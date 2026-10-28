@@ -54,7 +54,12 @@ export const commands = {
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
 	agentRemove: (id: string, uninstall: boolean) => __TAURI_INVOKE<null>("agent_remove", { id, uninstall }),
 	agentConnect: (command: AgentCommand_Deserialize, cwd: string, onEvent: Channel<AgentEvent_Deserialize>) => __TAURI_INVOKE<string>("agent_connect", { command, cwd, onEvent }),
+	/**  Start a fresh conversation on the connected agent process. */
+	agentNewSession: () => __TAURI_INVOKE<string>("agent_new_session"),
+	agentListSessions: () => __TAURI_INVOKE<SessionSummary_Serialize[]>("agent_list_sessions"),
+	agentResumeSession: (sessionId: string) => __TAURI_INVOKE<string>("agent_resume_session", { sessionId }),
 	agentPrompt: (text: string) => __TAURI_INVOKE<null>("agent_prompt", { text }),
+	agentSetConfig: (configId: string, value: string) => __TAURI_INVOKE<null>("agent_set_config", { configId, value }),
 	agentCancel: () => __TAURI_INVOKE<null>("agent_cancel"),
 	agentDisconnect: () => __TAURI_INVOKE<null>("agent_disconnect"),
 	agentPermission: (requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_permission", { requestId, optionId }),
@@ -87,9 +92,21 @@ export type AgentCommand_Serialize = {
 
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-export type AgentEvent_Deserialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "tool"; sessionId: string; toolCallId: string; title?: string | null; status?: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
+export type AgentEvent_Deserialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | 
+/**  A user turn replayed while an earlier session is restored. */
+{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Deserialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title?: string | null; status?: string | null; 
+/**  ACP tool kind such as `read`, `edit` or `execute`. */
+toolKind?: string | null; 
+/**  Set when an agent reports the call as made by a subagent. */
+parentToolCallId?: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
 
-export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "tool"; sessionId: string; toolCallId: string; title: string | null; status: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
+export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | 
+/**  A user turn replayed while an earlier session is restored. */
+{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Serialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title: string | null; status: string | null; 
+/**  ACP tool kind such as `read`, `edit` or `execute`. */
+toolKind: string | null; 
+/**  Set when an agent reports the call as made by a subagent. */
+parentToolCallId: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
 
 export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
 
@@ -108,6 +125,59 @@ export type BufferSnapshot = {
 	/**  Latest revision whose text equals the loaded or successfully saved baseline. */
 	savedRevision: number,
 	language: string,
+};
+
+export type ConfigChoice = ConfigChoice_Serialize | ConfigChoice_Deserialize;
+
+export type ConfigChoice_Deserialize = {
+	value: string,
+	name: string,
+	description?: string | null,
+};
+
+export type ConfigChoice_Serialize = {
+	value: string,
+	name: string,
+	description: string | null,
+};
+
+export type ConfigGroup = ConfigGroup_Serialize | ConfigGroup_Deserialize;
+
+export type ConfigGroup_Deserialize = {
+	/**  Empty for options the agent did not group. */
+	name: string,
+	choices: ConfigChoice_Deserialize[],
+};
+
+export type ConfigGroup_Serialize = {
+	/**  Empty for options the agent did not group. */
+	name: string,
+	choices: ConfigChoice_Serialize[],
+};
+
+/**  A select-style session option such as the model or the mode. */
+export type ConfigOption = ConfigOption_Serialize | ConfigOption_Deserialize;
+
+/**  A select-style session option such as the model or the mode. */
+export type ConfigOption_Deserialize = {
+	id: string,
+	name: string,
+	description?: string | null,
+	/**  Agent supplied category, for example `model` or `mode`. */
+	category?: string | null,
+	currentValue: string,
+	groups: ConfigGroup_Deserialize[],
+};
+
+/**  A select-style session option such as the model or the mode. */
+export type ConfigOption_Serialize = {
+	id: string,
+	name: string,
+	description: string | null,
+	/**  Agent supplied category, for example `model` or `mode`. */
+	category: string | null,
+	currentValue: string,
+	groups: ConfigGroup_Serialize[],
 };
 
 export type EditProposal = {
@@ -315,6 +385,23 @@ export type SessionState_Serialize = {
 	activeGroup: number,
 	panels: SessionPanels_Serialize,
 	markdownViews: { [key in string]: MarkdownView },
+};
+
+/**  A past conversation the agent can restore. */
+export type SessionSummary = SessionSummary_Serialize | SessionSummary_Deserialize;
+
+/**  A past conversation the agent can restore. */
+export type SessionSummary_Deserialize = {
+	sessionId: string,
+	title?: string | null,
+	updatedAt?: string | null,
+};
+
+/**  A past conversation the agent can restore. */
+export type SessionSummary_Serialize = {
+	sessionId: string,
+	title: string | null,
+	updatedAt: string | null,
 };
 
 export type Settings = Settings_Serialize | Settings_Deserialize;

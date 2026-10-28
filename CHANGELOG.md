@@ -16,6 +16,7 @@ Changes to Span are recorded here. Release notes combine this curated section wi
 - Material file and folder icons and SVG provider branding with vendored license and provenance records.
 - Public LSP client foundation, with native editor integration tracked separately.
 - A production website with verified manual installer links and a local release manifest for public API rate limits.
+- Agent Markdown rendering, follow-latest scrolling, queued follow-ups, resumable sessions, and subagent metadata, combined with the scoped installation and settings workflow.
 
 ### Changed
 
@@ -29,6 +30,8 @@ Changes to Span are recorded here. Release notes combine this curated section wi
 - Provide an explicit save fallback when formatting fails without discarding the user's edits.
 - Reconcile canceled discard requests and protect workspace transitions from stale or concurrent editor commands.
 - Derive dirty state from actual content changes, including edits reverted to their saved content.
+- Restrict numeric agent permission shortcuts to focused approval choices so normal editor typing cannot approve a request.
+- Guard late session responses from updating a newer connection and resolve the Windows user profile when HOME is unavailable.
 - Preserve Windows desktop test manifests and exact vendored SVG provenance across checkout platforms.
 
 ### Known limitations

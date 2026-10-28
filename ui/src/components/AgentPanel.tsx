@@ -12,9 +12,11 @@ import type {
   AgentCommand,
   BufferSnapshot,
   AgentEvent,
+  ConfigOption_Deserialize as ConfigOption,
   EditProposal,
   InstalledAgent,
   RegistryAgent,
+  SessionSummary,
 } from "../bindings";
 import {
   buildAgentCatalog,
@@ -26,6 +28,17 @@ import {
 import { api, isDesktop } from "../lib/client";
 import { FileIcon, Icon, MenuIcon } from "./Icon";
 import { BrandIcon } from "./BrandIcon";
+import { AgentMarkdown } from "./AgentMarkdown";
+import { AgentPermission } from "./AgentPermission";
+import { AgentTool } from "./AgentTool";
+import {
+  formatElapsed,
+  isNearBottom,
+  isNestedTool,
+  relativeTime,
+  subagentChildren,
+  toolSummary,
+} from "../lib/agent-feed";
 import "../styles/agent.css";
 
 type AgentPanelProps = {
@@ -41,6 +54,8 @@ type AgentPanelProps = {
   onBufferChanged?: (path: string, snapshot?: BufferSnapshot) => void;
   onOpenSettings?: () => void;
   removeAgent?: (id: string, uninstall: boolean) => Promise<void>;
+  onOpenFile?: (path: string) => void;
+  onOpenExternal?: (url: string) => void;
   onProposalsChange?: (proposals: EditProposal[]) => void;
   onReviewBusyChange?: (busy: boolean) => void;
   onReviewInEditor?: (path: string) => void;
@@ -69,7 +84,9 @@ type Menu =
   | "custom"
   | "commands"
   | "remove"
+  | "config"
   | null;
+type Queued = { id: number; text: string; message: string };
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const leaf = (path: string) => path.split("/").pop() || path;
@@ -113,9 +130,23 @@ export function AgentPanel(props: AgentPanelProps) {
   const [contextPaths, setContextPaths] = createSignal<string[]>([]);
   const [hiddenSelection, setHiddenSelection] = createSignal("");
   const [pendingAction, setPendingAction] = createSignal("");
+  const [configOptions, setConfigOptions] = createSignal<ConfigOption[]>([]);
+  const [configMenuId, setConfigMenuId] = createSignal("");
+  const [canLoad, setCanLoad] = createSignal(false);
+  const [canList, setCanList] = createSignal(false);
+  const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
+  const [sessionsBusy, setSessionsBusy] = createSignal(false);
+  const [sessionsError, setSessionsError] = createSignal("");
+  const [queue, setQueue] = createSignal<Queued[]>([]);
+  const [pinned, setPinned] = createSignal(true);
+  const [turnStart, setTurnStart] = createSignal(0);
+  const [clock, setClock] = createSignal(Date.now());
+  let history: string[] = [];
+  let historyIndex = -1;
   let nextId = 0;
   let input: HTMLTextAreaElement | undefined;
   let content: HTMLDivElement | undefined;
+  const [feedElement, setFeedElement] = createSignal<HTMLDivElement>();
   let menuElement: HTMLDivElement | undefined;
   let disposed = false;
   let agentEpoch = 0;
@@ -139,12 +170,16 @@ export function AgentPanel(props: AgentPanelProps) {
   );
   const canSend = createMemo(
     () =>
-      connected() &&
-      !running() &&
-      !working() &&
-      Boolean(prompt().trim()) &&
-      !feed().some((item) => item.kind === "permission" && !item.resolved),
+      connected() && !working() && !pendingAction() && Boolean(prompt().trim()),
   );
+  const firstOpenPermission = createMemo(
+    () =>
+      feed().find((item) => item.kind === "permission" && !item.resolved)?.id,
+  );
+  const toolFor = (toolCallId: string) =>
+    feed().find(
+      (item) => item.kind === "tool" && item.event.toolCallId === toolCallId,
+    );
   const unresolvedProposals = createMemo<EditProposal[]>(
     () =>
       feed().flatMap((item) =>
@@ -256,10 +291,22 @@ export function AgentPanel(props: AgentPanelProps) {
         setError("");
         setPrompt("");
         setContextPaths([]);
+        resetSessionState();
         setHiddenSelection(selectionKey());
       },
     ),
   );
+
+  function resetSessionState() {
+    setConfigOptions([]);
+    setConfigMenuId("");
+    setSessions([]);
+    setSessionsError("");
+    setQueue([]);
+    setCanLoad(false);
+    setCanList(false);
+    setPinned(true);
+  }
 
   function receive(event: AgentEvent) {
     if (
@@ -288,6 +335,24 @@ export function AgentPanel(props: AgentPanelProps) {
     } else if (event.kind === "session") {
       setSessionId(event.sessionId);
       setStatus("ready");
+    } else if (event.kind === "capabilities") {
+      setCanLoad(event.canLoadSession);
+      setCanList(event.canListSessions);
+    } else if (event.kind === "config") {
+      setConfigOptions(event.options);
+    } else if (event.kind === "user") {
+      setFeed((previous) => {
+        const last = previous[previous.length - 1];
+        if (last && last.kind === "user")
+          return [
+            ...previous.slice(0, -1),
+            { ...last, text: last.text + event.text },
+          ];
+        return [
+          ...previous,
+          { id: ++nextId, kind: "user" as const, text: event.text },
+        ].slice(-FEED_LIMIT);
+      });
     } else if (event.kind === "text" || event.kind === "thought") {
       setFeed((previous) => {
         const last = previous[previous.length - 1];
@@ -362,6 +427,7 @@ export function AgentPanel(props: AgentPanelProps) {
       setStatus("ready");
       setStatusMessage(`Ready · ${event.stopReason.replaceAll("_", " ")}`);
       note(`Turn finished: ${event.stopReason.replaceAll("_", " ")}`);
+      queueMicrotask(drainQueue);
     } else if (event.kind === "error") {
       setRunning(false);
       setStopRequested(false);
@@ -414,14 +480,39 @@ export function AgentPanel(props: AgentPanelProps) {
     }
     if (value === "/") setMenu("commands");
   });
+  const scrollToLatest = (smooth = false) =>
+    requestAnimationFrame(() =>
+      content?.scrollTo({
+        top: content.scrollHeight,
+        behavior: smooth ? "smooth" : "auto",
+      }),
+    );
+  function followLatest() {
+    setPinned(true);
+    scrollToLatest(true);
+  }
   createEffect(() => {
     feed();
+    logs();
     showLogs();
-    if (
-      content &&
-      content.scrollHeight - content.scrollTop - content.clientHeight < 200
-    )
-      queueMicrotask(() => content?.scrollTo({ top: content.scrollHeight }));
+    queue();
+    if (pinned()) scrollToLatest();
+  });
+  createEffect(() => {
+    // Markdown and highlighting settle after the feed signal changes, so watch the real height.
+    const element = feedElement();
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (pinned()) scrollToLatest();
+    });
+    observer.observe(element);
+    onCleanup(() => observer.disconnect());
+  });
+  createEffect(() => {
+    if (!running()) return;
+    setClock(Date.now());
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    onCleanup(() => window.clearInterval(timer));
   });
 
   createEffect(() => {
@@ -483,7 +574,21 @@ export function AgentPanel(props: AgentPanelProps) {
   function openMenu(next: Exclude<Menu, null>) {
     setMenu((current) => (current === next ? null : next));
     if (next === "agent" && !registryLoaded()) void loadAgents();
+    if (next === "session" && connected() && canList()) void loadSessions();
   }
+  function toggleConfig(option: ConfigOption) {
+    if (menu() === "config" && configMenuId() === option.id) {
+      setMenu(null);
+      return;
+    }
+    setConfigMenuId(option.id);
+    setMenu("config");
+  }
+  const choiceName = (option: ConfigOption) =>
+    option.groups
+      .flatMap((group) => group.choices)
+      .find((choice) => choice.value === option.currentValue)?.name ??
+    option.currentValue;
   async function connect(
     command: AgentCommand,
     name: string,
@@ -505,6 +610,7 @@ export function AgentPanel(props: AgentPanelProps) {
       if (sessionId()) await api.agentDisconnect();
       if (!current()) return;
       setFeed([]);
+      resetSessionState();
       setSessionId(undefined);
       setAgentName(name);
       setActiveAgentId(identity);
@@ -663,34 +769,31 @@ export function AgentPanel(props: AgentPanelProps) {
       if (current()) setWorking(false);
     }
   }
-  async function send() {
+  async function compose(text: string, selected: ReturnType<typeof selection>) {
+    const files = await Promise.all(
+      contextPaths().map((path) => api.openBuffer(path)),
+    );
+    const contexts = files.map((file) => `File: ${file.path}\n${file.text}`);
+    if (selected)
+      contexts.push(
+        `Selected code from ${selected.path}${selected.startLine ? `, line ${selected.startLine}` : ""}:\n${selected.text}`,
+      );
+    return contexts.length
+      ? `${text}\n\nEditor context:\n${contexts.join("\n\n")}`
+      : text;
+  }
+  async function dispatch(text: string, message: string) {
     const epoch = agentEpoch;
     const current = () => !disposed && epoch === agentEpoch;
-    if (!canSend()) return;
-    const text = prompt().trim();
-    const selected = selection();
-    setWorking(true);
-    setError("");
+    addItem({ id: ++nextId, kind: "user", text });
+    setRunning(true);
+    setStopRequested(false);
+    setTurnStart(Date.now());
+    setStatus("busy");
+    setStatusMessage("Agent is working");
+    setShowLogs(false);
+    followLatest();
     try {
-      const files = await Promise.all(
-        contextPaths().map((path) => api.openBuffer(path)),
-      );
-      if (!current()) return;
-      const contexts = files.map((file) => `File: ${file.path}\n${file.text}`);
-      if (selected)
-        contexts.push(
-          `Selected code from ${selected.path}${selected.startLine ? `, line ${selected.startLine}` : ""}:\n${selected.text}`,
-        );
-      const message = contexts.length
-        ? `${text}\n\nEditor context:\n${contexts.join("\n\n")}`
-        : text;
-      addItem({ id: ++nextId, kind: "user", text });
-      setPrompt("");
-      setRunning(true);
-      setStopRequested(false);
-      setStatus("busy");
-      setStatusMessage("Agent is working");
-      setShowLogs(false);
       await api.agentPrompt(message);
     } catch (cause) {
       if (!current()) return;
@@ -702,10 +805,127 @@ export function AgentPanel(props: AgentPanelProps) {
       }
       if (!prompt()) setPrompt(text);
       fail("Prompt failed", cause);
+    }
+  }
+  async function send() {
+    const epoch = agentEpoch;
+    const current = () => !disposed && epoch === agentEpoch;
+    if (!canSend()) return;
+    const text = prompt().trim();
+    const selected = selection();
+    setWorking(true);
+    setError("");
+    try {
+      const message = await compose(text, selected);
+      if (!current()) return;
+      history = [text, ...history.filter((entry) => entry !== text)].slice(0, 50);
+      historyIndex = -1;
+      setPrompt("");
+      if (running()) {
+        setQueue((previous) => [...previous, { id: ++nextId, text, message }]);
+        return;
+      }
+      void dispatch(text, message);
+    } catch (cause) {
+      if (!current()) return;
+      fail("Prompt failed", cause);
     } finally {
       if (current()) setWorking(false);
     }
   }
+  /** Queued steering messages go out together once the agent finishes or is stopped. */
+  function drainQueue() {
+    const waiting = queue();
+    if (!waiting.length || running() || !connected()) return;
+    setQueue([]);
+    void dispatch(
+      waiting.map((entry) => entry.text).join("\n\n"),
+      waiting.map((entry) => entry.message).join("\n\n"),
+    );
+  }
+  function recallPrompt(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
+    const area = event.currentTarget;
+    if (event.key === "ArrowUp" && area.selectionStart === 0 && area.selectionEnd === 0) {
+      if (historyIndex + 1 >= history.length) return;
+      event.preventDefault();
+      setPrompt(history[++historyIndex]);
+    } else if (event.key === "ArrowDown" && historyIndex >= 0 && area.selectionStart === area.value.length) {
+      event.preventDefault();
+      historyIndex -= 1;
+      setPrompt(historyIndex >= 0 ? history[historyIndex] : "");
+    }
+  }
+  async function setConfig(option: ConfigOption, value: string) {
+    const epoch = agentEpoch;
+    const current = () => !disposed && epoch === agentEpoch;
+    if (value === option.currentValue) {
+      setMenu(null);
+      input?.focus();
+      return;
+    }
+    setPendingAction(`config:${option.id}`);
+    setError("");
+    try {
+      await api.agentSetConfig(option.id, value);
+      if (!current()) return;
+      setMenu(null);
+      input?.focus();
+    } catch (cause) {
+      if (!current()) return;
+      fail(`Could not change ${option.name}`, cause);
+    } finally {
+      if (current()) setPendingAction("");
+    }
+  }
+  async function loadSessions() {
+    if (!canList() || sessionsBusy()) return;
+    const epoch = agentEpoch;
+    setSessionsBusy(true);
+    setSessionsError("");
+    try {
+      const found = await api.agentListSessions();
+      if (epoch === agentEpoch && !disposed) setSessions(found);
+    } catch (cause) {
+      if (epoch === agentEpoch && !disposed) setSessionsError(errorText(cause));
+    } finally {
+      if (epoch === agentEpoch && !disposed) setSessionsBusy(false);
+    }
+  }
+  async function switchChat(start: () => Promise<string>, failure: string) {
+    const epoch = ++agentEpoch;
+    const current = () => !disposed && epoch === agentEpoch;
+    setMenu(null);
+    setWorking(true);
+    setError("");
+    const previousFeed = feed();
+    const previousSession = sessionId();
+    setFeed([]);
+    setQueue([]);
+    setSessionId(undefined);
+    setRunning(false);
+    try {
+      const id = await start();
+      if (!current()) return;
+      setSessionId(id);
+      setStatus("ready");
+      setStatusMessage("Connected and ready");
+      followLatest();
+      focusPrompt();
+    } catch (cause) {
+      if (!current()) return;
+      setFeed(previousFeed);
+      setSessionId(previousSession);
+      fail(failure, cause);
+    } finally {
+      if (current()) setWorking(false);
+    }
+  }
+  const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat");
+  const resumeChat = (summary: SessionSummary) =>
+    switchChat(
+      () => api.agentResumeSession(summary.sessionId),
+      "Could not resume that chat",
+    );
   async function stop() {
     const epoch = agentEpoch;
     const current = () => !disposed && epoch === agentEpoch;
@@ -835,11 +1055,12 @@ export function AgentPanel(props: AgentPanelProps) {
         </button>
         <button
           class="agent-icon-button"
-          aria-label="Agent session options"
-          title="Agent sessions"
-          aria-haspopup="menu"
-          aria-expanded={menu() === "session"}
-          onClick={() => openMenu("session")}
+          aria-label={connected() ? "New chat" : "Agent session options"}
+          title={connected() ? "New chat" : "Agent sessions"}
+          aria-haspopup={connected() ? undefined : "menu"}
+          aria-expanded={connected() ? undefined : menu() === "session"}
+          disabled={working()}
+          onClick={() => (connected() ? void newChat() : openMenu("session"))}
         >
           <Icon name="Add" size={17} />
         </button>
@@ -868,7 +1089,11 @@ export function AgentPanel(props: AgentPanelProps) {
           </div>
         </div>
       </Show>
-      <div class="agent-content" ref={content}>
+      <div
+        class="agent-content"
+        ref={content}
+        onScroll={() => content && setPinned(isNearBottom(content))}
+      >
         <Show
           when={showLogs()}
           fallback={
@@ -940,6 +1165,7 @@ export function AgentPanel(props: AgentPanelProps) {
             >
               <div
                 class="agent-feed"
+                ref={setFeedElement}
                 aria-live="polite"
                 aria-relevant="additions text"
               >
@@ -959,12 +1185,26 @@ export function AgentPanel(props: AgentPanelProps) {
                             FeedItem,
                             { text: string }
                           >;
+                          const rich =
+                            message.kind === "text" ||
+                            message.kind === "thought";
                           return (
                             <div class={`agent-message ${message.kind}`}>
                               {message.kind === "thought" && (
                                 <div class="agent-message-label">Thinking</div>
                               )}
-                              {message.text}
+                              <Show when={rich} fallback={message.text}>
+                                <AgentMarkdown
+                                  text={message.text}
+                                  workspaceRoot={props.workspacePath || ""}
+                                  streaming={
+                                    running() &&
+                                    feed()[feed().length - 1]?.id === message.id
+                                  }
+                                  onOpenFile={props.onOpenFile}
+                                  onOpenExternal={props.onOpenExternal}
+                                />
+                              </Show>
                             </div>
                           );
                         }}
@@ -1007,46 +1247,25 @@ export function AgentPanel(props: AgentPanelProps) {
                           );
                         }}
                       </Show>
-                      <Show when={item.kind === "tool"}>
+                      <Show
+                        when={
+                          item.kind === "tool" &&
+                          !isNestedTool(feed(), item.event)
+                        }
+                      >
                         {(_match) => {
                           const tool = item as Extract<
                             FeedItem,
                             { kind: "tool" }
                           >;
                           return (
-                            <article class="agent-card">
-                              <div class="agent-card-header">
-                                <Icon name="Code1" size={14} />
-                                <span class="agent-card-title">
-                                  {tool.event.title || "Agent tool"}
-                                </span>
-                                <span
-                                  class={`agent-state ${tool.event.status || ""}`}
-                                >
-                                  {tool.event.status?.replaceAll("_", " ") ||
-                                    "pending"}
-                                </span>
-                              </div>
-                              <Show
-                                when={
-                                  tool.event.contentJson &&
-                                  tool.event.contentJson !== "null" &&
-                                  tool.event.contentJson !== "[]"
-                                }
-                              >
-                                <details>
-                                  <summary class="agent-card-body">
-                                    Tool details
-                                  </summary>
-                                  <pre class="agent-card-body">
-                                    {tool.event.contentJson.slice(0, 18000)}
-                                    {tool.event.contentJson.length > 18000
-                                      ? "\n[Details truncated. Inspect ACP log for recent transport lines.]"
-                                      : ""}
-                                  </pre>
-                                </details>
-                              </Show>
-                            </article>
+                            <AgentTool
+                              tool={tool.event}
+                              children={subagentChildren(
+                                feed(),
+                                tool.event.toolCallId,
+                              )}
+                            />
                           );
                         }}
                       </Show>
@@ -1056,61 +1275,24 @@ export function AgentPanel(props: AgentPanelProps) {
                             FeedItem,
                             { kind: "permission" }
                           >;
+                          const related = () => {
+                            const found = toolFor(request.event.toolCallId);
+                            return found?.kind === "tool"
+                              ? toolSummary(found.event.contentJson)
+                              : "";
+                          };
                           return (
-                            <article class="agent-card">
-                              <div class="agent-card-header">
-                                <span class="agent-card-title">
-                                  {request.event.title ||
-                                    "Permission requested"}
-                                </span>
-                                <span class="agent-state">
-                                  {request.resolved
-                                    ? "resolved"
-                                    : "needs approval"}
-                                </span>
-                              </div>
-                              <Show when={!request.resolved}>
-                                <div class="agent-permission">
-                                  <p>
-                                    Review this agent request before it
-                                    continues.
-                                  </p>
-                                  <div class="agent-actions">
-                                    <For each={request.event.options}>
-                                      {(option) => (
-                                        <button
-                                          class="agent-action"
-                                          classList={{
-                                            primary:
-                                              option.kind === "allow_once",
-                                            danger:
-                                              option.kind.startsWith("reject"),
-                                          }}
-                                          disabled={Boolean(pendingAction())}
-                                          onClick={() =>
-                                            void permission(
-                                              request.event,
-                                              option.optionId,
-                                            )
-                                          }
-                                        >
-                                          {option.name}
-                                        </button>
-                                      )}
-                                    </For>
-                                    <button
-                                      class="agent-action"
-                                      disabled={Boolean(pendingAction())}
-                                      onClick={() =>
-                                        void permission(request.event, null)
-                                      }
-                                    >
-                                      Dismiss request
-                                    </button>
-                                  </div>
-                                </div>
-                              </Show>
-                            </article>
+                            <AgentPermission
+                              title={request.event.title}
+                              summary={related()}
+                              options={request.event.options}
+                              resolved={request.resolved}
+                              active={firstOpenPermission() === request.id}
+                              busy={Boolean(pendingAction())}
+                              onChoose={(optionId) =>
+                                void permission(request.event, optionId)
+                              }
+                            />
                           );
                         }}
                       </Show>
@@ -1212,6 +1394,15 @@ export function AgentPanel(props: AgentPanelProps) {
                     </>
                   )}
                 </For>
+                <Show when={running()}>
+                  <div class="agent-working" role="status">
+                    <span class="agent-working-dots" aria-hidden="true" />
+                    <span>
+                      {stopRequested() ? "Stopping" : "Working"} ·{" "}
+                      {formatElapsed(clock() - turnStart())}
+                    </span>
+                  </div>
+                </Show>
               </div>
             </Show>
           }
@@ -1235,6 +1426,16 @@ export function AgentPanel(props: AgentPanelProps) {
           </Show>
         </Show>
       </div>
+      <Show when={!pinned() && (feed().length > 0 || showLogs())}>
+        <button
+          class="agent-jump"
+          aria-label="Jump to latest message"
+          onClick={followLatest}
+        >
+          <Icon name="arrow-down4" size={11} />
+          {running() ? "New activity" : "Latest"}
+        </button>
+      </Show>
       <footer class="agent-footer">
         <div
           class="agent-composer"
@@ -1623,6 +1824,19 @@ export function AgentPanel(props: AgentPanelProps) {
                     ? `Connected: ${agentName()}\nSession ${sessionId()}`
                     : "No active agent session"}
                 </div>
+                <Show when={connected()}>
+                  <button
+                    class="agent-menu-item"
+                    disabled={working() || running()}
+                    onClick={() => void newChat()}
+                  >
+                    <Icon name="Add" size={15} />
+                    <span>
+                      <strong>New chat</strong>
+                      <small>Keeps the same agent connection</small>
+                    </span>
+                  </button>
+                </Show>
                 <button
                   class="agent-menu-item"
                   disabled={working()}
@@ -1636,6 +1850,65 @@ export function AgentPanel(props: AgentPanelProps) {
                     {sessionId() ? "Connect another agent" : "Start a session"}
                   </span>
                 </button>
+                <Show when={connected()}>
+                  <div class="agent-menu-divider" />
+                  <div class="agent-menu-title">Recent chats</div>
+                  <Show
+                    when={canList()}
+                    fallback={
+                      <div class="agent-menu-note">
+                        {agentName()} does not list earlier chats.
+                      </div>
+                    }
+                  >
+                    <Show when={sessionsError()}>
+                      <div class="agent-menu-note">{sessionsError()}</div>
+                    </Show>
+                    <Show when={sessionsBusy() && !sessions().length}>
+                      <div class="agent-menu-note">Loading chats…</div>
+                    </Show>
+                    <Show
+                      when={
+                        !sessionsBusy() &&
+                        !sessionsError() &&
+                        !sessions().length
+                      }
+                    >
+                      <div class="agent-menu-note">
+                        No earlier chats in this folder.
+                      </div>
+                    </Show>
+                    <For each={sessions()}>
+                      {(entry) => (
+                        <button
+                          class="agent-menu-item"
+                          disabled={
+                            working() ||
+                            running() ||
+                            !canLoad() ||
+                            entry.sessionId === sessionId()
+                          }
+                          title={
+                            canLoad()
+                              ? entry.sessionId
+                              : `${agentName()} cannot restore chats`
+                          }
+                          onClick={() => void resumeChat(entry)}
+                        >
+                          <span>
+                            <strong>{entry.title || "Untitled chat"}</strong>
+                            <small>
+                              {entry.sessionId === sessionId()
+                                ? "Current chat"
+                                : relativeTime(entry.updatedAt) ||
+                                  entry.sessionId.slice(0, 8)}
+                            </small>
+                          </span>
+                        </button>
+                      )}
+                    </For>
+                  </Show>
+                </Show>
                 <Show when={sessionId()}>
                   <button
                     class="agent-menu-item"
@@ -1677,8 +1950,88 @@ export function AgentPanel(props: AgentPanelProps) {
                   current editor buffer, including unsaved changes.
                 </div>
               </Show>
+              <Show when={menu() === "config"}>
+                <For
+                  each={configOptions().filter(
+                    (option) => option.id === configMenuId(),
+                  )}
+                >
+                  {(option) => (
+                    <>
+                      <div class="agent-menu-title">{option.name}</div>
+                      <Show when={option.description}>
+                        <div class="agent-menu-note">{option.description}</div>
+                      </Show>
+                      <For each={option.groups}>
+                        {(group) => (
+                          <>
+                            <Show when={group.name}>
+                              <div class="agent-menu-title">{group.name}</div>
+                            </Show>
+                            <For each={group.choices}>
+                              {(choice) => (
+                                <button
+                                  class="agent-menu-item"
+                                  role="menuitemradio"
+                                  aria-checked={
+                                    choice.value === option.currentValue
+                                  }
+                                  disabled={Boolean(pendingAction())}
+                                  onClick={() =>
+                                    void setConfig(option, choice.value)
+                                  }
+                                >
+                                  <span>
+                                    <strong>{choice.name}</strong>
+                                    <Show when={choice.description}>
+                                      <small>{choice.description}</small>
+                                    </Show>
+                                  </span>
+                                  <Show
+                                    when={choice.value === option.currentValue}
+                                  >
+                                    <span class="agent-check" aria-hidden="true">
+                                      ✓
+                                    </span>
+                                  </Show>
+                                </button>
+                              )}
+                            </For>
+                          </>
+                        )}
+                      </For>
+                    </>
+                  )}
+                </For>
+              </Show>
               <Show when={menu() === "commands"}>
                 <div class="agent-menu-title">Assistant commands</div>
+                <Show when={connected()}>
+                  <button
+                    class="agent-menu-item"
+                    disabled={running()}
+                    onClick={() => commandAction(() => void newChat())}
+                  >
+                    <span>
+                      <strong>New chat</strong>
+                      <small>Start a fresh conversation with this agent</small>
+                    </span>
+                  </button>
+                  <button
+                    class="agent-menu-item"
+                    onClick={() =>
+                      commandAction(() => {
+                        setMenu("session");
+                        if (canList()) void loadSessions();
+                      })
+                    }
+                  >
+                    <span>
+                      <strong>Resume chat</strong>
+                      <small>Pick up an earlier conversation</small>
+                    </span>
+                  </button>
+                </Show>
                 <button
                   class="agent-menu-item"
                   onClick={() =>
@@ -1751,6 +2104,36 @@ export function AgentPanel(props: AgentPanelProps) {
               </For>
             </div>
           </Show>
+          <Show when={queue().length}>
+            <div class="agent-queue" aria-label="Queued follow-ups">
+              <For each={queue()}>
+                {(entry) => (
+                  <span class="agent-context-chip queued" title={entry.text}>
+                    <span>Queued: {entry.text.slice(0, 60)}</span>
+                    <button
+                      aria-label="Remove queued message"
+                      onClick={() =>
+                        setQueue((previous) =>
+                          previous.filter((value) => value.id !== entry.id),
+                        )
+                      }
+                    >
+                      ×
+                    </button>
+                  </span>
+                )}
+              </For>
+              <Show when={running()}>
+                <button
+                  class="agent-link"
+                  disabled={stopRequested()}
+                  onClick={() => void stop()}
+                >
+                  Stop and send now
+                </button>
+              </Show>
+            </div>
+          </Show>
           <label class="agent-sr-only" for="agent-prompt">
             Message to agent
           </label>
@@ -1760,10 +2143,13 @@ export function AgentPanel(props: AgentPanelProps) {
             class="agent-input"
             rows="2"
             value={prompt()}
-            placeholder="Ask AI Assistant…"
+            placeholder={
+              running() ? "Queue a follow-up for after this turn…" : "Ask AI Assistant…"
+            }
             spellcheck={false}
             onInput={(event) => setPrompt(event.currentTarget.value)}
             onKeyDown={(event) => {
+              recallPrompt(event);
               if (
                 event.key === "Enter" &&
                 !event.shiftKey &&
@@ -1818,23 +2204,41 @@ export function AgentPanel(props: AgentPanelProps) {
               Session
               <Icon name="arrow-down4" size={10} />
             </button>
-            <span class="agent-toolbar-spacer" />
-            <Show
-              when={running()}
-              fallback={
+            <For each={configOptions().slice(0, 3)}>
+              {(option) => (
                 <button
-                  class="agent-send"
-                  aria-label="Send prompt"
-                  title={
-                    connected() ? "Send · Enter" : "Connect an agent to send"
+                  class="agent-composer-button config"
+                  title={option.description || option.name}
+                  aria-label={`${option.name}: ${choiceName(option)}`}
+                  aria-haspopup="menu"
+                  aria-expanded={
+                    menu() === "config" && configMenuId() === option.id
                   }
-                  disabled={!canSend()}
-                  onClick={() => void send()}
+                  disabled={Boolean(pendingAction())}
+                  onClick={() => toggleConfig(option)}
                 >
-                  <Icon name="u-send" size={18} />
+                  <span class="agent-config-name">{choiceName(option)}</span>
+                  <Icon name="arrow-down4" size={10} />
                 </button>
+              )}
+            </For>
+            <span class="agent-toolbar-spacer" />
+            <button
+              class="agent-send"
+              aria-label={running() ? "Queue follow-up" : "Send prompt"}
+              title={
+                !connected()
+                  ? "Connect an agent to send"
+                  : running()
+                    ? "Queue for after this turn · Enter"
+                    : "Send · Enter"
               }
+              disabled={!canSend()}
+              onClick={() => void send()}
             >
+              <Icon name="u-send" size={18} />
+            </button>
+            <Show when={running()}>
               <button
                 class="agent-send stop"
                 aria-label="Stop agent"
@@ -1857,7 +2261,9 @@ export function AgentPanel(props: AgentPanelProps) {
                 : "Connect an ACP agent to begin"
               : "Browser preview · agent unavailable"}
           </span>
-          <span>↵ send · ⇧↵ newline</span>
+          <span>
+            {running() ? "↵ queue · Esc stop" : "↵ send · ⇧↵ newline · ↑ history"}
+          </span>
         </div>
       </footer>
     </section>

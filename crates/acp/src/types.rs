@@ -29,6 +29,44 @@ pub struct PlanEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigChoice {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigGroup {
+    /// Empty for options the agent did not group.
+    pub name: String,
+    pub choices: Vec<ConfigChoice>,
+}
+
+/// A select-style session option such as the model or the mode.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigOption {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Agent supplied category, for example `model` or `mode`.
+    pub category: Option<String>,
+    pub current_value: String,
+    pub groups: Vec<ConfigGroup>,
+}
+
+/// A past conversation the agent can restore.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -50,15 +88,32 @@ pub enum AgentEvent {
         session_id: String,
         text: String,
     },
+    /// A user turn replayed while an earlier session is restored.
+    User {
+        session_id: String,
+        text: String,
+    },
+    Capabilities {
+        can_load_session: bool,
+        can_list_sessions: bool,
+    },
     Plan {
         session_id: String,
         entries: Vec<PlanEntry>,
+    },
+    Config {
+        session_id: String,
+        options: Vec<ConfigOption>,
     },
     Tool {
         session_id: String,
         tool_call_id: String,
         title: Option<String>,
         status: Option<String>,
+        /// ACP tool kind such as `read`, `edit` or `execute`.
+        tool_kind: Option<String>,
+        /// Set when an agent reports the call as made by a subagent.
+        parent_tool_call_id: Option<String>,
         content_json: String,
     },
     Permission {

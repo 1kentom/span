@@ -26,7 +26,7 @@ test("Settings JSONC is a normal editor tab and retains invalid drafts through c
   await expect(page.getByRole("tab", { name: "rpc-node.ts", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "rpc-node.ts", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true })).toBeVisible();
-  await expect(page).toHaveURL(/127\.0\.0\.1:1420/);
+  await expect(page).toHaveURL(new URL("/", test.info().project.use.baseURL).href);
 });
 
 test("a dirty settings source survives moving out of a split and closing its former group", async ({ page }) => {

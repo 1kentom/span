@@ -72,7 +72,7 @@ test("tabs move between groups and Explorer files drop into the target group", a
 });
 
 test("file context menus expose working path submenus and disable native mutations in preview", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:1420" });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(test.info().project.use.baseURL || "http://127.0.0.1:1420").origin });
   await ready(page);
   await page.getByRole("tab", { name: "rpc-node.ts", exact: true }).click({ button: "right" });
   const menu = page.getByRole("menu", { name: "File actions", exact: true });

@@ -12,6 +12,11 @@ const mocks = vi.hoisted(() => ({
   disconnect: vi.fn(),
   install: vi.fn(),
   onEvent: vi.fn(),
+  prompt: vi.fn(),
+  setConfig: vi.fn(),
+  listSessions: vi.fn(),
+  resumeSession: vi.fn(),
+  newSession: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({
   isDesktop: true,
@@ -23,6 +28,11 @@ vi.mock("../lib/client", () => ({
     agentDisconnect: mocks.disconnect,
     agentInstall: mocks.install,
     onAgentEvent: mocks.onEvent,
+    agentPrompt: mocks.prompt,
+    agentSetConfig: mocks.setConfig,
+    agentListSessions: mocks.listSessions,
+    agentResumeSession: mocks.resumeSession,
+    agentNewSession: mocks.newSession,
   },
 }));
 const managed: InstalledAgent = {
@@ -81,12 +91,40 @@ beforeEach(() => {
   mocks.disconnect.mockResolvedValue(undefined);
   mocks.connect.mockResolvedValue("session-1");
   mocks.onEvent.mockResolvedValue(() => undefined);
+  mocks.prompt.mockResolvedValue(undefined);
+  mocks.setConfig.mockResolvedValue(undefined);
+  mocks.listSessions.mockResolvedValue([{ sessionId: "earlier-chat", title: "Earlier fixture chat", updatedAt: null }]);
+  mocks.resumeSession.mockResolvedValue("earlier-chat");
+  mocks.newSession.mockResolvedValue("new-chat");
 });
 afterEach(() => {
   disposers.splice(0).forEach((dispose) => dispose());
   document.body.replaceChildren();
 });
 describe("agent menu", () => {
+  it("preserves model selection, streamed Markdown, queued follow-ups and chat resume after connecting a curated agent", async () => {
+    const { root, open, button } = mount(); await open(); button("Codex").click(); await flush();
+    const receive = mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
+    receive({ kind: "capabilities", canLoadSession: true, canListSessions: true });
+    receive({ kind: "config", sessionId: "session-1", options: [{ id: "model", name: "Model", category: "model", currentValue: "fast", groups: [{ name: "", choices: [{ value: "fast", name: "Fast model" }, { value: "deep", name: "Deep model" }] }] }] });
+    root.querySelector<HTMLButtonElement>('[aria-label="Model: Fast model"]')!.click(); button("Deep model").click(); await flush();
+    expect(mocks.setConfig).toHaveBeenCalledWith("model", "deep");
+    const input = root.querySelector<HTMLTextAreaElement>("#agent-prompt")!;
+    const type = (text: string) => { input.value = text; input.dispatchEvent(new Event("input", { bubbles: true })); };
+    type("first question"); root.querySelector<HTMLButtonElement>('[aria-label="Send prompt"]')!.click(); await flush();
+    receive({ kind: "text", sessionId: "session-1", text: "**Streamed result**\n\n- preserved formatting" }); await flush();
+    expect(root.querySelector(".agent-markdown strong")?.textContent).toBe("Streamed result");
+    type("follow up while busy"); root.querySelector<HTMLButtonElement>('[aria-label="Queue follow-up"]')!.click(); await flush();
+    expect(root.querySelector('[aria-label="Queued follow-ups"]')?.textContent).toContain("follow up while busy");
+    expect(mocks.prompt).toHaveBeenCalledTimes(1);
+    receive({ kind: "complete", sessionId: "session-1", stopReason: "end_turn" }); await flush();
+    expect(mocks.prompt).toHaveBeenLastCalledWith("follow up while busy");
+    receive({ kind: "complete", sessionId: "session-1", stopReason: "end_turn" }); await flush();
+    root.querySelector<HTMLButtonElement>('[aria-label="Session options"]')!.click(); await flush();
+    button("Earlier fixture chat").click(); await flush();
+    expect(mocks.resumeSession).toHaveBeenCalledWith("earlier-chat");
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
   it("shows Claude Code with compact explicit text slots and hides raw executable paths", async () => {
     const { root, open } = mount();
     await open();

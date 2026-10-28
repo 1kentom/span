@@ -650,3 +650,130 @@ async fn incompatible_prompt_method_also_closes_connection() {
     service.shutdown_and_wait().await.unwrap();
     assert!(service.new_session().await.is_err());
 }
+
+#[tokio::test]
+async fn lists_and_restores_earlier_sessions_with_replayed_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Arc::new(Mutex::new(
+        CoreWorkspace::open(directory.path())
+            .unwrap()
+            .with_user_settings(None),
+    ));
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let service = AgentService::start(
+        AgentCommand {
+            command: "node".into(),
+            args: vec![
+                format!("{}/tests/fixtures/agent.mjs", env!("CARGO_MANIFEST_DIR")),
+                "--resume".into(),
+            ],
+            env: BTreeMap::new(),
+        },
+        directory.path().to_string_lossy().into_owned(),
+        workspace,
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    )
+    .await
+    .unwrap();
+    next(&mut events, |e| {
+        matches!(
+            e,
+            AgentEvent::Capabilities {
+                can_load_session: true,
+                can_list_sessions: true
+            }
+        )
+    })
+    .await;
+    service.new_session().await.unwrap();
+    let listed = service.list_sessions().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].session_id, "old-1");
+    assert_eq!(listed[0].title.as_deref(), Some("Earlier chat"));
+    service.load_session("old-1".into()).await.unwrap();
+    next(&mut events, |e| {
+        matches!(e, AgentEvent::User { session_id, text } if session_id == "old-1" && text == "earlier question")
+    })
+    .await;
+    next(&mut events, |e| {
+        matches!(e, AgentEvent::Text { session_id, text } if session_id == "old-1" && text == "earlier answer")
+    })
+    .await;
+    let tool = next(&mut events, |e| matches!(e, AgentEvent::Tool { .. })).await;
+    let AgentEvent::Tool {
+        parent_tool_call_id,
+        tool_kind,
+        ..
+    } = tool
+    else {
+        unreachable!()
+    };
+    assert_eq!(parent_tool_call_id.as_deref(), Some("task-1"));
+    assert_eq!(tool_kind.as_deref(), Some("read"));
+    service
+        .cancel("old-1".into())
+        .expect("restored session is tracked");
+}
+
+#[tokio::test]
+async fn agents_without_resume_support_report_it() {
+    let (_directory, _workspace, service, _events, _session) = setup().await;
+    assert!(service
+        .list_sessions()
+        .await
+        .unwrap_err()
+        .contains("cannot list"));
+    assert!(service
+        .load_session("x".into())
+        .await
+        .unwrap_err()
+        .contains("cannot restore"));
+}
+
+#[tokio::test]
+async fn advertised_initial_model_options_and_configuration_round_trip_are_preserved() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Arc::new(Mutex::new(
+        CoreWorkspace::open(directory.path())
+            .unwrap()
+            .with_user_settings(None),
+    ));
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let service = AgentService::start(
+        AgentCommand {
+            command: "node".into(),
+            args: vec![
+                format!("{}/tests/fixtures/agent.mjs", env!("CARGO_MANIFEST_DIR")),
+                "--config".into(),
+            ],
+            env: BTreeMap::new(),
+        },
+        directory.path().to_string_lossy().into_owned(),
+        workspace,
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    )
+    .await
+    .unwrap();
+    let session = service.new_session().await.unwrap();
+    let initial = next(
+        &mut events,
+        |event| matches!(event, AgentEvent::Config { session_id, .. } if session_id == &session),
+    )
+    .await;
+    let AgentEvent::Config { options, .. } = initial else {
+        unreachable!()
+    };
+    assert_eq!(options[0].current_value, "fast");
+    assert_eq!(options[0].groups[0].choices.len(), 2);
+    service
+        .set_config(session.clone(), "model".into(), "deep".into())
+        .await
+        .unwrap();
+    let updated = next(&mut events, |event| matches!(event, AgentEvent::Config { session_id, options } if session_id == &session && options[0].current_value == "deep")).await;
+    assert!(matches!(updated, AgentEvent::Config { .. }));
+    service.shutdown_and_wait().await.unwrap();
+}

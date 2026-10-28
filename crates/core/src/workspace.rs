@@ -52,9 +52,8 @@ impl CoreWorkspace {
                 root.display()
             )));
         }
-        let user_settings = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|p| p.join(".config/span/settings.jsonc"));
+        let user_settings =
+            user_settings_path(std::env::var_os("HOME"), std::env::var_os("USERPROFILE")).ok();
         Ok(Self {
             root,
             buffers: HashMap::new(),
@@ -74,10 +73,7 @@ impl CoreWorkspace {
 
     /// Trusted user preferences only. This context cannot resolve general filesystem paths.
     pub fn for_user_settings() -> Result<Self> {
-        let user = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|path| path.join(".config/span/settings.jsonc"))
-            .ok_or_else(|| CoreError::Settings("User profile directory is unavailable".into()))?;
+        let user = user_settings_path(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))?;
         Ok(Self {
             root: PathBuf::new(),
             buffers: HashMap::new(),
@@ -797,5 +793,39 @@ mod scan_tests {
         let workspace = CoreWorkspace::open(root.path()).unwrap();
         fs::remove_dir(path).unwrap();
         assert!(workspace.scan_entry(&observed.path()).is_none());
+    }
+}
+
+fn user_settings_path(
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+) -> Result<PathBuf> {
+    home.filter(|path| !path.is_empty())
+        .or_else(|| user_profile.filter(|path| !path.is_empty()))
+        .map(PathBuf::from)
+        .map(|path| path.join(".config/span/settings.jsonc"))
+        .ok_or_else(|| CoreError::Settings("User profile directory is unavailable".into()))
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+    #[test]
+    fn userprofile_is_used_when_windows_does_not_provide_home() {
+        let profile = PathBuf::from("profile-fixture");
+        assert_eq!(
+            user_settings_path(None, Some(profile.clone().into_os_string())).unwrap(),
+            profile.join(".config/span/settings.jsonc")
+        );
+        assert_eq!(
+            user_settings_path(Some("".into()), Some(profile.clone().into_os_string())).unwrap(),
+            profile.join(".config/span/settings.jsonc")
+        );
+        assert_eq!(
+            user_settings_path(Some("home-fixture".into()), Some(profile.into_os_string()))
+                .unwrap(),
+            PathBuf::from("home-fixture").join(".config/span/settings.jsonc")
+        );
+        assert!(user_settings_path(None, None).is_err());
     }
 }

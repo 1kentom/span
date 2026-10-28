@@ -9,6 +9,25 @@ pub struct ActiveAgent {
     session: String,
 }
 
+fn switch_session(
+    state: &DesktopState,
+    expected: &AgentService,
+    session: &str,
+) -> Result<(), String> {
+    let mut guard = state
+        .agent
+        .lock()
+        .map_err(|_| "Agent state is unavailable".to_owned())?;
+    let active = guard
+        .as_mut()
+        .ok_or_else(|| "Connect an agent first".to_owned())?;
+    if !active.service.same_connection(expected) {
+        return Err("The agent connection changed while switching conversations".into());
+    }
+    active.session = session.to_owned();
+    Ok(())
+}
+
 fn active(state: &DesktopState) -> Result<ActiveAgent, String> {
     state
         .agent
@@ -139,11 +158,55 @@ pub async fn agent_connect(
     Ok(session)
 }
 
+/// Start a fresh conversation on the connected agent process.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_new_session(state: State<'_, DesktopState>) -> Result<String, String> {
+    let agent = active(state.inner())?;
+    let session = agent.service.new_session().await?;
+    switch_session(state.inner(), &agent.service, &session)?;
+    Ok(session)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_list_sessions(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<span_acp::SessionSummary>, String> {
+    active(state.inner())?.service.list_sessions().await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_resume_session(
+    state: State<'_, DesktopState>,
+    session_id: String,
+) -> Result<String, String> {
+    let agent = active(state.inner())?;
+    agent.service.load_session(session_id.clone()).await?;
+    switch_session(state.inner(), &agent.service, &session_id)?;
+    Ok(session_id)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_prompt(state: State<'_, DesktopState>, text: String) -> Result<(), String> {
     let agent = active(state.inner())?;
     agent.service.prompt(agent.session, text).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_set_config(
+    state: State<'_, DesktopState>,
+    config_id: String,
+    value: String,
+) -> Result<(), String> {
+    let agent = active(state.inner())?;
+    agent
+        .service
+        .set_config(agent.session, config_id, value)
+        .await
 }
 
 #[tauri::command]
@@ -208,4 +271,57 @@ pub async fn agent_review_hunks(
     })
     .await
     .map_err(|error| format!("Review task failed: {error}"))?
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    #[tokio::test]
+    async fn old_connection_cannot_change_new_connections_active_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Mutex::new(
+            span_core::CoreWorkspace::open(directory.path())
+                .unwrap()
+                .with_user_settings(None),
+        ));
+        let command = AgentCommand {
+            command: "node".into(),
+            args: vec![format!(
+                "{}/../../crates/acp/tests/fixtures/agent.mjs",
+                env!("CARGO_MANIFEST_DIR")
+            )],
+            env: BTreeMap::new(),
+        };
+        let old = AgentService::start(
+            command.clone(),
+            directory.path().to_string_lossy().into_owned(),
+            workspace.clone(),
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+        let current = AgentService::start(
+            command,
+            directory.path().to_string_lossy().into_owned(),
+            workspace,
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+        let state = DesktopState::default();
+        *state.agent.lock().unwrap() = Some(ActiveAgent {
+            service: current.clone(),
+            session: "current".into(),
+        });
+        assert!(switch_session(&state, &old, "old-result").is_err());
+        assert_eq!(active(&state).unwrap().session, "current");
+        switch_session(&state, &current, "valid-result").unwrap();
+        assert_eq!(active(&state).unwrap().session, "valid-result");
+        old.shutdown_and_wait().await.unwrap();
+        current.shutdown_and_wait().await.unwrap();
+    }
 }

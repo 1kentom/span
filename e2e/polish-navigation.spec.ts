@@ -68,7 +68,7 @@ test("panel dividers collapse at the edge and rail clicks restore remembered siz
 });
 
 test("breadcrumbs browse siblings and file context menus copy the actual preview path", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:1420" });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(test.info().project.use.baseURL || "http://127.0.0.1:1420").origin });
   await ready(page);
   const crumbs = page.getByRole("navigation", { name: "Active file path", exact: true });
   await crumbs.getByRole("button", { name: "rpc-node.ts", exact: true }).click({ button: "right" });
@@ -107,7 +107,7 @@ test("Linux platform key selection accepts uppercase Control Shift Z events acro
 });
 
 test("editor context Copy Cut Paste uses the browser clipboard and undo restores each edit", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:1420" });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(test.info().project.use.baseURL || "http://127.0.0.1:1420").origin });
   await ready(page);
   const editor = page.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true });
   const initial = await editor.textContent();
