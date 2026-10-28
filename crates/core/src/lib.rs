@@ -2,6 +2,7 @@
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
 mod buffer;
 mod format;
+mod format_native;
 mod fs_ops;
 mod images;
 mod proposal_diff;
@@ -14,7 +15,8 @@ mod workspace;
 
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
 pub use format::{
-    native_program_path, resolve_program, run_formatter, FormatRequest, FormatResult,
+    native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
+    FormatResult,
 };
 pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};

@@ -23,6 +23,8 @@ pub struct DesktopState {
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    pub formatter_jobs:
+        Arc<Mutex<std::collections::HashMap<(usize, String), (u64, CancellationToken)>>>,
 }
 
 async fn with_workspace<T, F>(state: DesktopState, operation: F) -> Result<T, String>
@@ -98,6 +100,7 @@ async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
     agents::disconnect_and_wait(&state).await?;
+    services::cancel_all_formatter_jobs(&state);
     let worker_state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let result = workspace.workspace();
@@ -156,10 +159,14 @@ async fn edit_buffer_delta(
     expected_revision: u64,
     changes: Vec<TextEdit>,
 ) -> Result<BufferRevision, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
+    let state = state.inner().clone();
+    let edited_path = path.clone();
+    let result = with_workspace(state.clone(), move |workspace| {
         workspace.edit_buffer_delta(&path, expected_revision, changes)
     })
-    .await
+    .await?;
+    services::cancel_formatter_jobs_for_path(&state, &edited_path);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -192,10 +199,14 @@ async fn discard_buffer(
     state: State<'_, DesktopState>,
     path: String,
 ) -> Result<BufferSnapshot, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
+    let state = state.inner().clone();
+    let discarded_path = path.clone();
+    let result = with_workspace(state.clone(), move |workspace| {
         workspace.discard_buffer(&path)
     })
-    .await
+    .await?;
+    services::cancel_formatter_jobs_for_path(&state, &discarded_path);
+    Ok(result)
 }
 
 #[tauri::command]
