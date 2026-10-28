@@ -14,7 +14,7 @@ import { isDesktop } from "../../lib/client";
 import { ContextBanner } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
-import { ModelPopover } from "./ModelPopover";
+import { ModelIcon, ModelPopover, currentModelTraits } from "./ModelPopover";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
 import { SlashPopover } from "./SlashPopover";
@@ -283,6 +283,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           <Show when={a.menu() === "model"}>
             <ModelPopover
               agentName={props.label}
+              brand={props.brand}
               options={config()}
               agents={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: entry.version, current: entry.id === a.agentId() }))}
               busy={a.pendingAction().startsWith("config:") || a.working() || a.running()}
@@ -429,7 +430,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             aria-expanded={a.menu() === "model" || a.menu() === "agents"}
             onClick={() => toggle(a.connected() ? "model" : "agents")}
           >
-            <BrandIcon id={props.brand.id} name={props.brand.name} size={15} />
+            <ModelIcon id={props.brand.id} name={props.brand.name} size={15} traits={a.connected() ? currentModelTraits(config()) : []} />
             <span class="agent-model-name">{a.connected() ? modelLabel() : "No agent"}</span>
             <Show when={a.connected() && level()}>
               {(current) => (

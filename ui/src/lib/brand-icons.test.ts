@@ -12,6 +12,35 @@ describe("brand identity", () => {
     expect(brandIconFor({ id: "openai" })?.id).toBe("openai");
     expect(brandIconFor({ id: "cargo" })?.id).toBe("rust");
   });
+  it("resolves every real Claude identity, and the other agent registry ids", () => {
+    for (const identity of [
+      { id: "claude-acp" },
+      { id: "claude-acp", name: "Claude Agent" },
+      { name: "Claude Agent" },
+      { name: "Claude Code" },
+      { name: "@agentclientprotocol/claude-agent-acp" },
+      { name: "@zed-industries/claude-code-acp" },
+      { name: "Claude Agent ACP" },
+      { name: "Claude Code ACP adapter" },
+    ]) {
+      const expected = identity.name === "Claude Code ACP adapter" ? undefined : "claude";
+      expect(brandIconFor(identity)?.id, JSON.stringify(identity)).toBe(expected);
+    }
+    const ids: Record<string, string> = {
+      "codex-acp": "codex", opencode: "opencode", gemini: "gemini", "github-copilot": "copilot", "copilot-acp": "copilot",
+      "qwen-code": "qwen", "mistral-vibe": "mistral", "cursor-agent": "cursor", "grok-cli": "grok", "glm-acp-agent": "glm",
+      "@agentclientprotocol/codex-acp": "codex", "gemini-cli": "gemini", "grok-build": "grok", "Cursor": "cursor",
+    };
+    for (const [id, brand] of Object.entries(ids)) expect(brandIconFor({ id })?.id, id).toBe(brand);
+  });
+  it("applies the suffix fallback only to agent brands", () => {
+    expect(brandIconFor({ id: "gemini-agent" })?.id).toBe("gemini");
+    expect(brandIconFor({ id: "node-cli" })).toBeUndefined();
+    expect(brandIconFor({ id: "go-acp" })).toBeUndefined();
+    expect(brandIconFor({ id: "agent" })).toBeUndefined();
+    expect(brandIconFor({ id: "claude-acp-extra" })).toBeUndefined();
+    expect(brandIconFor({ id: "my-claude-acp" })).toBeUndefined();
+  });
   it("keeps unknown providers neutral instead of inventing logos", () => {
     expect(brandIconFor({ id: "sap" })).toBeUndefined();
     expect(brandIconFor({ name: "Custom ACP command" })).toBeUndefined();

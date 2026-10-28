@@ -3,11 +3,15 @@ import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import type { AgentChoice, ConfigOptionView } from "./types";
 import { arrowFocus, useEscape } from "./util";
+import { TRAIT_INFO, chipTrait, isFastSwitchOn, modelTraits, type ModelTrait } from "../../lib/model-traits";
+import type { BrandIdentity } from "../../lib/brand-icons";
 
 type ModelPopoverProps = {
   agentName: string;
   options: ConfigOptionView[];
   agents?: AgentChoice[];
+  /** Brand of the connected agent, shown on every model row. Falls back to the current entry of `agents`. */
+  brand?: BrandIdentity;
   busy?: boolean;
   onSelect: (configId: string, value: string) => void;
   onSwitchAgent?: (agentId: string) => void;
@@ -16,6 +20,40 @@ type ModelPopoverProps = {
 
 /** Bar heights rise from a short first bar to a full last bar. Level names come from the data. */
 export const barHeight = (index: number, count: number) => `${Math.round(30 + (70 * (index + 1)) / Math.max(1, count))}%`;
+
+/** True while a boolean fast switch among the options is on. It only applies to the current model. */
+export const fastSwitchOn = (options: readonly ConfigOptionView[]) => options.some(isFastSwitchOn);
+
+/** Traits of the model option's current choice, for the composer button. */
+export function currentModelTraits(options: readonly ConfigOptionView[]): ModelTrait[] {
+  const model = options.find((option) => option.category === "model");
+  const choice = model?.choices.find((candidate) => candidate.value === model.currentValue);
+  return choice ? modelTraits(choice, { fastOn: fastSwitchOn(options) }) : [];
+}
+
+/** Agent brand mark with the primary trait badge (fast bolt) at its bottom right corner. */
+export function ModelIcon(props: BrandIdentity & { traits: readonly ModelTrait[]; size?: number }) {
+  return (
+    <span class="sb-model-icon">
+      <BrandIcon id={props.id} name={props.name} size={props.size ?? 16} />
+      <Show when={props.traits.includes("fast")}>
+        <span class="sb-trait-badge" role="img" aria-label={TRAIT_INFO.fast.label} title={TRAIT_INFO.fast.label}>
+          <Icon name={TRAIT_INFO.fast.icon!} size={9} />
+        </span>
+      </Show>
+    </span>
+  );
+}
+
+function TraitChip(props: { trait: ModelTrait }) {
+  const info = () => TRAIT_INFO[props.trait];
+  return (
+    <span class="sb-trait-chip" data-trait={props.trait} aria-label={info().label} title={info().label}>
+      <Show when={info().icon}>{(icon) => <Icon name={icon()} size={10} />}</Show>
+      {info().chip}
+    </span>
+  );
+}
 
 function LevelControl(props: { option: ConfigOptionView; disabled?: boolean; onSelect: (value: string) => void }) {
   const selected = () => Math.max(0, props.option.choices.findIndex((choice) => choice.value === props.option.currentValue));
@@ -59,6 +97,8 @@ function LevelControl(props: { option: ConfigOptionView; disabled?: boolean; onS
 export function ModelPopover(props: ModelPopoverProps) {
   let root: HTMLDivElement | undefined;
   useEscape(props.onClose);
+  const brand = () => props.brand ?? props.agents?.find((agent) => agent.current) ?? { name: props.agentName };
+  const fastOn = () => fastSwitchOn(props.options);
   createEffect(() => {
     queueMicrotask(() => root?.querySelector<HTMLElement>("[aria-checked='true'], button:not(:disabled)")?.focus());
   });
@@ -74,7 +114,10 @@ export function ModelPopover(props: ModelPopoverProps) {
                 <div role="radiogroup" aria-label={option.name}>
                   <div class="sb-eyebrow">{option.category === "model" ? `${option.name} · ${props.agentName}` : option.name}</div>
                   <For each={option.choices}>
-                    {(choice) => (
+                    {(choice) => {
+                      const current = () => choice.value === option.currentValue;
+                      const traits = () => modelTraits(choice, { fastOn: current() && fastOn() });
+                      return (
                       <button
                         class="sb-option"
                         role="radio"
@@ -82,13 +125,18 @@ export function ModelPopover(props: ModelPopoverProps) {
                         disabled={props.busy}
                         onClick={() => props.onSelect(option.id, choice.value)}
                       >
+                        <Show when={option.category === "model"}><ModelIcon id={brand().id} name={brand().name} traits={traits()} /></Show>
                         <span class="sb-option-text">
-                          <span class="sb-option-name">{choice.name}</span>
+                          <span class="sb-option-line">
+                            <span class="sb-option-name">{choice.name}</span>
+                            <Show when={option.category === "model" ? chipTrait(traits(), choice.name) : undefined}>{(trait) => <TraitChip trait={trait()} />}</Show>
+                          </span>
                           <Show when={choice.description}><span class="sb-sub wrap">{choice.description}</span></Show>
                         </span>
-                        <Show when={choice.value === option.currentValue}><Icon name="TickCircle" size={14} class="sb-accent" /></Show>
+                        <Show when={current()}><Icon name="TickCircle" size={14} class="sb-accent" /></Show>
                       </button>
-                    )}
+                      );
+                    }}
                   </For>
                 </div>
               }

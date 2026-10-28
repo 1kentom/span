@@ -433,3 +433,13 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-delegation-files { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
 .sb-delegation-actions { display: flex; gap: 6px; }
 .sb-delegation-hint { padding: 2px 4px 0; overflow-wrap: anywhere; }
+.sb-option { --sb-ring: var(--popup); }
+.sb-option:hover:not(:disabled), .sb-option:focus-visible { --sb-ring: var(--sb-accent-surface); }
+.agent-model-button { --sb-ring: var(--sb-surface); }
+.agent-model-button[aria-expanded="true"] { --sb-ring: var(--sb-control); }
+.sb-model-icon { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 20px; height: 18px; }
+.agent-model-button .sb-model-icon { width: 17px; }
+.sb-trait-badge { position: absolute; right: -2px; bottom: -3px; display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: var(--sb-accent-fill); color: var(--sb-on-accent); box-shadow: 0 0 0 1.5px var(--sb-ring); }
+.agent-model-button .sb-trait-badge { right: -4px; }
+.sb-option-line { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
+.sb-trait-chip { display: inline-flex; align-items: center; gap: 3px; flex: none; padding: 0 5px; border: 1px solid var(--sb-border); border-radius: 8px; font-size: 10.5px; line-height: 15px; color: var(--sb-dim); }
