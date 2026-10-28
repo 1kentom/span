@@ -13,11 +13,14 @@
 //!   against and dropped as [`LspErrorDto::Stale`] if either moved.
 
 mod dto;
+mod nav_service;
+mod navigation;
 mod paths;
 mod position;
 mod provision;
 
 pub use dto::*;
+pub use navigation::*;
 use provision::{CatalogProvisioner, GatedResolver, InstallFailure, Provisioner, RuntimeIssue};
 use serde::Serialize;
 use span_core::{BufferRevision, BufferSnapshot, CoreWorkspace, Settings, TextEdit};
@@ -1358,9 +1361,13 @@ impl LanguageServers {
             tab_size: p.tab_size,
             workspace: p.workspace.clone(),
         });
+        tokio::pin!(call);
         let outcome = tokio::select! {
-            _ = guard.token.cancelled() => return Err(LspErrorDto::Cancelled),
-            r = tokio::time::timeout(self.request_timeout, call) => r,
+            _ = guard.token.cancelled() => {
+                cancel_grace(call).await;
+                return Err(LspErrorDto::Cancelled);
+            }
+            r = tokio::time::timeout(self.request_timeout, &mut call) => r,
         };
         let data = match outcome {
             Ok(result) => result.map_err(LspErrorDto::from)?,
@@ -1591,11 +1598,17 @@ impl LanguageServers {
             }
             for (root, state) in entries {
                 let capabilities = match (&root, &state) {
-                    (Some(root), LanguageServerStateDto::Ready) => self
-                        .manager
-                        .capabilities(server, root)
-                        .await
-                        .map(|c| CapabilitiesDto::from(&c)),
+                    (Some(root), LanguageServerStateDto::Ready) => {
+                        match self.manager.capabilities(server, root).await {
+                            Some(c) => {
+                                let mut dto = CapabilitiesDto::from(&c);
+                                dto.type_hierarchy =
+                                    self.manager.supports_type_hierarchy(server, root).await;
+                                Some(dto)
+                            }
+                            None => None,
+                        }
+                    }
                     _ => None,
                 };
                 rows.push(ServerStatusDto {
@@ -1622,6 +1635,12 @@ impl LanguageServers {
             manager.shutdown_all_within(Some(limit)).await;
         });
     }
+}
+
+/// After a cancel the request future gets this long to put `$/cancelRequest` on the wire
+/// (it observes the same token) before it is dropped.
+async fn cancel_grace<F: Future>(call: std::pin::Pin<&mut F>) {
+    let _ = tokio::time::timeout(Duration::from_millis(250), call).await;
 }
 
 struct Prepared {
@@ -1750,6 +1769,250 @@ pub async fn lsp_restart(
 #[specta::specta]
 pub async fn lsp_status(lsp: State<'_, LspService>) -> Result<Vec<ServerStatusDto>, String> {
     Ok(lsp.inner().clone().status().await)
+}
+
+// ---------------------------------------------------------------------------
+// Navigation commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_references(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    include_declaration: bool,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<LocationDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .references(&path, position, include_declaration, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_implementation(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<LocationDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .implementation(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_type_definition(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<LocationDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .type_definition(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_declaration(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<LocationDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .declaration(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_document_symbols(
+    lsp: State<'_, LspService>,
+    path: String,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<SymbolDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .document_symbols(&path, request_id)
+        .await
+}
+
+/// Capped at 200 results. With `path_hint` the server of that file answers; without it
+/// every ready server is asked.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_workspace_symbols(
+    lsp: State<'_, LspService>,
+    query: String,
+    path_hint: Option<String>,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<WorkspaceSymbolDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .workspace_symbols(query, path_hint, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_call_hierarchy_prepare(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<CallHierarchyItemDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .call_hierarchy_prepare(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_call_hierarchy_incoming(
+    lsp: State<'_, LspService>,
+    item: CallHierarchyItemDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<IncomingCallDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .call_hierarchy_incoming(&item, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_call_hierarchy_outgoing(
+    lsp: State<'_, LspService>,
+    item: CallHierarchyItemDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<OutgoingCallDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .call_hierarchy_outgoing(&item, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_type_hierarchy_prepare(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<TypeHierarchyItemDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .type_hierarchy_prepare(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_type_hierarchy_supertypes(
+    lsp: State<'_, LspService>,
+    item: TypeHierarchyItemDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<TypeHierarchyItemDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .type_hierarchy_supertypes(&item, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_type_hierarchy_subtypes(
+    lsp: State<'_, LspService>,
+    item: TypeHierarchyItemDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<TypeHierarchyItemDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .type_hierarchy_subtypes(&item, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_document_highlights(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<DocumentHighlightDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .document_highlights(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_signature_help(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Option<SignatureHelpDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .signature_help(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_prepare_rename(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Option<PrepareRenameDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .prepare_rename(&path, position, request_id)
+        .await
+}
+
+/// Returns the edit as data (UTF-16 per file). The buffers are not changed: the UI
+/// applies it through the buffer edit path.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_rename(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    new_name: String,
+    request_id: Option<String>,
+) -> Result<LspResponse<WorkspaceEditDto>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .rename(&path, position, new_name, request_id)
+        .await
+}
+
+/// A read-only excerpt for peeks, hover previews and library source. At most 1 MiB, and
+/// at most 400 lines of context on each side.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_read_source(
+    lsp: State<'_, LspService>,
+    location: LocationDto,
+    context_lines: u32,
+) -> Result<SourceSnippetDto, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .read_source(location, context_lines)
+        .await
 }
 
 #[cfg(test)]

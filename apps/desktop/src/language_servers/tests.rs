@@ -962,3 +962,393 @@ async fn a_failing_download_client_degrades_installs_without_failing_the_service
         .iter()
         .any(|s| matches!(s.state, LanguageServerStateDto::InstallFailed { .. })));
 }
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+
+fn sent(log: &Path, method: &str) -> Vec<serde_json::Value> {
+    log_entries(log)
+        .into_iter()
+        .filter(|e| e["method"] == method)
+        .collect()
+}
+
+#[tokio::test]
+async fn navigation_commands_return_stamped_typed_data() {
+    let mut f = fixture(true, "nav", Duration::from_secs(10));
+    f.open_ready().await;
+    eventually("ready state event", || {
+        f.has_state(&LanguageServerStateDto::Ready)
+    })
+    .await;
+    let svc = f.svc.clone();
+
+    let refs = svc
+        .references("a.json", pos(0, 8), true, Some("r1".into()))
+        .await
+        .unwrap();
+    assert_eq!(refs.revision, 0);
+    assert_eq!(refs.epoch, 1, "the first start of the server is epoch 1");
+    assert_eq!(refs.data.len(), 2);
+    assert_eq!(refs.data[0].path, "a.json");
+    assert!(!refs.data[0].external);
+    assert!(
+        refs.data[1].external,
+        "files outside the workspace are external"
+    );
+    let request = &sent(&f.log, "textDocument/references")[0];
+    assert_eq!(request["params"]["context"]["includeDeclaration"], true);
+    assert_eq!(
+        request["params"]["position"]["character"], 8,
+        "UTF-16 passes through"
+    );
+    svc.references("a.json", pos(0, 8), false, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        sent(&f.log, "textDocument/references")[1]["params"]["context"]["includeDeclaration"],
+        false
+    );
+
+    let imp = svc.implementation("a.json", pos(0, 1), None).await.unwrap();
+    assert_eq!(
+        imp.data[0].range.start.line, 1,
+        "location links map to their selection"
+    );
+    let ty = svc
+        .type_definition("a.json", pos(0, 1), None)
+        .await
+        .unwrap();
+    assert_eq!(ty.data[0].range.start.line, 7);
+    let decl = svc.declaration("a.json", pos(0, 1), None).await.unwrap();
+    assert_eq!(decl.data.len(), 1);
+
+    let symbols = svc.document_symbols("a.json", None).await.unwrap();
+    assert_eq!(symbols.data[0].name, "Outer");
+    assert_eq!(symbols.data[0].children[0].kind, SymbolKindDto::Method);
+
+    let hinted = svc
+        .workspace_symbols("foo".into(), Some("a.json".into()), None)
+        .await
+        .unwrap();
+    assert_eq!(hinted.data[0].name, "fooSym");
+    assert!(hinted.data[0].location.external);
+    let all = svc
+        .workspace_symbols("bar".into(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(all.data[0].name, "barSym");
+    assert_eq!(all.revision, 0);
+    assert!(all.data.len() <= navigation::MAX_WORKSPACE_SYMBOLS);
+
+    let prepared = svc
+        .call_hierarchy_prepare("a.json", pos(0, 1), None)
+        .await
+        .unwrap();
+    assert_eq!(prepared.data[0].location.path, "a.json");
+    let item = prepared.data[0].clone();
+    let incoming = svc.call_hierarchy_incoming(&item, None).await.unwrap();
+    assert_eq!(incoming.data[0].from.name, "caller");
+    assert_eq!(incoming.data[0].from_ranges.len(), 1);
+    let outgoing = svc.call_hierarchy_outgoing(&item, None).await.unwrap();
+    assert_eq!(outgoing.data[0].to.name, "callee");
+    assert_eq!(
+        sent(&f.log, "callHierarchy/incomingCalls")[0]["params"]["item"]["data"]["opaque"][1],
+        2,
+        "the opaque server data round-trips through the token"
+    );
+
+    let types = svc
+        .type_hierarchy_prepare("a.json", pos(0, 1), None)
+        .await
+        .unwrap();
+    let up = svc
+        .type_hierarchy_supertypes(&types.data[0], None)
+        .await
+        .unwrap();
+    assert_eq!(up.data[0].name, "supertypes");
+    let down = svc
+        .type_hierarchy_subtypes(&up.data[0], None)
+        .await
+        .unwrap();
+    assert_eq!(down.data[0].name, "subtypes");
+
+    let hl = svc
+        .document_highlights("a.json", pos(0, 1), None)
+        .await
+        .unwrap();
+    assert_eq!(hl.data[0].kind, DocumentHighlightKindDto::Read);
+    let sig = svc.signature_help("a.json", pos(0, 1), None).await.unwrap();
+    assert_eq!(sig.data.unwrap().signatures[0].parameters.len(), 2);
+
+    let prep = svc.prepare_rename("a.json", pos(0, 1), None).await.unwrap();
+    assert_eq!(prep.data.unwrap().placeholder.as_deref(), Some("old"));
+    let edit = svc
+        .rename("a.json", pos(0, 1), "renamed".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(edit.data.files[0].path, "a.json");
+    assert_eq!(edit.data.files[0].edits[0].new_text, "renamed");
+    assert_eq!(
+        f.ws.buffer_snapshot("a.json").unwrap().text,
+        DOC,
+        "rename never edits the buffer"
+    );
+
+    assert_eq!(
+        svc.rename("a.json", pos(0, 1), "  ".into(), None)
+            .await
+            .unwrap_err(),
+        LspErrorDto::other("invalid new name")
+    );
+
+    let status = svc.status().await;
+    let json = status
+        .iter()
+        .find(|s| s.server == LanguageServerId::Json)
+        .unwrap();
+    let caps = json.capabilities.unwrap();
+    assert!(
+        caps.references
+            && caps.implementation
+            && caps.type_definition
+            && caps.declaration
+            && caps.document_symbol
+            && caps.workspace_symbol
+            && caps.call_hierarchy
+            && caps.type_hierarchy
+            && caps.document_highlight
+            && caps.signature_help
+            && caps.rename
+            && caps.prepare_rename
+    );
+}
+
+#[tokio::test]
+async fn unadvertised_navigation_is_unsupported_and_never_reaches_the_server() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    f.open_ready().await;
+    eventually("ready state event", || {
+        f.has_state(&LanguageServerStateDto::Ready)
+    })
+    .await;
+    let svc = f.svc.clone();
+    let unsupported = |e: LspErrorDto| matches!(e, LspErrorDto::Unsupported { .. });
+    assert!(unsupported(
+        svc.references("a.json", pos(0, 1), true, None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        svc.implementation("a.json", pos(0, 1), None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        svc.document_symbols("a.json", None).await.unwrap_err()
+    ));
+    assert!(unsupported(
+        svc.workspace_symbols("q".into(), Some("a.json".into()), None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        svc.workspace_symbols("q".into(), None, None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        svc.call_hierarchy_prepare("a.json", pos(0, 1), None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        svc.type_hierarchy_prepare("a.json", pos(0, 1), None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        svc.rename("a.json", pos(0, 1), "x".into(), None)
+            .await
+            .unwrap_err()
+    ));
+    let all = methods(&f.log);
+    assert!(
+        all.iter().all(|m| !m.contains("references")
+            && !m.contains("implementation")
+            && !m.contains("documentSymbol")
+            && !m.contains("workspace/symbol")
+            && !m.contains("Hierarchy")
+            && !m.contains("ename")),
+        "{all:?}"
+    );
+    let caps = svc
+        .status()
+        .await
+        .into_iter()
+        .find(|s| s.server == LanguageServerId::Json)
+        .unwrap()
+        .capabilities
+        .unwrap();
+    assert!(
+        !caps.references && !caps.implementation && !caps.type_hierarchy && !caps.call_hierarchy
+    );
+}
+
+#[tokio::test]
+async fn navigation_reply_after_an_edit_is_stale() {
+    let mut f = fixture(true, "nav-slow", Duration::from_secs(10));
+    f.open_ready().await;
+    let svc = f.svc.clone();
+    let pending =
+        tokio::spawn(async move { svc.references("a.json", pos(0, 1), true, None).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    f.edit(0, 8, 8, "x");
+    assert_eq!(pending.await.unwrap().unwrap_err(), LspErrorDto::Stale);
+}
+
+#[tokio::test]
+async fn navigation_requests_cancel_by_id() {
+    let mut f = fixture(true, "nav-hang", Duration::from_secs(10));
+    f.open_ready().await;
+    let svc = f.svc.clone();
+    let pending = tokio::spawn(async move {
+        svc.references("a.json", pos(0, 1), true, Some("nav-1".into()))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    f.svc.cancel("nav-1");
+    assert_eq!(pending.await.unwrap().unwrap_err(), LspErrorDto::Cancelled);
+    eventually("cancelRequest reaches the server", || {
+        methods(&f.log).iter().any(|m| m == "$/cancelRequest")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn hierarchy_tokens_cannot_aim_requests_elsewhere() {
+    let mut f = fixture(true, "nav", Duration::from_secs(10));
+    f.open_ready().await;
+    let svc = f.svc.clone();
+    let prepared = svc
+        .call_hierarchy_prepare("a.json", pos(0, 1), None)
+        .await
+        .unwrap();
+    let mut item = prepared.data[0].clone();
+
+    item.token = "garbage".into();
+    assert!(matches!(
+        svc.call_hierarchy_incoming(&item, None).await.unwrap_err(),
+        LspErrorDto::Other { .. }
+    ));
+
+    // A genuine type hierarchy token is not a call hierarchy token.
+    let types = svc
+        .type_hierarchy_prepare("a.json", pos(0, 1), None)
+        .await
+        .unwrap();
+    item.token = types.data[0].token.clone();
+    assert!(svc.call_hierarchy_incoming(&item, None).await.is_err());
+
+    // A token for a root this service never started is refused before any request.
+    let before = sent(&f.log, "callHierarchy/incomingCalls").len();
+    let forged = navigation::map_call_item(
+        &f.root,
+        ID,
+        Path::new("/somewhere/else"),
+        serde_json::from_value(serde_json::json!({
+            "name": "x", "kind": 12, "uri": "file:///x.json",
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}
+        }))
+        .unwrap(),
+    );
+    assert!(matches!(
+        svc.call_hierarchy_incoming(&forged, None)
+            .await
+            .unwrap_err(),
+        LspErrorDto::NotReady { .. }
+    ));
+    assert_eq!(sent(&f.log, "callHierarchy/incomingCalls").len(), before);
+}
+
+#[tokio::test]
+async fn read_source_is_read_only_and_never_opens_documents_in_the_server() {
+    let mut f = fixture(true, "nav", Duration::from_secs(10));
+    f.open_ready().await;
+    let lib = f._dir.path().join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    let text: String = (0..1000).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(lib.join("types.d.ts"), &text).unwrap();
+    std::fs::write(lib.join("key.pem"), "secret").unwrap();
+    let range = RangeDto {
+        start: pos(500, 0),
+        end: pos(500, 4),
+    };
+    let external = LocationDto {
+        path: lib.join("types.d.ts").to_string_lossy().into_owned(),
+        range,
+        external: true,
+        display_path: "types.d.ts".into(),
+    };
+    let snippet = f.svc.read_source(external.clone(), 10_000).await.unwrap();
+    assert!(snippet.external && snippet.read_only);
+    assert_eq!(snippet.start_line, 100, "context is capped at 400 lines");
+    assert_eq!(snippet.text.lines().count(), 801);
+    assert_eq!(snippet.highlight_range, range);
+    assert_eq!(snippet.language, "typescript");
+    assert_eq!(snippet.display_path, "types.d.ts");
+
+    // The workspace file is served from the open buffer.
+    let local = LocationDto {
+        path: "a.json".into(),
+        range: RangeDto {
+            start: pos(0, 0),
+            end: pos(0, 1),
+        },
+        external: false,
+        display_path: "a.json".into(),
+    };
+    let local = f.svc.read_source(local, 3).await.unwrap();
+    assert!(!local.external && !local.read_only);
+    assert!(local.text.contains('😀'));
+
+    for bad in [
+        LocationDto {
+            path: "../lib/types.d.ts".into(),
+            external: false,
+            ..external.clone()
+        },
+        LocationDto {
+            path: "../lib/types.d.ts".into(),
+            ..external.clone()
+        },
+        LocationDto {
+            path: lib.join("key.pem").to_string_lossy().into_owned(),
+            ..external.clone()
+        },
+        LocationDto {
+            path: "http://example.com/a.ts".into(),
+            ..external.clone()
+        },
+    ] {
+        assert!(f.svc.read_source(bad.clone(), 5).await.is_err(), "{bad:?}");
+    }
+    // No Java server is running, so a class file cannot be fetched.
+    let jdt = LocationDto {
+        path: "jdt://contents/java.base/java.lang/String.class".into(),
+        ..external
+    };
+    assert!(matches!(
+        f.svc.read_source(jdt, 5).await.unwrap_err(),
+        LspErrorDto::NotReady { .. }
+    ));
+
+    let opened = sent(&f.log, "textDocument/didOpen");
+    assert_eq!(opened.len(), 1, "only the workspace buffer was ever opened");
+    assert!(opened[0]["params"]["textDocument"]["uri"]
+        .as_str()
+        .unwrap()
+        .ends_with("a.json"));
+}
