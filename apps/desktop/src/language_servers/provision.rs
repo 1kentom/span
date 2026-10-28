@@ -9,7 +9,9 @@
 use super::LspSettings;
 use span_lsp::servers::cache::ServerCache;
 use span_lsp::servers::catalog::{self, Platform};
-use span_lsp::servers::install::{BoxFuture, HttpFetch, InstallError, InstallProgress, Installer};
+use span_lsp::servers::install::{
+    BoxFuture, Fetch, HttpFetch, InstallError, InstallProgress, Installer,
+};
 use span_lsp::servers::manager::{LaunchResolver, ServerError};
 use span_lsp::servers::resolver::{locate_java, CatalogResolver, JavaSearch};
 use span_lsp::servers::runtime::{locate_node, NodeSearch, RuntimeError, SystemProbe};
@@ -73,9 +75,10 @@ pub struct CatalogProvisioner {
     auto_install: AtomicBool,
     config: RwLock<Config>,
     cache_root: PathBuf,
+    fetch: Arc<dyn Fetch>,
 }
 
-fn config_for(cache_root: &Path, settings: &LspSettings) -> Result<Config, String> {
+fn config_for(cache_root: &Path, fetch: &Arc<dyn Fetch>, settings: &LspSettings) -> Config {
     let node = match &settings.node_path {
         // An override is strict: nothing else is searched.
         Some(path) => NodeSearch {
@@ -91,30 +94,36 @@ fn config_for(cache_root: &Path, settings: &LspSettings) -> Result<Config, Strin
         },
         None => JavaSearch::from_host(),
     };
-    let resolver = CatalogResolver::new(cache_root)
-        .map_err(|e| e.to_string())?
+    let resolver = CatalogResolver::with_fetch(cache_root, fetch.clone())
         .with_node_search(node.clone())
         .with_java_search(java.clone());
-    Ok(Config {
+    Config {
         node,
         java,
         resolver: Arc::new(resolver),
-    })
+    }
 }
 
 impl CatalogProvisioner {
     pub fn new(cache_root: PathBuf) -> Result<Self, String> {
         let fetch = HttpFetch::new().map_err(|e| e.to_string())?;
+        Ok(Self::with_fetch(cache_root, Arc::new(fetch)))
+    }
+
+    /// Same as [`Self::new`] with a caller supplied download source (integration
+    /// tests pass a counting wrapper around the real [`HttpFetch`]).
+    pub fn with_fetch(cache_root: PathBuf, fetch: Arc<dyn Fetch>) -> Self {
         let settings = LspSettings::default();
-        let config = config_for(&cache_root, &settings)?;
-        Ok(Self {
+        let config = config_for(&cache_root, &fetch, &settings);
+        Self {
             cache: ServerCache::new(cache_root.clone()),
-            installer: Installer::new(ServerCache::new(cache_root.clone()), Arc::new(fetch)),
+            installer: Installer::new(ServerCache::new(cache_root.clone()), fetch.clone()),
             platform: Platform::current(),
             auto_install: AtomicBool::new(false),
             config: RwLock::new(config),
             cache_root,
-        })
+            fetch,
+        }
     }
 
     fn resolver(&self) -> Arc<CatalogResolver> {
@@ -230,10 +239,7 @@ impl Provisioner for CatalogProvisioner {
     fn configure(&self, settings: &LspSettings) {
         self.auto_install
             .store(settings.auto_install, Ordering::SeqCst);
-        match config_for(&self.cache_root, settings) {
-            Ok(config) => *self.config.write().unwrap() = config,
-            Err(error) => eprintln!("Could not apply language server settings: {error}"),
-        }
+        *self.config.write().unwrap() = config_for(&self.cache_root, &self.fetch, settings);
     }
 }
 

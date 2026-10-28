@@ -8,9 +8,11 @@ use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
 mod cli;
-mod language_servers;
+#[doc(hidden)]
+pub mod language_servers;
 mod menu;
-mod services;
+#[doc(hidden)]
+pub mod services;
 mod startup;
 
 /// The authoritative workspace is only accessed by blocking workers.

@@ -274,6 +274,19 @@ pub fn production(cache_root: PathBuf, sink: EventSink) -> Result<LspService, St
     ))
 }
 
+/// Test seam: the production wiring (catalog resolver, gated installs) with a
+/// caller supplied download source, so integration tests can count downloads.
+pub fn production_with_fetch(
+    cache_root: PathBuf,
+    fetch: Arc<dyn span_lsp::servers::install::Fetch>,
+    sink: EventSink,
+    config: ServiceConfig,
+) -> LspService {
+    let provisioner = Arc::new(CatalogProvisioner::with_fetch(cache_root, fetch));
+    let resolver = Arc::new(GatedResolver::new(provisioner.clone()));
+    LanguageServers::new(resolver, provisioner, sink, config)
+}
+
 fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
