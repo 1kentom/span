@@ -6,45 +6,38 @@ import type { LanguageServerId } from "../bindings";
 
 export const hubText = {
   title: "Language intelligence",
-  subtitle: "Completions, error checking, hover info and go to definition for your code.",
-  thisFile: "This file",
   allLanguages: "All languages",
   settingsLink: "Language server settings",
-  previewLabel: "Preview fixture, not a real language server",
-  noFile: "Open a file to see which language features it has.",
-  noServer: "No language support is available for this file type. You can still edit it normally.",
-  unavailable: "Language support status could not be read. You can keep editing, but completions and error checking may be missing.",
-  unavailableShort: "Status unavailable",
-  keepEditing: "You can keep editing.",
-  restarting: (name: string) => `Restarting ${name} with project dependencies…`,
-  closePanel: "Close language intelligence",
-  technicalDetails: "Technical details",
+  previewTag: "preview",
+  noFile: "Open a file to see its language features.",
+  noServer: "No language support for this file type.",
+  unavailable: "Status unavailable. Try again.",
+  restarting: (name: string) => `Restarting ${name} with its dependencies`,
   copyDetails: "Copy details",
   copiedDetails: "Copied",
   stopTrusting: "Stop trusting",
   trustFolder: "Trust folder",
-  trustThisFolder: "Trust this folder",
   notNow: "Not now",
-  learnMore: "Learn more",
-  hideDetails: "Hide details",
-  restricted: "Restricted",
-  trustedLine: "This folder is trusted, so language support can run its build tools (Maven, Gradle or Cargo).",
+  trustedFolder: "Trusted folder",
+  untrustedFolder: "Untrusted folder",
+  why: "Why?",
+  closeTrust: "Dismiss",
   hoverTrustHint: "Library types are not loaded until this folder is trusted.",
 } as const;
 
-/** Human language names, as shown on the card. */
+/** Human language names, as shown in the panel header. */
 export const languageNames: Readonly<Record<LanguageServerId, string>> = {
   jdtls: "Java", vtsls: "TypeScript and JavaScript", html: "HTML", css: "CSS, SCSS and Less", json: "JSON",
   "rust-analyzer": "Rust", basedpyright: "Python",
 };
-/** One or two words, for the status bar and tooltips. */
+/** One or two words, for the status bar, the list rows and tooltips. */
 export const shortLanguageNames: Readonly<Record<LanguageServerId, string>> = {
   jdtls: "Java", vtsls: "TypeScript", html: "HTML", css: "CSS", json: "JSON", "rust-analyzer": "Rust", basedpyright: "Python",
 };
-/** The technical name, shown small and grey under the language name. */
+/** The technical name, shown small and muted under the language name. */
 export const technicalNames: Readonly<Record<LanguageServerId, string>> = {
-  jdtls: "Eclipse JDT LS", vtsls: "vtsls", html: "VS Code HTML language server", css: "VS Code CSS language server",
-  json: "VS Code JSON language server", "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright",
+  jdtls: "Eclipse JDT LS", vtsls: "vtsls", html: "VS Code HTML", css: "VS Code CSS",
+  json: "VS Code JSON", "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright",
 };
 /** The server ids in the order the "All languages" list shows them. */
 export const serverOrder: readonly LanguageServerId[] = ["jdtls", "vtsls", "html", "css", "json", "rust-analyzer", "basedpyright"];
@@ -52,7 +45,12 @@ export const serverOrder: readonly LanguageServerId[] = ["jdtls", "vtsls", "html
 export const projectCodeServers: ReadonlySet<LanguageServerId> = new Set<LanguageServerId>(["jdtls", "rust-analyzer"]);
 
 export const supportName = (id: LanguageServerId) => `${languageNames[id]} support`;
-export const technicalLabel = (id: LanguageServerId, version?: string | null) => `${technicalNames[id]}${version ? ` ${version.replace(/^v/i, "")}` : ""}`;
+/** "Eclipse JDT LS 1.62": major and minor only. A build suffix such as "-202610131109" is dropped. */
+export function shortVersion(version?: string | null): string {
+  const clean = (version ?? "").trim().replace(/^v/i, "");
+  return /^(\d+\.\d+)(?:[.+-].*)?$/.exec(clean)?.[1] ?? clean;
+}
+export const technicalLabel = (id: LanguageServerId, version?: string | null) => [technicalNames[id], shortVersion(version)].filter(Boolean).join(" ");
 const runtimeFor = (id: LanguageServerId) => id === "jdtls" ? "JDK" : "Node.js";
 
 /** "42 MB", "1.2 GB". Decimal steps are binary on purpose, the same as the backend size hints. */
@@ -63,7 +61,6 @@ export function formatBytes(bytes: number): string {
   if (mb >= 1) return `${Math.round(mb)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
-export const approxSize = (bytes?: number | null) => bytes && bytes > 0 ? `About ${formatBytes(bytes)}.` : "";
 
 /** Install progress as a whole number, never above 100. Undefined while the total is unknown. */
 export function percentOf(received?: number | null, total?: number | null): number | undefined {
@@ -71,83 +68,96 @@ export function percentOf(received?: number | null, total?: number | null): numb
   return Math.min(100, Math.floor((received / total) * 100));
 }
 
+/** The percent text of the panel and the status bar. A fixed shape, so digits never move the layout around it. */
+export const percentText = (percent: number | undefined) => percent === undefined ? "" : `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+
+/** "128 of 320 MB": the unit is written once when both sides share it. */
+export function bytesPair(received: number, total: number): string {
+  const [a, b] = [formatBytes(received), formatBytes(total)];
+  const unit = b.split(" ")[1];
+  return a.endsWith(` ${unit}`) ? `${a.slice(0, -unit.length - 1)} of ${b}` : `${a} of ${b}`;
+}
+
+/** One short phrase per install phase. */
 export function installPhaseLine(phase: string | undefined, received?: number | null, total?: number | null): string {
   switch (phase) {
     case "downloading":
-      return total && total > 0 ? `Downloading… ${formatBytes(received ?? 0)} of ${formatBytes(total)}` : received ? `Downloading… ${formatBytes(received)} so far` : "Downloading…";
-    case "verifying": return "Checking the download…";
-    case "extracting": return "Unpacking…";
-    case "finalizing": return "Finishing…";
-    case "reused": return "Using files already on this computer…";
-    case "waitingForLock": return "Waiting for another install to finish…";
-    case "cancelled": return "Install cancelled.";
-    default: return "Getting ready…";
+      return total && total > 0 ? `Downloading ${bytesPair(received ?? 0, total)}` : received ? `Downloading ${formatBytes(received)}` : "Downloading";
+    case "verifying": return "Checking the download";
+    case "extracting": return "Unpacking";
+    case "finalizing": return "Finishing";
+    case "reused": return "Using files already here";
+    case "waitingForLock": return "Waiting for another install";
+    case "cancelled": return "Install cancelled";
+    default: return "Getting ready";
   }
 }
 
-export const needsInstallDetail = (id: LanguageServerId, bytes: number | null | undefined, autoInstall: boolean) =>
-  [`${supportName(id)} is not installed. Install it to get completions, error checking and go to definition.`, approxSize(bytes), "You can keep editing while it downloads."].filter(Boolean).join(" ")
-  + (autoInstall ? "" : " Automatic install is off, so nothing downloads until you choose Install.");
-export const installLabel = (id: LanguageServerId) => `Install ${supportName(id)}`;
-export const installingKeepEditing = (id: LanguageServerId) => `You can keep editing. ${languageNames[id]} features switch on by themselves when it is ready.`;
-export const startingDetail = (id: LanguageServerId) => `Starting ${supportName(id)}. The first start can take a minute while it reads your project.`;
-export const readyDetail = "Ready. Completions, errors, hover and go to definition are on for this file.";
-export const crashedDetail = (id: LanguageServerId) => `${supportName(id)} stopped unexpectedly.`;
-export const disabledDetail = (id: LanguageServerId) => `${supportName(id)} is turned off.`;
-export const idleDetail = (id: LanguageServerId) => `${supportName(id)} has not started yet.`;
-export const checkingDetail = (id: LanguageServerId) => `Checking ${supportName(id)}…`;
-export const installFailedFallback = (id: LanguageServerId) => `${supportName(id)} could not be installed.`;
-export const startFailedFallback = (id: LanguageServerId) => `${supportName(id)} did not start.`;
-export const nonRetryable = "Retrying will not fix this. Check the language server settings, then restart.";
+export const needsInstallLine = (bytes?: number | null) => bytes && bytes > 0 ? `Install for completions and errors (about ${formatBytes(bytes)})` : "Install for completions and errors";
+export const needsInstallTip = (autoInstall: boolean) => autoInstall ? "You can keep editing while it downloads." : "You can keep editing while it downloads. Automatic install is off.";
+export const startingLine = "The first start can take a minute";
+export const startingTip = "Features turn on by themselves when it is ready.";
+export const workLine = "Reading your project";
+export const workTip = "Results can be incomplete until it finishes.";
+export const crashedLine = "Stopped unexpectedly";
+export const disabledLine = "Turn on for completions and errors";
+export const idleLine = "Not started yet";
+export const checkingLine = "Checking";
+export const installFailedLine = (retryable: boolean) => retryable ? "Couldn't install. Check your connection" : "Couldn't install. Check the settings";
+export const startFailedLine = "Didn't start. Try restarting";
+export const nonRetryable = "Retrying will not fix this. Check the settings, then restart.";
 
 export interface RuntimeFacts { name?: string; requiredVersion: number; foundVersion?: string | null; foundPath?: string | null; foundList?: string[] }
-/** "Java support needs JDK 25 or newer. Found: JDK 21 at /path. Install a newer JDK, or choose one." */
-export function runtimeMissingDetail(id: LanguageServerId, facts: RuntimeFacts): string {
+/** "Needs JDK 25 or newer. Found JDK 21" */
+export function runtimeMissingLine(id: LanguageServerId, facts: RuntimeFacts): string {
   const runtime = runtimeFor(id);
-  const found = facts.foundVersion
-    ? `Found: ${runtime} ${facts.foundVersion}${facts.foundPath ? ` at ${facts.foundPath}` : ""}.`
-    : facts.foundList?.length ? `Found: ${facts.foundList.map(item => /^\d/.test(item) ? `${runtime} ${item}` : item).join(", ")}.` : `Found: no ${runtime} on this computer.`;
-  return `${supportName(id)} needs ${runtime} ${facts.requiredVersion} or newer. ${found} Install a newer ${runtime}, or choose one.`;
+  const found = facts.foundVersion ? `Found ${runtime} ${facts.foundVersion}`
+    : facts.foundList?.length ? `Found ${facts.foundList.map(item => /^\d/.test(item) ? `${runtime} ${item}` : item).join(", ")}` : `No ${runtime} found`;
+  return `Needs ${runtime} ${facts.requiredVersion} or newer. ${found}`;
 }
-export const chooseRuntimeLabel = (id: LanguageServerId) => id === "jdtls" ? "Choose JDK folder…" : "Choose Node.js…";
+export const runtimeMissingTip = (id: LanguageServerId, facts: RuntimeFacts) =>
+  [facts.foundPath ? `Found at ${facts.foundPath}.` : "", `Install a newer ${runtimeFor(id)}, or choose one.`].filter(Boolean).join(" ");
+export const chooseRuntimeLabel = (id: LanguageServerId) => id === "jdtls" ? "Choose JDK" : "Choose Node.js";
 export const chooseRuntimeTitle = (id: LanguageServerId) => id === "jdtls" ? "Choose a JDK folder" : "Choose the Node.js executable";
 
-/** Work the server reports, for example indexing. `title` comes from the server. */
-export function workHeadline(title: string | null | undefined, percentage: number | null | undefined): string {
-  const lead = !title || /index/i.test(title) ? "Indexing your project" : title.replace(/[….]+$/, "").trim();
-  return `${lead}…${percentage === undefined || percentage === null ? "" : ` ${Math.round(percentage)}%`}`;
-}
-export const workDetail = (id: LanguageServerId) => `${supportName(id)} is still reading your project. Results can be incomplete until it finishes.`;
-
-export const trustBanner = {
-  title: "Trust this folder to load project dependencies?",
-  body: "Language support needs to run this project's build tool (Maven, Gradle or Cargo) to understand its libraries. Only trust projects you got from a source you trust.",
-  more: "Without trust, language support starts in a restricted mode. Your own code still gets completions and error checking, but types that come from libraries are not loaded, so hover and go to definition can come up empty for them. Trusting runs the project's build tool on your computer, the same way opening it in an IDE does. You can stop trusting this folder at any time from this panel.",
+/** The trust prompt over the editor, and the long explanation in the panel footer tooltip. */
+export const trustPrompt = {
+  question: "Trust this folder to load its dependencies?",
+  explain: "Build tools (Maven, Gradle, Cargo) run to load libraries. Only trust folders from a source you trust. Without trust, library types are not loaded.",
 } as const;
 
-export interface FeatureChipSpec { id: string; label: string; on: string; off: string }
-export const featureChipSpecs: readonly FeatureChipSpec[] = [
-  { id: "completion", label: "Completions", on: "Suggestions appear as you type.", off: "Suggestions as you type are not available for this file." },
-  { id: "diagnostics", label: "Errors", on: "Problems are underlined as you type.", off: "Error checking is not available for this file." },
-  { id: "hover", label: "Hover", on: "Hover a name to see its type and documentation.", off: "Hover info is not available for this file." },
-  { id: "definition", label: "Go to definition", on: "Jump to where a name is defined.", off: "Go to definition is not available for this file." },
-  { id: "references", label: "References", on: "Find every place a name is used.", off: "Finding references is not available for this file." },
-  { id: "rename", label: "Rename", on: "Rename a name everywhere it is used.", off: "Renaming across files is not available for this file." },
-  { id: "format", label: "Format", on: "Tidy the file with the language's formatter.", off: "Formatting is not available for this file." },
+export interface FeatureSpec { id: string; label: string }
+export const featureSpecs: readonly FeatureSpec[] = [
+  { id: "completion", label: "completions" }, { id: "diagnostics", label: "errors" }, { id: "hover", label: "hover" },
+  { id: "definition", label: "go to definition" }, { id: "references", label: "references" }, { id: "rename", label: "rename" }, { id: "format", label: "format" },
 ];
-export const chipsWaiting = (id: LanguageServerId) => `Available once ${supportName(id)} is ready.`;
+/** "Completions, errors, hover": only what is on. */
+export function featuresLine(on: readonly string[]): string {
+  const text = featureSpecs.filter(spec => on.includes(spec.id)).map(spec => spec.label).join(", ");
+  return text ? text[0].toUpperCase() + text.slice(1) : "Ready";
+}
 
-/** Short state words for the "All languages" rows. */
-export function rowStateText(kind: string, percent?: number): string {
+/** The word next to the dot in the panel header, only for states where it adds something. */
+export function headerWord(kind: string): string {
+  switch (kind) {
+    case "installing": return "Installing";
+    case "starting": return "Starting";
+    case "working": return "Indexing";
+    case "disabled": return "Off";
+    default: return "";
+  }
+}
+/** The full state name, for the dot's tooltip and label. */
+export function stateName(kind: string): string {
   switch (kind) {
     case "ready": return "Ready";
-    case "working": return percent === undefined ? "Indexing" : `Indexing ${percent}%`;
-    case "installing": return percent === undefined ? "Installing" : `Installing ${percent}%`;
+    case "working": return "Indexing";
+    case "installing": return "Installing";
     case "starting": return "Starting";
     case "needs-install": return "Not installed";
     case "runtime-missing": return "Needs a runtime";
     case "install-failed": return "Install failed";
-    case "failed": return "Problem";
+    case "failed": return "Did not start";
     case "crashed": return "Stopped";
     case "disabled": return "Off";
     case "idle": return "Not started";
@@ -156,44 +166,61 @@ export function rowStateText(kind: string, percent?: number): string {
   }
 }
 
-/** Status bar summary, for example "Java: installing 42%". */
+/** The state word in an "All languages" row. Empty when ready or when the action says it all. */
+export function rowWord(kind: string, percent?: number): string {
+  switch (kind) {
+    case "working": return percent === undefined ? "Indexing" : `Indexing ${percentText(percent)}`;
+    case "installing": return percent === undefined ? "Installing" : `Installing ${percentText(percent)}`;
+    case "starting": return "Starting";
+    case "needs-install": return "Not installed";
+    case "runtime-missing": return "Needs runtime";
+    case "install-failed": case "failed": return "Failed";
+    case "crashed": return "Stopped";
+    case "unavailable": return "Unavailable";
+    case "unknown": return "Checking";
+    default: return "";
+  }
+}
+
+/** Status bar text: the language, plus a short word only when work runs or attention is needed. */
 export function statusBarText(id: LanguageServerId, kind: string, percent?: number, restricted = false): string {
   const name = shortLanguageNames[id];
   const word = (() => {
     switch (kind) {
-      case "ready": return restricted ? "ready (restricted)" : "ready";
-      case "working": return percent === undefined ? "indexing" : `indexing ${percent}%`;
-      case "installing": return percent === undefined ? "installing" : `installing ${percent}%`;
-      case "starting": return "starting";
-      case "needs-install": return "not installed";
-      case "runtime-missing": return `needs ${runtimeFor(id)}`;
-      case "install-failed": case "failed": return "needs attention";
-      case "crashed": return "stopped";
-      case "disabled": return "off";
-      case "idle": return "idle";
-      case "unavailable": return "status unavailable";
-      default: return "checking";
+      case "ready": return restricted ? "Trust" : "";
+      case "working": case "installing": return percent === undefined ? (kind === "working" ? "Indexing" : "Installing") : "";
+      case "starting": return "Starting";
+      case "needs-install": return "Install";
+      case "runtime-missing": return runtimeFor(id);
+      case "install-failed": case "failed": return "Failed";
+      case "crashed": return "Stopped";
+      case "disabled": return "Off";
+      case "unavailable": return "Unavailable";
+      default: return "";
     }
   })();
-  return `${name}: ${word}`;
+  if ((kind === "working" || kind === "installing") && percent !== undefined) return `${name} ${percentText(percent)}`;
+  return word ? `${name} \u00b7 ${word}` : name;
 }
 
 /** Spoken and tooltip summary, always built from the same numbers as the panel. */
 export function buttonSummary(id: LanguageServerId | undefined, kind: string, percent?: number, restricted = false): string {
   if (!id) return "No language support for this file";
-  const name = supportName(id);
+  const name = shortLanguageNames[id];
+  const pct = percent === undefined ? "" : ` (${percentText(percent)})`;
   switch (kind) {
-    case "installing": return percent === undefined ? `Installing ${name}` : `Installing ${name} (${percent}%)`;
-    case "working": return percent === undefined ? `${name} is indexing your project` : `${name} is indexing your project (${percent}%)`;
+    case "installing": return `Installing ${name}${pct}`;
+    case "working": return `Indexing ${name}${pct}`;
     case "starting": return `Starting ${name}`;
-    case "ready": return restricted ? `${name} is ready, with this folder restricted` : `${name} is ready`;
+    case "ready": return restricted ? `${name} is ready, folder not trusted` : `${name} is ready`;
     case "needs-install": return `${name} is not installed`;
     case "runtime-missing": return `${name} needs ${runtimeFor(id)}`;
-    case "install-failed": case "failed": return `${name} needs attention`;
+    case "install-failed": return `${name} did not install`;
+    case "failed": return `${name} did not start`;
     case "crashed": return `${name} stopped unexpectedly`;
-    case "disabled": return `${name} is turned off`;
-    case "idle": return `${name} has not started yet`;
-    case "unavailable": return "Language support status is unavailable";
+    case "disabled": return `${name} is off`;
+    case "idle": return `${name} is not started`;
+    case "unavailable": return "Language status is unavailable";
     default: return `Checking ${name}`;
   }
 }
