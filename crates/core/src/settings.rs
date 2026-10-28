@@ -140,6 +140,12 @@ pub struct Settings {
     pub keybindings: HashMap<String, Vec<String>>,
     pub formatters: HashMap<String, Vec<String>>,
     pub language_servers: LanguageServerSettings,
+    /// `editor.syntaxColors`: per theme (`dark`, `light`, `purple`) overrides of the built in
+    /// syntax palette, keyed by token id (see `SYNTAX_TOKEN_IDS`) with `#rgb`, `#rrggbb` or
+    /// `#rrggbbaa` values. Empty means the UI default palettes. Optional in TypeScript so
+    /// existing literals stay valid.
+    #[specta(optional)]
+    pub syntax_colors: HashMap<String, HashMap<String, String>>,
     /// Agent features. Optional in TypeScript so existing literals stay valid;
     /// a missing value means the defaults.
     #[specta(optional)]
@@ -184,6 +190,7 @@ impl Default for Settings {
             keybindings: HashMap::new(),
             formatters: HashMap::new(),
             language_servers: LanguageServerSettings::default(),
+            syntax_colors: HashMap::new(),
             agents: AgentSettings::default(),
         }
     }
@@ -253,6 +260,7 @@ impl Settings {
         }
         validate_shortcut_collisions(&self.keybindings)?;
         self.language_servers.validate()?;
+        validate_syntax_colors(&self.syntax_colors)?;
         for (language, argv) in &self.formatters {
             if language.is_empty()
                 || language.len() > 64
@@ -280,7 +288,9 @@ impl Settings {
     }
 }
 
-const COMMAND_IDS: &[&str] = &[
+/// Every rebindable command id. The TypeScript `actionDefinitions` table and the JSON schema
+/// list the same ids in the same order, and tests compare them.
+pub const COMMAND_IDS: &[&str] = &[
     "quickOpen",
     "toggleFiles",
     "focusFiles",
@@ -304,7 +314,124 @@ const COMMAND_IDS: &[&str] = &[
     "zoomIn",
     "zoomOut",
     "resetZoom",
+    "goToDefinition",
+    "goToTypeDefinition",
+    "goToImplementation",
+    "peekDefinition",
+    "peekTypeDefinition",
+    "peekImplementation",
+    "findReferences",
+    "peekReferences",
+    "goToSymbolInFile",
+    "goToSymbolInWorkspace",
+    "quickInfo",
+    "showCallHierarchy",
+    "showTypeHierarchy",
+    "renameSymbol",
+    "goBack",
+    "goForward",
 ];
+
+/// Code navigation commands introduced after shortcuts could already be saved. Like Toggle Files,
+/// a default is dropped when an explicit binding already claims the same key, so adding a default
+/// never invalidates an existing settings file.
+const INHERITED_DEFAULT_IDS: &[&str] = &[
+    "toggleFiles",
+    "focusFiles",
+    "goToDefinition",
+    "goToTypeDefinition",
+    "goToImplementation",
+    "peekDefinition",
+    "peekTypeDefinition",
+    "peekImplementation",
+    "findReferences",
+    "peekReferences",
+    "goToSymbolInFile",
+    "goToSymbolInWorkspace",
+    "quickInfo",
+    "showCallHierarchy",
+    "showTypeHierarchy",
+    "renameSymbol",
+    "goBack",
+    "goForward",
+];
+
+/// Themes that can carry `editor.syntaxColors`.
+pub const SYNTAX_THEMES: &[&str] = &["dark", "light", "purple"];
+
+/// Token ids that `editor.syntaxColors.<theme>` can colour. The TypeScript `syntaxTokenIds`
+/// list is identical and tested equal.
+pub const SYNTAX_TOKEN_IDS: &[&str] = &[
+    "keyword",
+    "controlKeyword",
+    "operator",
+    "punctuation",
+    "comment",
+    "docComment",
+    "string",
+    "number",
+    "constant",
+    "boolean",
+    "function",
+    "method",
+    "type",
+    "class",
+    "interface",
+    "enum",
+    "typeParameter",
+    "variable",
+    "parameter",
+    "property",
+    "namespace",
+    "importPath",
+    "annotation",
+    "macro",
+    "label",
+    "tag",
+    "attribute",
+    "regexp",
+    "escape",
+    "invalid",
+];
+
+/// Only literal hex colours: `#rgb`, `#rrggbb` or `#rrggbbaa`. Nothing that a stylesheet could
+/// evaluate (functions, variables, names) is accepted.
+fn is_hex_color(value: &str) -> bool {
+    let Some(digits) = value.strip_prefix('#') else {
+        return false;
+    };
+    matches!(digits.len(), 3 | 6 | 8) && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_syntax_colors(colors: &HashMap<String, HashMap<String, String>>) -> Result<()> {
+    let mut total = 0;
+    for (theme, tokens) in colors {
+        if !SYNTAX_THEMES.contains(&theme.as_str()) {
+            return Err(CoreError::Settings(format!(
+                "editor.syntaxColors: unknown theme \"{theme}\" (use dark, light or purple)"
+            )));
+        }
+        for (token, color) in tokens {
+            if !SYNTAX_TOKEN_IDS.contains(&token.as_str()) {
+                return Err(CoreError::Settings(format!(
+                    "editor.syntaxColors.{theme}: unknown token \"{token}\""
+                )));
+            }
+            if !is_hex_color(color) {
+                return Err(CoreError::Settings(format!(
+                    "editor.syntaxColors.{theme}.{token}: colour must be #rgb, #rrggbb or #rrggbbaa"
+                )));
+            }
+            total += 1;
+        }
+    }
+    if total > SYNTAX_THEMES.len() * SYNTAX_TOKEN_IDS.len() {
+        return Err(CoreError::Settings(
+            "editor.syntaxColors has too many entries".into(),
+        ));
+    }
+    Ok(())
+}
 
 // Normalize keyboard naming variants before validation and collision checks.
 fn normalize_zoom_shortcut(shortcut: &str) -> String {
@@ -345,9 +472,16 @@ fn validate_shortcut(shortcut: &str) -> Result<()> {
     if key.is_empty() || key.chars().any(char::is_control) || key.contains(' ') {
         return Err(invalid());
     }
-    if !modifiers
-        .iter()
-        .any(|modifier| matches!(*modifier, "Mod" | "Ctrl" | "Alt" | "Meta" | "Cmd"))
+    // Function keys may stand alone or with Shift only (F12, Shift+F12). Every other key needs
+    // a command modifier so ordinary typing is never captured.
+    let function_key = key
+        .strip_prefix('F')
+        .and_then(|value| value.parse::<u8>().ok())
+        .is_some_and(|value| (1..=24).contains(&value));
+    if !function_key
+        && !modifiers
+            .iter()
+            .any(|modifier| matches!(*modifier, "Mod" | "Ctrl" | "Alt" | "Meta" | "Cmd"))
     {
         return Err(invalid());
     }
@@ -377,10 +511,6 @@ fn validate_shortcut(shortcut: &str) -> Result<()> {
             | "ArrowLeft"
             | "ArrowRight"
     );
-    let function_key = key
-        .strip_prefix('F')
-        .and_then(|value| value.parse::<u8>().ok())
-        .is_some_and(|value| (1..=24).contains(&value));
     let single_key = key.len() == 1
         && key
             .as_bytes()
@@ -473,6 +603,22 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("zoomIn", vec!["Mod+=", "Mod+Shift+="]),
         ("zoomOut", vec!["Mod+-"]),
         ("resetZoom", vec!["Mod+0"]),
+        ("goToDefinition", vec!["F12"]),
+        ("goToTypeDefinition", vec!["Mod+Shift+F12"]),
+        ("goToImplementation", vec!["Mod+F12"]),
+        ("peekDefinition", vec!["Alt+F12"]),
+        ("peekTypeDefinition", vec![]),
+        ("peekImplementation", vec![]),
+        ("findReferences", vec!["Shift+F12"]),
+        ("peekReferences", vec!["Shift+Alt+F12"]),
+        ("goToSymbolInFile", vec!["Mod+Shift+O"]),
+        ("goToSymbolInWorkspace", vec!["Mod+T"]),
+        ("quickInfo", vec!["Mod+Shift+I"]),
+        ("showCallHierarchy", vec!["Shift+Alt+H"]),
+        ("showTypeHierarchy", vec!["Mod+Alt+H"]),
+        ("renameSymbol", vec!["F2"]),
+        ("goBack", vec!["Mod+Alt+ArrowLeft"]),
+        ("goForward", vec!["Mod+Alt+ArrowRight"]),
     ];
     let claimed = overrides
         .values()
@@ -481,7 +627,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         .collect::<Result<std::collections::HashSet<_>>>()?;
     let mut assigned = HashMap::new();
     for (command, mut defaults) in defaults {
-        if command == "toggleFiles" || command == "focusFiles" {
+        if INHERITED_DEFAULT_IDS.contains(&command) {
             defaults.retain(|shortcut| {
                 !claimed.contains(&shortcut_conflict_key(shortcut).expect("valid default shortcut"))
             });
@@ -643,6 +789,7 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("editor.fontFamily", "editorFontFamily"),
     ("editor.tabSize", "tabSize"),
     ("editor.formatOnSave", "formatOnSave"),
+    ("editor.syntaxColors", "syntaxColors"),
     ("window.zoomLevel", "zoomLevel"),
     ("workbench.editor.limit.enabled", "tabLimitEnabled"),
     ("workbench.editor.limit.value", "tabLimit"),
@@ -696,6 +843,12 @@ pub(crate) fn patch_in_scope(
     key: &str,
     value_json: Option<&str>,
 ) -> Result<String> {
+    if let Some(rest) = key
+        .strip_prefix("editor.syntaxColors.")
+        .or_else(|| key.strip_prefix("syntaxColors."))
+    {
+        return patch_syntax_color(text, rest, value_json);
+    }
     let Some(rest) = key.strip_prefix("languageServers.") else {
         return patch(text, key, value_json);
     };
@@ -789,6 +942,94 @@ pub(crate) fn patch_in_scope(
             "languageServers",
             Some(&Value::Object(servers).to_string()),
         )
+    }
+}
+
+/// Sets or removes `editor.syntaxColors.<theme>.<token>`, or removes `editor.syntaxColors.<theme>`
+/// as a whole. Empty parent objects are removed. Both scopes may set colours.
+fn patch_syntax_color(text: &str, rest: &str, value_json: Option<&str>) -> Result<String> {
+    let (theme, token) = match rest.split_once('.') {
+        Some((theme, token)) => (theme, Some(token)),
+        None => (rest, None),
+    };
+    if !SYNTAX_THEMES.contains(&theme) {
+        return Err(CoreError::Settings(format!(
+            "editor.syntaxColors: unknown theme \"{theme}\" (use dark, light or purple)"
+        )));
+    }
+    let value = value_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|error| CoreError::Settings(error.to_string()))?
+        .filter(|v| !v.is_null());
+    let root = parse(text)?;
+    // Reuse the member name the file already uses so comments and layout stay put.
+    let member = if root.get("editor.syntaxColors").is_some() || root.get("syntaxColors").is_none()
+    {
+        "editor.syntaxColors"
+    } else {
+        "syntaxColors"
+    };
+    let mut colors = match normalize(root)?.get("syntaxColors").cloned() {
+        None => serde_json::Map::new(),
+        Some(Value::Object(map)) => map,
+        Some(_) => {
+            return Err(CoreError::Settings(
+                "editor.syntaxColors must be an object".into(),
+            ))
+        }
+    };
+    match token {
+        None => {
+            if value.is_some() {
+                return Err(CoreError::Settings(format!(
+                    "editor.syntaxColors.{theme} can only be removed; set a token as editor.syntaxColors.{theme}.<token>"
+                )));
+            }
+            colors.remove(theme);
+        }
+        Some(token) => {
+            if !SYNTAX_TOKEN_IDS.contains(&token) {
+                return Err(CoreError::Settings(format!(
+                    "editor.syntaxColors.{theme}: unknown token \"{token}\""
+                )));
+            }
+            let mut tokens = match colors.remove(theme) {
+                None => serde_json::Map::new(),
+                Some(Value::Object(map)) => map,
+                Some(_) => {
+                    return Err(CoreError::Settings(format!(
+                        "editor.syntaxColors.{theme} must be an object"
+                    )))
+                }
+            };
+            match value {
+                None => {
+                    tokens.remove(token);
+                }
+                Some(Value::String(color)) => {
+                    if !is_hex_color(&color) {
+                        return Err(CoreError::Settings(format!(
+                            "editor.syntaxColors.{theme}.{token}: colour must be #rgb, #rrggbb or #rrggbbaa"
+                        )));
+                    }
+                    tokens.insert(token.into(), Value::String(color));
+                }
+                Some(_) => {
+                    return Err(CoreError::Settings(format!(
+                        "editor.syntaxColors.{theme}.{token} must be a colour string"
+                    )))
+                }
+            }
+            if !tokens.is_empty() {
+                colors.insert(theme.into(), Value::Object(tokens));
+            }
+        }
+    }
+    if colors.is_empty() {
+        patch(text, member, None)
+    } else {
+        patch(text, member, Some(&Value::Object(colors).to_string()))
     }
 }
 
@@ -1444,5 +1685,270 @@ mod language_server_key_tests {
         assert!(err.contains("languageServers.nodePath") && err.contains("user settings only"));
         // Removing from the workspace scope is also refused: those keys are not valid there.
         assert!(set(Workspace, b, "languageServers.javaHome", None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod code_navigation_tests {
+    use super::*;
+    use crate::SettingsScope::{User, Workspace};
+
+    fn set(scope: crate::SettingsScope, text: &str, key: &str, v: Option<&str>) -> Result<String> {
+        patch_in_scope(scope, text, key, v)
+    }
+
+    fn schema() -> serde_json::Value {
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap()
+    }
+
+    fn strings(value: &serde_json::Value) -> Vec<String> {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn schema_lists_the_same_command_ids_and_syntax_tokens_in_order() {
+        let schema = schema();
+        assert_eq!(
+            strings(&schema["properties"]["keybindings"]["propertyNames"]["enum"]),
+            COMMAND_IDS
+        );
+        let colors = &schema["properties"]["syntaxColors"];
+        assert_eq!(strings(&colors["propertyNames"]["enum"]), SYNTAX_THEMES);
+        assert_eq!(
+            strings(&colors["additionalProperties"]["propertyNames"]["enum"]),
+            SYNTAX_TOKEN_IDS
+        );
+        assert_eq!(SYNTAX_TOKEN_IDS.len(), 30);
+        let mut unique = SYNTAX_TOKEN_IDS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), SYNTAX_TOKEN_IDS.len());
+    }
+
+    #[test]
+    fn navigation_defaults_are_unique_and_function_keys_may_stand_alone() {
+        Settings::default().validate().unwrap();
+        for shortcut in ["F12", "Shift+F12", "Alt+F12", "Mod+Alt+Shift+F12", "F2"] {
+            validate_shortcut(shortcut).unwrap();
+        }
+        for shortcut in ["Shift+A", "A", "Shift+Enter"] {
+            assert!(validate_shortcut(shortcut).is_err(), "{shortcut}");
+        }
+        let clash = Settings {
+            keybindings: HashMap::from([
+                ("save".into(), vec!["F12".into()]),
+                ("closeTab".into(), vec!["F12".into()]),
+            ]),
+            ..Default::default()
+        };
+        let message = clash.validate().unwrap_err().to_string();
+        assert!(
+            message.contains("F12") && message.contains("conflicts"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_existing_binding_claims_a_new_navigation_default_without_error() {
+        let settings = Settings {
+            keybindings: HashMap::from([("save".into(), vec!["F2".into()])]),
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        let rebound = Settings {
+            keybindings: HashMap::from([("renameSymbol".into(), vec!["Mod+Alt+R".into()])]),
+            ..Default::default()
+        };
+        rebound.validate().unwrap();
+    }
+
+    fn colors(text: &str) -> HashMap<String, HashMap<String, String>> {
+        load_with_texts(text, "{}").unwrap().syntax_colors
+    }
+
+    #[test]
+    fn syntax_colors_default_empty_and_set_remove_through_dotted_keys() {
+        assert!(Settings::default().syntax_colors.is_empty());
+        for scope in [User, Workspace] {
+            let t = set(
+                scope,
+                "{}",
+                "editor.syntaxColors.dark.keyword",
+                Some("\"#ff8800\""),
+            )
+            .unwrap();
+            let t = set(
+                scope,
+                &t,
+                "editor.syntaxColors.dark.comment",
+                Some("\"#abc\""),
+            )
+            .unwrap();
+            let t = set(
+                scope,
+                &t,
+                "editor.syntaxColors.light.string",
+                Some("\"#11223344\""),
+            )
+            .unwrap();
+            let loaded = colors(&t);
+            assert_eq!(loaded["dark"]["keyword"], "#ff8800");
+            assert_eq!(loaded["dark"]["comment"], "#abc");
+            assert_eq!(loaded["light"]["string"], "#11223344");
+            let t = set(scope, &t, "editor.syntaxColors.dark.keyword", None).unwrap();
+            assert_eq!(colors(&t)["dark"].len(), 1);
+            let t = set(scope, &t, "editor.syntaxColors.dark.comment", Some("null")).unwrap();
+            let loaded = colors(&t);
+            assert!(!loaded.contains_key("dark"), "empty parent is removed");
+            assert!(loaded.contains_key("light"));
+            let t = set(scope, &t, "editor.syntaxColors.light", None).unwrap();
+            assert!(!t.contains("syntaxColors"), "{t}");
+            assert!(colors(&t).is_empty());
+        }
+    }
+
+    #[test]
+    fn removing_a_whole_theme_keeps_the_others_and_comments() {
+        let text = "{\n  // keep me\n  \"tabSize\": 4,\n  \"editor.syntaxColors\": { \"dark\": { \"keyword\": \"#fff\" }, \"purple\": { \"tag\": \"#000\" } }\n}\n";
+        let t = set(User, text, "editor.syntaxColors.dark", None).unwrap();
+        assert!(t.contains("// keep me"), "{t}");
+        let loaded = colors(&t);
+        assert!(!loaded.contains_key("dark"));
+        assert_eq!(loaded["purple"]["tag"], "#000");
+        let t = set(User, &t, "syntaxColors.purple.tag", Some("\"#123456\"")).unwrap();
+        assert_eq!(colors(&t)["purple"]["tag"], "#123456");
+        assert!(t.contains("// keep me"), "{t}");
+    }
+
+    #[test]
+    fn syntax_colors_reject_bad_colours_tokens_and_themes() {
+        for color in [
+            "\"red\"",
+            "\"url(x)\"",
+            "\"var(--a)\"",
+            "\"#12\"",
+            "\"#12345\"",
+            "\"#1234567\"",
+            "\"#123456789\"",
+            "\"#ggg\"",
+            "\"ff0000\"",
+            "\"#fff; x\"",
+            "\"calc(1)\"",
+            "\"\"",
+            "5",
+            "true",
+        ] {
+            let err = set(User, "{}", "editor.syntaxColors.dark.keyword", Some(color))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("editor.syntaxColors.dark.keyword"),
+                "{color}: {err}"
+            );
+        }
+        let err = set(
+            User,
+            "{}",
+            "editor.syntaxColors.dark.bogus",
+            Some("\"#fff\""),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown token \"bogus\""), "{err}");
+        let err = set(
+            User,
+            "{}",
+            "editor.syntaxColors.solarized.keyword",
+            Some("\"#fff\""),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown theme \"solarized\""), "{err}");
+        assert!(set(User, "{}", "editor.syntaxColors.dark", Some("{}")).is_err());
+        // Hand written files go through the same validation.
+        for text in [
+            r##"{ "editor.syntaxColors": { "dark": { "keyword": "red" } } }"##,
+            r##"{ "syntaxColors": { "dark": { "nope": "#fff" } } }"##,
+            r##"{ "syntaxColors": { "neon": { "keyword": "#fff" } } }"##,
+            r##"{ "syntaxColors": { "dark": { "keyword": 1 } } }"##,
+            r##"{ "syntaxColors": { "dark": "#fff" } }"##,
+        ] {
+            assert!(load_with_texts(text, "{}").is_err(), "{text}");
+            assert!(load_with_texts("{}", text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn every_token_in_every_theme_fits_the_entry_limit() {
+        let mut map = serde_json::Map::new();
+        for theme in SYNTAX_THEMES {
+            let tokens: serde_json::Map<String, Value> = SYNTAX_TOKEN_IDS
+                .iter()
+                .map(|token| ((*token).into(), Value::String("#abcdef".into())))
+                .collect();
+            map.insert((*theme).into(), Value::Object(tokens));
+        }
+        let text = serde_json::json!({ "syntaxColors": map }).to_string();
+        let loaded = colors(&text);
+        assert_eq!(loaded.values().map(HashMap::len).sum::<usize>(), 90);
+    }
+
+    #[test]
+    fn workspace_colours_override_user_colours_per_token() {
+        let user = r##"{ "editor.syntaxColors": { "dark": { "keyword": "#111111", "string": "#222222" }, "light": { "tag": "#333333" } } }"##;
+        let workspace = r##"{ "editor.syntaxColors": { "dark": { "keyword": "#999999" } } }"##;
+        let merged = load_with_texts(user, workspace).unwrap().syntax_colors;
+        assert_eq!(merged["dark"]["keyword"], "#999999");
+        assert_eq!(merged["dark"]["string"], "#222222");
+        assert_eq!(merged["light"]["tag"], "#333333");
+    }
+
+    #[test]
+    fn syntax_colors_are_configured_keys_resettable_and_keep_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("p");
+        std::fs::create_dir(&project).unwrap();
+        let ws = crate::CoreWorkspace::open(&project)
+            .unwrap()
+            .with_user_settings(Some(dir.path().join("user.jsonc")));
+        ws.update_settings_jsonc_for_scope(User, "{\n  // mine\n  \"tabSize\": 3\n}\n")
+            .unwrap();
+        ws.update_setting(User, "editor.syntaxColors.dark.keyword", Some("\"#fa0\""))
+            .unwrap();
+        ws.update_setting(
+            Workspace,
+            "editor.syntaxColors.dark.keyword",
+            Some("\"#0af\""),
+        )
+        .unwrap();
+        let merged = ws.get_settings().unwrap();
+        assert_eq!(merged.syntax_colors["dark"]["keyword"], "#0af");
+        assert_eq!(
+            ws.get_settings_for_scope(User).unwrap().syntax_colors["dark"]["keyword"],
+            "#fa0"
+        );
+        assert_eq!(
+            ws.get_settings_keys_for_scope(User).unwrap(),
+            ["syntaxColors", "tabSize"]
+        );
+        assert!(ws
+            .get_settings_jsonc_for_scope(User)
+            .unwrap()
+            .contains("// mine"));
+        // Reset of the whole setting uses the canonical or the dotted alias name.
+        ws.update_setting(User, "editor.syntaxColors", None)
+            .unwrap();
+        assert_eq!(ws.get_settings_keys_for_scope(User).unwrap(), ["tabSize"]);
+        ws.update_setting(Workspace, "syntaxColors", None).unwrap();
+        assert!(ws.get_settings().unwrap().syntax_colors.is_empty());
+        assert!(ws
+            .get_settings_jsonc_for_scope(User)
+            .unwrap()
+            .contains("// mine"));
     }
 }

@@ -26,7 +26,7 @@ pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use settings::{
     AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, Settings,
-    SettingsScope, Theme, LANGUAGE_SERVER_IDS,
+    SettingsScope, Theme, COMMAND_IDS, LANGUAGE_SERVER_IDS, SYNTAX_THEMES, SYNTAX_TOKEN_IDS,
 };
 pub use tools::{list_tools, ToolInfo};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
