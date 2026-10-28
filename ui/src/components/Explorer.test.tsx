@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { render } from "solid-js/web";
+import { createExplorerState } from "../lib/explorer-state";
 import { Explorer } from "./Explorer";
 import { setCompactFolders } from "../lib/explorer-prefs";
 import type { FileEntry } from "../bindings";
@@ -27,7 +28,7 @@ function fake(disk: Record<string, FileEntry[]>, active = "") {
   };
   const workbench = { directories, expanded, loadDirectory, toggleDirectory, activePath: () => active, dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
   const root = document.createElement("div"); document.body.append(root);
-  disposers.push(render(() => <Explorer workbench={workbench as never} view="Files" onNavigate={() => {}} />, root));
+  disposers.push(render(() => <Explorer workbench={workbench as never} state={createExplorerState(workbench as never)} view="Files" onNavigate={() => {}} onOpenToSide={() => {}} onEditorTarget={() => undefined} onEditorPreview={() => {}} onEditorDrop={() => {}} />, root));
   return { root, expanded, listed, setDirectories, rows: () => Array.from(root.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')) };
 }
 const disk = {

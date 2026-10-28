@@ -201,16 +201,16 @@ export default function App() {
   async function applyStartup(request: StartupRequest) {
     const plan = planStartup(request, w.workspace()?.root);
     if (plan.outside.length) {
-      if (plan.open.length) await performStartup({ workspaceRoot: null, files: plan.open });
+      if (plan.open.length) await performStartup({ workspaceRoot: null, files: plan.open, impliedRoot: false });
       const folder = commonFolder(plan.outside);
-      if (folder && await new Promise<boolean>(resolve => setOutsideFiles({ files: plan.outside, folder, resolve }))) await applyStartup({ workspaceRoot: folder, files: plan.outside });
+      if (folder && await new Promise<boolean>(resolve => setOutsideFiles({ files: plan.outside, folder, resolve }))) await applyStartup({ workspaceRoot: folder, files: plan.outside, impliedRoot: false });
       return;
     }
-    const resolved = { workspaceRoot: plan.switchTo ?? null, files: plan.open };
-    if (plan.switchTo && hasUnsaved()) { const open = await new Promise<boolean>(resolve => setPendingExternal({ request: { workspaceRoot: plan.switchTo!, files: plan.open }, resolve })); if (!open) return; }
+    const resolved = { workspaceRoot: plan.switchTo ?? null, files: plan.open, impliedRoot: false };
+    if (plan.switchTo && hasUnsaved()) { const open = await new Promise<boolean>(resolve => setPendingExternal({ request: { workspaceRoot: plan.switchTo!, files: plan.open, impliedRoot: false }, resolve })); if (!open) return; }
     await performStartup(resolved);
   }
-  function openRecentProject(root: string) { void applyStartup({ workspaceRoot: root, files: [] }); }
+  function openRecentProject(root: string) { void applyStartup({ workspaceRoot: root, files: [], impliedRoot: false }); }
   function showProjectHistory(event: MouseEvent) { event.preventDefault(); const bounds = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : { left: event.clientX, bottom: event.clientY }; void refreshRecentProjects().then(() => setContext({ x: bounds.left, y: bounds.bottom, label: "Projects", items: [{ id: "open", label: "Open folder…", onSelect: requestWorkspace }, ...recentProjects().map(project => ({ id: project.root, label: `${project.name}${project.missing ? " (missing)" : ""}`, disabled: project.missing, onSelect: () => openRecentProject(project.root) })), { id: "clear", label: "Clear recent projects", separator: true, disabled: !recentProjects().length, onSelect: () => { void api.clearRecentProjects().then(refreshRecentProjects); } }] })); }
   const copyPath = (path: string, absolute = false) => { void copyText(absolute ? absolutePath(path, w.workspace()?.root) : relativePath(path, w.workspace()?.root)); };
   function requestFileAction(kind: FileAction["kind"], source: string, directory = false) {
@@ -262,9 +262,7 @@ export default function App() {
       if (!explorer.selection().includes(path)) explorer.selectOnly(path);
       setContext({ ...position, items: explorerMenu(path, kind === "directory", position), label: "File actions" }); return;
     }
-    const regular = path !== SETTINGS_TAB && !isSettingsBuffer(path); const directory = kind === "directory";
-    if (directory) items.push({ id: "toggle", label: w.expanded().has(path) ? "Collapse folder" : "Expand folder", icon: "menu-folder", onSelect: () => { void w.toggleDirectory(path); setShowLeft(true); setLeftView("Files"); } }, { id: "compact-folders", label: compactFolders() ? "Show folders separately" : "Compact single-child folders", icon: "menu-folder", onSelect: () => setCompactFolders(!compactFolders()) });
-    else if (kind === "file") items.push({ id: "open", label: "Open file", icon: "menu-file", onSelect: () => navigate(path) });
+    const regular = path !== SETTINGS_TAB && !isSettingsBuffer(path); const directory = false; // Explorer rows returned above.
     if (!directory) {
       items.push({ id: "split", label: "Split editor", icon: "split-editor", children: [{ id: "split-right", label: "Open in split to the right", icon: "split-editor", shortcut: shortcut("splitEditor"), onSelect: () => { void w.openToSide(path, group); } }, { id: "split-down", label: "Open in split below", icon: "split-editor", shortcut: shortcut("splitEditorDown"), onSelect: () => { void w.openToSide(path, group, "down"); } }] });
       if (kind === "tab") items.push({ id: "close", label: "Close tab", icon: "menu-cancel", shortcut: shortcut("closeTab"), onSelect: () => requestCloseTab(path, group) }, { id: "close-group", label: "Close editor group", icon: "menu-cancel", disabled: w.groups().length < 2, onSelect: () => requestCloseGroup(group) });

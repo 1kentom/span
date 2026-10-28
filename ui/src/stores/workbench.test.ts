@@ -191,7 +191,7 @@ describe("workspace views and session state", () => {
   it("restores saved file groups, panel sizes and Markdown view overrides", async () => {
     const readme: BufferSnapshot = { path: "README.md", text: "# Project\n", revision: 0, savedRevision: 0, language: "markdown" };
     server.set(readme.path, readme);
-    const session: SessionState = { workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts"], activePath: "src/file.ts" }, { paths: ["README.md"], activePath: "README.md" }], activeGroup: 1, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: true, assistantCollapsed: false, terminalCollapsed: true }, markdownViews: { "README.md": "both" } };
+    const session: SessionState = { workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts"], activePath: "src/file.ts" }, { paths: ["README.md"], activePath: "README.md" }], activeGroup: 1, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: true, assistantCollapsed: false, terminalCollapsed: true }, markdownViews: { "README.md": "both" }, splitVertical: false };
     client.getSession.mockResolvedValue(session);
     const workbench = testWorkbench(); await workbench.initialize();
     expect(workbench.groups().map(group => group.tabs)).toEqual([["src/file.ts"], ["README.md"]]);
@@ -303,7 +303,7 @@ describe("workspace views and session state", () => {
     const first: BufferSnapshot = { path: "src/first.ts", text: "first\n", revision: 0, savedRevision: 0, language: "typescript" };
     const active: BufferSnapshot = { path: "src/active.ts", text: "active\n", revision: 0, savedRevision: 0, language: "typescript" };
     server.set(first.path, first); server.set(active.path, active);
-    const session: SessionState = { workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts", first.path, active.path], activePath: active.path }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: false }, markdownViews: {} };
+    const session: SessionState = { workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts", first.path, active.path], activePath: active.path }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: false }, markdownViews: {}, splitVertical: false };
     client.getSession.mockResolvedValue(session);
     client.getSettings.mockResolvedValue({ ...preferences, tabLimit: 2 });
     const workbench = testWorkbench(); await workbench.initialize();
