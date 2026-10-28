@@ -259,3 +259,23 @@ describe("saveName", () => {
     expect(named("Pasted text, 31 lines")).toBe("Pasted text, 31 lines.txt");
   });
 });
+
+describe("permission waits in the step view", () => {
+  it("shows the OpenCode read as pending while its permission is open, then running once answered", async () => {
+    const { initialAgentState, reduceAgentEvent } = await import("./agent-session");
+    const events = [
+      { kind: "session", sessionId: "s" },
+      tool("t1", { status: "pending", title: "read" }),
+      tool("t1", { status: "in_progress", title: "read" }),
+      { kind: "permission", sessionId: "s", requestId: "r1", toolCallId: "t1", title: "present.txt", options: [] },
+    ] as const;
+    const waiting = events.reduce((state, event) => reduceAgentEvent(state, event as never), initialAgentState(true));
+    const stepOf = (state: typeof waiting) => {
+      const item = state.feed.find((entry) => entry.kind === "tool");
+      return toStep((item as Extract<FeedItem, { kind: "tool" }>).event, []);
+    };
+    expect(stepOf(waiting).status).toBe("pending");
+    const answered = reduceAgentEvent(waiting, { kind: "permissionResolved", sessionId: "s", requestId: "r1" });
+    expect(stepOf(answered).status).toBe("in_progress");
+  });
+});

@@ -3,6 +3,7 @@ import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
 import { isNearBottom, relativeTime } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
+import type { AgentHint } from "../bindings";
 import { curatedAgent } from "../lib/acp-catalog";
 import { capabilityChips, classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
@@ -104,10 +105,17 @@ export function AgentPanel(props: AgentPanelProps) {
   );
   /** Methods that cannot run from Span and need nothing typed. Methods that take a key or gateway get a form instead. */
   const unsupportedAuth = () => a.state().auth?.methods.filter((method) => !method.supported && !method.input) ?? [];
-  /** Per-method hints that the header hint does not already say. */
+  /** One method's hint line. Environment setup names the method, since several methods can need it. */
+  const methodHint = (method: { name: string; hint?: AgentHint | null }) => {
+    const line = hintText(method.hint);
+    return line && method.hint === "needsEnvironmentSetup" ? `${method.name} ${line}` : line;
+  };
+  /** Per-method hints that the header hint does not already say. The model-aware OpenCode hint already covers its login method. */
   const methodHints = () => {
-    const shown = hintText(a.state().auth?.hint);
-    return [...new Set(unsupportedAuth().flatMap((method) => (hintText(method.hint) ? [hintText(method.hint)!] : [])))].filter((line) => line !== shown);
+    const header = a.state().auth?.hint;
+    const shown = hintText(header);
+    const covered = (method: { hint?: AgentHint | null }) => header === "runOpencodeAuthLoginOrSwitchModel" && method.hint === "runOpencodeAuthLogin";
+    return [...new Set(unsupportedAuth().flatMap((method) => (!covered(method) && methodHint(method) ? [methodHint(method)!] : [])))].filter((line) => line !== shown);
   };
   const unhinted = () => unsupportedAuth().filter((method) => !method.hint);
   const presetRows = () => a.presets().map((preset) => ({ id: preset.id, name: preset.name, description: preset.description, command: [preset.launch.command, ...preset.launch.args].join(" ") }));
@@ -346,11 +354,15 @@ export function AgentPanel(props: AgentPanelProps) {
           </Match>
           <Match when={body() === "signin"}>
             <div class="agent-body">
+              <Show when={a.state().auth!.agentMessage}>
+                {(message) => <ErrorCard level="error" title={`${label()} reported a problem`} text={message()} actions={[]} />}
+              </Show>
               <SignIn
                 id={brand().id}
                 name={label()}
-                title={`Sign in to ${label()}`}
-                text={a.state().auth!.message}
+                title={a.state().auth!.agentMessage ? "Other sign-in options" : `Sign in to ${label()}`}
+                text={a.state().auth!.agentMessage ? undefined : a.state().auth!.message}
+                secondary={Boolean(a.state().auth!.agentMessage)}
                 hint={hintText(a.state().auth!.hint)}
                 methods={a
                   .state()

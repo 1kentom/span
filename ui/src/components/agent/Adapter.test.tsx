@@ -547,3 +547,82 @@ describe("live announcements", () => {
     expect(message.getAttribute("aria-busy")).not.toBe("true");
   });
 });
+
+describe("live agent run findings in the panel", () => {
+  it("shows a quiet bypass banner by the composer until the agent leaves the mode", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "claude", name: "Claude" }} label="Claude" />);
+    mocks.emit({ kind: "notice", sessionId: "s1", severity: "warning", title: "Bypass permissions", description: null, noticeId: "span/permission-bypass", hint: "permissionsBypassed" } as AgentEvent);
+    await tick();
+    expect(text(host.querySelector(".sb-permission-bypass"))).toBe("Gemini is in Bypass permissions: it will not ask before running tools, and Span's approval prompts will not appear");
+    mocks.emit({ kind: "noticeCleared", sessionId: "s1", noticeId: "span/permission-bypass" });
+    await tick();
+    expect(host.querySelector(".sb-permission-bypass")).toBeNull();
+  });
+
+  it("puts Gemini's account message first and offers sign-in only as a secondary choice", async () => {
+    Element.prototype.scrollTo = () => undefined;
+    const tier = "This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google";
+    const methods = [
+      { id: "oauth-personal", name: "Log in with Google", description: "Log in with your Google account", kind: "agent", supported: true },
+      { id: "vertex-ai", name: "Vertex AI", description: "Use an API key with Vertex AI GenAI API", kind: "agent", supported: false, hint: "needsEnvironmentSetup" as const },
+    ];
+    mocks.api.agentInstalled.mockResolvedValueOnce([{ id: "gemini", version: "0.46.0", launch: { command: "gemini", args: ["--acp"], env: {} } }] as never);
+    mocks.api.agentConnect.mockImplementationOnce(async () => {
+      mocks.emit({ kind: "ready", agentName: "gemini-cli", agentTitle: "Gemini CLI", agentVersion: "0.46.0", features: features(), authMethods: methods }, { kind: "authRequired", message: `Authentication required: ${tier}`, authMethods: methods, agentMessage: tier } as AgentEvent);
+      return "";
+    });
+    const host = mount(() => <AgentPanel workspacePath="/w" workspaceGeneration={1} />);
+    await tick();
+    await tick();
+    click(host.querySelector("[aria-label='Connect gemini']"));
+    await tick();
+    const card = host.querySelector(".sb-card.alert");
+    expect(text(card)).toContain(tier);
+    expect(card!.compareDocumentPosition(host.querySelector(".sb-signin")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(host.querySelector(".sb-method.primary")).toBeNull();
+    expect(text(host.querySelector(".sb-method"))).toContain("Log in with Google");
+    expect(text(host)).toContain("Vertex AI needs setup in a terminal or environment variables, which Span does not do. Set it up, then reconnect.");
+    expect(text(host)).not.toContain("needs a terminal sign-in");
+  });
+
+  it("suggests another model when only the default model's provider is signed out", async () => {
+    Element.prototype.scrollTo = () => undefined;
+    const methods = [{ id: "opencode-login", name: "Login with opencode", description: null, kind: "agent", supported: false, hint: "runOpencodeAuthLogin" as const }];
+    mocks.api.agentInstalled.mockResolvedValueOnce([{ id: "opencode", version: "2.0.32", launch: { command: "opencode", args: ["acp"], env: {} } }] as never);
+    mocks.api.agentConnect.mockImplementationOnce(async () => {
+      mocks.emit({ kind: "ready", agentName: "OpenCode", agentTitle: null, agentVersion: "2.0.32", features: features(), authMethods: methods }, { kind: "authRequired", message: "Authentication required: provider authentication required: {}", authMethods: methods, hint: "runOpencodeAuthLoginOrSwitchModel" } as AgentEvent);
+      return "";
+    });
+    const host = mount(() => <AgentPanel workspacePath="/w" workspaceGeneration={1} />);
+    await tick();
+    await tick();
+    click(host.querySelector("[aria-label='Connect opencode']"));
+    await tick();
+    expect(text(host.querySelector(".sb-auth-hint"))).toBe("Run opencode auth login in a terminal, or choose another model, then retry");
+    expect(text(host)).not.toContain("in a terminal, then retry");
+  });
+
+  const modeOption = (current: string, choices: [string, string][]) => ({ id: "mode", name: "Mode", description: null, category: "mode", currentValue: current, groups: [{ name: "", choices: choices.map(([value, name]) => ({ value, name, description: null })) }] });
+  const bypassNotice = (title: string) => ({ kind: "notice", sessionId: "s1", severity: "warning", title, description: null, noticeId: "span/permission-bypass", hint: "permissionsBypassed" }) as AgentEvent;
+  for (const [agent, current, choices, safe] of [
+    ["Claude bypassPermissions", "bypassPermissions", [["default", "Manual"], ["acceptEdits", "Accept edits"], ["bypassPermissions", "Bypass permissions"]], "default"],
+    ["Codex agent-full-access", "agent-full-access", [["read-only", "Read-only"], ["agent", "Auto review"], ["agent-full-access", "Full access"]], "read-only"],
+  ] as [string, string, [string, string][], string][]) {
+    it(`marks the mode chip as a warning with its full name for ${agent}`, async () => {
+      const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "a", name: "Agent" }} label="Agent" />);
+      const full = choices.find(([value]) => value === current)![1];
+      mocks.emit({ kind: "config", sessionId: "s1", options: [modeOption(current, choices)] } as AgentEvent, bypassNotice(full));
+      await tick();
+      const chip = host.querySelector(".agent-mode-button")!;
+      expect(chip.classList.contains("warn")).toBe(true);
+      expect(chip.getAttribute("aria-label")).toBe(`Mode: ${full}. This agent will not ask before running tools or editing files`);
+      expect(chip.getAttribute("title")).toBe(`${full}. This agent will not ask before running tools or editing files`);
+      expect(text(chip.querySelector(".agent-model-name"))).toBe(full);
+      expect(chip.querySelector("svg, .icon, [class*='icon']")).not.toBeNull();
+      mocks.emit({ kind: "config", sessionId: "s1", options: [modeOption(safe, choices)] } as AgentEvent, { kind: "noticeCleared", sessionId: "s1", noticeId: "span/permission-bypass" });
+      await tick();
+      expect(chip.classList.contains("warn")).toBe(false);
+      expect(chip.getAttribute("title")).toBeNull();
+    });
+  }
+});

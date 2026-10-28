@@ -12,6 +12,9 @@
 //! - `sent` / `notSent`: client messages recorded by the fixture agent.
 //! - `counts`: `{"match": event, "count": n}`, how often an event appears.
 //! - `logsExclude`: text that must not appear in any protocol log line.
+//! - `debugExclude`: text that must not appear in the `Debug` output of any event.
+//! - A `listSessions` step's `expectSessions` lists the session ids the
+//!   client returns, in order.
 use serde_json::{json, Value};
 use span_acp::{AgentCommand, AgentEvent, AgentService, AuthCredential};
 use span_core::CoreWorkspace;
@@ -117,6 +120,8 @@ async fn replay(agent: &str, name: &str) {
         CoreWorkspace::open(&root).unwrap().with_user_settings(None),
     ));
     let events: Events = Arc::new(Mutex::new(Vec::new()));
+    let debug: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink_debug = debug.clone();
     let service_slot: Arc<OnceLock<AgentService>> = Arc::new(OnceLock::new());
     let policy: Arc<Mutex<String>> = Arc::new(Mutex::new("allow".into()));
     let sink_events = events.clone();
@@ -153,6 +158,7 @@ async fn replay(agent: &str, name: &str) {
                         service.respond_permission(session_id.clone(), request_id.clone(), choice);
                 }
             }
+            sink_debug.lock().unwrap().push(format!("{event:?}"));
             sink_events
                 .lock()
                 .unwrap()
@@ -243,6 +249,13 @@ async fn replay(agent: &str, name: &str) {
                 service.cancel(session.clone()).unwrap();
                 running.await.unwrap()
             }
+            "listSessions" => service.list_sessions().await.map(|found| {
+                let ids: Vec<Value> = found.iter().map(|s| json!(s.session_id)).collect();
+                if let Some(want) = step.get("expectSessions") {
+                    assert_eq!(&Value::Array(ids), want, "{step}: listed sessions");
+                }
+            }),
+            "deleteSession" => service.delete_session(text("session")).await,
             other => panic!("unknown drive step {other}"),
         };
         mark(&events, action, &result);
@@ -291,6 +304,15 @@ async fn replay(agent: &str, name: &str) {
         expected["notSent"].as_array().unwrap_or(&empty),
         &sent,
     );
+    for secret in expected["debugExclude"].as_array().unwrap_or(&empty) {
+        let secret = secret.as_str().unwrap();
+        for line in debug.lock().unwrap().iter() {
+            assert!(
+                !line.contains(secret),
+                "{label}: secret leaked into Debug output: {line}"
+            );
+        }
+    }
     for secret in expected["logsExclude"].as_array().unwrap_or(&empty) {
         let secret = secret.as_str().unwrap();
         for event in actual.iter().filter(|e| e["kind"] == "log") {
@@ -391,3 +413,49 @@ fixture!(generic_tool_typed_fields, "generic", "tool-fields");
 fixture!(generic_changes_nothing, "generic", "unchanged");
 fixture!(generic_mcp_gated_by_capabilities, "generic", "mcp-gating");
 fixture!(generic_auth_required_from_prompt, "generic", "auth-prompt");
+// Live run findings (claude-agent-acp 0.98.0, codex-acp 2.3.0, OpenCode
+// 2.0.32, gemini-cli 0.46.0).
+fixture!(claude_bypass_mode_warns_until_safe, "claude", "bypass-mode");
+fixture!(
+    codex_full_access_mode_warns_until_safe,
+    "codex",
+    "full-access-mode"
+);
+fixture!(gemini_yolo_mode_warns_until_safe, "gemini", "yolo-mode");
+fixture!(
+    opencode_rejection_marks_cancelled_turn,
+    "opencode",
+    "reject-cancelled"
+);
+fixture!(codex_list_follows_empty_pages, "codex", "list-empty-pages");
+fixture!(
+    claude_deleted_session_stays_hidden,
+    "claude",
+    "delete-still-listed"
+);
+fixture!(claude_mcp_tool_kind_other, "claude", "mcp-tool-kind");
+fixture!(
+    claude_auth_status_never_logged,
+    "claude",
+    "auth-status-redacted"
+);
+fixture!(
+    opencode_default_model_auth_hint,
+    "opencode",
+    "auth-default-model"
+);
+fixture!(
+    gemini_account_message_and_env_method,
+    "gemini",
+    "unsupported-client"
+);
+fixture!(
+    codex_thread_status_is_not_session_info,
+    "codex",
+    "thread-status"
+);
+fixture!(
+    claude_interrupted_replay_is_a_notice,
+    "claude",
+    "interrupted-replay"
+);

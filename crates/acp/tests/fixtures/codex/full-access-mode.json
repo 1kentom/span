@@ -1,0 +1,67 @@
+{
+  "quirk": "The mode option value agent-full-access lets Codex run without asking: a warning Notice with hint permissionsBypassed appears when the mode changes to it and is cleared when it changes back to a safe mode. The default agent (Auto review) mode raises nothing.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setConfig",
+      "id": "mode",
+      "value": "agent-full-access"
+    },
+    {
+      "do": "setConfig",
+      "id": "mode",
+      "value": "read-only"
+    }
+  ],
+  "events": [
+    {
+      "kind": "config"
+    },
+    {
+      "kind": "_step",
+      "do": "newSession"
+    },
+    {
+      "kind": "config"
+    },
+    {
+      "kind": "notice",
+      "severity": "warning",
+      "title": "Full access",
+      "noticeId": "span/permission-bypass",
+      "hint": "permissionsBypassed"
+    },
+    {
+      "kind": "_step",
+      "do": "setConfig"
+    },
+    {
+      "kind": "config"
+    },
+    {
+      "kind": "noticeCleared",
+      "noticeId": "span/permission-bypass"
+    },
+    {
+      "kind": "_step",
+      "do": "setConfig"
+    }
+  ],
+  "counts": [
+    {
+      "match": {
+        "kind": "notice",
+        "hint": "permissionsBypassed"
+      },
+      "count": 1
+    },
+    {
+      "match": {
+        "kind": "noticeCleared"
+      },
+      "count": 1
+    }
+  ]
+}

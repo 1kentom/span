@@ -11,8 +11,9 @@ import { delegationLine } from "../../lib/agent-delegation";
 import { canCompact, type PermissionEvent } from "../../lib/agent-session";
 import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { isDesktop } from "../../lib/client";
+import { BYPASS_MODE_EXPLANATION } from "../../lib/agent-hint-text";
 import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } from "../../lib/updates";
-import { ContextBanner } from "./Banners";
+import { ContextBanner, PermissionBypassNote } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
 import { ModelPopover } from "./ModelPopover";
@@ -166,6 +167,9 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             <span>{entry().text}</span>
           </div>
         )}
+      </Show>
+      <Show when={a.state().sessionId ? a.state().permissionBypass : undefined}>
+        {(bypass) => <PermissionBypassNote agent={a.agentLabel()} mode={bypass().mode} />}
       </Show>
       <Show when={showBanner()}>
         <ContextBanner
@@ -453,12 +457,27 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             <Icon name="arrow-down4" size={10} />
           </button>
           <Show when={a.connected() && mode()}>
-            {(option) => (
-              <button class="agent-tool-button agent-mode-button" aria-label={`${option().name}: ${currentChoice(option())?.name ?? option().currentValue}`} aria-haspopup="dialog" onClick={() => toggle("model")}>
-                <span class="agent-model-name">{currentChoice(option())?.name ?? option().currentValue}</span>
-                <Icon name="arrow-down4" size={10} />
-              </button>
-            )}
+            {(option) => {
+              const name = () => currentChoice(option())?.name ?? option().currentValue;
+              // The backend's bypass notice is the one source for "this mode skips approval prompts".
+              const bypass = () => Boolean(a.state().permissionBypass);
+              return (
+                <button
+                  class="agent-tool-button agent-mode-button"
+                  classList={{ warn: bypass() }}
+                  aria-label={bypass() ? `${option().name}: ${name()}. ${BYPASS_MODE_EXPLANATION}` : `${option().name}: ${name()}`}
+                  title={bypass() ? `${name()}. ${BYPASS_MODE_EXPLANATION}` : undefined}
+                  aria-haspopup="dialog"
+                  onClick={() => toggle("model")}
+                >
+                  <Show when={bypass()}>
+                    <Icon name="Warning2" size={11} class="sb-glyph warn" />
+                  </Show>
+                  <span class="agent-model-name">{name()}</span>
+                  <Icon name="arrow-down4" size={10} />
+                </button>
+              );
+            }}
           </Show>
           <span class="agent-toolbar-spacer" />
           <Show when={a.connected() && usage()}>

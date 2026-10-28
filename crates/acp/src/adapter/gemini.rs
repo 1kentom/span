@@ -1,5 +1,6 @@
 //! Gemini CLI (0.67 nightly read from source; the registry pins 0.66.0, which
-//! was not compared). Nothing here was observed on a live agent.
+//! was not compared). Only the `vertex-ai` method shape was seen on a live
+//! agent (0.46.0); nothing else here was observed live.
 use super::{annotate, text, Profile, Quirks, SessionState};
 use crate::{AgentHint, AuthInput, AuthMethodInfo, ConfigChoice, ConfigGroup, ConfigOption};
 use serde_json::{json, Value};
@@ -194,13 +195,24 @@ impl Quirks for Gemini {
     }
 
     /// API key and gateway methods mark themselves with `_meta["api-key"]`
-    /// and `_meta.gateway`.
+    /// and `_meta.gateway`. A method that describes an API key but carries
+    /// neither (0.46.0 `vertex-ai`) takes its settings from the environment,
+    /// so it is not offered as a button that would send nothing.
     fn auth_method(&self, method: &mut AuthMethodInfo, meta: Option<&Value>) {
-        let Some(meta) = meta else { return };
-        if meta.get("api-key").is_some() {
-            method.input = Some(AuthInput::ApiKey);
-        } else if meta.get("gateway").is_some() {
-            method.input = Some(AuthInput::Gateway);
+        if let Some(meta) = meta {
+            if meta.get("api-key").is_some() {
+                method.input = Some(AuthInput::ApiKey);
+            } else if meta.get("gateway").is_some() {
+                method.input = Some(AuthInput::Gateway);
+            }
+        }
+        let describes_key = method
+            .description
+            .as_deref()
+            .is_some_and(|text| text.to_ascii_lowercase().contains("api key"));
+        if method.input.is_none() && describes_key {
+            method.supported = false;
+            method.hint = Some(AgentHint::NeedsEnvironmentSetup);
         }
     }
 

@@ -1,0 +1,70 @@
+{
+  "quirk": "Gemini 0.46.0 answers session/new with -32000 carrying an account tier message, not a sign-in request: AuthRequired keeps the sign-in methods but carries the agent's own text as agentMessage. A plain Authentication required message carries none and is not prefixed twice. vertex-ai has no _meta input, so it is marked as needing environment setup instead of being offered with no input.",
+  "drive": [
+    {
+      "do": "newSession",
+      "expectError": "no longer supported"
+    },
+    {
+      "do": "newSession",
+      "expectError": "Authentication required"
+    },
+    {
+      "do": "authenticate",
+      "method": "vertex-ai",
+      "expectError": "environment"
+    }
+  ],
+  "events": [
+    {
+      "kind": "ready",
+      "authMethods": [
+        {
+          "id": "oauth-personal",
+          "supported": true,
+          "input": null,
+          "hint": null
+        },
+        {
+          "id": "gemini-api-key",
+          "supported": true,
+          "input": "apiKey"
+        },
+        {
+          "id": "vertex-ai",
+          "supported": false,
+          "input": null,
+          "hint": "needsEnvironmentSetup"
+        },
+        {
+          "id": "gateway",
+          "supported": true,
+          "input": "gateway"
+        }
+      ]
+    },
+    {
+      "kind": "authRequired",
+      "message": "Authentication required: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google",
+      "agentMessage": "This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google"
+    },
+    {
+      "kind": "_step",
+      "do": "newSession"
+    },
+    {
+      "kind": "authRequired",
+      "message": "Authentication required",
+      "agentMessage": null
+    },
+    {
+      "kind": "_step",
+      "do": "newSession"
+    }
+  ],
+  "notSent": [
+    {
+      "method": "authenticate"
+    }
+  ]
+}
