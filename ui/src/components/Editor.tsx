@@ -10,6 +10,7 @@ import { loadLanguage, resolveLanguageId } from "../editor/languages";
 import { completionTabSupport } from "../editor/completion-tab";
 import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/search-panel";
 import { formatWithLanguageServer, lspExtension, type LspBinding } from "../lib/lsp-codemirror";
+import { navigationExtension } from "../lib/lsp-peek";
 import { syntaxHighlightStyle } from "../editor/syntax-highlight";
 import "../styles/editor.css";
 import "../styles/syntax.css";
@@ -408,6 +409,7 @@ export default function Editor(props: EditorProps) {
       appearance.of(EditorView.theme({}, { dark: props.theme !== "light" })),
       syntaxHighlighting(codeHighlighting), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       props.lsp ? lspExtension(props.buffer.path, props.lsp) : [],
+      navigationExtension(props.buffer.path),
       keymap.of([
         { key: "Mod-z", run: (editor) => { if (props.onUndo) { props.onUndo(); return true; } return undo(editor); }, preventDefault: true },
         { key: "Mod-Shift-z", run: (editor) => { if (props.onRedo) { props.onRedo(); return true; } return redo(editor); }, preventDefault: true },

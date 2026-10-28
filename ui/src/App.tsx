@@ -22,7 +22,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { createSyntaxColorsEffect } from "./editor/syntax-colors-effect";
 import { SyntaxColorsSettings } from "./components/SyntaxColorsSettings";
 import { createWorkbench, settleIntent, SETTINGS_TAB, isSettingsBuffer, tabName, type EditorGroup } from "./stores/workbench";
-import { canDispatchAction, currentPlatform, dispatchKeyboard, nativeMenuBindings, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
+import { canDispatchAction, currentPlatform, normalizeShortcut, dispatchKeyboard, nativeMenuBindings, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
 import { navigationActions, setNavigationNotifier } from "./lib/navigation-actions";
 import { createZoomController } from "./lib/zoom";
 import { createInternalDrag, type InternalDragState } from "./lib/internal-drag";
@@ -31,7 +31,12 @@ import { api, isDesktop, lspPort, previewNotice } from "./lib/client";
 import { LanguageServerStatus } from "./components/LanguageServerStatus";
 import { LanguageServerSettings } from "./components/LanguageServerSettings";
 import { useLanguageServers } from "./stores/language-servers";
-import { serverForBuffer } from "./lib/lsp-client";
+import { serverForBuffer, serverLabels } from "./lib/lsp-client";
+import { ChangeSet } from "@codemirror/state";
+import { navigationPort } from "./lib/client";
+import { LibraryViewer, NavigationLayer, NavigationPanels, NavigationTabs } from "./components/navigation/NavigationLayer";
+import { configureNavigation, createSymbolSource, navigationState, openSymbol, symbolCrumbs } from "./stores/navigation";
+import type { CapabilitiesDto } from "./bindings";
 import type { EditProposal, SyntaxSnapshot, ToolInfo, StartupRequest_Serialize as StartupRequest, RecentProject_Serialize as RecentProject } from "./bindings";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -84,6 +89,8 @@ export default function App() {
   const dropGroup = () => internalDrag()?.target;
   const [context, setContext] = createSignal<{ x: number; y: number; items: ContextMenuItem[]; label: string }>();
   const [quickOpen, setQuickOpen] = createSignal(false);
+  const [quickOpenQuery, setQuickOpenQuery] = createSignal("");
+  const [breadcrumbFocus, setBreadcrumbFocus] = createSignal(0);
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [recordingShortcut, setRecordingShortcut] = createSignal(false);
   const [settingsDirty, setSettingsDirty] = createSignal(false);
@@ -233,7 +240,7 @@ export default function App() {
     queueMicrotask(() => editorCommands.get(`${w.activeGroup()}:${path}`)?.[command]());
   }
   const handlers: ActionHandlers = {
-    quickOpen: () => setQuickOpen(true), toggleFiles, focusFiles, openFile: () => { void openFilePicker(); }, commandPalette: () => setPaletteOpen(true), findInFile: () => runEditor("find"), searchWorkspace: openSearch,
+    quickOpen: () => { setQuickOpenQuery(""); setQuickOpen(true); }, toggleFiles, focusFiles, openFile: () => { void openFilePicker(); }, commandPalette: () => setPaletteOpen(true), findInFile: () => runEditor("find"), searchWorkspace: openSearch,
     settings: openSettings, closeTab: () => { const path = w.activeTab(); if (path) requestCloseTab(path, w.activeGroup()); else requestCloseGroup(w.activeGroup()); }, save: saveActive, openFolder: requestWorkspace,
     splitEditor: () => w.splitEditor(), toggleProject: () => setShowLeft(!showLeft()), toggleAssistant: () => setShowRight(!showRight()), toggleTerminal: () => setShowBottom(!showBottom()),
     markdownPreview: () => { const path = w.activePath(); if (path && w.isMarkdown(path)) w.setMarkdownView(path, w.markdownView(path) === "preview" ? "source" : "preview"); },
@@ -242,10 +249,40 @@ export default function App() {
     toggleWordWrap: () => { void w.updateEffectiveSetting("wordWrap", !w.settings().wordWrap).catch(error => w.setError(String(error))); },
     ...navigationActions,
   };
+  // Preview only: every capability on for sample TypeScript files, so the navigation UI can be exercised without a backend.
+  const previewCapabilities: CapabilitiesDto = { completion: false, hover: false, definition: true, formatting: false, rangeFormatting: false, rename: true, prepareRename: true, references: true, implementation: true, typeDefinition: true, declaration: true, documentSymbol: true, workspaceSymbol: true, callHierarchy: true, typeHierarchy: true, documentHighlight: true, signatureHelp: false };
+  const stopNavigation = configureNavigation({
+    port: navigationPort, activePath: () => w.activePath(), workspaceRoot: () => w.workspace()?.root, workspaceGeneration: w.workspaceGeneration,
+    revision: path => w.buffers[path]?.revision ?? 0, revisions: () => Object.fromEntries(Object.keys(w.buffers).filter(path => w.buffers[path]).map(path => [path, w.buffers[path].revision])),
+    synchronized: path => w.synchronized(path),
+    epoch: path => { const server = serverForBuffer(path); const root = w.workspace()?.root; return isDesktop && server && root ? languageServers.entryFor(server, `${root.replace(/[\\/]+$/, "")}/${path}`)?.epoch : undefined; },
+    server: path => {
+      const server = serverForBuffer(path);
+      if (!server) return undefined;
+      if (!isDesktop) return /\.(?:ts|tsx|js|jsx)$/.test(path) ? { label: "preview fixture", capabilities: previewCapabilities } : undefined;
+      const root = w.workspace()?.root; const entry = root ? languageServers.entryFor(server, `${root.replace(/[\\/]+$/, "")}/${path}`) : undefined;
+      return { label: serverLabels[server], capabilities: entry && entry.enabled && entry.state.kind === "ready" ? entry.capabilities ?? undefined : undefined, state: entry ? (entry.enabled ? entry.state.kind : "disabled") : "not started" };
+    },
+    isReadOnly: path => isSettingsBuffer(path), isOpen: path => !!w.buffers[path], documentText: path => w.documents()[path]?.document,
+    open: (path, line, column) => navigate(path, line, column),
+    openFile: async path => { await w.openFile(path); return !!w.buffers[path]; },
+    applyEdits: (path, edits) => {
+      const document = w.documents()[path]?.document; const buffer = w.buffers[path];
+      if (!document || !buffer) return false;
+      const changes = edits.map(edit => ({ from: edit.from, to: edit.to, insert: edit.insert })); const changeSet = ChangeSet.of(changes, document.length);
+      w.edit(path, { baseRevision: buffer.revision, changes, document: changeSet.apply(document), previousDocument: document, changeSet });
+      return true;
+    },
+    notify: message => w.setError(message), revealBottomPanel: () => setShowBottom(true),
+    openQuickOpen: initial => { setQuickOpenQuery(initial); setQuickOpen(true); },
+  });
+  onCleanup(stopNavigation);
   setNavigationNotifier(message => w.setError(message));
   onCleanup(() => setNavigationNotifier(undefined));
   const isZoomKey = (event: KeyboardEvent) => { const key = shortcutFromEvent(event); return !!key && (["zoomIn", "zoomOut", "resetZoom"] as const).some(action => bindings()[action].includes(key)); };
-  const keyboard = (event: KeyboardEvent) => { if (w.busy() && !isZoomKey(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; } if (!modalAllowsGlobalShortcut(event) && !isZoomKey(event)) return; dispatchKeyboard(event, { bindings: bindings(), handlers, platform, nativeActions: nativeActions() }); };
+  // Focus Breadcrumbs is UI only for now: it is not in the Rust COMMAND_IDS, so it cannot live in actionDefinitions or be rebound.
+  const focusBreadcrumbsKey = normalizeShortcut("Mod+Shift+.", platform);
+  const keyboard = (event: KeyboardEvent) => { if (!event.defaultPrevented && !w.busy() && focusBreadcrumbsKey && shortcutFromEvent(event) === focusBreadcrumbsKey) { event.preventDefault(); event.stopPropagation(); setBreadcrumbFocus(value => value + 1); return; } if (w.busy() && !isZoomKey(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; } if (!modalAllowsGlobalShortcut(event) && !isZoomKey(event)) return; dispatchKeyboard(event, { bindings: bindings(), handlers, platform, nativeActions: nativeActions() }); };
   function saveSettingsClose() {
     const next = pendingSettingsClose(); if (!next) return Promise.resolve(false);
     return settleIntent(next, current => pendingSettingsClose() === current, async () => await saveSettingsDraft?.() || false, () => { setPendingSettingsClose(undefined); next(); });
@@ -362,15 +399,16 @@ export default function App() {
     <div class="workbench-main">
       <aside class="panel explorer-panel" style={{ width: `${leftWidth()}px`, display: showLeft() ? "flex" : "none" }} aria-label="Project" onContextMenu={treeContext} onKeyDown={treeContext}><div class="panel-header explorer-header"><For each={["Files", "Search", "Git", "History"] as const}>{view => <button class={`panel-tab ${leftView() === view ? "selected" : ""}`} aria-pressed={leftView() === view} onClick={() => { setLeftView(view); if (view === "Search") openSearch(); }}>{view}</button>}</For><button class="icon-button" aria-label="New file" title="New file" disabled={!isDesktop || !w.workspace()} onClick={() => requestFileAction("newFile", "", true)}><MenuIcon name="newFile" /></button><button class="icon-button" aria-label="New folder" title="New folder" disabled={!isDesktop || !w.workspace()} onClick={() => requestFileAction("newFolder", "", true)}><MenuIcon name="newFolder" /></button></div><Explorer workbench={w} view={leftView()} onNavigate={navigate} onFilePointerDown={(event, path) => startFileDrag(event, path)} /></aside>
       <PanelHandle label="Resize project panel" restoreLabel="Restore project panel" shortcut={shortcut("toggleProject")} direction="horizontal" value={leftWidth()} min={200} max={Math.min(1000, windowWidth() * .42)} collapsed={!showLeft()} onResize={setLeftWidth} onShown={setShowLeft} />
-      <div class="center-area" ref={centerElement}><div class="editor-groups"><For each={w.groups().map(group => group.id)}>{(id, index) => <><Show when={index() > 0}><ResizeHandle label="Resize editor groups" direction="horizontal" value={centerWidth() * splitFraction()} min={centerWidth() * .2} max={centerWidth() * .8} onResize={width => setSplitFraction(width / centerWidth())} /></Show><EditorPane group={w.groups().find(group => group.id === id)!} width={w.groups().length > 1 && index() === 0 ? centerWidth() * splitFraction() - 4 : undefined} /></>}</For><div class="settings-view-layer" style={settingsLayerStyle()} onFocusIn={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }} onPointerDown={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }}><SettingsDocument /></div></div>
+      <div class="center-area" ref={centerElement}><div class="editor-groups"><For each={w.groups().map(group => group.id)}>{(id, index) => <><Show when={index() > 0}><ResizeHandle label="Resize editor groups" direction="horizontal" value={centerWidth() * splitFraction()} min={centerWidth() * .2} max={centerWidth() * .8} onResize={width => setSplitFraction(width / centerWidth())} /></Show><EditorPane group={w.groups().find(group => group.id === id)!} width={w.groups().length > 1 && index() === 0 ? centerWidth() * splitFraction() - 4 : undefined} /></>}</For><LibraryViewer /><div class="settings-view-layer" style={settingsLayerStyle()} onFocusIn={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }} onPointerDown={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }}><SettingsDocument /></div></div>
       <PanelHandle label="Resize terminal panel" restoreLabel="Restore terminal panel" shortcut={shortcut("toggleTerminal")} direction="vertical" reverse value={bottomHeight()} min={100} max={Math.min(1000, window.innerHeight * .7)} collapsed={!showBottom()} onResize={setBottomHeight} onShown={setShowBottom} />
-      <section class="panel terminal-panel" style={{ height: `${bottomHeight()}px`, display: showBottom() ? "flex" : "none" }} aria-label="Terminal"><div class="panel-header"><span class="panel-tab selected">Terminal<button class="close-button" aria-label="Close terminal panel" onClick={() => setShowBottom(false)}>×</button></span><span class="phase-note">Phase 0.3</span></div><div class="terminal-empty"><Icon name="u-terminal" size={18} /><span>Terminal sessions will be available in phase 0.3.</span></div></section></div>
+      <section class="panel terminal-panel" style={{ height: `${bottomHeight()}px`, display: showBottom() ? "flex" : "none" }} aria-label="Terminal"><div class="panel-header"><span class={`panel-tab ${navigationState.bottomTab() === "terminal" ? "selected" : ""}`} onClick={() => navigationState.setBottomTab("terminal")}>Terminal<button class="close-button" aria-label="Close terminal panel" onClick={() => setShowBottom(false)}>×</button></span><NavigationTabs showPanel={() => setShowBottom(true)} /><span class="phase-note">Phase 0.3</span></div><Show when={navigationState.bottomTab() === "terminal"} fallback={<NavigationPanels />}><div class="terminal-empty"><Icon name="u-terminal" size={18} /><span>Terminal sessions will be available in phase 0.3.</span></div></Show></section></div>
       <PanelHandle label="Resize AI Assistant panel" restoreLabel="Restore AI Assistant panel" shortcut={shortcut("toggleAssistant")} direction="horizontal" reverse value={rightWidth()} min={260} max={Math.min(1000, windowWidth() * .42)} collapsed={!showRight()} onResize={setRightWidth} onShown={setShowRight} />
       <aside class="panel assistant-panel" style={{ width: `${rightWidth()}px`, display: showRight() ? "flex" : "none" }} aria-label="AI Assistant panel"><AgentPanel workspacePath={w.workspace()?.root} workspaceGeneration={w.workspaceGeneration()} onProposalsChange={proposalsChanged} onReviewInEditor={(path, line) => navigate(path, line)} onReviewReady={review => { reviewProposal = review; }} onReviewBusyChange={setProposalBusy} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} removeAgent={api.agentRemove} selectionContext={selectionContext()} onBufferChanged={(path, snapshot) => void w.acceptAgentBuffer(path, snapshot)} onOpenSettings={openSettings} onOpenFile={(path, line) => navigate(path, line)} onFilesChanged={() => w.refreshTree()} onOpenExternal={url => void api.openExternal(url).catch(error => w.setError(String(error)))} /></aside>
     </div>
-    <footer class="statusbar"><div class="breadcrumbs"><Show when={w.activePath()} fallback={<span>{w.activeTab() === SETTINGS_TAB ? "Workspace settings" : w.busy() ? "Opening folder…" : "Ready"}</span>}><Breadcrumbs path={w.activePath()} workspace={w.workspace()} listDirectory={api.listDirectory} onOpen={path => navigate(path)} onReveal={path => void revealPath(path)} onContextMenu={(event, path, directory) => showContext(event, path, directory ? "directory" : "file")} /></Show></div><div class="status-right"><Show when={!isDesktop}><span class="preview-label" title={previewNotice}>Browser preview</span></Show><span>{cursor().line}:{cursor().column}</span><Show when={w.autoSaveFailures().length}><button title="Review Auto Save error" onClick={() => w.setError(w.autoSaveFailures()[0].message)}>Auto Save failed</button></Show><LanguageServerStatus state={languageServers.bufferState(w.activePath() || "", w.workspace()?.root)} autoInstall={w.settings().languageServers?.autoInstall ?? true} onInstall={server => void languageServers.install(server)} onRestart={server => void languageServers.restart(server)} onRetry={server => void languageServers.retry(server)} onOpenSettings={openSettings} error={(() => { const p = w.activePath(); const id = p ? serverForBuffer(p) : undefined; return id ? languageServers.errorFor(id) : ""; })()} statusError={languageServers.statusError()} onRefresh={() => void languageServers.refresh()} /><span>UTF-8</span><span>{w.buffers[w.activePath() || ""]?.language || "Plain text"}</span><span class="version-label">span 0.1.0</span></div></footer>
+    <footer class="statusbar"><div class="breadcrumbs"><Show when={w.activePath()} fallback={<span>{w.activeTab() === SETTINGS_TAB ? "Workspace settings" : w.busy() ? "Opening folder…" : "Ready"}</span>}><Breadcrumbs path={w.activePath()} workspace={w.workspace()} symbols={symbolCrumbs()} onSymbol={symbol => openSymbol(symbol)} focusRequest={breadcrumbFocus()} listDirectory={api.listDirectory} onOpen={path => navigate(path)} onReveal={path => void revealPath(path)} onContextMenu={(event, path, directory) => showContext(event, path, directory ? "directory" : "file")} /></Show></div><div class="status-right"><Show when={!isDesktop}><span class="preview-label" title={previewNotice}>Browser preview</span></Show><span>{cursor().line}:{cursor().column}</span><Show when={w.autoSaveFailures().length}><button title="Review Auto Save error" onClick={() => w.setError(w.autoSaveFailures()[0].message)}>Auto Save failed</button></Show><LanguageServerStatus state={languageServers.bufferState(w.activePath() || "", w.workspace()?.root)} autoInstall={w.settings().languageServers?.autoInstall ?? true} onInstall={server => void languageServers.install(server)} onRestart={server => void languageServers.restart(server)} onRetry={server => void languageServers.retry(server)} onOpenSettings={openSettings} error={(() => { const p = w.activePath(); const id = p ? serverForBuffer(p) : undefined; return id ? languageServers.errorFor(id) : ""; })()} statusError={languageServers.statusError()} onRefresh={() => void languageServers.refresh()} /><span>UTF-8</span><span>{w.buffers[w.activePath() || ""]?.language || "Plain text"}</span><span class="version-label">span 0.1.0</span></div></footer>
     <Show when={w.error()}><div class="error-toast" role="alert"><Icon name="Warning2" /><span>{w.error()}</span><Show when={w.activePath() && w.failed().has(w.activePath()!)}><button onClick={() => void w.save()}>Retry</button><button onClick={() => { const path = w.activePath(); if (path) void w.acceptAgentBuffer(path); }}>Recover draft</button></Show><button class="close-button" aria-label="Dismiss notification" onClick={() => w.setError("")}>×</button></div></Show>
-    <Show when={quickOpen()}><QuickOpen onQueryFiles={w.queryFiles} indexStatus={w.indexStatus()} indexError={w.indexError()} workspaceGeneration={w.workspaceGeneration()} files={w.files()} onOpen={navigate} onClose={() => setQuickOpen(false)} onOpenFolder={requestWorkspace} workspace={w.workspace()} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} recentPaths={w.recentPaths()} handlers={handlers} bindings={bindings()} onPreview={async path => { const document = w.documents()[path]?.document; if (document) return document.sliceString(0, 64 * 1024); if (isBinaryAssetPath(path)) return "Image preview is available when opened."; return (await api.peekBuffer(path)).text.slice(0, 64 * 1024); }} onSearch={api.search} /></Show>
+    <Show when={quickOpen()}><QuickOpen initialQuery={quickOpenQuery()} symbols={createSymbolSource()} onQueryFiles={w.queryFiles} indexStatus={w.indexStatus()} indexError={w.indexError()} workspaceGeneration={w.workspaceGeneration()} files={w.files()} onOpen={navigate} onClose={() => setQuickOpen(false)} onOpenFolder={requestWorkspace} workspace={w.workspace()} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} recentPaths={w.recentPaths()} handlers={handlers} bindings={bindings()} onPreview={async path => { const document = w.documents()[path]?.document; if (document) return document.sliceString(0, 64 * 1024); if (isBinaryAssetPath(path)) return "Image preview is available when opened."; return (await api.peekBuffer(path)).text.slice(0, 64 * 1024); }} onSearch={api.search} /></Show>
+    <NavigationLayer line={cursor().line} column={cursor().column} />
     <Show when={fileAction()}>{intent => <FileOperationDialog intent={intent()} />}</Show>
     <Show when={context()}>{menu => <ContextMenu x={menu().x} y={menu().y} items={menu().items} label={menu().label} onClose={() => setContext(undefined)} />}</Show>
     <Show when={paletteOpen()}><CommandPalette bindings={bindings()} handlers={handlers} onClose={() => setPaletteOpen(false)} platform={platform} /></Show>
