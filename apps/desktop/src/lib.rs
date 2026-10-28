@@ -491,31 +491,46 @@ async fn get_settings_keys_for_scope(
     .await
 }
 
+/// Push the effective (user plus workspace) settings to the language server service after a
+/// scoped settings change. With no workspace open there is nothing running to update.
+async fn apply_effective_settings(state: &DesktopState, lsp: &language_servers::LspService) {
+    if let Ok(effective) = with_workspace(state.clone(), |workspace| workspace.get_settings()).await
+    {
+        lsp.apply_settings(&effective);
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn update_settings_jsonc_for_scope(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     scope: SettingsScope,
     text: String,
 ) -> Result<Settings, String> {
-    with_settings(state.inner().clone(), scope, move |workspace| {
+    let saved = with_settings(state.inner().clone(), scope, move |workspace| {
         workspace.update_settings_jsonc_for_scope(scope, &text)
     })
-    .await
+    .await?;
+    apply_effective_settings(state.inner(), lsp.inner()).await;
+    Ok(saved)
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn update_setting(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     scope: SettingsScope,
     key: String,
     value_json: Option<String>,
 ) -> Result<Settings, String> {
-    with_settings(state.inner().clone(), scope, move |workspace| {
+    let saved = with_settings(state.inner().clone(), scope, move |workspace| {
         workspace.update_setting(scope, &key, value_json.as_deref())
     })
-    .await
+    .await?;
+    apply_effective_settings(state.inner(), lsp.inner()).await;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -548,13 +563,16 @@ async fn edit_settings_buffer(
 #[specta::specta]
 async fn save_settings_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     scope: SettingsScope,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
-    with_settings(state.inner().clone(), scope, move |workspace| {
+    let saved = with_settings(state.inner().clone(), scope, move |workspace| {
         workspace.save_settings_buffer(scope, expected_revision)
     })
-    .await
+    .await?;
+    apply_effective_settings(state.inner(), lsp.inner()).await;
+    Ok(saved)
 }
 
 #[tauri::command]
