@@ -1,0 +1,139 @@
+{
+  "quirk": "session/new and session/load return legacy modes and models and no configOptions: options mode and model are synthesised; changes go to session/set_mode and unstable session/set_model, never set_config_option.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setConfig",
+      "id": "mode",
+      "value": "autoEdit"
+    },
+    {
+      "do": "setConfig",
+      "id": "model",
+      "value": "gemini-2.5-flash"
+    },
+    {
+      "do": "load",
+      "session": "g-old"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "g-1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "g-1",
+      "options": [
+        {
+          "id": "mode",
+          "category": "mode",
+          "currentValue": "default",
+          "groups": [
+            {
+              "name": "",
+              "choices": [
+                {
+                  "value": "default",
+                  "name": "Default"
+                },
+                {
+                  "value": "autoEdit",
+                  "name": "Auto Edit"
+                },
+                {
+                  "value": "yolo",
+                  "name": "YOLO"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "model",
+          "category": "model",
+          "currentValue": "gemini-2.5-pro",
+          "groups": [
+            {
+              "name": "",
+              "choices": [
+                {
+                  "value": "gemini-2.5-pro",
+                  "name": "Gemini 2.5 Pro"
+                },
+                {
+                  "value": "gemini-2.5-flash",
+                  "name": "Gemini 2.5 Flash"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "autoEdit"
+        },
+        {
+          "id": "model",
+          "currentValue": "gemini-2.5-pro"
+        }
+      ]
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "autoEdit"
+        },
+        {
+          "id": "model",
+          "currentValue": "gemini-2.5-flash"
+        }
+      ]
+    },
+    {
+      "kind": "config",
+      "sessionId": "g-old",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "default"
+        },
+        {
+          "id": "model",
+          "currentValue": "gemini-2.5-pro"
+        }
+      ]
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/set_mode",
+      "params": {
+        "sessionId": "g-1",
+        "modeId": "autoEdit"
+      }
+    },
+    {
+      "method": "session/set_model",
+      "params": {
+        "sessionId": "g-1",
+        "modelId": "gemini-2.5-flash"
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/set_config_option"
+    }
+  ]
+}

@@ -69,8 +69,11 @@ async fn real_process_stream_permission_unsaved_read_and_review() {
     let (directory, workspace, service, mut events, session) = setup().await;
     let prompt_service = service.clone();
     let prompt_session = session.clone();
-    let prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, "edit".into()).await });
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "edit".into(), vec![])
+            .await
+    });
     next(
         &mut events,
         |e| matches!(e, AgentEvent::Thought { text, .. } if text == "Checking buffer"),
@@ -143,8 +146,11 @@ async fn stop_resolves_pending_permission_and_rejects_late_decision() {
     let (_directory, _workspace, service, mut events, session) = setup().await;
     let prompt_service = service.clone();
     let prompt_session = session.clone();
-    let prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, "edit".into()).await });
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "edit".into(), vec![])
+            .await
+    });
     let request_id = match next(&mut events, |e| matches!(e, AgentEvent::Permission { .. })).await {
         AgentEvent::Permission { request_id, .. } => request_id,
         _ => unreachable!(),
@@ -168,8 +174,11 @@ async fn stop_rejects_staged_edit_atomically() {
     let (_directory, workspace, service, mut events, session) = setup().await;
     let prompt_service = service.clone();
     let prompt_session = session.clone();
-    let prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, "edit".into()).await });
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "edit".into(), vec![])
+            .await
+    });
     let request_id = match next(&mut events, |e| matches!(e, AgentEvent::Permission { .. })).await {
         AgentEvent::Permission { request_id, .. } => request_id,
         _ => unreachable!(),
@@ -216,7 +225,7 @@ async fn stop_rejects_staged_edit_atomically() {
 async fn malformed_and_failed_processes_report_errors() {
     for mode in ["truncated", "crash"] {
         let (_directory, _workspace, service, mut events, session) = setup().await;
-        assert!(service.prompt(session, mode.into()).await.is_err());
+        assert!(service.prompt(session, mode.into(), vec![]).await.is_err());
         next(
             &mut events,
             |e| matches!(e, AgentEvent::Status { state, .. } if state == "disconnected"),
@@ -230,8 +239,11 @@ async fn remembered_permission_is_scoped_to_session_and_read_revision_is_enforce
     let (_directory, workspace, service, mut events, session) = setup().await;
     let prompt_service = service.clone();
     let prompt_session = session.clone();
-    let prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, "edit".into()).await });
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "edit".into(), vec![])
+            .await
+    });
     let request_id = match next(&mut events, |e| matches!(e, AgentEvent::Permission { .. })).await {
         AgentEvent::Permission { request_id, .. } => request_id,
         _ => unreachable!(),
@@ -266,7 +278,8 @@ async fn remembered_permission_is_scoped_to_session_and_read_revision_is_enforce
 
     // The same tool and input in the same session reuses the explicit always choice.
     let prompt_service = service.clone();
-    let prompt = tokio::spawn(async move { prompt_service.prompt(session, "edit".into()).await });
+    let prompt =
+        tokio::spawn(async move { prompt_service.prompt(session, "edit".into(), vec![]).await });
     let proposal = match next(&mut events, |e| {
         matches!(
             e,
@@ -287,8 +300,11 @@ async fn remembered_permission_is_scoped_to_session_and_read_revision_is_enforce
     let session = service.new_session().await.unwrap();
     let prompt_service = service.clone();
     let prompt_session = session.clone();
-    let prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, "edit".into()).await });
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "edit".into(), vec![])
+            .await
+    });
     let request_id = match next(&mut events, |e| matches!(e, AgentEvent::Permission { .. })).await {
         AgentEvent::Permission { request_id, .. } => request_id,
         _ => unreachable!(),
@@ -329,7 +345,7 @@ async fn unresponsive_stop_terminates_connection_with_bounded_deadline() {
     let prompt_session = session.clone();
     let prompt = tokio::spawn(async move {
         prompt_service
-            .prompt(prompt_session, "stubborn".into())
+            .prompt(prompt_session, "stubborn".into(), vec![])
             .await
     });
     next(&mut events, |e| matches!(e, AgentEvent::Log { direction, line } if direction == "Stdin" && line.contains("stubborn"))).await;
@@ -400,8 +416,11 @@ async fn selected_hunks_apply_unsaved_and_partial_write_reports_reread() {
     }
     let prompt_service = service.clone();
     let prompt_session = session.clone();
-    let prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, "multi".into()).await });
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "multi".into(), vec![])
+            .await
+    });
     let request_id = match next(&mut events, |event| {
         matches!(event, AgentEvent::Permission { .. })
     })
@@ -457,8 +476,11 @@ async fn identical_write_acknowledges_without_pending_review_or_revision_change(
     let before = workspace.lock().unwrap().agent_read("sample.txt").unwrap();
     let prompt_service = service.clone();
     let prompt_session = session.clone();
-    let prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, "same".into()).await });
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "same".into(), vec![])
+            .await
+    });
     let request_id = match next(&mut events, |event| {
         matches!(event, AgentEvent::Permission { .. })
     })
@@ -528,8 +550,11 @@ async fn explicit_disconnect_waits_for_pending_review_cleanup() {
     let (_directory, workspace, service, mut events, session) = setup().await;
     let prompt_service = service.clone();
     let prompt_session = session.clone();
-    let prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, "edit".into()).await });
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "edit".into(), vec![])
+            .await
+    });
     let request_id = match next(&mut events, |event| {
         matches!(event, AgentEvent::Permission { .. })
     })
@@ -644,7 +669,10 @@ async fn incompatible_prompt_method_also_closes_connection() {
     .await
     .unwrap();
     let session = service.new_session().await.unwrap();
-    let message = service.prompt(session, "test".into()).await.unwrap_err();
+    let message = service
+        .prompt(session, "test".into(), vec![])
+        .await
+        .unwrap_err();
     assert!(message.contains("does not support ACP conversation prompts"));
     assert!(!message.contains("-32601"));
     service.shutdown_and_wait().await.unwrap();
@@ -694,11 +722,11 @@ async fn lists_and_restores_earlier_sessions_with_replayed_history() {
     assert_eq!(listed[0].title.as_deref(), Some("Earlier chat"));
     service.load_session("old-1".into()).await.unwrap();
     next(&mut events, |e| {
-        matches!(e, AgentEvent::User { session_id, text } if session_id == "old-1" && text == "earlier question")
+        matches!(e, AgentEvent::User { session_id, text, .. } if session_id == "old-1" && text == "earlier question")
     })
     .await;
     next(&mut events, |e| {
-        matches!(e, AgentEvent::Text { session_id, text } if session_id == "old-1" && text == "earlier answer")
+        matches!(e, AgentEvent::Text { session_id, text, .. } if session_id == "old-1" && text == "earlier answer")
     })
     .await;
     let tool = next(&mut events, |e| matches!(e, AgentEvent::Tool { .. })).await;
@@ -776,4 +804,464 @@ async fn advertised_initial_model_options_and_configuration_round_trip_are_prese
     let updated = next(&mut events, |event| matches!(event, AgentEvent::Config { session_id, options } if session_id == &session && options[0].current_value == "deep")).await;
     assert!(matches!(updated, AgentEvent::Config { .. }));
     service.shutdown_and_wait().await.unwrap();
+}
+
+async fn start_with(flags: &[&str]) -> (tempfile::TempDir, AgentService, Events) {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Arc::new(Mutex::new(
+        CoreWorkspace::open(directory.path())
+            .unwrap()
+            .with_user_settings(None),
+    ));
+    let (tx, events) = mpsc::unbounded_channel();
+    let mut args = vec![format!(
+        "{}/tests/fixtures/agent.mjs",
+        env!("CARGO_MANIFEST_DIR")
+    )];
+    args.extend(flags.iter().map(|flag| flag.to_string()));
+    let service = AgentService::start(
+        AgentCommand {
+            command: "node".into(),
+            args,
+            env: BTreeMap::new(),
+        },
+        directory.path().to_string_lossy().into_owned(),
+        workspace,
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    )
+    .await
+    .expect("initialize actual subprocess");
+    (directory, service, events)
+}
+
+fn echoed(event: AgentEvent) -> serde_json::Value {
+    match event {
+        AgentEvent::Text { text, .. } => serde_json::from_str(&text).expect("echo is JSON"),
+        other => panic!("expected text, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ready_event_reports_identity_features_and_auth_methods() {
+    let (_directory, _service, mut events) = start_with(&["--rich", "--auth"]).await;
+    let AgentEvent::Ready {
+        agent_name,
+        agent_title,
+        agent_version,
+        features,
+        auth_methods,
+    } = next(&mut events, |e| matches!(e, AgentEvent::Ready { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(agent_name.as_deref(), Some("span-test-peer"));
+    assert_eq!(agent_title.as_deref(), Some("Span Test Peer"));
+    assert_eq!(agent_version.as_deref(), Some("1.0.0"));
+    assert!(features.load_session && features.image && features.embedded_context);
+    assert!(!features.audio && features.mcp_http && !features.mcp_sse);
+    assert!(
+        features.can_list_sessions && features.can_resume_sessions && features.can_close_sessions
+    );
+    assert!(!features.can_delete_sessions);
+    assert_eq!(auth_methods.len(), 2);
+    assert_eq!(auth_methods[0].id, "token");
+    assert!(auth_methods[0].supported && auth_methods[0].kind == "agent");
+    assert!(!auth_methods[1].supported && auth_methods[1].kind == "terminal");
+}
+
+#[tokio::test]
+async fn session_updates_become_events() {
+    let (_directory, service, mut events) = start_with(&["--rich"]).await;
+    let session = service.new_session().await.unwrap();
+    let AgentEvent::AvailableCommands { commands, .. } = next(&mut events, |e| {
+        matches!(e, AgentEvent::AvailableCommands { .. })
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].name, "web");
+    assert_eq!(commands[0].input_hint.as_deref(), Some("query"));
+    assert!(commands[1].input_hint.is_none());
+    next(&mut events, |e| {
+        matches!(e, AgentEvent::CurrentMode { session_id, mode_id } if *session_id == session && mode_id == "architect")
+    })
+    .await;
+    next(&mut events, |e| {
+        matches!(e, AgentEvent::SessionInfo { title, updated_at, .. }
+            if title.as_deref() == Some("Renamed chat") && updated_at.as_deref() == Some("2026-10-28T10:00:00Z"))
+    })
+    .await;
+    next(&mut events, |e| {
+        matches!(e, AgentEvent::Usage { used: 1200, size: 200000, cost_amount: Some(a), cost_currency: Some(c), .. }
+            if (*a - 0.25).abs() < f64::EPSILON && c == "USD")
+    })
+    .await;
+    next(&mut events, |e| {
+        matches!(e, AgentEvent::Notice { severity, title, description, .. }
+            if severity == "warning" && title == "MCP server unavailable" && description.as_deref() == Some("docs offline"))
+    })
+    .await;
+    next(&mut events, |e| {
+        matches!(e, AgentEvent::Compaction { compaction_id, status, .. } if compaction_id == "c-1" && status == "in_progress")
+    })
+    .await;
+    next(
+        &mut events,
+        |e| matches!(e, AgentEvent::CompactionSummary { text, .. } if text == "Summary part"),
+    )
+    .await;
+    next(
+        &mut events,
+        |e| matches!(e, AgentEvent::Compaction { status, .. } if status == "completed"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn complete_event_carries_every_stop_reason() {
+    let (_directory, service, mut events) = start_with(&[]).await;
+    let session = service.new_session().await.unwrap();
+    for reason in [
+        "end_turn",
+        "max_tokens",
+        "max_turn_requests",
+        "refusal",
+        "cancelled",
+    ] {
+        service
+            .prompt(session.clone(), format!("stop:{reason}"), vec![])
+            .await
+            .unwrap();
+        next(
+            &mut events,
+            |e| matches!(e, AgentEvent::Complete { stop_reason, .. } if stop_reason == reason),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn auth_required_surfaces_methods_then_authenticate_and_retry_succeeds() {
+    let (_directory, service, mut events) = start_with(&["--auth"]).await;
+    let error = service.new_session().await.unwrap_err();
+    assert!(error.contains("Authentication required"), "{error}");
+    assert!(service.auth_required());
+    let AgentEvent::AuthRequired { auth_methods, .. } = next(&mut events, |e| {
+        matches!(e, AgentEvent::AuthRequired { .. })
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(auth_methods[0].id, "token");
+    assert!(service
+        .authenticate("nope".into())
+        .await
+        .unwrap_err()
+        .contains("Unknown"));
+    assert!(service
+        .authenticate("tui".into())
+        .await
+        .unwrap_err()
+        .contains("Terminal sign-in"));
+    service.authenticate("token".into()).await.unwrap();
+    assert!(!service.auth_required());
+    let session = service.new_session().await.expect("retry after sign-in");
+    assert_eq!(session, "fixture-1");
+}
+
+#[tokio::test]
+async fn attachments_are_gated_by_advertised_capabilities() {
+    let image = || span_acp::PromptAttachment::Image {
+        data: "aGk=".into(),
+        mime_type: "image/png".into(),
+        uri: None,
+    };
+    let link = || span_acp::PromptAttachment::ResourceLink {
+        uri: "file:///a.txt".into(),
+        name: "a.txt".into(),
+        mime_type: Some("text/plain".into()),
+        description: None,
+    };
+    let resource = || span_acp::PromptAttachment::Resource {
+        uri: "file:///a.txt".into(),
+        mime_type: Some("text/plain".into()),
+        text: Some("hello".into()),
+        blob: None,
+    };
+    // Agent without image or embeddedContext support.
+    let (_directory, plain, _events) = start_with(&[]).await;
+    let session = plain.new_session().await.unwrap();
+    assert!(plain
+        .prompt(session.clone(), "hi".into(), vec![image()])
+        .await
+        .unwrap_err()
+        .contains("image"));
+    assert!(plain
+        .prompt(session, "hi".into(), vec![resource()])
+        .await
+        .unwrap_err()
+        .contains("embedded"));
+    // Agent that advertises both.
+    let (_directory, rich, mut events) = start_with(&["--rich"]).await;
+    let session = rich.new_session().await.unwrap();
+    assert!(rich
+        .prompt(
+            session.clone(),
+            "hi".into(),
+            vec![span_acp::PromptAttachment::Image {
+                data: "aGk=".into(),
+                mime_type: "text/plain".into(),
+                uri: None,
+            }]
+        )
+        .await
+        .unwrap_err()
+        .contains("MIME"));
+    rich.prompt(
+        session.clone(),
+        "look".into(),
+        vec![image(), link(), resource()],
+    )
+    .await
+    .unwrap();
+    let blocks = echoed(next(&mut events, |e| matches!(e, AgentEvent::Text { .. })).await);
+    let kinds: Vec<&str> = blocks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["text", "image", "resource_link", "resource"]);
+    assert_eq!(blocks[1]["mimeType"], "image/png");
+    assert_eq!(blocks[3]["resource"]["text"], "hello");
+    // Resource links need no capability.
+    plain_link_works(link()).await;
+}
+
+async fn plain_link_works(link: span_acp::PromptAttachment) {
+    let (_directory, plain, mut events) = start_with(&[]).await;
+    let session = plain.new_session().await.unwrap();
+    plain
+        .prompt(session, String::new(), vec![link])
+        .await
+        .unwrap();
+    let blocks = echoed(next(&mut events, |e| matches!(e, AgentEvent::Text { .. })).await);
+    assert_eq!(blocks[0]["type"], "resource_link");
+}
+
+#[tokio::test]
+async fn slash_commands_travel_as_plain_prompt_text() {
+    let (_directory, service, mut events) = start_with(&["--rich"]).await;
+    let session = service.new_session().await.unwrap();
+    service
+        .prompt(session, "/web agent client protocol".into(), vec![])
+        .await
+        .unwrap();
+    let blocks = echoed(next(&mut events, |e| matches!(e, AgentEvent::Text { .. })).await);
+    assert_eq!(blocks.as_array().unwrap().len(), 1);
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[0]["text"], "/web agent client protocol");
+}
+
+#[tokio::test]
+async fn form_elicitation_validates_and_returns_answers() {
+    let (_directory, service, mut events) = start_with(&["--rich"]).await;
+    let session = service.new_session().await.unwrap();
+    let prompt_service = service.clone();
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(session, "elicit-form".into(), vec![])
+            .await
+    });
+    let AgentEvent::Elicitation {
+        request_id,
+        mode,
+        message,
+        schema_json,
+        url,
+        session_id,
+        ..
+    } = next(&mut events, |e| matches!(e, AgentEvent::Elicitation { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(mode, "form");
+    assert_eq!(message, "Pick a name");
+    assert!(url.is_none() && session_id.is_some());
+    assert!(schema_json.unwrap().contains("\"name\""));
+    // Missing required field, unknown field, bad action are rejected and stay pending.
+    assert!(service
+        .respond_elicitation(request_id.clone(), "accept".into(), Some("{}".into()))
+        .unwrap_err()
+        .contains("Missing required"));
+    assert!(service
+        .respond_elicitation(
+            request_id.clone(),
+            "accept".into(),
+            Some("{\"name\":\"a\",\"x\":1}".into())
+        )
+        .unwrap_err()
+        .contains("Unknown field"));
+    assert!(service
+        .respond_elicitation(request_id.clone(), "maybe".into(), None)
+        .is_err());
+    service
+        .respond_elicitation(
+            request_id.clone(),
+            "accept".into(),
+            Some("{\"name\":\"Ada\",\"count\":3}".into()),
+        )
+        .unwrap();
+    next(
+        &mut events,
+        |e| matches!(e, AgentEvent::ElicitationResolved { request_id: id } if *id == request_id),
+    )
+    .await;
+    let answer = echoed(next(&mut events, |e| matches!(e, AgentEvent::Text { .. })).await);
+    assert_eq!(answer["action"], "accept");
+    assert_eq!(answer["content"]["name"], "Ada");
+    assert_eq!(answer["content"]["count"], 3);
+    prompt.await.unwrap().unwrap();
+    assert!(service
+        .respond_elicitation(request_id, "cancel".into(), None)
+        .is_err());
+}
+
+#[tokio::test]
+async fn url_elicitation_completes_and_unsafe_urls_are_declined() {
+    let (_directory, service, mut events) = start_with(&["--rich"]).await;
+    let session = service.new_session().await.unwrap();
+    let prompt_service = service.clone();
+    let prompt_session = session.clone();
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "elicit-url".into(), vec![])
+            .await
+    });
+    let AgentEvent::Elicitation {
+        request_id,
+        mode,
+        url,
+        elicitation_id,
+        schema_json,
+        ..
+    } = next(&mut events, |e| matches!(e, AgentEvent::Elicitation { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(mode, "url");
+    assert_eq!(url.as_deref(), Some("https://example.com/auth"));
+    assert_eq!(elicitation_id.as_deref(), Some("e-1"));
+    assert!(schema_json.is_none());
+    service
+        .respond_elicitation(request_id, "accept".into(), None)
+        .unwrap();
+    next(&mut events, |e| matches!(e, AgentEvent::ElicitationComplete { elicitation_id } if elicitation_id == "e-1")).await;
+    let answer = echoed(next(&mut events, |e| matches!(e, AgentEvent::Text { .. })).await);
+    assert_eq!(answer["action"], "accept");
+    prompt.await.unwrap().unwrap();
+    // A non-http(s) URL is never shown to the user and is declined automatically.
+    service
+        .prompt(session, "elicit-badurl".into(), vec![])
+        .await
+        .unwrap();
+    let answer = echoed(next(&mut events, |e| matches!(e, AgentEvent::Text { .. })).await);
+    assert_eq!(answer["action"], "decline");
+}
+
+#[tokio::test]
+async fn stop_cancels_pending_elicitation() {
+    let (_directory, service, mut events) = start_with(&["--rich"]).await;
+    let session = service.new_session().await.unwrap();
+    let prompt_service = service.clone();
+    let prompt_session = session.clone();
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "elicit-form".into(), vec![])
+            .await
+    });
+    next(&mut events, |e| matches!(e, AgentEvent::Elicitation { .. })).await;
+    service.cancel(session).unwrap();
+    next(&mut events, |e| {
+        matches!(e, AgentEvent::ElicitationResolved { .. })
+    })
+    .await;
+    let answer = echoed(next(&mut events, |e| matches!(e, AgentEvent::Text { .. })).await);
+    assert_eq!(answer["action"], "cancel");
+    let _ = prompt.await;
+}
+
+#[tokio::test]
+async fn close_session_succeeds_and_forgets_the_session() {
+    let (_directory, service, _events) = start_with(&["--close"]).await;
+    let session = service.new_session().await.expect("session");
+    service.close_session(session.clone()).await.expect("close");
+    let error = service.close_session(session).await.unwrap_err();
+    assert!(error.contains("Unknown session"), "{error}");
+    service.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn close_session_treats_resource_not_found_as_success() {
+    let (_directory, service, _events) = start_with(&["--close-gone"]).await;
+    let session = service.new_session().await.expect("session");
+    service
+        .close_session(session)
+        .await
+        .expect("-32002 means already closed");
+    service.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn close_and_delete_are_rejected_when_not_advertised() {
+    let (_directory, service, _events) = start_with(&[]).await;
+    let session = service.new_session().await.expect("session");
+    let close = service.close_session(session.clone()).await.unwrap_err();
+    assert!(close.contains("cannot close"), "{close}");
+    let delete = service.delete_session(session).await.unwrap_err();
+    assert!(delete.contains("cannot delete"), "{delete}");
+    service.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn delete_session_succeeds_for_a_history_entry() {
+    let (_directory, service, _events) = start_with(&["--delete"]).await;
+    service.new_session().await.expect("session");
+    service
+        .delete_session("old-1".into())
+        .await
+        .expect("delete listed session");
+    service.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn delete_of_the_active_session_cancels_the_turn_first() {
+    let (_directory, service, mut events) = start_with(&["--delete"]).await;
+    let session = service.new_session().await.expect("session");
+    let prompt_service = service.clone();
+    let prompt_session = session.clone();
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "wait".into(), vec![])
+            .await
+    });
+    // The fixture rejects session/delete while a prompt is unanswered, so
+    // success proves the cancel reached it first.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    service
+        .delete_session(session.clone())
+        .await
+        .expect("delete cancels first");
+    prompt.await.expect("prompt task").expect("cancelled turn");
+    next(
+        &mut events,
+        |e| matches!(e, AgentEvent::Complete { stop_reason, .. } if stop_reason == "cancelled"),
+    )
+    .await;
+    service.shutdown().expect("shutdown");
 }

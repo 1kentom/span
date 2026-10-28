@@ -1,0 +1,28 @@
+{
+  "quirk": "OpenCode drains for up to 5 s after session/cancel: the Stop deadline is 8 s, so a 6 s acknowledgement keeps the connection.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "cancelAfter",
+      "text": "long task"
+    }
+  ],
+  "events": [
+    {
+      "kind": "complete",
+      "stopReason": "cancelled"
+    },
+    {
+      "kind": "_step",
+      "do": "cancelAfter",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "error"
+    }
+  ]
+}

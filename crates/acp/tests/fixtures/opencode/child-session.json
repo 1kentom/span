@@ -1,0 +1,24 @@
+{
+  "quirk": "Child-session updates carry _meta[\"opencode/child-session\"] and a toolCallId containing ':': the parent link maps to parentToolCallId like Claude's parentToolUseId. The meta field shape is UNVERIFIED.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "delegate"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "task_1",
+      "parentToolCallId": null
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "ses_child:call_9",
+      "parentToolCallId": "task_1"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "quirk": "Claude drops a stdio MCP server that carries an explicit type: \"stdio\": stdio servers are sent without type.",
+  "mcpServers": [
+    {
+      "type": "stdio",
+      "name": "local",
+      "command": "node",
+      "args": [
+        "server.js"
+      ],
+      "env": []
+    },
+    {
+      "type": "http",
+      "name": "remote",
+      "url": "https://mcp.example",
+      "headers": []
+    }
+  ],
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/new",
+      "params": {
+        "mcpServers": [
+          {
+            "name": "local",
+            "type": null,
+            "command": "node"
+          },
+          {
+            "type": "http",
+            "name": "remote"
+          }
+        ]
+      }
+    }
+  ]
+}

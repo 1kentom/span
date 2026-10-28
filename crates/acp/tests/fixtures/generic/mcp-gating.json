@@ -1,0 +1,42 @@
+{
+  "quirk": "Every MCP server list is gated by advertised mcpCapabilities: with none advertised only stdio is sent, unchanged.",
+  "mcpServers": [
+    {
+      "type": "stdio",
+      "name": "local",
+      "command": "node",
+      "args": [],
+      "env": []
+    },
+    {
+      "type": "http",
+      "name": "remote",
+      "url": "https://mcp.example",
+      "headers": []
+    },
+    {
+      "type": "sse",
+      "name": "events",
+      "url": "https://sse.example",
+      "headers": []
+    }
+  ],
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/new",
+      "params": {
+        "mcpServers": [
+          {
+            "type": "stdio",
+            "name": "local"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "quirk": "Thought chunks formatted `**subject**\\ndescription` are whole thoughts and start a new block.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "hi"
+    }
+  ],
+  "events": [
+    {
+      "kind": "thought",
+      "text": "**Reading files**\nLooking at the sources",
+      "newBlock": true
+    },
+    {
+      "kind": "thought",
+      "text": "**Planning the edit**\nTwo steps",
+      "newBlock": true
+    }
+  ]
+}

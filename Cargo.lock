@@ -3948,6 +3948,7 @@ name = "span-acp"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "getrandom 0.4.3",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4047,6 +4048,7 @@ checksum = "ed155e448f42fc4be7a5cbc12bd43f6c549981f7c32fcba429ff6bc57cc4f30c"
 dependencies = [
  "paste",
  "rustc_version",
+ "serde_json",
  "specta-macros",
 ]
 

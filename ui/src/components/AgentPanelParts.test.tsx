@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import { createSignal } from "solid-js";
 import { AgentMarkdown } from "./AgentMarkdown";
-import { AgentPermission } from "./AgentPermission";
-import { AgentTool } from "./AgentTool";
+import { PermissionDock } from "./agent/Docks";
+import { WorkGroup } from "./agent/WorkGroup";
 import type { ToolEvent } from "../lib/agent-feed";
+import { initialAgentState, openPermission, reduceAgentEvent, resolvePermission } from "../lib/agent-session";
+import { toStep, workChildren } from "../lib/agent-view";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -59,52 +61,64 @@ describe("AgentMarkdown", () => {
   });
 });
 
-describe("AgentPermission", () => {
+// AgentPermission was replaced by PermissionDock. These keep the old component's behaviour covered: allow choices
+// first, Span named as the holder of a standing choice, and keys that only count from inside the focused choices.
+describe("AgentPermission (now PermissionDock)", () => {
   const options = [
     { optionId: "no", name: "Reject", kind: "reject_once" },
     { optionId: "always", name: "Always allow", kind: "allow_always" },
     { optionId: "once", name: "Allow once", kind: "allow_once" },
   ];
-  it("lists allow choices first and answers number keys", () => {
-    const chosen: (string | null)[] = [];
-    const host = mount(() => (
-      <AgentPermission title="Run command" summary="git status" options={options} resolved={false} active busy={false} onChoose={(id) => chosen.push(id)} />
-    ));
-    expect([...host.querySelectorAll(".agent-permission-option")].map((button) => button.textContent?.replace(/\s+/g, " ").trim())).toEqual([
-      "1Allow once",
-      "2Always allowRemembered by Span for this session",
-      "3Reject",
-    ]);
-    expect(host.querySelector(".agent-permission-summary")?.textContent).toBe("git status");
-    const choice = host.querySelector<HTMLButtonElement>(".agent-permission-option")!;
-    choice.focus();
-    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true }));
+  const press = (target: EventTarget, key: string, init: KeyboardEventInit = {}) => {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(event);
+    return event;
+  };
+  const firstChoice = (host: HTMLElement) => host.querySelector<HTMLButtonElement>(".sb-actions .sb-btn")!;
+
+  it("lists allow choices first and answers its hotkeys (Y, A and N replace number keys)", () => {
+    const chosen: string[] = [];
+    const host = mount(() => <PermissionDock title="Run command" command="git status" options={options} onChoose={(id) => chosen.push(id)} />);
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>(".sb-actions .sb-btn")];
+    expect(buttons.map((button) => button.textContent?.replace(/\s+/g, " ").trim())).toEqual(["Allow onceY", "Always allowA", "RejectN"]);
+    expect(buttons[1].title).toBe("Always allow (Remembered by Span for this session)");
+    expect(host.querySelector(".sb-dock-command")?.textContent).toBe("$ git status");
+    buttons[0].focus();
+    press(buttons[0], "a");
     expect(chosen).toEqual(["always"]);
-    host.querySelector<HTMLButtonElement>(".agent-link")!.click();
-    expect(chosen).toEqual(["always", null]);
+    press(buttons[0], "y");
+    press(buttons[0], "n");
+    expect(chosen).toEqual(["always", "once", "no"]);
   });
 
   it("ignores number keys while typing and when another request is first", () => {
-    const chosen: (string | null)[] = [];
-    mount(() => <AgentPermission title="t" summary="" options={options} resolved={false} active={false} busy={false} onChoose={(id) => chosen.push(id)} />);
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "1" }));
+    const chosen: string[] = [];
+    const inactive = mount(() => <PermissionDock title="t" options={options} active={false} onChoose={(id) => chosen.push(id)} />);
+    firstChoice(inactive).focus();
+    press(firstChoice(inactive), "y");
+    press(firstChoice(inactive), "1");
     const area = document.createElement("textarea");
     area.value = "draft";
     document.body.append(area);
-    mount(() => <AgentPermission title="t" summary="" options={options} resolved={false} active busy={false} onChoose={(id) => chosen.push(id)} />);
-    area.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    mount(() => <PermissionDock title="t" options={options} onChoose={(id) => chosen.push(id)} />);
+    area.focus();
+    press(area, "1");
+    press(area, "y");
     expect(chosen).toEqual([]);
   });
 
   it("hides the choices once resolved", () => {
-    const host = mount(() => <AgentPermission title="t" summary="" options={options} resolved active busy={false} onChoose={() => {}} />);
-    expect(host.querySelector(".agent-permission-option")).toBeNull();
-    expect(host.textContent).toContain("resolved");
+    const permission = { kind: "permission", sessionId: "s1", requestId: "r1", toolCallId: "t1", title: "Run", options } as const;
+    let state = reduceAgentEvent({ ...initialAgentState(true), sessionId: "s1" }, permission);
+    // The composer draws a PermissionDock only for the open request, so a resolved one leaves no choices on screen.
+    expect(openPermission(state.feed)?.event.requestId).toBe("r1");
+    state = resolvePermission(state, "r1");
+    expect(openPermission(state.feed)).toBeUndefined();
   });
 
   it("never answers while digits are typed in editor or other text fields", () => {
     const choose = vi.fn();
-    const host = mount(() => <AgentPermission title="t" summary="" options={options} resolved={false} active busy={false} onChoose={choose} />);
+    const host = mount(() => <PermissionDock title="t" options={options} onChoose={choose} />);
     const editor = document.createElement("div");
     editor.className = "cm-content";
     editor.contentEditable = "true";
@@ -119,51 +133,56 @@ describe("AgentPermission", () => {
     document.body.append(editor, textbox, area, input, unrelated);
     for (const target of [editor, textbox, area, input, unrelated]) {
       target.focus();
-      const event = new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true });
-      target.dispatchEvent(event);
-      expect(event.defaultPrevented).toBe(false);
+      for (const key of ["1", "y"]) expect(press(target, key).defaultPrevented).toBe(false);
     }
     expect(choose).not.toHaveBeenCalled();
-    const choice = host.querySelector<HTMLButtonElement>(".agent-permission-option")!;
+    const choice = firstChoice(host);
     choice.focus();
-    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    press(choice, "y");
     expect(choose).toHaveBeenCalledExactlyOnceWith("once");
   });
 
   it("ignores consumed, composing, repeated keys and another open dialog", () => {
     const choose = vi.fn();
-    const host = mount(() => <AgentPermission title="t" summary="" options={options} resolved={false} active busy={false} onChoose={choose} />);
-    const choice = host.querySelector<HTMLButtonElement>(".agent-permission-option")!;
+    const host = mount(() => <PermissionDock title="t" options={options} onChoose={choose} />);
+    const choice = firstChoice(host);
     choice.focus();
-    const consumed = new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true });
+    const consumed = new KeyboardEvent("keydown", { key: "y", bubbles: true, cancelable: true });
     consumed.preventDefault();
     choice.dispatchEvent(consumed);
-    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true, isComposing: true }));
-    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true, repeat: true }));
+    press(choice, "y", { isComposing: true });
+    press(choice, "y", { repeat: true });
     const dialog = document.createElement("div");
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
     document.body.append(dialog);
-    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    press(choice, "y");
     expect(choose).not.toHaveBeenCalled();
     dialog.remove();
-    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "3", bubbles: true }));
+    press(choice, "n");
     expect(choose).toHaveBeenCalledExactlyOnceWith("no");
   });
 });
 
-describe("AgentTool", () => {
+// AgentTool was replaced by the work group rows. Subagent calls still render under their parent call.
+describe("AgentTool (now WorkGroup steps)", () => {
   const tool = (id: string, status: string, parent: string | null = null): ToolEvent => ({
     kind: "tool", sessionId: "s", toolCallId: id, title: `call ${id}`, status, toolKind: null, parentToolCallId: parent, contentJson: "{}",
   });
+  const item = (event: ToolEvent, id: number) => ({ id, kind: "tool" as const, event });
   it("shows subagent progress under the parent call", () => {
-    const host = mount(() => <AgentTool tool={tool("task", "in_progress")} children={[tool("a", "completed", "task"), tool("b", "in_progress", "task")]} />);
-    expect(host.querySelector(".agent-subagent summary")?.textContent).toContain("1/2 done");
-    expect(host.querySelectorAll(".agent-subagent li")).toHaveLength(2);
-    expect(host.querySelector<HTMLDetailsElement>(".agent-subagent")!.open).toBe(true);
+    const parent = tool("task", "in_progress");
+    const feed = [item(parent, 1), item(tool("a", "completed", "task"), 2), item(tool("b", "in_progress", "task"), 3)];
+    const children = workChildren(feed as never, parent);
+    expect(children.map((child) => child.toolCallId)).toEqual(["a", "b"]);
+    const host = mount(() => <WorkGroup headline="Working" steps={[toStep(parent, children)]} />);
+    expect(host.querySelectorAll(".sb-children .sb-child")).toHaveLength(2);
+    expect(host.querySelector(".sb-step-glyph .sb-spinner")).not.toBeNull();
   });
   it("renders a plain call without a subagent section", () => {
-    const host = mount(() => <AgentTool tool={tool("solo", "completed")} children={[]} />);
-    expect(host.querySelector(".agent-subagent")).toBeNull();
+    const solo = tool("solo", "completed");
+    const host = mount(() => <WorkGroup headline="Worked" steps={[toStep(solo, workChildren([item(solo, 1)] as never, solo))]} />);
+    expect(host.querySelectorAll(".sb-step")).toHaveLength(1);
+    expect(host.querySelector(".sb-children")).toBeNull();
   });
 });

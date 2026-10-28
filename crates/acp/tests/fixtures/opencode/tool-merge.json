@@ -1,0 +1,61 @@
+{
+  "quirk": "First tool_call is pending with rawInput {} and the raw tool name as title; completed omits title, kind and rawInput; in_progress repeats unchanged. Updates merge per toolCallId, repeats are dropped, the title is a placeholder until in_progress.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "list"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "call_1",
+      "status": "pending",
+      "title": null,
+      "hint": "toolPending",
+      "rawInput": {}
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "call_1",
+      "status": "in_progress",
+      "title": "List files",
+      "hint": null,
+      "rawInput": {
+        "command": "ls"
+      },
+      "locations": [
+        {
+          "path": "$ROOT",
+          "line": null
+        }
+      ]
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "call_1",
+      "status": "completed",
+      "title": "List files",
+      "toolKind": "execute",
+      "rawInput": {
+        "command": "ls"
+      },
+      "rawOutput": {
+        "output": "a\nb"
+      }
+    }
+  ],
+  "counts": [
+    {
+      "match": {
+        "kind": "tool",
+        "toolCallId": "call_1",
+        "status": "in_progress"
+      },
+      "count": 1
+    }
+  ]
+}

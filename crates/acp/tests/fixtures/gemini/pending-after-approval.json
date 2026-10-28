@@ -1,0 +1,38 @@
+{
+  "quirk": "The tool stays pending after approval and never reports in_progress: in_progress is synthesised after an allow outcome. No rawInput is sent.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "edit"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "replace-1",
+      "status": "pending",
+      "rawInput": null
+    },
+    {
+      "kind": "permission",
+      "toolCallId": "replace-1",
+      "toolKind": "edit"
+    },
+    {
+      "kind": "permissionResolved"
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "replace-1",
+      "status": "in_progress"
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "replace-1",
+      "status": "completed"
+    }
+  ]
+}
