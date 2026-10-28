@@ -24,7 +24,17 @@ describe("composer stack shape", () => {
   });
 
   it("keeps the activity bar text clear of the rounded corner", () => {
-    expect(block(".agent-footer > .sb-activity")).toMatch(/padding-inline:\s*(1[4-9]|[2-9]\d)px/);
+    expect(block(".agent-footer > .sb-activity")).toMatch(/padding-inline:\s*(1[2-9]|[2-9]\d)px/);
+  });
+
+  it("makes the activity bar a compact tab: a little narrower and less round than the composer", () => {
+    const tab = block(".agent-footer > .sb-activity");
+    const inset = Number(/margin-inline:\s*(\d+)px/.exec(tab)?.[1]);
+    const tabRadius = Number(/border-radius:\s*(\d+)px\s+\1px\s+0\s+0/.exec(tab)?.[1]);
+    expect(inset).toBeGreaterThanOrEqual(8);
+    expect(inset).toBeLessThanOrEqual(20);
+    expect(tabRadius).toBeGreaterThanOrEqual(8);
+    expect(tabRadius).toBeLessThan(Number(radius));
   });
 
   it("squares the corners of bars that sit under another bar", () => {
