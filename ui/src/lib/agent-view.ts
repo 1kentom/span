@@ -440,6 +440,14 @@ export function warningParts(title: string, description?: string): { summary: st
   return { summary: text.slice(0, cut.index + 1), detail: text.slice(cut.index + 1).trim() };
 }
 
+const CONFIG_PATH = /(?<![\w~/.:-])(?:~\/|\/|[A-Za-z]:[\\/])[^\s()`'"<>,;:*|?]*?\.(?:toml|jsonc|json|yaml|yml|ini|conf)(?![\w-]|\.\w)/g;
+
+/** Distinct config file paths a warning mentions, taken from the original text so the path is the real one (no ~ shortening). Paths with spaces are not matched. */
+export function configFilesIn(title: string, description?: string): string[] {
+  const text = [title, description].filter(Boolean).join(" ");
+  return [...new Set(text.match(CONFIG_PATH) ?? [])];
+}
+
 /** "Working" or "Worked" plus counts by kind, for example "2 reads, 1 edit". */
 export function workSummary(steps: readonly StepView[]): { headline: string; counts: string } {
   const running = steps.some((step) => step.status === "in_progress" || step.status === "pending");
