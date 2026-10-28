@@ -480,36 +480,42 @@ pub async fn agent_permission(
 #[specta::specta]
 pub async fn agent_review(
     state: State<'_, DesktopState>,
+    lsp: State<'_, crate::language_servers::LspService>,
     proposal_id: String,
     accept: bool,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
     let agent = active(state.inner())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
         agent
             .service
             .review_proposal(proposal_id, accept, expected_revision)
     })
     .await
-    .map_err(|error| format!("Review task failed: {error}"))?
+    .map_err(|error| format!("Review task failed: {error}"))??;
+    lsp.on_snapshot(&snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_review_hunks(
     state: State<'_, DesktopState>,
+    lsp: State<'_, crate::language_servers::LspService>,
     proposal_id: String,
     accepted_hunk_ids: Vec<String>,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
     let agent = active(state.inner())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
         agent
             .service
             .review_proposal_hunks(proposal_id, accepted_hunk_ids, expected_revision)
     })
     .await
-    .map_err(|error| format!("Review task failed: {error}"))?
+    .map_err(|error| format!("Review task failed: {error}"))??;
+    lsp.on_snapshot(&snapshot);
+    Ok(snapshot)
 }
 
 /// Delegation state of the active connection and its current lead session:

@@ -1,12 +1,13 @@
 import { LanguageDescription, LanguageSupport, StreamLanguage, type Language, type StreamParser } from "@codemirror/language";
 
-export type LanguageId = "typescript" | "javascript" | "json" | "jsonc" | "markdown" | "rust" | "python" | "dotenv" | "toml" | "yaml" | "html" | "css" | "shell" | "text";
+export type LanguageId = "typescript" | "javascript" | "json" | "jsonc" | "markdown" | "rust" | "python" | "java" | "dotenv" | "toml" | "yaml" | "html" | "css" | "shell" | "text";
 
 const aliases: Record<string, LanguageId> = {
   ts: "typescript", tsx: "typescript", typescript: "typescript", mts: "typescript", cts: "typescript",
   js: "javascript", jsx: "javascript", javascript: "javascript", mjs: "javascript", cjs: "javascript",
   json: "json", jsonc: "jsonc", md: "markdown", mdx: "markdown", markdown: "markdown", mdown: "markdown",
   rs: "rust", rust: "rust", py: "python", python: "python", pyw: "python",
+  java: "java", jav: "java",
   env: "dotenv", dotenv: "dotenv", toml: "toml", yaml: "yaml", yml: "yaml",
   html: "html", htm: "html", xml: "html", svg: "html", css: "css", scss: "css",
   sh: "shell", bash: "shell", zsh: "shell", shell: "shell", shellscript: "shell", console: "shell",
@@ -80,6 +81,7 @@ export function loadLanguage(hint: string, path = ""): Promise<LoadedLanguage | 
       case "jsonc": return (await import("./settings-completion")).jsoncSupport(settings);
       case "rust": return (await import("@codemirror/lang-rust")).rust();
       case "python": return (await import("@codemirror/lang-python")).python();
+      case "java": return (await import("@codemirror/lang-java")).java();
       case "html": {
         const [{ html }, { emmetSupport }] = await Promise.all([import("@codemirror/lang-html"), import("./emmet")]);
         const support = html();
@@ -96,7 +98,7 @@ export function loadLanguage(hint: string, path = ""): Promise<LoadedLanguage | 
       case "shell": return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/shell")).shell);
       case "markdown": {
         const { markdown } = await import("@codemirror/lang-markdown");
-        const names = ["typescript", "javascript", "json", "jsonc", "rust", "python", "html", "css", "toml", "yaml", "shell", "dotenv"] as const;
+        const names = ["typescript", "javascript", "json", "jsonc", "rust", "python", "java", "html", "css", "toml", "yaml", "shell", "dotenv"] as const;
         return markdown({ codeLanguages: names.map((name) => LanguageDescription.of({ name, alias: Object.keys(aliases).filter((alias) => aliases[alias] === name), load: async () => {
           const support = await loadLanguage(name);
           if (!support) throw new Error(`No grammar for ${name}`);

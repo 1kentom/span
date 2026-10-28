@@ -67,7 +67,7 @@ test("tabs move between groups and Explorer files drop into the target group", a
   await expect(first.getByRole("tab", { name: "package.json", exact: true })).toHaveCount(0);
   await expect(second.getByRole("textbox", { name: "Edit package.json", exact: true })).toBeVisible();
   const entry = page.getByRole("treeitem").filter({ hasText: /^\.env\.local$/ });
-  await expect(entry).toHaveAttribute("draggable", "true");
+  await expect(entry).not.toHaveAttribute("draggable", "true");
   await entry.dragTo(second.locator(".editor-documents"));
   await expect(second.getByRole("textbox", { name: "Edit .env.local", exact: true })).toBeVisible();
 });

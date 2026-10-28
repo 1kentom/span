@@ -2,6 +2,7 @@ import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { DiffView } from "./WorkGroup";
+import { KeyGlyph } from "./KeyGlyph";
 import type { Brand, PermissionChoice, PermissionDetails, QuestionAnswer, QuestionOption } from "./types";
 import { dockKey } from "./util";
 import { DOCK_TAB_HINT } from "../../lib/agent-dock-focus";
@@ -317,7 +318,7 @@ export function UrlDock(props: UrlDockProps) {
       </div>
       <TabHint show={!focus.focused()} />
       <div class="sb-actions">
-        <button class="sb-btn primary" onClick={props.onOpen}>Open browser<kbd class="sb-hotkey" aria-hidden="true">↵</kbd></button>
+        <button class="sb-btn primary" onClick={props.onOpen}>Open browser<kbd class="sb-hotkey" aria-hidden="true"><KeyGlyph value="\u21b5" size={11} /></kbd></button>
         <button class="sb-btn" onClick={props.onCancel}>Cancel</button>
       </div>
     </section>

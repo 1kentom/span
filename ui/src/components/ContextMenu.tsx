@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal, createUniqueId, onCleanup, onMount } from "solid-js";
 import { clampMenu } from "../lib/navigation";
-import Icon from "./Icon";
+import Icon, { FileIcon } from "./Icon";
 import "../styles/navigation.css";
 
 export type ContextMenuItem = {
@@ -13,6 +13,7 @@ export type ContextMenuItem = {
   separator?: boolean;
   keepOpen?: boolean;
   icon?: string;
+  fileIcon?: { path: string; directory?: boolean };
   children?: ContextMenuItem[];
 };
 
@@ -113,7 +114,7 @@ export function ContextMenu(props: { x: number; y: number; items: ContextMenuIte
           const target = event.currentTarget;
           if (item.children?.length) openTimer = setTimeout(() => openSubmenu(item, target), hoverOpenDelay);
           else leaveTimer = setTimeout(() => { setExpanded(path => path.slice(0, depth)); target.focus({ preventScroll: true }); }, hoverLeaveDelay);
-        }} onClick={() => activate(item, button)}><span class="context-menu-icon"><Show when={item.icon}><Icon name={item.icon!} size={15} /></Show></span><span class="context-menu-label">{item.label}</span><Show when={item.shortcut}><span class="context-menu-shortcut">{item.shortcut}</span></Show><span class="context-menu-chevron"><Show when={item.children?.length}><Icon name="arrow-right4" size={12} /></Show></span></button>
+        }} onClick={() => activate(item, button)}><span class="context-menu-icon" aria-hidden="true"><Show when={item.fileIcon} fallback={<Show when={item.icon}><Icon name={item.icon!} size={15} /></Show>}>{file => <FileIcon path={file().path} directory={file().directory} />}</Show></span><span class="context-menu-label">{item.label}</span><Show when={item.shortcut}><span class="context-menu-shortcut">{item.shortcut}</span></Show><span class="context-menu-chevron"><Show when={item.children?.length}><Icon name="arrow-right4" size={12} /></Show></span></button>
         <Show when={item.children?.length && active(item)}><MenuPanel items={item.children!} path={[...panel.path, item.id]} anchor={anchor()} label={item.label} parent={button} /></Show>
       </>;
     }}</For></div>;
