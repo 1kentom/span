@@ -1,6 +1,8 @@
 const { test, expect } = require('@playwright/test');
 const manifest = require('../releases.json');
 const release = manifest[0];
+const nightly = manifest.find(entry => /nightly/i.test(entry.tag_name));
+const channelLabel = /nightly/i.test(release.tag_name) ? 'Nightly' : release.prerelease ? 'Preview' : 'Stable';
 const installers = release.assets.filter(asset => /\.(dmg|exe|deb|AppImage)$/i.test(asset.name));
 const clone = value => JSON.parse(JSON.stringify(value));
 async function api(page, response = null) {
@@ -19,7 +21,7 @@ test('changelog renders the current verified manifest as readable notes during A
   const latest = page.locator('.release-entry').first();
   await expect(latest.locator('h2')).toHaveText(release.name);
   await expect(latest.locator('time')).toHaveAttribute('datetime', release.published_at);
-  await expect(latest.locator('.release-channel')).toHaveText('Nightly');
+  await expect(latest.locator('.release-channel')).toHaveText(channelLabel);
   await expect(latest.locator('.release-full-notes')).toHaveAttribute('open', '');
   await expect(latest.locator('.release-note-content h4')).toContainText(['Added', 'Changed', 'Fixed', 'Known limitations']);
   expect(await latest.locator('.release-note-content li').count()).toBeGreaterThan(5);
@@ -48,23 +50,27 @@ test('release Markdown keeps code and formatting while rejecting active HTML, im
 });
 
 test('partial and older API metadata cannot delete verified installers, hashes or channel heads', async ({ page }) => {
-  const partial = clone(release); partial.assets = [partial.assets.find(asset => /\.dmg$/.test(asset.name))]; partial.body = '';
+  const partial = clone(nightly); partial.assets = [partial.assets.find(asset => /\.dmg$/.test(asset.name))]; partial.body = '';
   const older = clone(release); older.tag_name = 'v0.1.0-nightly.test-older'; older.html_url = `https://github.com/1kentom/span/releases/tag/${older.tag_name}`; older.published_at = '2025-01-01T00:00:00Z'; older.assets = [];
   await api(page, [partial, older]); await page.goto('/download/');
   await expect(page.locator('.build-download')).toHaveCount(5);
-  expect(new Set(await page.locator('.build-download').evaluateAll(nodes => nodes.map(node => node.href)))).toEqual(new Set(installers.map(asset => asset.browser_download_url)));
-  for (const asset of installers) {
+  const nightlyInstallers = nightly.assets.filter(asset => /\.(dmg|exe|deb|AppImage)$/i.test(asset.name));
+  expect(new Set(await page.locator('.build-download').evaluateAll(nodes => nodes.map(node => node.href)))).toEqual(new Set(nightlyInstallers.map(asset => asset.browser_download_url)));
+  for (const asset of nightlyInstallers) {
     const row = page.locator('.build-row').filter({ has: page.locator('.file-name', { hasText: asset.name }) });
     await row.locator('summary').click(); await expect(row.locator('.build-checksum')).toHaveText(asset.digest.slice(7));
   }
+  await page.goto(`/download/?channel=${channelLabel.toLowerCase()}`);
+  await expect(page.locator('#release-version')).toContainText(release.tag_name);
+  expect(new Set(await page.locator('.build-download').evaluateAll(nodes => nodes.map(node => node.href)))).toEqual(new Set(installers.map(asset => asset.browser_download_url)));
   await page.goto('/changelog/');
-  await expect(page.locator('.release-entry')).toHaveCount(2);
+  await expect(page.locator('.release-entry')).toHaveCount(manifest.length + 1);
   await expect(page.locator('.release-note-content').first()).toContainText('Known limitations');
 });
 
 test('a newer notes-only release does not replace the verified download', async ({ page }) => {
   const preview = clone(release); preview.tag_name = 'v0.1.0-preview.test'; preview.name = 'Preview notes fixture'; preview.html_url = `https://github.com/1kentom/span/releases/tag/${preview.tag_name}`; preview.published_at = '2030-01-01T00:00:00Z'; preview.assets = [];
-  await api(page, [preview]); await page.goto('/download/');
+  await api(page, [preview]); await page.goto(`/download/?channel=${channelLabel.toLowerCase()}`);
   await expect(page.locator('#release-version')).toContainText(release.tag_name);
   await expect(page.locator('.build-download')).toHaveCount(5);
   await page.goto('/'); await expect(page.locator('.home-release-line')).toContainText(release.tag_name);
