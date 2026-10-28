@@ -166,6 +166,11 @@ export const api = {
     if (!isDesktop) nativeRequired('Reading terminal scrollback');
     return Uint8Array.from(await commands.terminalScrollback(id));
   },
+  async pickFile(): Promise<string | null> {
+    if (!isDesktop) nativeRequired('Opening files');
+    const selected = await open({ directory: false, multiple: false, title: 'Open a file in span' });
+    return typeof selected === 'string' ? selected : null;
+  },
   async openWorkspace(path?: string): Promise<Workspace | null> {
     if (!isDesktop) {
       if (path && path !== previewWorkspace.root) nativeRequired('Opening folders');
