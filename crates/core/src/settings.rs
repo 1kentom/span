@@ -168,6 +168,11 @@ pub struct AgentSettings {
     /// delegation or an agent switch does not wait for the start. On by
     /// default. Honoured only from the user's own settings file.
     pub warm_start: bool,
+    /// `agents.healthCheck`: every five minutes, send one tiny prompt to
+    /// each running agent Span is not chatting with, over a hidden session,
+    /// and show whether it replied (ADR 0010). Never starts an agent. On by
+    /// default. Honoured only from the user's own settings file.
+    pub health_check: bool,
 }
 
 impl Default for AgentSettings {
@@ -175,6 +180,7 @@ impl Default for AgentSettings {
         Self {
             delegation: DelegationSettings::default(),
             warm_start: true,
+            health_check: true,
         }
     }
 }
@@ -564,6 +570,8 @@ const USER_ONLY: &[&[&str]] = &[
     &["agents", "delegation", "enabled"],
     // Starts agent processes when a folder opens (ADR 0009).
     &["agents", "warmStart"],
+    // Sends prompts to running agents in the background (ADR 0010).
+    &["agents", "healthCheck"],
     // A cloned project must not make Span contact the network at launch.
     &["updates", "checkOnLaunch"],
 ];

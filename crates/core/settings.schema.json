@@ -314,10 +314,16 @@
         "delegation": {
           "enabled": true
         },
-        "warmStart": true
+        "warmStart": true,
+        "healthCheck": true
       },
       "additionalProperties": false,
       "properties": {
+        "healthCheck": {
+          "type": "boolean",
+          "default": true,
+          "description": "On by default. Every five minutes, send one tiny prompt (reply with one word) to each running agent you are not chatting with, over a hidden session, and show a health dot for it. Never starts an agent; each check uses a few tokens of that agent's model. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+        },
         "warmStart": {
           "type": "boolean",
           "default": true,

@@ -800,6 +800,47 @@ fn agent_warm_start_is_on_by_default_and_honoured_only_from_user_settings() {
 }
 
 #[test]
+fn agent_health_check_is_on_by_default_and_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(Settings::default().agents.health_check);
+    assert!(workspace.get_settings().unwrap().agents.health_check);
+
+    // A workspace file cannot turn it off (or back on).
+    fs::create_dir_all(directory.path().join(".span")).unwrap();
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"healthCheck\": false } }",
+    )
+    .unwrap();
+    assert!(workspace.get_settings().unwrap().agents.health_check);
+    fs::write(&user, "{ \"agents\": { \"healthCheck\": false } }").unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.health_check);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"healthCheck\": true } }",
+    )
+    .unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.health_check);
+    // Turning it off leaves warm start alone.
+    assert!(workspace.get_settings().unwrap().agents.warm_start);
+
+    let legacy: Settings =
+        serde_json::from_value(serde_json::json!({ "agents": { "warmStart": false } })).unwrap();
+    assert!(legacy.agents.health_check);
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    assert_eq!(
+        schema["properties"]["agents"]["properties"]["healthCheck"]["default"],
+        true
+    );
+}
+
+#[test]
 fn agent_delegation_is_on_by_default_and_honoured_only_from_user_settings() {
     let directory = tempdir().unwrap();
     let home = tempdir().unwrap();

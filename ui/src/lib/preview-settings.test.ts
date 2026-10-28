@@ -89,3 +89,14 @@ describe('agent warm start in the browser fixture', () => {
     expect(fixture.get().agents?.delegation?.enabled).toBe(true);
   });
 });
+
+describe('agent health check in the browser fixture', () => {
+  it('is on by default and only the user scope can turn it off', () => {
+    const fixture = createPreviewSettings();
+    expect(fixture.get().agents?.healthCheck).toBe(true);
+    fixture.update('workspace', 'agents', JSON.stringify({ healthCheck: false }));
+    expect(fixture.get().agents?.healthCheck).toBe(true);
+    fixture.update('user', 'agents', JSON.stringify({ healthCheck: false }));
+    expect(fixture.get().agents?.healthCheck).toBe(false);
+  });
+});
