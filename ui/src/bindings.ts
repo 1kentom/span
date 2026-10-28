@@ -144,6 +144,18 @@ export const commands = {
 	 */
 	lspReadSource: (location: LocationDto, contextLines: number) => __TAURI_INVOKE<SourceSnippetDto>("lsp_read_source", { location, contextLines }),
 	lspCancel: (requestId: string) => __TAURI_INVOKE<null>("lsp_cancel", { requestId }),
+	/**
+	 *  Cancel an install in flight. Quiet and safe when nothing is installing: the server goes
+	 *  back to `needs-install` and a `cancelled` install progress event is emitted.
+	 */
+	lspCancelInstall: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_cancel_install", { server }),
+	/**
+	 *  Trust (or stop trusting) the CURRENT workspace root: rust-analyzer and JDT LS may then
+	 *  run the project's own build code (Maven and Gradle import, build scripts). Writes
+	 *  `languageServers.trustedWorkspaces` in the user settings, restarts the running servers
+	 *  that execute build code, and returns the updated status.
+	 */
+	lspTrustWorkspace: (trusted: boolean) => __TAURI_INVOKE<ServerStatusDto_Serialize[]>("lsp_trust_workspace", { trusted }),
 	lspInstall: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_install", { server }),
 	lspRestart: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_restart", { server }),
 	lspStatus: () => __TAURI_INVOKE<ServerStatusDto_Serialize[]>("lsp_status"),
@@ -179,12 +191,32 @@ export const events = {
 	languageServerError: makeEvent<LanguageServerError_Serialize, LanguageServerError_Deserialize>("language-server-error"),
 	languageServerInstallProgress: makeEvent<LanguageServerInstallProgress_Serialize, LanguageServerInstallProgress_Deserialize>("language-server-install-progress"),
 	languageServerStateChanged: makeEvent<LanguageServerStateChanged_Serialize, LanguageServerStateChanged_Deserialize>("language-server-state-changed"),
+	languageServerWorkProgress: makeEvent<LanguageServerWorkProgress_Serialize, LanguageServerWorkProgress_Deserialize>("language-server-work-progress"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
 	startupRequestError: makeEvent<StartupRequestError, StartupRequestError>("startup-request-error"),
 	startupRequestsChanged: makeEvent<StartupRequestsChanged, StartupRequestsChanged>("startup-requests-changed"),
 };
 
 /* Types */
+/**  One running piece of work, for late subscribers (`ServerStatusDto.activity`). */
+export type ActivityDto = ActivityDto_Serialize | ActivityDto_Deserialize;
+
+/**  One running piece of work, for late subscribers (`ServerStatusDto.activity`). */
+export type ActivityDto_Deserialize = {
+	token: string,
+	title?: string | null,
+	message?: string | null,
+	percentage?: number | null,
+};
+
+/**  One running piece of work, for late subscribers (`ServerStatusDto.activity`). */
+export type ActivityDto_Serialize = {
+	token: string,
+	title: string | null,
+	message: string | null,
+	percentage: number | null,
+};
+
 export type AgentCommand = AgentCommand_Serialize | AgentCommand_Deserialize;
 
 export type AgentCommand_Deserialize = {
@@ -1056,7 +1088,30 @@ export type IndentGuide = {
 
 export type InsertTextFormatDto = "plainText" | "snippet";
 
-export type InstallPhase = "started" | "alreadyInstalled" | "waitingForLock" | "downloading" | "reused" | "verifying" | "extracting" | "finalizing" | "finished" | "failed";
+export type InstallPhase = "started" | "alreadyInstalled" | "waitingForLock" | "downloading" | "reused" | "verifying" | "extracting" | "finalizing" | "finished" | "failed" | 
+/**  The user cancelled; the server is back to needing an install. */
+"cancelled";
+
+/**  Where an in-flight install stands, as carried by `lsp_status` rows. */
+export type InstallStatusDto = InstallStatusDto_Serialize | InstallStatusDto_Deserialize;
+
+/**  Where an in-flight install stands, as carried by `lsp_status` rows. */
+export type InstallStatusDto_Deserialize = {
+	phase: InstallPhase,
+	overallReceived: number,
+	overallTotal?: number | null,
+	artifactIndex: number,
+	artifactCount: number,
+};
+
+/**  Where an in-flight install stands, as carried by `lsp_status` rows. */
+export type InstallStatusDto_Serialize = {
+	phase: InstallPhase,
+	overallReceived: number,
+	overallTotal: number | null,
+	artifactIndex: number,
+	artifactCount: number,
+};
 
 export type InstalledAgent = InstalledAgent_Serialize | InstalledAgent_Deserialize;
 
@@ -1100,6 +1155,13 @@ export type LanguageServerInstallProgress_Deserialize = {
 	received?: number | null,
 	total?: number | null,
 	message?: string | null,
+	/**  Bytes received across every artifact of the install. Never decreases. */
+	overallReceived: number,
+	/**  Bytes expected across every artifact, when known. */
+	overallTotal?: number | null,
+	/**  Zero based index of the artifact being worked on. */
+	artifactIndex: number,
+	artifactCount: number,
 };
 
 export type LanguageServerInstallProgress_Serialize = {
@@ -1109,6 +1171,13 @@ export type LanguageServerInstallProgress_Serialize = {
 	received: number | null,
 	total: number | null,
 	message: string | null,
+	/**  Bytes received across every artifact of the install. Never decreases. */
+	overallReceived: number,
+	/**  Bytes expected across every artifact, when known. */
+	overallTotal: number | null,
+	/**  Zero based index of the artifact being worked on. */
+	artifactIndex: number,
+	artifactCount: number,
 };
 
 /**  Language server behaviour, stored under the `languageServers` settings key. */
@@ -1136,6 +1205,11 @@ export type LanguageServerSettings_Deserialize = {
 	 *  because opening an untrusted project would otherwise execute its code.
 	 */
 	runProjectCode?: boolean,
+	/**
+	 *  Canonical absolute workspace roots whose build code may run (per-workspace trust).
+	 *  `run_project_code` stays as a global override meaning "trust every folder".
+	 */
+	trustedWorkspaces?: string[],
 };
 
 /**  Language server behaviour, stored under the `languageServers` settings key. */
@@ -1160,6 +1234,11 @@ export type LanguageServerSettings_Serialize = {
 	 *  because opening an untrusted project would otherwise execute its code.
 	 */
 	runProjectCode: boolean,
+	/**
+	 *  Canonical absolute workspace roots whose build code may run (per-workspace trust).
+	 *  `run_project_code` stays as a global override meaning "trust every folder".
+	 */
+	trustedWorkspaces: string[],
 };
 
 export type LanguageServerStateChanged = LanguageServerStateChanged_Serialize | LanguageServerStateChanged_Deserialize;
@@ -1205,6 +1284,43 @@ export type LanguageServerStateDto_Serialize = { kind: "notStarted" } | { kind: 
 { kind: "runtimeMissing"; runtime: string; requiredVersion: number; found: string[] };
 
 /**
+ *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
+ *  at most about four `report` events per second per token; `begin` and `end` always
+ *  arrive.
+ */
+export type LanguageServerWorkProgress = LanguageServerWorkProgress_Serialize | LanguageServerWorkProgress_Deserialize;
+
+/**
+ *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
+ *  at most about four `report` events per second per token; `begin` and `end` always
+ *  arrive.
+ */
+export type LanguageServerWorkProgress_Deserialize = {
+	server: LanguageServerId,
+	root: string,
+	token: string,
+	title?: string | null,
+	message?: string | null,
+	percentage?: number | null,
+	kind: WorkProgressKindDto,
+};
+
+/**
+ *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
+ *  at most about four `report` events per second per token; `begin` and `end` always
+ *  arrive.
+ */
+export type LanguageServerWorkProgress_Serialize = {
+	server: LanguageServerId,
+	root: string,
+	token: string,
+	title: string | null,
+	message: string | null,
+	percentage: number | null,
+	kind: WorkProgressKindDto,
+};
+
+/**
  *  `path` is workspace relative with forward slashes when inside the workspace,
  *  otherwise the absolute path (or the server URI, for `jdt:` class files). `external`
  *  marks everything outside the workspace and library files inside it (`node_modules`):
@@ -1247,7 +1363,7 @@ export type LspResponse<T> = {
 
 export type MarkdownView = "source" | "preview" | "both";
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
@@ -1411,6 +1527,24 @@ export type RegistryAgent_Serialize = {
 	package: string | null,
 };
 
+export type RuntimeDto = RuntimeDto_Serialize | RuntimeDto_Deserialize;
+
+export type RuntimeDto_Deserialize = {
+	/**  `Node.js` or `JDK`. */
+	name: string,
+	requiredVersion: number,
+	foundVersion?: string | null,
+	foundPath?: string | null,
+};
+
+export type RuntimeDto_Serialize = {
+	/**  `Node.js` or `JDK`. */
+	name: string,
+	requiredVersion: number,
+	foundVersion: string | null,
+	foundPath: string | null,
+};
+
 export type SavedAttachment = {
 	/**  Workspace-relative path with forward slashes. */
 	path: string,
@@ -1454,6 +1588,24 @@ export type ServerStatusDto_Deserialize = {
 	epoch: number,
 	/**  Only known while the server is ready. */
 	capabilities?: CapabilitiesDto | null,
+	/**  Human name, e.g. "Java (Eclipse JDT LS)". */
+	displayName: string,
+	/**  Human language names the server covers. */
+	languages: string[],
+	/**  Size of the installed files on disk, when installed. */
+	installedSizeBytes?: number | null,
+	/**  The runtime the server needs (Node.js or a JDK), with what was found. */
+	runtime?: RuntimeDto_Deserialize | null,
+	/**  Plain-language sentence for failed states. */
+	failureReason?: string | null,
+	/**  The technical error behind `failure_reason`. */
+	failureDetails?: string | null,
+	/**  Per-workspace trust for servers that execute project build code. */
+	trust: TrustDto_Deserialize,
+	/**  Work the server reports it is doing (indexing, importing), for late subscribers. */
+	activity: ActivityDto_Deserialize[],
+	/**  Overall progress while this server is installing. */
+	install?: InstallStatusDto_Deserialize | null,
 };
 
 export type ServerStatusDto_Serialize = {
@@ -1466,6 +1618,24 @@ export type ServerStatusDto_Serialize = {
 	epoch: number,
 	/**  Only known while the server is ready. */
 	capabilities: CapabilitiesDto | null,
+	/**  Human name, e.g. "Java (Eclipse JDT LS)". */
+	displayName: string,
+	/**  Human language names the server covers. */
+	languages: string[],
+	/**  Size of the installed files on disk, when installed. */
+	installedSizeBytes: number | null,
+	/**  The runtime the server needs (Node.js or a JDK), with what was found. */
+	runtime: RuntimeDto_Serialize | null,
+	/**  Plain-language sentence for failed states. */
+	failureReason: string | null,
+	/**  The technical error behind `failure_reason`. */
+	failureDetails: string | null,
+	/**  Per-workspace trust for servers that execute project build code. */
+	trust: TrustDto_Serialize,
+	/**  Work the server reports it is doing (indexing, importing), for late subscribers. */
+	activity: ActivityDto_Serialize[],
+	/**  Overall progress while this server is installing. */
+	install: InstallStatusDto_Serialize | null,
 };
 
 export type SessionGroup = SessionGroup_Serialize | SessionGroup_Deserialize;
@@ -1848,6 +2018,32 @@ export type ToolLocation_Serialize = {
 	line: number | null,
 };
 
+/**
+ *  Whether running a project's own build code is allowed for it, and whether the
+ *  restricted mode is costing results.
+ */
+export type TrustDto = TrustDto_Serialize | TrustDto_Deserialize;
+
+/**
+ *  Whether running a project's own build code is allowed for it, and whether the
+ *  restricted mode is costing results.
+ */
+export type TrustDto_Deserialize = {
+	workspaceTrusted: boolean,
+	needsTrust: boolean,
+	reason?: string | null,
+};
+
+/**
+ *  Whether running a project's own build code is allowed for it, and whether the
+ *  restricted mode is costing results.
+ */
+export type TrustDto_Serialize = {
+	workspaceTrusted: boolean,
+	needsTrust: boolean,
+	reason: string | null,
+};
+
 /**  Same shape as [`CallHierarchyItemDto`], for `lsp_type_hierarchy_*`. */
 export type TypeHierarchyItemDto = TypeHierarchyItemDto_Serialize | TypeHierarchyItemDto_Deserialize;
 
@@ -1916,6 +2112,8 @@ export type UserAttachment_Serialize = {
 };
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
+
+export type WorkProgressKindDto = "begin" | "report" | "end";
 
 export type Workspace = {
 	root: string,
