@@ -69,7 +69,8 @@ describe("dock CSS frame", () => {
   });
 
   it("makes every composer-adjacent dock as wide as the prompt box, with no outside margin", () => {
-    const dock = rule(agent, ".agent-footer > .sb-dock");
+    // Docks share the one stacked-bar rule with the drawers and the activity bar.
+    const dock = rule(agent, ".agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity)");
     expect(dock).toMatch(/margin:\s*0;/);
     // The dock's top corners follow the prompt box's radius, whatever the composer design sets it to.
     const composerRadius = rule(agent, ".agent-composer").match(/border-radius:\s*(\d+px);/)?.[1];

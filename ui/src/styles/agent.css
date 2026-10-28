@@ -316,7 +316,11 @@
 .agent-footer > .sb-banner {
   margin: 0 0 6px;
 }
-/* Everything stacked on the prompt box has the prompt box's width and top radius (20px, see .agent-composer). */
+/*
+ * One rule for everything stacked on the prompt box (plan and queue drawers, the activity bar, question,
+ * permission and URL docks): the prompt box's width and top radius (20px, see .agent-composer).
+ * A dock is one card, its question, error and Skip live inside.
+ */
 .agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) {
   margin: 0;
   border-radius: 20px 20px 0 0;
@@ -330,13 +334,9 @@
   border-color: var(--sb-border);
   background: var(--sb-raised);
 }
-.agent-footer > :is(.sb-drawer, .sb-activity) + :is(.sb-drawer, .sb-activity, .sb-dock) {
+/* Only the top element of a stack is rounded: any stacked bar below another one (even with a running step between) is square. */
+.agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) ~ :is(.sb-drawer, .sb-dock, .sb-activity) {
   border-radius: 0;
-}
-/* A dock is one card: same width as the prompt box below it, corners joined to it. Its question, error and Skip live inside. */
-.agent-footer > .sb-dock {
-  margin: 0;
-  border-radius: 20px 20px 0 0;
 }
 .sb-urlbox .sb-mono.sb-ellipsis {
   overflow: visible;
