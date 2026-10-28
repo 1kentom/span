@@ -38,7 +38,13 @@ impl Trace {
             .unwrap_or("server");
         let name: String = stem
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let base = format!("{}-{}", name, pid.unwrap_or(0));
         let jsonl = File::create(dir.join(format!("{base}.jsonl"))).ok()?;

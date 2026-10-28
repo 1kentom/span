@@ -51,13 +51,11 @@ async fn trace_records_messages_and_stderr() {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         assert!(Instant::now() < deadline, "no event within 20s");
-        if let Some(span_lsp::ServerEvent::Diagnostics(_)) = tokio::time::timeout(
-            Duration::from_secs(5),
-            client.next_event(),
-        )
-        .await
-        .ok()
-        .flatten()
+        if let Some(span_lsp::ServerEvent::Diagnostics(_)) =
+            tokio::time::timeout(Duration::from_secs(5), client.next_event())
+                .await
+                .ok()
+                .flatten()
         {
             break;
         }
@@ -108,9 +106,10 @@ async fn no_trace_files_without_trace_dir() {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-lsp-server.py");
     let (program, args) =
         common::python_args(&[script.to_string_lossy().into_owned(), "normal".to_string()]);
-    let client = LspClient::spawn_traced(&program, &args, Some(dir.path().to_path_buf()), &[], None)
-        .await
-        .unwrap();
+    let client =
+        LspClient::spawn_traced(&program, &args, Some(dir.path().to_path_buf()), &[], None)
+            .await
+            .unwrap();
     client
         .initialize(InitializeParams::default())
         .await
