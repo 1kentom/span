@@ -28,6 +28,8 @@ export interface SettingsPageProps {
   updates?: JSX.Element;
   onOpenAgents?: () => void;
   agentStatus?: string;
+  /** Agent rows saved to user settings (warm start), shown in the Agents section. */
+  agentOptions?: JSX.Element;
 }
 interface Preference {
   key: keyof SettingsValue;
@@ -198,6 +200,7 @@ export function SettingsPage(props: SettingsPageProps) {
         <Show when={!searching() && section() === "Files"}><div class="sp-formatter-note"><p>{Object.keys(props.settings.formatters).length ? `Configured formatters: ${Object.keys(props.settings.formatters).join(", ")}.` : "No formatters configured. Add a formatter command for each language to use format on save."}</p><button class="sp-text-button" onClick={() => go("JSONC")}>Configure formatters in JSONC<Icon name="arrow-right4" size={13} /></button></div></Show>
         <Show when={!searching() && section() === "Keyboard Shortcuts"}><Show when={!dirty()} fallback={<p class="sp-help">Keyboard preferences are available after you finish reviewing the JSONC draft.</p>}>{props.shortcuts}</Show></Show>
         <Show when={!searching() && section() === "Agents"}><div class="sp-information"><Icon name="collaborators" size={25} /><h2>Agent connections</h2><p>Install and connect an Agent Client Protocol agent from the assistant panel. Agent permissions and suggested edits stay reviewable in the workspace.</p><dl><dt>Connection</dt><dd>{props.agentStatus || "Managed in the assistant panel"}</dd></dl><Show when={props.onOpenAgents}><button class="button" onClick={props.onOpenAgents}>Manage agents<Icon name="arrow-right4" size={14} /></button></Show></div></Show>
+        <Show when={!searching() && section() === "Agents" && props.agentOptions}><div class="sp-preferences">{props.agentOptions}</div></Show>
         <Show when={!searching() && section() === "Tools"}>{props.tools}</Show>
         <Show when={!searching() && section() === "Language servers"}><Show when={!dirty()} fallback={<p class="sp-help">Language server preferences are available after you finish reviewing the JSONC draft.</p>}>{props.languageServers}</Show></Show>
         <Show when={!searching() && section() === "Updates"}>{props.updates}</Show>

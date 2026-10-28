@@ -1850,6 +1850,66 @@ async fn two_simultaneous_delegates_share_one_start() {
 }
 
 #[tokio::test]
+async fn a_delegate_during_a_warm_start_waits_for_it() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let starts = Arc::new(AtomicUsize::new(0));
+    let background = BackgroundAgents::new(
+        h.manager.clone(),
+        launcher(&h, Duration::from_millis(400), starts.clone()),
+    );
+    let codex = installed("codex-acp", worker(&["--name=codex"]));
+    let config = h.background_config(scaled(), vec![codex.clone()], &background);
+    let (_lead, server) = h.background_lead(&lead_connection, config).await;
+    background.warm(
+        vec![codex],
+        Duration::from_millis(300),
+        4,
+        Duration::from_secs(20),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(background.state("codex-acp"), BackgroundState::Starting);
+    let delegated = Client::new(&server)
+        .tool("delegate", json!({"agent": "codex-acp", "task": "reply:warm"}))
+        .await;
+    assert_eq!(delegated["isError"], false, "{delegated}");
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    let events = h.tool_events.lock().unwrap().clone();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        DelegationEvent::StartFinished { launched: false, reason: None, .. }
+    )));
+}
+
+#[tokio::test]
+async fn warm_starts_initialize_only_one_at_a_time_and_at_most_the_cap() {
+    let h = harness();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let background = BackgroundAgents::new(
+        h.manager.clone(),
+        launcher(&h, Duration::ZERO, starts.clone()),
+    );
+    let agents: Vec<InstalledAgent> = (1..=5)
+        .map(|n| installed(&format!("agent-{n}"), worker(&[&format!("--name=a{n}")])))
+        .collect();
+    background.warm(agents, Duration::from_millis(300), 4, Duration::from_secs(20));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(starts.load(Ordering::SeqCst) <= 1, "staggered");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while background.connections().len() < 4 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(background.connections().len(), 4);
+    assert_eq!(background.state("agent-5"), BackgroundState::Idle);
+    // Initialize only: no session was opened on any warm connection.
+    assert!(h.manager.sessions().is_empty());
+    background.shutdown();
+    assert!(background.connections().is_empty());
+    assert!(h.manager.connections().iter().all(|c| !c.open) || h.manager.connections().is_empty());
+}
+
+#[tokio::test]
 async fn a_failed_start_maps_to_a_closed_reason_and_the_lead_keeps_working() {
     let mut h = harness();
     let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;

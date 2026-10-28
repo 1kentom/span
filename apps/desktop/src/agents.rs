@@ -408,6 +408,63 @@ pub async fn agent_connect(
     Ok(session)
 }
 
+/// Warm start (ADR 0009): start installed agents in the background so a
+/// delegation or an agent switch does not wait for the process. Process and
+/// ACP `initialize` only, no session. `recent` lists agent ids most recently
+/// used first (the UI keeps that list); the rest follow by id. At most four,
+/// one at a time and 300 ms apart, off the UI thread; returns at once. A
+/// failed start is recorded quietly and retried only on demand. Does nothing
+/// when `agents.warmStart` (user settings only) is off. Returns how many
+/// agents it queued.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_warm_start(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    recent: Vec<String>,
+) -> Result<u32, String> {
+    let state = state.inner();
+    let workspace = workspace(state)?;
+    let enabled = tauri::async_runtime::spawn_blocking(move || {
+        workspace
+            .lock()
+            .ok()
+            .and_then(|workspace| workspace.get_settings().ok())
+            .is_some_and(|settings| settings.agents.warm_start)
+    })
+    .await
+    .unwrap_or(false);
+    if !enabled {
+        return Ok(0);
+    }
+    let agents = warm_order(installed_agents(&app).await, &recent);
+    let count = agents.len().min(WARM_CAP) as u32;
+    background(state).warm(
+        agents,
+        std::time::Duration::from_millis(300),
+        WARM_CAP,
+        std::time::Duration::from_secs(45),
+    );
+    Ok(count)
+}
+
+const WARM_CAP: usize = 4;
+
+/// Installed agents ordered for a warm start: `recent` ids first in that
+/// order, then the others by id. One entry per id (the newest version).
+fn warm_order(mut installed: Vec<InstalledAgent>, recent: &[String]) -> Vec<InstalledAgent> {
+    installed.sort_by(|a, b| a.id.cmp(&b.id).then(b.version.cmp(&a.version)));
+    installed.dedup_by(|a, b| a.id == b.id);
+    let rank = |id: &str| {
+        recent
+            .iter()
+            .position(|r| r.eq_ignore_ascii_case(id))
+            .unwrap_or(usize::MAX)
+    };
+    installed.sort_by_key(|agent| rank(&agent.id));
+    installed
+}
+
 /// Start a fresh conversation on the connected agent process.
 #[tauri::command]
 #[specta::specta]
@@ -805,6 +862,43 @@ pub async fn agent_child_permission(
 pub async fn app_update_check(app: tauri::AppHandle) -> span_acp::update::AppUpdate {
     let version = app.package_info().version.to_string();
     span_acp::update::check_app_update(&version, cfg!(debug_assertions)).await
+}
+
+#[cfg(test)]
+mod warm_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn agent(id: &str, version: &str) -> InstalledAgent {
+        InstalledAgent {
+            id: id.into(),
+            version: version.into(),
+            launch: AgentCommand {
+                command: id.into(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn warm_order_puts_recent_agents_first_once_each() {
+        let installed = vec![
+            agent("gemini", "1"),
+            agent("claude-acp", "1"),
+            agent("codex-acp", "2"),
+            agent("codex-acp", "1"),
+            agent("opencode", "1"),
+        ];
+        let ids: Vec<String> = warm_order(installed, &["codex-acp".into(), "opencode".into()])
+            .into_iter()
+            .map(|a| format!("{}@{}", a.id, a.version))
+            .collect();
+        assert_eq!(
+            ids,
+            ["codex-acp@2", "opencode@1", "claude-acp@1", "gemini@1"]
+        );
+    }
 }
 
 #[cfg(test)]

@@ -77,3 +77,15 @@ describe('agent delegation in the browser fixture', () => {
     expect(fixture.get().agents?.delegation?.enabled).toBe(false);
   });
 });
+
+describe('agent warm start in the browser fixture', () => {
+  it('is on by default and only the user scope can turn it off', () => {
+    const fixture = createPreviewSettings();
+    expect(fixture.get().agents?.warmStart).toBe(true);
+    fixture.update('workspace', 'agents', JSON.stringify({ warmStart: false }));
+    expect(fixture.get().agents?.warmStart).toBe(true);
+    fixture.update('user', 'agents', JSON.stringify({ delegation: { enabled: true }, warmStart: false }));
+    expect(fixture.get().agents?.warmStart).toBe(false);
+    expect(fixture.get().agents?.delegation?.enabled).toBe(true);
+  });
+});

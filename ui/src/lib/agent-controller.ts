@@ -28,7 +28,7 @@ import {
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
 import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
 import { moveItem } from "./agent-queue";
-import { readLastSession, writeLastSession } from "./last-session";
+import { noteAgentUsed, readLastSession, readRecentAgents, writeLastSession } from "./last-session";
 import { chooseRestores, readLastConfig, writeLastConfig } from "./last-config";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
@@ -524,7 +524,10 @@ export function createAgentController(props: AgentPanelProps) {
           else unsubscribeStates = cleanup;
         })
         .catch(() => undefined);
-      void loadAgents().then(restoreLastSession);
+      void loadAgents().then(() => {
+        warmStart();
+        return restoreLastSession();
+      });
     }
     const goOnline = () => {
       setOnline(true);
@@ -578,6 +581,19 @@ export function createAgentController(props: AgentPanelProps) {
     else fail({ phase: "connect", message: `Could not load the ACP registry: ${errorText(remote.reason)}` });
     setRegistryBusy(false);
   }
+  /**
+   * Warm start (ADR 0009): once the panel has painted, ask the backend to start installed agents in the background, most
+   * recently used first, so a delegation or a switch does not wait. Quiet: a failed start never shows an error here.
+   */
+  function warmStart() {
+    if (!isDesktop || disposed || !props.workspacePath || !api.agentWarmStart) return;
+    const recent = readRecentAgents();
+    const run = () => {
+      if (!disposed) void api.agentWarmStart?.(recent).catch(() => undefined);
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 0);
+  }
   /** On app open: reconnect the agent that had the last chat in this workspace and resume that chat when the agent can. */
   async function restoreLastSession() {
     const workspace = props.workspacePath;
@@ -630,6 +646,7 @@ export function createAgentController(props: AgentPanelProps) {
       setAgentName(name);
       setAgentId(id);
       setLaunch({ command, name, id });
+      if (id) noteAgentUsed(id);
       setConnecting({ name, command: [command.command, ...(command.args ?? [])].join(" "), logBase: state().logCount, failed: false });
       update((previous) => ({
         ...resetConversation(previous),

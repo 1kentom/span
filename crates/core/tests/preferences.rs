@@ -755,6 +755,51 @@ fn trusted_settings_dirty_state_clears_when_manual_edits_return_to_saved_text() 
 }
 
 #[test]
+fn agent_warm_start_is_on_by_default_and_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(Settings::default().agents.warm_start);
+    assert!(workspace.get_settings().unwrap().agents.warm_start);
+
+    // A workspace file cannot change it either way.
+    fs::create_dir_all(directory.path().join(".span")).unwrap();
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"warmStart\": false }, \"fontSize\": 15 }",
+    )
+    .unwrap();
+    let read = workspace.get_settings().unwrap();
+    assert!(read.agents.warm_start);
+    assert_eq!(read.font_size, 15);
+
+    // The user's own file can turn it off; a workspace true does not turn it back on.
+    fs::write(&user, "{ \"agents\": { \"warmStart\": false } }").unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.warm_start);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"warmStart\": true } }",
+    )
+    .unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.warm_start);
+    // Turning it off leaves delegation alone.
+    assert!(workspace.get_settings().unwrap().agents.delegation.enabled);
+
+    let legacy: Settings =
+        serde_json::from_value(serde_json::json!({ "agents": { "delegation": {} } })).unwrap();
+    assert!(legacy.agents.warm_start);
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    assert_eq!(
+        schema["properties"]["agents"]["properties"]["warmStart"]["default"],
+        true
+    );
+}
+
+#[test]
 fn agent_delegation_is_on_by_default_and_honoured_only_from_user_settings() {
     let directory = tempdir().unwrap();
     let home = tempdir().unwrap();

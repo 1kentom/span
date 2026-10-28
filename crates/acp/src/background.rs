@@ -305,6 +305,21 @@ impl BackgroundAgents {
         rx
     }
 
+    /// Warm start: start `agents` one at a time, `gap` apart, at most `cap`
+    /// of them, in the order given. Failures are recorded quietly (the agent
+    /// shows as unavailable and the next request retries). Returns at once.
+    pub fn warm(&self, agents: Vec<InstalledAgent>, gap: Duration, cap: usize, timeout: Duration) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            for (index, agent) in agents.into_iter().take(cap).enumerate() {
+                if index > 0 {
+                    tokio::time::sleep(gap).await;
+                }
+                let _ = this.ensure(&agent, timeout).await;
+            }
+        });
+    }
+
     /// The UI makes `agent`'s running connection its active one: from now on
     /// every event of it goes to `sink`, starting with the identity and
     /// status events it missed.

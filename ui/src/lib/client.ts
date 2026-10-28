@@ -445,6 +445,11 @@ export const api = {
     if (!isDesktop) nativeRequired('Listing installed agents');
     return commands.agentInstalled();
   },
+  /** Warm start (ADR 0009): the backend starts installed agents in the background, `recent` ids first. Resolves at once with how many it queued; 0 when `agents.warmStart` is off. */
+  async agentWarmStart(recent: string[]): Promise<number> {
+    if (!isDesktop) return 0;
+    return commands.agentWarmStart(recent);
+  },
   async agentInstall(id: string): Promise<InstalledAgent> {
     if (!isDesktop) nativeRequired('Installing agents');
     return commands.agentInstall(id);

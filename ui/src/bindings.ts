@@ -182,6 +182,17 @@ export const commands = {
 	 *  active chat's lead is searched first.
 	 */
 	agentCancelTask: (taskId: string) => __TAURI_INVOKE<null>("agent_cancel_task", { taskId }),
+	/**
+	 *  Warm start (ADR 0009): start installed agents in the background so a
+	 *  delegation or an agent switch does not wait for the process. Process and
+	 *  ACP `initialize` only, no session. `recent` lists agent ids most recently
+	 *  used first (the UI keeps that list); the rest follow by id. At most four,
+	 *  one at a time and 300 ms apart, off the UI thread; returns at once. A
+	 *  failed start is recorded quietly and retried only on demand. Does nothing
+	 *  when `agents.warmStart` (user settings only) is off. Returns how many
+	 *  agents it queued.
+	 */
+	agentWarmStart: (recent: string[]) => __TAURI_INVOKE<number>("agent_warm_start", { recent }),
 	uploadsList: () => __TAURI_INVOKE<Upload_Serialize[]>("uploads_list"),
 	uploadsUsage: () => __TAURI_INVOKE<UploadUsage>("uploads_usage"),
 	uploadsAdd: (name: string, dataBase64: string, source: UploadSource_Deserialize) => __TAURI_INVOKE<Upload_Serialize>("uploads_add", { name, dataBase64, source }),
@@ -508,11 +519,25 @@ export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 /**  `agents.*` settings. */
 export type AgentSettings_Deserialize = {
 	delegation?: DelegationSettings_Deserialize,
+	/**
+	 *  `agents.warmStart`: when a folder opens, start installed agents in
+	 *  the background (process and ACP initialize only, no session) so a
+	 *  delegation or an agent switch does not wait for the start. On by
+	 *  default. Honoured only from the user's own settings file.
+	 */
+	warmStart?: boolean,
 };
 
 /**  `agents.*` settings. */
 export type AgentSettings_Serialize = {
 	delegation: DelegationSettings_Serialize,
+	/**
+	 *  `agents.warmStart`: when a folder opens, start installed agents in
+	 *  the background (process and ACP initialize only, no session) so a
+	 *  delegation or an agent switch does not wait for the start. On by
+	 *  default. Honoured only from the user's own settings file.
+	 */
+	warmStart: boolean,
 };
 
 export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;

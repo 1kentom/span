@@ -159,10 +159,24 @@ pub struct UpdateSettings {
 }
 
 /// `agents.*` settings.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSettings {
     pub delegation: DelegationSettings,
+    /// `agents.warmStart`: when a folder opens, start installed agents in
+    /// the background (process and ACP initialize only, no session) so a
+    /// delegation or an agent switch does not wait for the start. On by
+    /// default. Honoured only from the user's own settings file.
+    pub warm_start: bool,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            delegation: DelegationSettings::default(),
+            warm_start: true,
+        }
+    }
 }
 
 /// `agents.delegation.*`: the span-agents tool server (#52).
@@ -548,6 +562,8 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
 /// settings before merging; unknown sibling keys are still rejected.
 const USER_ONLY: &[&[&str]] = &[
     &["agents", "delegation", "enabled"],
+    // Starts agent processes when a folder opens (ADR 0009).
+    &["agents", "warmStart"],
     // A cloned project must not make Span contact the network at launch.
     &["updates", "checkOnLaunch"],
 ];

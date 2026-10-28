@@ -23,3 +23,21 @@ export function writeLastSession(workspace: string, value: LastSession | undefin
   else delete all[workspace];
   try { window.localStorage.setItem(KEY, JSON.stringify(all)); } catch { /* storage can be unavailable */ }
 }
+
+// UI-only list of agent ids most recently used first, across workspaces. Warm start (ADR 0009) starts these first.
+const RECENT_KEY = "span.agent.recent";
+const RECENT_LIMIT = 8;
+
+export function readRecentAgents(): string[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(RECENT_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function noteAgentUsed(id: string) {
+  const next = [id, ...readRecentAgents().filter((entry) => entry !== id)].slice(0, RECENT_LIMIT);
+  try { window.localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch { /* storage can be unavailable */ }
+}

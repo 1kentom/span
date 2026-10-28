@@ -313,10 +313,16 @@
       "default": {
         "delegation": {
           "enabled": true
-        }
+        },
+        "warmStart": true
       },
       "additionalProperties": false,
       "properties": {
+        "warmStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "On by default. When a folder opens, start up to four installed agents in the background (process and initialize only, no session and no model use) so delegating to them or switching to them does not wait. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+        },
         "delegation": {
           "type": "object",
           "default": {

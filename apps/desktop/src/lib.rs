@@ -925,6 +925,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_delegation_status,
             agents::agent_child_permission,
             agents::agent_cancel_task,
+            agents::agent_warm_start,
             uploads::uploads_list,
             uploads::uploads_usage,
             uploads::uploads_add,
