@@ -366,7 +366,9 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-confirm { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; flex: 1 1 100%; padding: 6px 8px; border: 1px solid var(--sb-control-border); border-radius: 6px; background: var(--sb-control); }
 .sb-confirm-text { flex: 1 1 140px; font-size: 12px; color: var(--sb-fg); }
 .agent-steered-label { margin-bottom: 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--sb-accent-fg); }
-.agent-footer .sb-hints { padding: 3px 2px 0; }
+.agent-footer .sb-hints { padding: 6px 4px 2px; gap: 6px 14px; }
+.agent-footer .sb-hint { gap: 6px; white-space: nowrap; }
+.agent-footer .sb-hint-key { min-width: 18px; height: 18px; border-radius: 5px; }
 .sb-session:has(.sb-confirm) { flex-wrap: wrap; }
 
 /* Narrow panel: the Following pill collapses to the icon-only button (state stays visible through the accent fill). */
@@ -463,5 +465,5 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .agent-run-hint { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 8px; color: var(--sb-dim); font-size: 11px; }
 .agent-run-hint .sb-flex { min-width: 0; }
 /* The Enter key is the library return icon; the label stays available to screen readers. */
-.key-enter { display: inline-block; vertical-align: middle; background-color: currentColor; }
+.key-enter { display: inline-block; vertical-align: middle; background-color: currentColor; transform: scaleY(-1); /* arrow on the lower line, like the standard return symbol */ }
 .sb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
