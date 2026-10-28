@@ -1,0 +1,59 @@
+{
+  "quirk": "session/new answers with currentModeId bypassPermissions, so Claude never asks permission: a warning Notice with hint permissionsBypassed and noticeId span/permission-bypass is emitted, and cleared when the mode changes to a safe one (current_mode_update arrives before the set_config_option result).",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setConfig",
+      "id": "mode",
+      "value": "default"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session"
+    },
+    {
+      "kind": "config"
+    },
+    {
+      "kind": "notice",
+      "severity": "warning",
+      "title": "Bypass permissions",
+      "noticeId": "span/permission-bypass",
+      "hint": "permissionsBypassed"
+    },
+    {
+      "kind": "_step",
+      "do": "newSession"
+    },
+    {
+      "kind": "currentMode",
+      "modeId": "default"
+    },
+    {
+      "kind": "noticeCleared",
+      "noticeId": "span/permission-bypass"
+    },
+    {
+      "kind": "_step",
+      "do": "setConfig"
+    }
+  ],
+  "counts": [
+    {
+      "match": {
+        "kind": "notice",
+        "hint": "permissionsBypassed"
+      },
+      "count": 1
+    },
+    {
+      "match": {
+        "kind": "noticeCleared"
+      },
+      "count": 1
+    }
+  ]
+}

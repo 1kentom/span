@@ -1,16 +1,30 @@
 import { For, Match, Show, Switch, createMemo } from "solid-js";
+import { Icon } from "../Icon";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
 import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
-import { EditsBypassNote, ErrorCard, Notice, StopCard } from "./Banners";
+import { urlRecordText } from "../../lib/agent-url-request";
+import { handoffDivider } from "../../lib/agent-handoff";
+import { EditsBypassNote, ErrorCard, Notice, StopCard, WarningNote } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
 import { DelegationCard } from "./DelegationCard";
 import { ChangesCard, WorkGroup } from "./WorkGroup";
 
 const sameKeys = (previous: string[], next: string[]) => previous.length === next.length && previous.every((key, index) => key === next[index]);
+
+/** One muted line for a browser sign-in: no code, no message, no query string. */
+function UrlRecordLine(props: { record: Extract<FeedItem, { kind: "signin" }> }) {
+  const line = () => urlRecordText(props.record);
+  return (
+    <div class="sb-url-record" data-status={props.record.status} title={line()}>
+      <Icon name="Link2" size={12} />
+      <span class="sb-ellipsis">{line()}</span>
+    </div>
+  );
+}
 
 function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: () => boolean }) {
   const a = props.agent;
@@ -22,7 +36,18 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       <Match when={item().kind === "user"}>
         <div class="agent-message user" data-feed-id={item().id} classList={{ steered: Boolean((item() as Extract<FeedItem, { kind: "user" }>).steered) }}>
           <Show when={(item() as Extract<FeedItem, { kind: "user" }>).steered}>
-            <div class="agent-steered-label">Steered</div>
+            <div class="agent-steer-tag"><Icon name="arrow-right4" size={11} /><span>Steered</span><span class="agent-steer-note"> · read after the current step</span></div>
+          </Show>
+          <Show when={!(item() as Extract<FeedItem, { kind: "user" }>).steered && a.sentNowIds().has(item().id)}>
+            <div class="agent-steer-tag"><Icon name="arrow-right4" size={11} /><span>Sent now</span><span class="agent-steer-note"> · interrupted the current step</span></div>
+          </Show>
+          <Show when={(item() as Extract<FeedItem, { kind: "user" }>).context}>
+            {(context) => (
+              <details class="agent-summary agent-context-sent">
+                <summary><Icon name="arrow-right4" size={11} /><span>Context sent</span><span class="agent-steer-note"> · carried over from the previous agent</span></summary>
+                <pre class="agent-context-text">{context()}</pre>
+              </details>
+            )}
           </Show>
           {message().text}
           <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.setViewing(attachment.id)} />
@@ -45,17 +70,38 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       <Match when={item().kind === "note"}>
         <Notice text={message().text} />
       </Match>
+      <Match when={item().kind === "handoff"}>
+        {(() => {
+          const switched = () => item() as Extract<FeedItem, { kind: "handoff" }>;
+          const view = () => handoffDivider(switched().from, switched().to, switched().carried);
+          return (
+            <div class="agent-handoff" role="separator" aria-label={view().text}>
+              <div class="sb-notice" aria-hidden="true">
+                <span class="sb-rule" />
+                <span class="sb-ellipsis">{view().title}</span>
+                <span class="sb-rule" />
+              </div>
+              <p class="sb-fine agent-handoff-note" aria-hidden="true">{view().note}</p>
+            </div>
+          );
+        })()}
+      </Match>
+      <Match when={item().kind === "signin"}>
+        <UrlRecordLine record={item() as Extract<FeedItem, { kind: "signin" }>} />
+      </Match>
       <Match when={item().kind === "notice"}>
         {(() => {
           const notice = () => item() as Extract<FeedItem, { kind: "notice" }>;
           const view = () => noticeView(notice());
           return (
-            <Show
-              when={notice().severity === "warning" || notice().severity === "error"}
-              fallback={<Notice text={view().description ? `${view().title} · ${view().description}` : view().title} />}
-            >
-              <ErrorCard level={notice().severity === "error" ? "error" : "warn"} title={view().title} text={view().description} actions={[]} />
-            </Show>
+            <Switch fallback={<Notice text={view().description ? `${view().title} · ${view().description}` : view().title} />}>
+              <Match when={notice().severity === "warning"}>
+                <WarningNote title={view().title} description={view().description} />
+              </Match>
+              <Match when={notice().severity === "error"}>
+                <ErrorCard level="error" title={view().title} text={view().description} actions={[]} />
+              </Match>
+            </Switch>
           );
         })()}
       </Match>

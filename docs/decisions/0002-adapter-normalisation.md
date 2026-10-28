@@ -113,3 +113,29 @@ All new event fields are optional, so the TypeScript change is additive; the
 one new variant is `noticeCleared`. Rust code that destructures `Text`,
 `Thought`, `User` or `Complete` exhaustively needs `..`. A live run of each
 agent is still needed to confirm every row above.
+
+## Live run findings
+
+A live probe (`crates/acp/examples/live_probe.rs`) ran Span's client against
+claude-agent-acp 0.98.0, codex-acp 2.3.0, OpenCode 2.0.32 and gemini-cli
+0.46.0. The fixtures below copy sanitised shapes from those captures; the
+fixes were verified against the fixtures, not by a second live run.
+
+| Finding | Change | Fixture or test |
+| --- | --- | --- |
+| `connect` returned before `Ready` reached the manager, so `open_lead` saw no features | `Ready` and `Capabilities` are emitted before `AgentService::start` resolves | tool_server `open_lead_right_after_connect_always_sees_features` |
+| Codex `session/list` returns empty pages that still carry a cursor | the cursor is followed until null, a repeat, 50 pages or 100 sessions, within 30 s overall (20 s per page) | codex/list-empty-pages |
+| Bypass modes are silent | a warning `Notice` (`noticeId` `span/permission-bypass`, hint `permissionsBypassed`, title the mode's name) while a mode option or current mode is `bypassPermissions`, `agent-full-access`, `yolo` or `never`; `NoticeCleared` when it becomes safe | claude/bypass-mode, codex/full-access-mode, gemini/yolo-mode, opencode/reject-cancelled (none raised) |
+| Claude keeps listing a deleted session | ids deleted by the user are hidden from `list_sessions` for the connection; a notice with hint `deletedStillListed` names the session once | claude/delete-still-listed |
+| OpenCode ends a turn `cancelled` after a rejection | `Complete.hint` `rejectedByUser` when the user rejected a permission or edit in the turn and did not press Stop | opencode/reject-cancelled |
+| MCP tool calls lose kind `other` | a `tool_call` without `kind` is reported as `other` | claude/mcp-tool-kind |
+| `_auth/status_update` carries the account email and plan | params of `_auth/*` methods are redacted from the protocol log | claude/auth-status-redacted |
+| Doubled "Authentication required" prefix | added only when the agent's text lacks it | opencode/auth-default-model |
+| OpenCode default model unsigned while others work | hint `runOpencodeAuthLoginOrSwitchModel` when the model option offers another model | opencode/auth-default-model |
+| Gemini `-32000` carries an account tier notice | `AuthRequired.agentMessage` holds the agent's text when it does not read as a sign-in request; `vertex-ai` (no `_meta` input) is unsupported with hint `needsEnvironmentSetup` | gemini/unsupported-client |
+| Codex `session_info_update` with only `_meta` | no `SessionInfo` event | codex/thread-status |
+| Claude replays `[Request interrupted by user]` | info notice with hint `interruptedByUser` | claude/interrupted-replay |
+
+Not changed: Codex notices name files under the user's home directory. They
+are shown only to that user, name the file to fix, and the same paths are in
+the protocol log, so they are left as sent.

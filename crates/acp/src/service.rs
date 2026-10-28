@@ -1,7 +1,7 @@
 use crate::adapter::{map::config_options_value, Adapter, AgentKind, ConfigRoute, McpCaps};
 use crate::{
     AgentCommand, AgentEvent, AgentFeatures, AgentHint, AuthCredential, AuthInput, AuthMethodInfo,
-    PermissionOption, PromptAttachment, SessionSummary,
+    ConfigOption, PermissionOption, PromptAttachment, SessionSummary,
 };
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo, UntypedMessage};
@@ -86,6 +86,14 @@ struct Bridge {
     mcp_caps: McpCaps,
     /// Sessions whose replay may still be streaming, with the last update time.
     replaying: HashMap<String, tokio::time::Instant>,
+    /// Sessions the user deleted on this connection. Claude Code answers
+    /// `session/delete` and still lists the session, so these stay hidden
+    /// from `list_sessions` for the life of the connection.
+    deleted: HashSet<String>,
+    /// Deleted sessions the agent was seen still listing (reported once).
+    deleted_listed: HashSet<String>,
+    /// Sessions whose current turn had a permission or edit rejected by the user.
+    rejected: HashSet<String>,
 }
 
 /// Send a request whose response is needed as raw JSON: legacy `modes` and
@@ -104,13 +112,19 @@ const REDACTED: &str = "[redacted]";
 /// Methods whose `params.mcpServers` may carry credentials.
 const MCP_SERVER_METHODS: &[&str] = &["session/new", "session/load", "session/resume"];
 
+/// Agent notifications under this prefix (`_auth/status_update` from Claude
+/// Code and Codex) carry the signed-in account: email, plan, organization.
+const AUTH_METHOD_PREFIX: &str = "_auth/";
+
 /// Debug lines go to the UI log. Secrets never do: `authenticate` `_meta`,
-/// and the header values (HTTP, SSE) and environment values (stdio) of
-/// every MCP server offered in `session/new`, `session/load` and
-/// `session/resume`, such as the span-agents bearer token. A line that
-/// mentions one of these methods but does not parse is dropped whole.
+/// the params of `_auth/*` methods (the method name stays), and the header
+/// values (HTTP, SSE) and environment values (stdio) of every MCP server
+/// offered in `session/new`, `session/load` and `session/resume`, such as the
+/// span-agents bearer token. A line that mentions one of these methods but
+/// does not parse is dropped whole.
 fn redact_log(line: &str) -> String {
     let sensitive = line.contains("authenticate")
+        || line.contains(AUTH_METHOD_PREFIX)
         || line.contains("mcpServers")
         || MCP_SERVER_METHODS.iter().any(|m| line.contains(m));
     if !sensitive {
@@ -126,6 +140,14 @@ fn redact_log(line: &str) -> String {
     if method.as_deref() == Some("authenticate") {
         if let Some(meta) = message.pointer_mut("/params/_meta") {
             *meta = json!(REDACTED);
+        }
+    }
+    if method
+        .as_deref()
+        .is_some_and(|m| m.starts_with(AUTH_METHOD_PREFIX))
+    {
+        if let Some(params) = message.get_mut("params") {
+            *params = json!(REDACTED);
         }
     }
     // Redact any `mcpServers` list wherever it appears in params, whatever
@@ -368,6 +390,12 @@ impl AgentService {
         if method.hint == Some(AgentHint::RunOpencodeAuthLogin) {
             return Err("Run `opencode auth login` in a terminal, then connect again".into());
         }
+        if method.hint == Some(AgentHint::NeedsEnvironmentSetup) {
+            return Err(format!(
+                "{} needs setup in a terminal or environment variables, which Span does not do. Set it up, then connect again",
+                method.name
+            ));
+        }
         if !method.supported {
             return Err("Terminal sign-in is not supported by this client".into());
         }
@@ -519,6 +547,12 @@ impl AgentService {
             bridge.delegated.insert(session_id.to_owned());
         }
     }
+    /// True while a turn of `session_id` is in flight on the agent.
+    pub fn is_running(&self, session_id: &str) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|bridge| bridge.running.contains(session_id))
+    }
     pub fn cancel(&self, session_id: String) -> Result<(), String> {
         {
             let mut bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
@@ -660,6 +694,9 @@ impl AgentService {
             .proposals
             .remove(&proposal_id)
             .ok_or("Proposal is no longer pending")?;
+        if selected.is_empty() {
+            bridge.rejected.insert(proposal.session.clone());
+        }
         bridge.revisions.insert(
             (proposal.session.clone(), snapshot.path.clone()),
             snapshot.revision,
@@ -752,6 +789,9 @@ async fn run(
                 };
                 let allowed = selected.as_ref().is_some_and(|choice| request.options.iter().any(|o| o.option_id.to_string() == *choice
                     && matches!(o.kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways)));
+                let rejected = selected.as_ref().is_some_and(|choice| request.options.iter().any(|o| o.option_id.to_string() == *choice
+                    && matches!(o.kind, PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways)));
+                if rejected { if let Ok(mut bridge) = state.lock() { bridge.rejected.insert(session.clone()); } }
                 for event in adapter.after_permission(&session, &request.tool_call.tool_call_id.to_string(), allowed) { emit(event); }
                 responder.respond(RequestPermissionResponse::new(match selected {
                     Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
@@ -884,11 +924,12 @@ async fn run(
                 bridge.adapter = adapter.clone();
                 bridge.mcp_caps = mcp_caps;
             }
-            // Ready is delivered before `start` resolves, so a caller never sees
-            // a started service whose sink has not yet recorded its features.
+            // Ready and Capabilities are emitted before `start` resolves, so
+            // whoever records them (the session manager's features) has done
+            // so by the time the caller opens a session.
             emit(ready_event);
-            let _ = ready.send(Ok(()));
             emit(AgentEvent::Capabilities { can_load_session: can_load, can_list_sessions: can_list });
+            let _ = ready.send(Ok(()));
             emit(AgentEvent::Status { state: "connected".into(), message: "ACP initialized. Agent process has your OS privileges.".into() });
             let mut cancel_deadline: Option<tokio::time::Instant> = None;
             let (compatibility_failed, mut compatibility_failures) = mpsc::unbounded_channel::<()>();
@@ -931,17 +972,17 @@ async fn run(
                         });
                         let needs_auth = result.as_ref().err().is_some_and(|e| e.code == ErrorCode::AuthRequired);
                         if let Ok(mut bridge) = state.lock() { bridge.auth_required = needs_auth; }
-                        if let (true, Err(error)) = (needs_auth, &result) { auth_required(&state, &emit, error); }
+                        if let (true, Err(error)) = (needs_auth, &result) { auth_required(&state, &emit, error, None); }
                         // An agent without ACP sessions cannot be used at all, so its
                         // connection ends; other failures keep the connection for the
                         // remaining sessions.
                         let unsupported = result.as_ref().err().is_some_and(|e| matches!(e.code, ErrorCode::MethodNotFound));
-                        let result = result.map_err(|e| if needs_auth { format!("Authentication required: {e}") } else { crate::compatibility::user_error("session/new", &e, &emit) });
+                        let result = result.map_err(|e| if needs_auth { auth_message(&e) } else { crate::compatibility::user_error("session/new", &e, &emit) });
                         let result = result.map(|(id, response)| {
                             if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                             emit(AgentEvent::Session { session_id: id.clone() });
                             let options = adapter.session_config(&id, &response);
-                            if !options.is_empty() { emit(AgentEvent::Config { session_id: id.clone(), options }); }
+                            if !options.is_empty() { emit_config(&emit, &adapter, &id, options); }
                             id
                         });
                         let _ = reply.send(result);
@@ -965,8 +1006,8 @@ async fn run(
                             if bridge.closed || !bridge.sessions.contains(&id) { return Err("Unknown session".to_string()); }
                             // Gemini silently aborts the running turn when a second prompt arrives, so none is ever sent.
                             if bridge.replaying.contains_key(&id) { return Err("The session is still being restored".to_string()); }
-                            if !bridge.running.insert(id.clone()) { return Err("A prompt is already running in this session".to_string()); }
-                            bridge.cancelled.remove(&id); Ok(())
+                            if !bridge.running.insert(id.clone()) { return Err(crate::manager::PROMPT_ALREADY_RUNNING.to_string()); }
+                            bridge.cancelled.remove(&id); bridge.rejected.remove(&id); Ok(())
                         }).unwrap_or_else(|_| Err("Agent state lock poisoned".into()));
                         if let Err(error) = valid { let _ = reply.send(Err(error)); continue; }
                         let slash = matches!(blocks.first(), Some(ContentBlock::Text(text)) if text.text.trim_start().starts_with('/'));
@@ -989,10 +1030,19 @@ async fn run(
                             };
                             if let Ok(mut bridge) = prompt_state.lock() { bridge.running.remove(&id); bridge.abandon.remove(&id); }
                             match result {
-                                Ok(response) => { prompt_emit(prompt_adapter.complete(&id, &response)); let _ = reply.send(Ok(())); }
+                                Ok(response) => {
+                                    let mut complete = prompt_adapter.complete(&id, &response);
+                                    // OpenCode ends a turn `cancelled` after the user rejects a
+                                    // permission; say so unless the user pressed Stop.
+                                    let (rejected, stopped) = prompt_state.lock().map(|mut bridge| (bridge.rejected.remove(&id), bridge.cancelled.contains(&id))).unwrap_or((false, false));
+                                    if let AgentEvent::Complete { stop_reason, hint, .. } = &mut complete {
+                                        if stop_reason == "cancelled" && rejected && !stopped && hint.is_none() { *hint = Some(AgentHint::RejectedByUser); }
+                                    }
+                                    prompt_emit(complete); let _ = reply.send(Ok(()));
+                                }
                                 Err(error) => {
                                     // OpenCode reports a missing sign-in only here; any agent may.
-                                    if error.code == ErrorCode::AuthRequired { auth_required(&prompt_state, &prompt_emit, &error); }
+                                    if error.code == ErrorCode::AuthRequired { auth_required(&prompt_state, &prompt_emit, &error, Some(&id)); }
                                     let message = crate::compatibility::user_error("session/prompt", &error, &prompt_emit);
                                     prompt_emit(AgentEvent::Error { session_id: Some(id.clone()), message: message.clone() }); let _ = reply.send(Err(message));
                                     if matches!(&error.code, ErrorCode::MethodNotFound) { let _ = compatibility_failed.send(()); }
@@ -1020,7 +1070,7 @@ async fn run(
                                         ConfigRoute::Option => config_options_value(response.get("configOptions")),
                                         _ => set_adapter.legacy_applied(&id, &config_id, &value),
                                     };
-                                    set_emit(AgentEvent::Config { session_id: id, options });
+                                    emit_config(&set_emit, &set_adapter, &id, options);
                                     let _ = reply.send(Ok(()));
                                 }
                                 Ok(Err(error)) => { let _ = reply.send(Err(error.to_string())); }
@@ -1031,25 +1081,14 @@ async fn run(
                     }
                     Command::ListSessions(reply) => {
                         if !can_list { let _ = reply.send(Err("This agent cannot list earlier sessions".into())); continue; }
-                        let list_cx = cx.clone(); let list_cwd = cwd.clone();
+                        let list_cx = cx.clone(); let list_cwd = cwd.clone(); let list_state = state.clone(); let list_emit = emit.clone();
                         cx.spawn(async move {
-                            let mut found: Vec<SessionSummary> = Vec::new();
-                            let mut cursor: Option<String> = None;
-                            for _ in 0..5 {
-                                let request = ListSessionsRequest::new().cwd(list_cwd.clone()).cursor(cursor.clone());
-                                let page = tokio::time::timeout(std::time::Duration::from_secs(20), list_cx.send_request(request).block_task()).await;
-                                match page {
-                                    Ok(Ok(page)) => {
-                                        found.extend(page.sessions.into_iter().map(|info| SessionSummary { session_id: info.session_id.to_string(), title: info.title, updated_at: info.updated_at }));
-                                        cursor = page.next_cursor;
-                                        if cursor.is_none() { break; }
-                                    }
-                                    Ok(Err(error)) => { let _ = reply.send(Err(error.to_string())); return Ok(()); }
-                                    Err(_) => { let _ = reply.send(Err("The agent did not list sessions within 20 seconds".into())); return Ok(()); }
-                                }
-                            }
-                            found.truncate(100);
-                            let _ = reply.send(Ok(found));
+                            let result = list_all_sessions(&list_cx, list_cwd).await.map(|found| {
+                                let mut kept = hide_deleted(&list_state, &list_emit, found);
+                                kept.truncate(LIST_MAX_SESSIONS);
+                                kept
+                            });
+                            let _ = reply.send(result);
                             Ok(())
                         })?;
                     }
@@ -1067,14 +1106,14 @@ async fn run(
                             match result {
                                 Ok(Ok(response)) => {
                                     let options = load_adapter.session_config(&id, &response);
-                                    if !options.is_empty() { load_emit(AgentEvent::Config { session_id: id.clone(), options }); }
+                                    if !options.is_empty() { emit_config(&load_emit, &load_adapter, &id, options); }
                                     if let Some(quiet) = profile.replay_quiet { replay_settled(&load_state, &id, quiet).await; }
                                     let _ = reply.send(Ok(()));
                                 }
                                 other => {
                                     if let Ok(mut bridge) = load_state.lock() { bridge.sessions.remove(&id); bridge.replaying.remove(&id); }
                                     if let Ok(Err(error)) = other.as_ref() {
-                                        if error.code == ErrorCode::AuthRequired { auth_required(&load_state, &load_emit, error); }
+                                        if error.code == ErrorCode::AuthRequired { auth_required(&load_state, &load_emit, error, Some(&id)); }
                                     }
                                     let _ = reply.send(Err(match other {
                                         Ok(Err(error)) => error.to_string(),
@@ -1123,7 +1162,10 @@ async fn run(
                                 Ok(Err(error)) => Err(error.to_string()),
                                 Err(_) => Err("The agent did not delete the session within 20 seconds".to_string()),
                             };
-                            if result.is_ok() { forget_session(&delete_state, &id); }
+                            if result.is_ok() {
+                                forget_session(&delete_state, &id);
+                                if let Ok(mut bridge) = delete_state.lock() { bridge.deleted.insert(id.clone()); }
+                            }
                             let _ = reply.send(result);
                             Ok(())
                         })?;
@@ -1163,24 +1205,172 @@ fn gated_mcp_servers(state: &Arc<Mutex<Bridge>>, servers: &[Value]) -> Vec<Value
         .unwrap_or_default()
 }
 
-/// Emit `AuthRequired` for an `-32000` error from any request.
+const AUTH_PREFIX: &str = "Authentication required";
+
+/// The user facing text of an `-32000` error. The prefix is added only when
+/// the agent's text does not already start with it (OpenCode's does).
+fn auth_message(error: &agent_client_protocol::Error) -> String {
+    let text = error.to_string();
+    if text
+        .to_ascii_lowercase()
+        .starts_with(&AUTH_PREFIX.to_ascii_lowercase())
+    {
+        text
+    } else {
+        format!("{AUTH_PREFIX}: {text}")
+    }
+}
+
+/// Whether an `-32000` message reads as a request to sign in. Gemini 0.46.0
+/// sends an account tier notice ("This client is no longer supported ...")
+/// with the same code, which is not.
+fn reads_as_sign_in(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "auth",
+        "sign in",
+        "sign-in",
+        "log in",
+        "login",
+        "logged in",
+        "credential",
+        "api key",
+        "unauthori",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+/// Emit `AuthRequired` for an `-32000` error from any request. `session` is
+/// the session the failed request was for, when there is one.
 fn auth_required(
     state: &Arc<Mutex<Bridge>>,
     emit: &EventSink,
     error: &agent_client_protocol::Error,
+    session: Option<&str>,
 ) {
-    let (methods, hint) = state
+    let (methods, adapter) = state
         .lock()
         .map(|mut bridge| {
             bridge.auth_required = true;
-            (bridge.auth_methods.clone(), bridge.adapter.auth_hint())
+            (bridge.auth_methods.clone(), bridge.adapter.clone())
         })
         .unwrap_or_default();
     emit(AgentEvent::AuthRequired {
-        message: format!("Authentication required: {error}"),
+        message: auth_message(error),
         auth_methods: methods,
-        hint,
+        hint: adapter.auth_hint(session),
+        agent_message: (!reads_as_sign_in(&error.message)).then(|| error.message.clone()),
     });
+}
+
+/// Emit a `Config` event and whatever the adapter derives from it (the
+/// permission bypass notice).
+fn emit_config(emit: &EventSink, adapter: &Adapter, session: &str, options: Vec<ConfigOption>) {
+    let event = AgentEvent::Config {
+        session_id: session.to_owned(),
+        options,
+    };
+    let extra = adapter.observe(session, &event);
+    emit(event);
+    for event in extra {
+        emit(event);
+    }
+}
+
+/// Pages followed for one `session/list`. Codex 2.3.0 returns empty pages
+/// that still carry a cursor (four pages to reach one session in a live
+/// run), so the cursor is followed until it is null, a cursor repeats, the
+/// page cap or the session cap is reached, or the time budget runs out.
+const LIST_MAX_PAGES: usize = 50;
+/// Overall time for one `list_sessions`, across pages.
+const LIST_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+/// Time for one page.
+const LIST_PAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// Sessions returned at most.
+const LIST_MAX_SESSIONS: usize = 100;
+
+async fn list_all_sessions(
+    cx: &ConnectionTo<Agent>,
+    cwd: std::path::PathBuf,
+) -> Result<Vec<SessionSummary>, String> {
+    let deadline = tokio::time::Instant::now() + LIST_BUDGET;
+    let mut found: Vec<SessionSummary> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen: HashSet<String> = HashSet::new();
+    for _ in 0..LIST_MAX_PAGES {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let wait = remaining.min(LIST_PAGE_TIMEOUT);
+        let request = ListSessionsRequest::new()
+            .cwd(cwd.clone())
+            .cursor(cursor.clone());
+        match tokio::time::timeout(wait, cx.send_request(request).block_task()).await {
+            Ok(Ok(page)) => {
+                found.extend(page.sessions.into_iter().map(|info| SessionSummary {
+                    session_id: info.session_id.to_string(),
+                    title: info.title,
+                    updated_at: info.updated_at,
+                }));
+                cursor = page.next_cursor;
+            }
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(_) if found.is_empty() => {
+                return Err(format!(
+                    "The agent did not list sessions within {}",
+                    spoken_seconds(wait)
+                ))
+            }
+            // Keep what earlier pages returned.
+            Err(_) => break,
+        }
+        if found.len() >= LIST_MAX_SESSIONS {
+            break;
+        }
+        match &cursor {
+            Some(next) if seen.insert(next.clone()) => {}
+            _ => break,
+        }
+    }
+    Ok(found)
+}
+
+/// Remove sessions the user deleted on this connection from a listing. A
+/// deleted session the agent still lists is reported once, as a notice for
+/// that session with the `deletedStillListed` hint.
+fn hide_deleted(
+    state: &Arc<Mutex<Bridge>>,
+    emit: &EventSink,
+    found: Vec<SessionSummary>,
+) -> Vec<SessionSummary> {
+    let mut newly_seen = Vec::new();
+    let kept = match state.lock() {
+        Ok(mut bridge) => {
+            let (hidden, kept): (Vec<_>, Vec<_>) = found
+                .into_iter()
+                .partition(|summary| bridge.deleted.contains(&summary.session_id));
+            for summary in hidden {
+                if bridge.deleted_listed.insert(summary.session_id.clone()) {
+                    newly_seen.push(summary.session_id);
+                }
+            }
+            kept
+        }
+        Err(_) => found,
+    };
+    for session_id in newly_seen {
+        emit(AgentEvent::Notice {
+            session_id,
+            severity: "info".into(),
+            title: String::new(),
+            description: None,
+            notice_id: Some("span/deleted-still-listed".into()),
+            hint: Some(AgentHint::DeletedStillListed),
+        });
+    }
+    kept
 }
 
 /// Wait until a replaying session has been quiet for `quiet` (at most 15
@@ -1508,5 +1698,39 @@ mod tests {
         assert!(!redact_log(&auth).contains(SECRET));
         let plain = json!({"method": "session/prompt", "params": {"sessionId": "s"}}).to_string();
         assert_eq!(redact_log(&plain), plain);
+    }
+
+    /// Live captures (Claude Code 0.98.0, Codex 2.3.0): `_auth/status_update`
+    /// names the signed-in account.
+    #[test]
+    fn auth_status_params_are_redacted_and_the_method_kept() {
+        let line = json!({"jsonrpc": "2.0", "method": "_auth/status_update", "params": {"authStatus": {"kind": "account", "label": "Claude Max",
+            "account": {"plan": "Claude Max", "email": "person@example.com", "organization": "person@example.com's Organization"}}}}).to_string();
+        let redacted = redact_log(&line);
+        assert!(!redacted.contains("person@example.com"), "{redacted}");
+        assert!(!redacted.contains("Claude Max"), "{redacted}");
+        let parsed: Value = serde_json::from_str(&redacted).unwrap();
+        assert_eq!(parsed["method"], "_auth/status_update");
+        assert_eq!(parsed["params"], REDACTED);
+    }
+
+    #[test]
+    fn auth_messages_are_prefixed_once() {
+        let error = |message: &str| agent_client_protocol::Error::new(-32000, message.to_owned());
+        // OpenCode 2.0.32 already starts with the prefix.
+        let opencode = error("Authentication required: provider authentication required");
+        assert_eq!(
+            auth_message(&opencode),
+            "Authentication required: provider authentication required"
+        );
+        let tier =
+            error("This client is no longer supported for Gemini Code Assist for individuals.");
+        assert_eq!(
+            auth_message(&tier),
+            "Authentication required: This client is no longer supported for Gemini Code Assist for individuals."
+        );
+        assert!(reads_as_sign_in(&opencode.message));
+        assert!(reads_as_sign_in("Unauthorized: no provider credentials"));
+        assert!(!reads_as_sign_in(&tier.message));
     }
 }

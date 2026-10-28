@@ -1,122 +1,145 @@
-import { For, Show, createEffect } from "solid-js";
+import { For, Show, createEffect, createMemo } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
-import type { AgentChoice, ConfigOptionView } from "./types";
+import type { ConfigOptionView } from "./types";
 import { arrowFocus, useEscape } from "./util";
+import { TRAIT_INFO, chipTrait, isFastSwitchOn, modelTraits, overlayTrait, type ModelTrait } from "../../lib/model-traits";
+import type { BrandIdentity } from "../../lib/brand-icons";
+import { EffortSlider, defaultLevel, focusModelRow, modelNameOf } from "./EffortSlider";
+import { groupOptions } from "../../lib/agent-options";
 
 type ModelPopoverProps = {
   agentName: string;
+  /** Every session config option. Only the model list and the effort slider are drawn; the fast switch still badges the current model. */
   options: ConfigOptionView[];
-  agents?: AgentChoice[];
+  /** Brand of the connected agent, shown on the provider row and every model row. */
+  brand?: BrandIdentity;
   busy?: boolean;
   onSelect: (configId: string, value: string) => void;
-  onSwitchAgent?: (agentId: string) => void;
+  /** Opens the agent popover from the provider row. Without it the row is not drawn. */
+  onOpenAgents?: () => void;
   onClose: () => void;
 };
 
-/** Bar heights rise from a short first bar to a full last bar. Level names come from the data. */
-export const barHeight = (index: number, count: number) => `${Math.round(30 + (70 * (index + 1)) / Math.max(1, count))}%`;
+/** True while a boolean fast switch among the options is on. It only applies to the current model. */
+export const fastSwitchOn = (options: readonly ConfigOptionView[]) => options.some(isFastSwitchOn);
 
-function LevelControl(props: { option: ConfigOptionView; disabled?: boolean; onSelect: (value: string) => void }) {
-  const selected = () => Math.max(0, props.option.choices.findIndex((choice) => choice.value === props.option.currentValue));
-  const current = () => props.option.choices[selected()];
+/** Traits of the model option's current choice, for the composer button. */
+export function currentModelTraits(options: readonly ConfigOptionView[]): ModelTrait[] {
+  const model = options.find((option) => option.category === "model");
+  const choice = model?.choices.find((candidate) => candidate.value === model.currentValue);
+  return choice ? modelTraits(choice, { fastOn: fastSwitchOn(options) }) : [];
+}
+
+/** The primary trait (fast bolt, or the star for heavy models) as a small round badge. */
+export function TraitBadge(props: { trait: ModelTrait; class?: string }) {
+  const info = () => TRAIT_INFO[props.trait];
   return (
-    <div class="sb-level">
-      <div class="sb-level-head">
-        <span class="sb-eyebrow tight">{props.option.name}</span>
-        <span class="sb-flex" />
-        <span class="sb-level-name">{current()?.name}</span>
-      </div>
-      <div class="sb-level-bars" role="radiogroup" aria-label={props.option.name}>
-        <For each={props.option.choices}>
-          {(choice, index) => (
-            <button
-              class="sb-level-bar"
-              role="radio"
-              aria-checked={choice.value === props.option.currentValue}
-              aria-label={choice.name}
-              title={choice.name}
-              disabled={props.disabled}
-              onClick={() => props.onSelect(choice.value)}
-            >
-              <span class="sb-level-fill" classList={{ on: index() <= selected() }} style={{ height: barHeight(index(), props.option.choices.length) }} />
-            </button>
-          )}
-        </For>
-      </div>
-      <Show when={props.option.choices.length > 1}>
-        <div class="sb-level-ends">
-          <span>{props.option.choices[0].name}</span>
-          <span>{props.option.choices[props.option.choices.length - 1].name}</span>
-        </div>
-      </Show>
-      <Show when={current()?.description}><div class="sb-sub wrap">{current()?.description}</div></Show>
-    </div>
+    <span class={`sb-trait-badge ${props.class ?? ""}`} data-trait={props.trait} role="img" aria-label={info().label} title={info().label}>
+      <Icon name={info().icon!} size={9} />
+    </span>
   );
 }
 
-/** Popover over the composer. Sections are built from the agent's session config options. */
+/** Agent brand mark with the primary trait badge at its bottom right corner. */
+export function ModelIcon(props: BrandIdentity & { traits: readonly ModelTrait[]; size?: number }) {
+  return (
+    <span class="sb-model-icon">
+      <BrandIcon id={props.id} name={props.name} size={props.size ?? 16} />
+      <Show when={overlayTrait(props.traits)}>{(trait) => <TraitBadge trait={trait()} />}</Show>
+    </span>
+  );
+}
+
+function TraitChip(props: { trait: ModelTrait }) {
+  const info = () => TRAIT_INFO[props.trait];
+  return (
+    <span class="sb-trait-chip" data-trait={props.trait} aria-label={info().label} title={info().label}>
+      <Show when={info().icon}>{(icon) => <Icon name={icon()} size={10} />}</Show>
+      {info().chip}
+    </span>
+  );
+}
+
+/** The model popover: a provider row that opens the agent popover, the agent's model list, then the effort slider. */
 export function ModelPopover(props: ModelPopoverProps) {
   let root: HTMLDivElement | undefined;
   useEscape(props.onClose);
+  const brand = () => props.brand ?? { name: props.agentName };
+  const fastOn = () => fastSwitchOn(props.options);
+  const groups = createMemo(() => groupOptions(props.options));
+  // Model lists first, then sliders, each keyed by id so a config update keeps the control under focus.
+  const sections = createMemo(() => [...groups().model, ...groups().effort].map((option) => option.id), undefined, { equals: (a, b) => a.join("\n") === b.join("\n") });
   createEffect(() => {
-    queueMicrotask(() => root?.querySelector<HTMLElement>("[aria-checked='true'], button:not(:disabled)")?.focus());
+    queueMicrotask(() => (root?.querySelector<HTMLElement>("[aria-checked='true']:not(:disabled)") ?? root?.querySelector<HTMLElement>("button:not(:disabled)"))?.focus());
   });
   return (
-    <div class="sb-popover" role="dialog" aria-label={`${props.agentName} options`} ref={root} onKeyDown={(event) => arrowFocus(event, root, "button:not(:disabled)")}>
-      <For each={props.options}>
-        {(option, index) => (
-          <>
-            <Show when={index() > 0}><div class="sb-rule-h" /></Show>
-            <Show
-              when={option.category === "thought_level"}
-              fallback={
-                <div role="radiogroup" aria-label={option.name}>
-                  <div class="sb-eyebrow">{option.category === "model" ? `${option.name} · ${props.agentName}` : option.name}</div>
-                  <For each={option.choices}>
-                    {(choice) => (
-                      <button
-                        class="sb-option"
-                        role="radio"
-                        aria-checked={choice.value === option.currentValue}
-                        disabled={props.busy}
-                        onClick={() => props.onSelect(option.id, choice.value)}
-                      >
-                        <span class="sb-option-text">
-                          <span class="sb-option-name">{choice.name}</span>
-                          <Show when={choice.description}><span class="sb-sub wrap">{choice.description}</span></Show>
-                        </span>
-                        <Show when={choice.value === option.currentValue}><Icon name="TickCircle" size={14} class="sb-accent" /></Show>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              }
-            >
-              <LevelControl option={option} disabled={props.busy} onSelect={(value) => props.onSelect(option.id, value)} />
-            </Show>
-          </>
-        )}
-      </For>
-      <Show when={props.agents?.length}>
+    <div class="sb-popover sb-picker" role="dialog" aria-label={`${props.agentName} model`} ref={root} onKeyDown={(event) => arrowFocus(event, root, "button:not(:disabled)")}>
+      <Show when={props.onOpenAgents}>
+        <button class="sb-option sb-provider" aria-label={`Agent: ${props.agentName}. Switch agent`} aria-haspopup="dialog" onClick={() => props.onOpenAgents?.()}>
+          <BrandIcon id={brand().id} name={brand().name} size={15} />
+          <span class="sb-option-text">
+            <span class="sb-option-name">{props.agentName}</span>
+          </span>
+          <Icon name="arrow-right4" size={11} />
+        </button>
         <div class="sb-rule-h" />
-        <div role="group" aria-label="Agent">
-          <div class="sb-eyebrow">Agent</div>
-          <For each={props.agents}>
-            {(agent) => (
-              <button class="sb-option" disabled={props.busy || agent.current || !props.onSwitchAgent} aria-current={agent.current ? "true" : undefined} onClick={() => props.onSwitchAgent?.(agent.id)}>
-                <BrandIcon id={agent.id} name={agent.name} size={15} />
-                <span class="sb-option-text">
-                  <span class="sb-option-name">{agent.name}</span>
-                  <Show when={agent.subtitle}><span class="sb-sub">{agent.subtitle}</span></Show>
-                </span>
-                <Show when={agent.current}><span class="sb-ok-text">Connected</span></Show>
-              </button>
-            )}
-          </For>
-        </div>
       </Show>
-      <p class="sb-fine pad">Options come from the agent's session config.</p>
+      {/* Keyed by option id and choice value, not object identity: a config
+          update delivers new option objects, and rebuilding the rows would
+          drop keyboard focus from the control the user is on. */}
+      <For each={sections()}>
+        {(optionId, index) => {
+          // The last seen option stays readable while a removed row is disposed.
+          let last = props.options.find((candidate) => candidate.id === optionId)!;
+          const option = () => (last = props.options.find((candidate) => candidate.id === optionId) ?? last);
+          return (
+            <>
+              <Show when={index() > 0}><div class="sb-rule-h" /></Show>
+              <Show
+                when={option().category === "thought_level"}
+                fallback={
+                  <div role="radiogroup" aria-label={option().name}>
+                    <div class="sb-eyebrow">{`${option().name} · ${props.agentName}`}</div>
+                    <For each={option().choices.map((choice) => choice.value)}>
+                      {(choiceValue) => {
+                        let lastChoice = option().choices.find((candidate) => candidate.value === choiceValue)!;
+                        const choice = () => (lastChoice = option().choices.find((candidate) => candidate.value === choiceValue) ?? lastChoice);
+                        const current = () => choiceValue === option().currentValue;
+                        const traits = () => modelTraits(choice(), { fastOn: current() && fastOn() });
+                        return (
+                          <button class="sb-option" role="radio" aria-checked={current()} disabled={props.busy} onClick={() => props.onSelect(option().id, choiceValue)}>
+                            <ModelIcon id={brand().id} name={brand().name} traits={traits()} />
+                            <span class="sb-option-text">
+                              <span class="sb-option-line">
+                                <span class="sb-option-name">{choice().name}</span>
+                                <Show when={chipTrait(traits(), choice().name)}>{(trait) => <TraitChip trait={trait()} />}</Show>
+                              </span>
+                              <Show when={choice().description}><span class="sb-sub wrap">{choice().description}</span></Show>
+                            </span>
+                            <Show when={current()}><Icon name="TickCircle" size={14} class="sb-accent" /></Show>
+                          </button>
+                        );
+                      }}
+                    </For>
+                  </div>
+                }
+              >
+                <EffortSlider
+                  label={option().name}
+                  options={option().choices}
+                  value={option().currentValue}
+                  defaultValue={defaultLevel(option().choices)}
+                  disabled={props.busy}
+                  modelName={modelNameOf(props.options)}
+                  onModelClick={() => focusModelRow(root, props.options)}
+                  onChange={(value) => props.onSelect(option().id, value)}
+                />
+              </Show>
+            </>
+          );
+        }}
+      </For>
     </div>
   );
 }

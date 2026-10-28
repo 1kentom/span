@@ -48,7 +48,7 @@ fn is_windows_reserved(name: &str) -> bool {
 }
 
 /// Shared by directory components and file names.
-fn check_component(name: &str) -> Result<()> {
+pub(crate) fn check_component(name: &str) -> Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(reject("name is empty or relative"));
     }
@@ -106,7 +106,7 @@ fn attachment_dir_parts(dir: &str) -> Result<Vec<&str>> {
     Ok(parts)
 }
 
-fn numbered(file_name: &str, n: u32) -> String {
+pub(crate) fn numbered(file_name: &str, n: u32) -> String {
     let path = Path::new(file_name);
     match (path.file_stem(), path.extension()) {
         (Some(stem), Some(ext)) => {

@@ -144,6 +144,18 @@ pub struct Settings {
     /// a missing value means the defaults.
     #[specta(optional)]
     pub agents: AgentSettings,
+    /// Update checks. Optional in TypeScript like `agents`.
+    #[specta(optional)]
+    pub updates: UpdateSettings,
+}
+
+/// `updates.*`: update checks for the app and for agents (ADR 0004).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateSettings {
+    /// Check once per launch, check-only, with a plain GET. Off by default.
+    /// Honoured only from the user's own settings file.
+    pub check_on_launch: bool,
 }
 
 /// `agents.*` settings.
@@ -185,6 +197,7 @@ impl Default for Settings {
             formatters: HashMap::new(),
             language_servers: LanguageServerSettings::default(),
             agents: AgentSettings::default(),
+            updates: UpdateSettings::default(),
         }
     }
 }
@@ -525,7 +538,11 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
 /// must not be able to switch these on: `agents.delegation.enabled` lets an
 /// agent start other agents (ADR 0003). The key is dropped from workspace
 /// settings before merging; unknown sibling keys are still rejected.
-const USER_ONLY: &[&[&str]] = &[&["agents", "delegation", "enabled"]];
+const USER_ONLY: &[&[&str]] = &[
+    &["agents", "delegation", "enabled"],
+    // A cloned project must not make Span contact the network at launch.
+    &["updates", "checkOnLaunch"],
+];
 
 pub(crate) fn without_user_only(mut value: Value) -> Value {
     drop_user_only(&mut value);

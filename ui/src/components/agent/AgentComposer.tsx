@@ -1,20 +1,23 @@
-import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
-import { BrandIcon } from "../BrandIcon";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { FileIcon, Icon } from "../Icon";
 import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
 import { shouldFocusDock } from "../../lib/agent-dock-focus";
-import { formatElapsed } from "../../lib/agent-feed";
 import { delegationLine } from "../../lib/agent-delegation";
-import { canCompact, type PermissionEvent } from "../../lib/agent-session";
-import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
-import { isDesktop } from "../../lib/client";
+import { canCompact, type FeedItem, type PermissionEvent } from "../../lib/agent-session";
+import { isSlashQuery, leaf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
+import { api, isDesktop } from "../../lib/client";
+import { URL_COPY, parseUrlRequest, withBrowserWait, type UrlRequestView } from "../../lib/agent-url-request";
 import { ContextBanner } from "./Banners";
-import { ComposerHints } from "./ComposerHints";
+import { AgentStatusBar } from "./AgentStatusBar";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
-import { ModelPopover } from "./ModelPopover";
+import { RunningStep } from "./RunningStep";
+import { RUN_TEXT } from "../../lib/agent-hint-text";
+import { createPickers } from "./ComposerPickers";
+import { brandFromModelNames, brandIconFor } from "../../lib/brand-icons";
+import { configViews } from "../../lib/agent-view";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
 import { SlashPopover } from "./SlashPopover";
@@ -27,6 +30,9 @@ const BANNER_AT = 85;
 /** Everything below the conversation: banners, plan, queue, docks, the prompt box and its toolbar. */
 export function AgentComposer(props: { agent: AgentController; brand: Brand; label: string }) {
   const a = props.agent;
+  const modelNames = () => (configViews(a.state().config).find((option) => option.category === "model")?.choices ?? []).map((choice) => choice.name);
+  /** The panel's brand, or the family its model list names when the agent identity is not resolved (no agent id yet). */
+  const brand = (): Brand => (brandIconFor(props.brand) ? props.brand : brandFromModelNames(modelNames()) ?? props.brand);
   let input: HTMLTextAreaElement | undefined;
   let plus: HTMLButtonElement | undefined;
   let uploadInput!: HTMLInputElement;
@@ -35,6 +41,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   const [slashClosedFor, setSlashClosedFor] = createSignal<string>();
   /** Focus is inside the open dock. The hints row lists dock keys only then. */
   const [dockFocused, setDockFocused] = createSignal(false);
+  const [editLast, setEditLast] = createSignal(0);
   /** Time of the last key or input in the prompt box, so a new dock never takes focus from someone typing. */
   let lastTypedAt = 0;
   const noteTyping = (event?: KeyboardEvent) => {
@@ -48,12 +55,35 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     },
     onFocusChange: setDockFocused,
   };
-  const dockOpen = () => Boolean(a.permission() || a.childPermission() || a.elicitation());
-  const config = createMemo(() => configViews(a.state().config));
-  const model = () => config().find((option) => option.category === "model");
-  const level = () => levelOf(config().find((option) => option.category === "thought_level"));
-  const mode = () => config().find((option) => option.category === "mode");
-  const modelLabel = () => currentChoice(model())?.name ?? props.label;
+  const dockOpen = () => Boolean(a.permission() || a.childPermission() || a.elicitation() || waitingStep());
+  const urlView = createMemo(() => {
+    const ask = a.elicitation();
+    return parseUrlRequest(ask?.message, ask?.url);
+  });
+  /** The page the user opened. Held in this component only, so the code is gone when the step ends or the panel closes. */
+  const [browserStep, setBrowserStep] = createSignal<{ requestId: string; url: string; view: UrlRequestView } | undefined>();
+  onCleanup(() => setBrowserStep(undefined));
+  const stepRecord = () => {
+    const step = browserStep();
+    return step ? a.state().feed.find((item): item is Extract<FeedItem, { kind: "signin" }> => item.kind === "signin" && item.requestId === step.requestId) : undefined;
+  };
+  const waitingStep = createMemo(() => {
+    const step = browserStep();
+    return step && !a.elicitation() && a.connected() && a.running() && stepRecord()?.status === "opened" ? step : undefined;
+  });
+  createEffect(() => {
+    if (!browserStep()) return;
+    const status = stepRecord()?.status;
+    if (!stepRecord() || status === "completed" || status === "cancelled" || !a.connected() || !a.running()) setBrowserStep(undefined);
+  });
+  /** A URL request the app cannot open is declined at once. The feed already records why. */
+  const declinedUrls = new Set<string>();
+  createEffect(() => {
+    const ask = a.elicitation();
+    if (ask?.mode !== "url" || !urlView().rejection || declinedUrls.has(ask.requestId)) return;
+    declinedUrls.add(ask.requestId);
+    void a.respondElicitation(ask.requestId, "decline");
+  });
   const usage = () => a.state().usage;
   const showBanner = () => {
     const current = usage();
@@ -140,17 +170,23 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   const hasPayload = () => Boolean(a.prompt().trim() || a.attachments().length);
   const loadingOnly = (reason: string) => reason === "Still loading.";
   const reportable = () => a.blocked().filter((entry) => !loadingOnly(entry.reason));
-  const toggle = (menu: "model" | "agents" | "attach") => a.setMenu(a.menu() === menu ? null : menu);
-  const closeMenu = () => {
-    a.setMenu(null);
-    input?.focus();
-  };
+  const toggle = (menu: "attach") => a.setMenu(a.menu() === menu ? null : menu);
+  const pickers = createPickers(a, { get brand() { return brand(); }, get label() { return props.label; } }, () => input);
 
+
+  /** Taller field, about 40 percent of the panel. Local view state only; Escape never touches it. */
+  const [expanded, setExpanded] = createSignal(false);
   createEffect(() => {
     a.prompt();
+    const tall = expanded();
     if (!input) return;
+    if (tall) {
+      const panel = input.closest<HTMLElement>(".agent-panel")?.clientHeight ?? 0;
+      input.style.height = `${Math.max(120, Math.round(panel * 0.4))}px`;
+      return;
+    }
     input.style.height = "auto";
-    input.style.height = `${Math.min(180, Math.max(61, input.scrollHeight))}px`;
+    input.style.height = `${Math.min(178, Math.max(60, input.scrollHeight))}px`;
   });
 
   return (
@@ -180,7 +216,11 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
       <Show when={a.queue().length}>
         <QueuePanel
           items={a.queue().map((entry) => ({ id: entry.id, text: entry.text || `${entry.items.length} attachment${entry.items.length === 1 ? "" : "s"}` }))}
-          note={a.queueHeld() ? undefined : a.online() ? "Sent when the agent is idle" : "Sent when you're back online"}
+          note={a.queueHeld() ? undefined : a.online() ? "Sends when the agent finishes" : "Sends when you're back online"}
+          pendingId={a.queueSending()}
+          editLastToken={editLast()}
+          onEmptied={() => input?.focus()}
+          onReorder={a.reorderQueue}
           held={a.queueHeld()}
           canSendAll={a.connected() && !a.running() && a.online()}
           onSendAll={a.sendQueued}
@@ -191,13 +231,20 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         />
       </Show>
       <Show when={a.running()}>
-        <ActivityBar label={a.state().stopRequested ? "Stopping" : "Working"} elapsed={formatElapsed(a.clock() - a.turnStart())} hint={a.state().stopRequested ? undefined : "Esc to stop"} />
+        <Show when={a.runningStep()}>
+          {(step) => <RunningStep title={step().title} command={step().command} elapsed={step().elapsed} lines={step().lines} hidden={step().hidden} full={step().full} still={step().still} />}
+        </Show>
+        <ActivityBar
+          label={withBrowserWait(a.activity(), a.elicitation()?.mode === "url" || Boolean(waitingStep()))}
+          elapsed={a.turnElapsed()}
+          hint={a.state().stopRequested || a.elicitation() || waitingStep() ? undefined : "Esc to stop"}
+        />
       </Show>
       <Show when={leadRequest()} keyed>
         {(request) => (
           <PermissionDock
             title={request.event.title}
-            brand={props.brand}
+            brand={brand()}
             details={permissionView(request.event)}
             options={request.event.options}
             busy={Boolean(a.pendingAction())}
@@ -228,101 +275,75 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             fallback={
               <Show when={`${request().requestId}:${a.form()?.index ?? 0}`} keyed>
                 {(_key) => (
-                  <>
-                    <QuestionDock
-                      asker={{ ...props.brand, label: props.label }}
-                      step={a.fields().length > 1 ? `${(a.form()?.index ?? 0) + 1} of ${a.fields().length}` : undefined}
-                      prompt={
-                        !field()
-                          ? request().message
-                          : field()!.type === "unsupported"
-                            ? `${request().message} (${field()!.label}: Span cannot answer this kind of question)`
-                            : a.fields().length === 1
-                              ? request().message
-                              : `${request().message} (${field()!.label})`
-                      }
-                      options={field() ? field()!.options : [{ id: "accept", label: "Continue" }]}
-                      allowText={Boolean(field() && !field()!.options.length && field()!.type !== "unsupported")}
-                      autoFocus={dockFocusProps.autoFocus}
-                      onFocusChange={dockFocusProps.onFocusChange}
-                      onAnswer={(answer) => void a.answerForm(answer)}
-                      onCancel={() => void a.respondElicitation(request().requestId, "decline")}
-                    />
-                    <Show when={field()?.description}>
-                      <p class="sb-fine agent-dock-note">{field()!.description}</p>
-                    </Show>
-                    <Show when={a.form()?.error}>
-                      <p class="sb-fine agent-dock-error" role="alert">{a.form()!.error}</p>
-                    </Show>
-                  </>
+                  <QuestionDock
+                    asker={{ ...brand(), label: props.label }}
+                    step={a.fields().length > 1 ? `${(a.form()?.index ?? 0) + 1} of ${a.fields().length}` : undefined}
+                    prompt={
+                      !field()
+                        ? request().message
+                        : field()!.type === "unsupported"
+                          ? `${request().message} (${field()!.label}: Span cannot answer this kind of question)`
+                          : a.fields().length === 1
+                            ? request().message
+                            : `${request().message} (${field()!.label})`
+                    }
+                    detail={field()?.description}
+                    error={a.form()?.error}
+                    options={field() ? field()!.options : [{ id: "accept", label: "Continue" }]}
+                    allowText={Boolean(field() && !field()!.options.length && field()!.type !== "unsupported")}
+                    autoFocus={dockFocusProps.autoFocus}
+                    onFocusChange={dockFocusProps.onFocusChange}
+                    onAnswer={(answer) => void a.answerForm(answer)}
+                    onCancel={() => void a.respondElicitation(request().requestId, "decline")}
+                  />
                 )}
               </Show>
             }
           >
             <UrlDock
-              title="The agent asks you to open a page"
-              text={`${request().message} Span opens this address in your browser only after you choose Open browser.`}
-              brand={props.brand}
+              title={urlView().title}
+              text={`${urlView().text} ${URL_COPY.consent}`.trim()}
+              brand={brand()}
               href={request().url ?? ""}
+              code={urlView().code}
               autoFocus={dockFocusProps.autoFocus}
               onFocusChange={dockFocusProps.onFocusChange}
-              onOpen={() => void a.openElicitationUrl(request().requestId, request().url ?? "")}
+              onCopyCode={(code) => api.writeClipboard(code)}
+              onOpen={() => {
+                setBrowserStep({ requestId: request().requestId, url: request().url ?? "", view: urlView() });
+                void a.openElicitationUrl(request().requestId, request().url ?? "");
+              }}
               onCancel={() => void a.respondElicitation(request().requestId, "decline")}
             />
           </Show>
         )}
       </Show>
-      <div class="att-dropzone agent-composer">
-        <Show when={a.menu() && a.menu() !== "actions" && a.menu() !== "attach"}>
-          <button class="agent-menu-dismiss" aria-label="Close agent menu" tabindex="-1" onClick={closeMenu} />
+      <Show when={waitingStep()}>
+        {(step) => (
+          <UrlDock
+            waiting
+            title={step().view.title}
+            text={step().view.text}
+            brand={brand()}
+            href={step().url}
+            code={step().view.code}
+            autoFocus={dockFocusProps.autoFocus}
+            onFocusChange={dockFocusProps.onFocusChange}
+            onCopyCode={(code) => api.writeClipboard(code)}
+            onOpen={() => void api.openExternal(step().url).catch(() => undefined)}
+            onCancel={() => setBrowserStep(undefined)}
+          />
+        )}
+      </Show>
+      <div class="att-dropzone agent-composer" classList={{ expanded: expanded() }}>
+        <Show when={pickers.open()}>
+          <button class="agent-menu-dismiss" aria-label="Close agent menu" tabindex="-1" onClick={pickers.close} />
         </Show>
         <div class="agent-popover-anchor">
           <Show when={slashOpen() && (groups().length || a.prompt().length > 1)}>
             <SlashPopover groups={groups()} onSelect={pickSlash} onClose={() => setSlashClosedFor(a.prompt())} />
           </Show>
-          <Show when={a.menu() === "model"}>
-            <ModelPopover
-              agentName={props.label}
-              options={config()}
-              agents={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: entry.version, current: entry.id === a.agentId() }))}
-              busy={a.pendingAction().startsWith("config:") || a.working() || a.running()}
-              onSelect={(id, value) => void a.setConfig(id, value)}
-              onSwitchAgent={(id) => a.connectInstalled(id)}
-              onClose={closeMenu}
-            />
-          </Show>
-          <Show when={a.menu() === "agents"}>
-            <div class="sb-popover" role="dialog" aria-label="Agents">
-              <Show when={isDesktop} fallback={<p class="sb-fine pad">Open span desktop to connect an ACP agent.</p>}>
-                <div class="sb-eyebrow">Installed agents</div>
-                <For each={a.installed()} fallback={<p class="sb-fine pad">No managed agents installed yet.</p>}>
-                  {(entry) => (
-                    <button class="sb-option" disabled={a.working()} onClick={() => a.connectInstalled(entry.id)}>
-                      <BrandIcon id={entry.id} name={a.registryName(entry.id)} size={15} />
-                      <span class="sb-option-text">
-                        <span class="sb-option-name">{a.registryName(entry.id) || entry.id}</span>
-                        <span class="sb-sub">{entry.version}</span>
-                      </span>
-                    </button>
-                  )}
-                </For>
-                <div class="sb-rule-h" />
-                <button
-                  class="sb-option"
-                  onClick={() => {
-                    a.setMenu(null);
-                    a.setView("connect");
-                  }}
-                >
-                  <Icon name="Code1" size={15} />
-                  <span class="sb-option-text">
-                    <span class="sb-option-name">Registry and custom command</span>
-                  </span>
-                  <Icon name="arrow-right4" size={11} />
-                </button>
-              </Show>
-            </div>
-          </Show>
+          <pickers.Popovers />
         </div>
         <Show when={a.menu() === "attach"}>
           <AttachMenu agentName={props.label} capabilities={a.caps()} handlers={attachHandlers()} disabledReasons={attachReasons()} onClose={() => a.setMenu(null)} returnFocus={() => plus} />
@@ -364,6 +385,19 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             {reportable().length === 1 ? "it" : "them"} to send.
           </p>
         </Show>
+        <Show when={a.runHint()}>
+          <div class="agent-run-hint">
+            <span class="sb-flex">{RUN_TEXT.busy}</span>
+            <Show when={a.busyNotice()}>
+              <button type="button" class="sb-btn" disabled={!a.canSend()} onClick={() => void a.steer()}>
+                Steer
+              </button>
+              <button type="button" class="sb-btn" disabled={!a.canSend()} onClick={() => void a.send()}>
+                Queue
+              </button>
+            </Show>
+          </div>
+        </Show>
         <label class="sb-visually-hidden" for="agent-prompt">
           Message to agent
         </label>
@@ -390,6 +424,12 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               // An open dock is answered from the keyboard by moving into it. Tab does not queue while one is open.
               event.preventDefault();
               focusDock(footer?.querySelector<HTMLElement>(".sb-dock") ?? undefined);
+              return;
+            }
+            // With messages queued, ArrowUp in an empty composer edits the last one instead of recalling a prompt.
+            if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && !event.isComposing && !a.prompt() && a.queue().length) {
+              event.preventDefault();
+              setEditLast((token) => token + 1);
               return;
             }
             a.recallPrompt(event);
@@ -421,35 +461,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           </button>
           <input ref={uploadInput} class="att-file-input" type="file" multiple tabIndex={-1} aria-hidden="true" onChange={pickFiles} />
           <input ref={imageInput} class="att-file-input" type="file" multiple accept="image/*" tabIndex={-1} aria-hidden="true" onChange={pickFiles} />
-          <button
-            class="agent-tool-button agent-model-button"
-            aria-label={a.connected() ? `Agent and model: ${props.label}, ${modelLabel()}` : "Select agent"}
-            title={a.connected() ? "Agent and model" : "Select agent"}
-            aria-haspopup="dialog"
-            aria-expanded={a.menu() === "model" || a.menu() === "agents"}
-            onClick={() => toggle(a.connected() ? "model" : "agents")}
-          >
-            <BrandIcon id={props.brand.id} name={props.brand.name} size={15} />
-            <span class="agent-model-name">{a.connected() ? modelLabel() : "No agent"}</span>
-            <Show when={a.connected() && level()}>
-              {(current) => (
-                <span class="agent-level" aria-hidden="true">
-                  <For each={Array.from({ length: current().count }, (_, index) => index)}>
-                    {(index) => <span classList={{ on: index < current().index }} style={{ height: `${Math.round(30 + (70 * (index + 1)) / current().count)}%` }} />}
-                  </For>
-                </span>
-              )}
-            </Show>
-            <Icon name="arrow-down4" size={10} />
-          </button>
-          <Show when={a.connected() && mode()}>
-            {(option) => (
-              <button class="agent-tool-button agent-mode-button" aria-label={`${option().name}: ${currentChoice(option())?.name ?? option().currentValue}`} aria-haspopup="dialog" onClick={() => toggle("model")}>
-                <span class="agent-model-name">{currentChoice(option())?.name ?? option().currentValue}</span>
-                <Icon name="arrow-down4" size={10} />
-              </button>
-            )}
-          </Show>
+          <pickers.Chips />
           <span class="agent-toolbar-spacer" />
           <Show when={a.connected() && usage()}>
             <UsageRing used={usage()!.used} size={usage()!.size} cost={usage()!.cost} warnAt={BANNER_AT} />
@@ -459,6 +471,18 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               {a.state().turnUsage!.tokens.toLocaleString()} tokens last turn
             </span>
           </Show>
+          {/* Expand, send and stop stay together. When the row is too short they move to a second line as one group. */}
+          <span class="agent-toolbar-end">
+          <button
+            type="button"
+            class="agent-tool-button agent-expand"
+            aria-pressed={expanded()}
+            aria-label={expanded() ? "Collapse composer" : "Expand composer"}
+            title={expanded() ? "Collapse composer" : "Expand composer"}
+            onClick={() => setExpanded(!expanded())}
+          >
+            <Icon name="Maximize4" size={14} />
+          </button>
           <button
             class="agent-send"
             aria-label={a.running() ? "Queue follow-up" : "Send prompt"}
@@ -481,15 +505,21 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               <Icon name="Stop" size={15} />
             </button>
           </Show>
+          </span>
         </div>
         <AttachmentNotices intake={a.intake} />
       </div>
-      <div class="agent-composer-hint">
-        <span class="sb-ellipsis">{isDesktop ? (a.connected() ? a.state().statusMessage : "Connect an ACP agent to begin") : "Browser preview · agent unavailable"}</span>
-      </div>
-      <Show when={a.connected()}>
-        <ComposerHints mode={hintMode()} hints={hints()} />
-      </Show>
+      <AgentStatusBar
+        text={isDesktop ? (a.connected() ? a.state().statusMessage : "Connect an ACP agent to begin") : "Browser preview · agent unavailable"}
+        running={a.running()}
+        input={{
+          connecting: Boolean(a.connecting()),
+          toolActive: Boolean(a.runningStep()),
+          needsYou: dockOpen(),
+          failed: a.state().status === "error",
+        }}
+        hints={{ mode: hintMode(), hints: a.connected() ? hints() : {} }}
+      />
     </footer>
   );
 }

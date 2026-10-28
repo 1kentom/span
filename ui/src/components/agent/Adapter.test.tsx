@@ -47,6 +47,7 @@ const type = (input: HTMLInputElement, value: string) => {
 };
 
 beforeEach(() => {
+  window.localStorage.clear();
   mocks.listeners.splice(0);
   mocks.api.agentConnect.mockReset();
   mocks.api.agentSetConfig.mockClear();
@@ -311,8 +312,10 @@ describe("sign-in forms and secrets", () => {
     await tick();
     click(host.querySelector("[aria-label='Connect opencode']"));
     await tick();
-    expect(host.querySelectorAll("code")).toHaveLength(1);
     expect(text(host.querySelector(".sb-auth-hint"))).toBe("Run opencode auth login in a terminal, then retry");
+    expect(text(host.querySelector(".sb-terminal-command"))).toBe("opencode auth login");
+    expect(host.querySelector("[aria-label='Copy command']")).not.toBeNull();
+    expect(text(host.querySelector(".sb-terminal-login .sb-btn.primary"))).toBe("I have signed in, retry");
     expect(text(host)).not.toContain("needs a terminal sign-in");
   });
   it("authenticateWith passes the credential straight through and leaves it nowhere in state", async () => {
@@ -359,16 +362,16 @@ describe("feed and composer with adapter data", () => {
     const notice = (description: string): AgentEvent => ({ kind: "notice", sessionId: "s1", severity: "warning", title: "", description, noticeId: "retry", hint: "retrying" }) as AgentEvent;
     mocks.emit(notice("attempt 1"));
     await tick();
-    expect(host.querySelectorAll(".sb-card.alert")).toHaveLength(1);
-    expect(text(host.querySelector(".sb-card.alert"))).toContain("Retrying");
-    expect(text(host.querySelector(".sb-card.alert"))).toContain("attempt 1");
+    expect(host.querySelectorAll(".sb-warning-note")).toHaveLength(1);
+    expect(text(host.querySelector(".sb-warning-note"))).toContain("Retrying");
+    expect(text(host.querySelector(".sb-warning-note"))).toContain("attempt 1");
     mocks.emit(notice("attempt 2"));
     await tick();
-    expect(host.querySelectorAll(".sb-card.alert")).toHaveLength(1);
-    expect(text(host.querySelector(".sb-card.alert"))).toContain("attempt 2");
+    expect(host.querySelectorAll(".sb-warning-note")).toHaveLength(1);
+    expect(text(host.querySelector(".sb-warning-note"))).toContain("attempt 2");
     mocks.emit({ kind: "noticeCleared", sessionId: "s1", noticeId: "retry" });
     await tick();
-    expect(host.querySelectorAll(".sb-card.alert")).toHaveLength(0);
+    expect(host.querySelectorAll(".sb-warning-note")).toHaveLength(0);
     expect(a.feed()).toEqual([]);
   });
   it("renders replayed user attachments as chips", async () => {
@@ -458,19 +461,140 @@ describe("Gemini legacy modes and models", () => {
       { id: "model", name: "Model", description: null, category: "model", currentValue: "gemini-2.5-pro", groups: [{ name: "", choices: [{ value: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }, { value: "gemini-2.5-flash", name: "Gemini 2.5 Flash" }] }] },
     ],
   } as AgentEvent;
-  it("shows them as normal options in the model popover and changes them through set-config", async () => {
+  it("shows the models in the model popover and the modes in the mode popover, and changes them through set-config", async () => {
     const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "gemini", name: "Gemini" }} label="Gemini" />);
     mocks.emit(config);
     await tick();
-    click(host.querySelector("[aria-label^='Agent and model']"));
+    click(host.querySelector("[aria-label^='Model:']"));
     await tick();
-    const popover = host.querySelector("[role=dialog]")!;
-    expect([...popover.querySelectorAll("[role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Model", "Mode"]);
+    let popover = host.querySelector("[role=dialog]")!;
+    expect([...popover.querySelectorAll("[role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Model"]);
     expect(text(popover)).toContain("Gemini 2.5 Flash");
-    expect(text(popover)).toContain("YOLO");
+    expect(text(popover)).not.toContain("YOLO");
     click([...popover.querySelectorAll("[role=radio]")].find((option) => option.textContent?.includes("Gemini 2.5 Flash")));
     await tick();
     expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("model", "gemini-2.5-flash");
+    click(host.querySelector(".agent-mode-button"));
+    await tick();
+    popover = host.querySelector("[role=dialog]")!;
+    expect([...popover.querySelectorAll("[role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Mode"]);
+    click([...popover.querySelectorAll("[role=radio]")].find((option) => option.textContent?.includes("YOLO")));
+    await tick();
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("mode", "yolo");
+  });
+});
+
+describe("composer pickers", () => {
+  const select = (id: string, name: string, category: string | null, current: string, choices: [string, string, string?][]) => ({
+    id, name, description: null, category, currentValue: current,
+    groups: [{ name: "", choices: choices.map(([value, label, description]) => ({ value, name: label, description: description ?? null })) }],
+  });
+  const codex = {
+    kind: "config",
+    sessionId: "s1",
+    options: [
+      select("mode", "Mode", "mode", "agent", [["read-only", "Read-only", "Requires approval to edit files and access the internet."], ["workspace", "Workspace access"], ["agent", "Auto review", "Only ask for actions detected as potentially unsafe"], ["agent-full-access", "Full access"]]),
+      select("model", "Model", "model", "sol", [["sol", "6.1 Sol"], ["luna", "6 Luna"]]),
+      select("reasoning_effort", "Reasoning effort", "thought_level", "medium", [["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"]]),
+      select("collaboration_mode", "Collaboration mode", null, "default", [["default", "Default"], ["plan", "Plan", "Plan before making changes"]]),
+      select("fast_mode", "Fast mode", null, "off", [["off", "Off", "Default speed, normal usage"], ["on", "On", "1.5x speed, increased usage"]]),
+    ],
+  } as AgentEvent;
+  const dialogs = (host: Element) => [...host.querySelectorAll("[role=dialog]")].map((dialog) => dialog.getAttribute("aria-label"));
+  async function codexComposer() {
+    const ready = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "codex-acp", name: "Codex" }} label="Codex" />);
+    mocks.emit(codex);
+    await tick();
+    const chip = (selector: string) => ready.host.querySelector<HTMLButtonElement>(selector)!;
+    return { ...ready, agentChip: chip(".agent-agent-button"), modelChip: chip(".agent-model-button"), modeChip: chip(".agent-mode-button") };
+  }
+
+  it("draws three chips with their own accessible names and the full mode label", async () => {
+    const { agentChip, modelChip, modeChip } = await codexComposer();
+    expect(agentChip.getAttribute("aria-label")).toBe("Agent: Codex");
+    expect(modelChip.getAttribute("aria-label")).toBe("Model: 6.1 Sol, Reasoning effort: Medium");
+    expect(text(modelChip.querySelector(".agent-model-name"))).toBe("6.1 Sol");
+    expect(modelChip.querySelectorAll(".agent-level > span")).toHaveLength(4);
+    expect(modeChip.getAttribute("aria-label")).toBe("Mode: Auto review");
+    expect(text(modeChip.querySelector(".agent-model-name"))).toBe("Auto review");
+    for (const chip of [agentChip, modelChip, modeChip]) expect(chip.getAttribute("aria-haspopup")).toBe("dialog");
+  });
+
+  it("opens one popover at a time, each with its own content", async () => {
+    const { host, modelChip, modeChip, agentChip } = await codexComposer();
+    click(modelChip);
+    await tick();
+    expect(dialogs(host)).toEqual(["Codex model"]);
+    expect(modelChip.getAttribute("aria-expanded")).toBe("true");
+    click(modeChip);
+    await tick();
+    expect(dialogs(host)).toEqual(["Codex mode"]);
+    expect([modelChip.getAttribute("aria-expanded"), modeChip.getAttribute("aria-expanded")]).toEqual(["false", "true"]);
+    expect([...host.querySelectorAll("[role=dialog] [role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Mode", "Collaboration mode", "Fast mode"]);
+    click(agentChip);
+    await tick();
+    expect(dialogs(host)).toEqual(["Agents"]);
+    click(agentChip);
+    await tick();
+    expect(dialogs(host)).toEqual([]);
+  });
+
+  it("applies a mode popover pick at once through set-config", async () => {
+    const { host, modeChip } = await codexComposer();
+    click(modeChip);
+    await tick();
+    click([...host.querySelectorAll("[role=dialog] [role=radio]")].find((row) => row.textContent?.includes("1.5x speed")));
+    await tick();
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("fast_mode", "on");
+  });
+
+  it("returns focus to the chip on Escape and on an outside click", async () => {
+    const { host, modelChip, modeChip } = await codexComposer();
+    click(modeChip);
+    await tick();
+    await tick();
+    expect(host.querySelector("[role=dialog]")!.contains(document.activeElement)).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(dialogs(host)).toEqual([]);
+    expect(document.activeElement).toBe(modeChip);
+    click(modelChip);
+    await tick();
+    click(host.querySelector(".agent-menu-dismiss"));
+    await tick();
+    expect(dialogs(host)).toEqual([]);
+    expect(document.activeElement).toBe(modelChip);
+  });
+
+  it("opens the agent popover from the provider row and returns focus to the model chip", async () => {
+    const { host, modelChip } = await codexComposer();
+    click(modelChip);
+    await tick();
+    click(host.querySelector(".sb-provider"));
+    await tick();
+    expect(dialogs(host)).toEqual(["Agents"]);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(document.activeElement).toBe(modelChip);
+  });
+
+  it("hides the mode chip and the model chip when the agent reports nothing for them", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "a", name: "Agent" }} label="Agent" />);
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("effort", "Effort", "thought_level", "low", [["low", "Low"], ["high", "High"]])] } as AgentEvent);
+    await tick();
+    expect(host.querySelector(".agent-mode-button")).toBeNull();
+    expect(host.querySelector(".agent-model-button")).not.toBeNull();
+    mocks.emit({ kind: "config", sessionId: "s1", options: [] } as AgentEvent);
+    await tick();
+    expect(host.querySelector(".agent-model-button")).toBeNull();
+    expect(host.querySelector(".agent-agent-button")!.getAttribute("aria-label")).toBe("Agent: Agent");
+  });
+
+  it("labels an on/off option on the chip with its name when the agent has no mode", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "a", name: "Agent" }} label="Agent" />);
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("fast_mode", "Fast mode", null, "on", [["off", "Off"], ["on", "On"]])] } as AgentEvent);
+    await tick();
+    expect(text(host.querySelector(".agent-mode-button .agent-model-name"))).toBe("Fast mode: On");
   });
 });
 
@@ -519,9 +643,10 @@ describe("live announcements", () => {
     await tick();
     const bar = host.querySelector(".sb-activity")!;
     expect(bar).not.toBeNull();
-    expect(text(bar)).toMatch(/Working · 0s/);
+    // The bar names the phase (no tool yet, so the agent is thinking) and ticks a m:ss clock.
+    expect(text(bar)).toMatch(/Thinking · 0:00/);
     const live = [...host.querySelectorAll("[aria-live], [role=status], [role=alert]")];
-    for (const region of live) expect(text(region) ?? "", region.outerHTML).not.toMatch(/\d+s\b/);
+    for (const region of live) expect(text(region) ?? "", region.outerHTML).not.toMatch(/\d+s\b|\d+:\d\d/);
     expect(bar.closest("[aria-live], [role=status]")).toBeNull();
     const status = host.querySelector(".agent-run-status")!;
     expect(status.getAttribute("role")).toBe("status");
@@ -545,5 +670,93 @@ describe("live announcements", () => {
     mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "end_turn" } as AgentEvent);
     await tick();
     expect(message.getAttribute("aria-busy")).not.toBe("true");
+  });
+});
+
+describe("live agent run findings in the panel", () => {
+  it("shows no bypass banner by the composer: the mode chip already says it", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "claude", name: "Claude" }} label="Claude" />);
+    mocks.emit({ kind: "notice", sessionId: "s1", severity: "warning", title: "Bypass permissions", description: null, noticeId: "span/permission-bypass", hint: "permissionsBypassed" } as AgentEvent);
+    await tick();
+    expect(host.querySelector(".sb-permission-bypass")).toBeNull();
+    mocks.emit({ kind: "noticeCleared", sessionId: "s1", noticeId: "span/permission-bypass" });
+    await tick();
+    expect(host.querySelector(".sb-permission-bypass")).toBeNull();
+  });
+
+  it("puts Gemini's account message first and offers sign-in only as a secondary choice", async () => {
+    Element.prototype.scrollTo = () => undefined;
+    const tier = "This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google";
+    const methods = [
+      { id: "oauth-personal", name: "Log in with Google", description: "Log in with your Google account", kind: "agent", supported: true },
+      { id: "vertex-ai", name: "Vertex AI", description: "Use an API key with Vertex AI GenAI API", kind: "agent", supported: false, hint: "needsEnvironmentSetup" as const },
+    ];
+    mocks.api.agentInstalled.mockResolvedValueOnce([{ id: "gemini", version: "0.46.0", launch: { command: "gemini", args: ["--acp"], env: {} } }] as never);
+    mocks.api.agentConnect.mockImplementationOnce(async () => {
+      mocks.emit({ kind: "ready", agentName: "gemini-cli", agentTitle: "Gemini CLI", agentVersion: "0.46.0", features: features(), authMethods: methods }, { kind: "authRequired", message: `Authentication required: ${tier}`, authMethods: methods, agentMessage: tier } as AgentEvent);
+      return "";
+    });
+    const host = mount(() => <AgentPanel workspacePath="/w" workspaceGeneration={1} />);
+    await tick();
+    await tick();
+    click(host.querySelector("[aria-label='Connect gemini']"));
+    await tick();
+    const card = host.querySelector(".sb-card.alert");
+    expect(text(card)).toContain(tier);
+    expect(card!.compareDocumentPosition(host.querySelector(".sb-signin")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(host.querySelector(".sb-method.primary")).toBeNull();
+    expect(text(host.querySelector(".sb-method"))).toContain("Log in with Google");
+    expect(text(host)).toContain("Vertex AI needs setup in a terminal or environment variables, which Span does not do. Set it up, then reconnect.");
+    expect(text(host)).not.toContain("needs a terminal sign-in");
+  });
+
+  it("suggests another model when only the default model's provider is signed out", async () => {
+    Element.prototype.scrollTo = () => undefined;
+    const methods = [{ id: "opencode-login", name: "Login with opencode", description: null, kind: "agent", supported: false, hint: "runOpencodeAuthLogin" as const }];
+    mocks.api.agentInstalled.mockResolvedValueOnce([{ id: "opencode", version: "2.0.32", launch: { command: "opencode", args: ["acp"], env: {} } }] as never);
+    mocks.api.agentConnect.mockImplementationOnce(async () => {
+      mocks.emit({ kind: "ready", agentName: "OpenCode", agentTitle: null, agentVersion: "2.0.32", features: features(), authMethods: methods }, { kind: "authRequired", message: "Authentication required: provider authentication required: {}", authMethods: methods, hint: "runOpencodeAuthLoginOrSwitchModel" } as AgentEvent);
+      return "";
+    });
+    const host = mount(() => <AgentPanel workspacePath="/w" workspaceGeneration={1} />);
+    await tick();
+    await tick();
+    click(host.querySelector("[aria-label='Connect opencode']"));
+    await tick();
+    expect(text(host.querySelector(".sb-auth-hint"))).toBe("Run opencode auth login in a terminal, or choose another model, then retry");
+    expect(text(host)).not.toContain("in a terminal, then retry");
+  });
+
+  const modeOption = (current: string, choices: [string, string][]) => ({ id: "mode", name: "Mode", description: null, category: "mode", currentValue: current, groups: [{ name: "", choices: choices.map(([value, name]) => ({ value, name, description: null })) }] });
+  const bypassNotice = (title: string) => ({ kind: "notice", sessionId: "s1", severity: "warning", title, description: null, noticeId: "span/permission-bypass", hint: "permissionsBypassed" }) as AgentEvent;
+  for (const [agent, current, choices, safe] of [
+    ["Claude bypassPermissions", "bypassPermissions", [["default", "Manual"], ["acceptEdits", "Accept edits"], ["bypassPermissions", "Bypass permissions"]], "default"],
+    ["Codex agent-full-access", "agent-full-access", [["read-only", "Read-only"], ["agent", "Auto review"], ["agent-full-access", "Full access"]], "read-only"],
+  ] as [string, string, [string, string][], string][]) {
+    it(`marks the mode chip as a warning with its full name for ${agent}`, async () => {
+      const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "a", name: "Agent" }} label="Agent" />);
+      const full = choices.find(([value]) => value === current)![1];
+      mocks.emit({ kind: "config", sessionId: "s1", options: [modeOption(current, choices)] } as AgentEvent, bypassNotice(full));
+      await tick();
+      const chip = host.querySelector(".agent-mode-button")!;
+      expect(chip.classList.contains("warn")).toBe(true);
+      expect(chip.getAttribute("aria-label")).toBe(`Mode: ${full}. This agent will not ask before running tools or editing files`);
+      expect(chip.getAttribute("title")).toBe(`${full}. This agent will not ask before running tools or editing files`);
+      expect(text(chip.querySelector(".agent-model-name"))).toBe(full);
+      expect(chip.querySelector("svg, .icon, [class*='icon']")).not.toBeNull();
+      mocks.emit({ kind: "config", sessionId: "s1", options: [modeOption(safe, choices)] } as AgentEvent, { kind: "noticeCleared", sessionId: "s1", noticeId: "span/permission-bypass" });
+      await tick();
+      expect(chip.classList.contains("warn")).toBe(false);
+      expect(chip.getAttribute("title")).toBeNull();
+    });
+  }
+});
+
+describe("terminal sign-in", () => {
+  it("pulls the command out of the hint", async () => {
+    const { terminalCommand } = await import("./SignIn");
+    expect(terminalCommand("Run `opencode auth login` in a terminal, then retry")).toBe("opencode auth login");
+    expect(terminalCommand("Sign in with your browser")).toBeUndefined();
+    expect(terminalCommand(undefined)).toBeUndefined();
   });
 });

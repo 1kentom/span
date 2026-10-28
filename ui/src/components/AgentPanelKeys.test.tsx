@@ -59,6 +59,7 @@ async function runningPanel() {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   mocks.listeners.splice(0);
   mocks.api.agentConnect.mockReset();
   mocks.api.agentCancel.mockClear();

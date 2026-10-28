@@ -823,3 +823,108 @@ fn agent_delegation_is_off_by_default_and_honoured_only_from_user_settings() {
         false
     );
 }
+
+#[test]
+fn update_check_on_launch_is_off_by_default_and_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(!Settings::default().updates.check_on_launch);
+    assert!(!workspace.get_settings().unwrap().updates.check_on_launch);
+
+    // A workspace file cannot switch it on, through JSONC or a hand edit.
+    let merged = workspace
+        .update_settings_jsonc("{ \"updates\": { \"checkOnLaunch\": true } }")
+        .unwrap();
+    assert!(!merged.updates.check_on_launch);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"updates\": { \"checkOnLaunch\": true }, \"fontSize\": 15 }",
+    )
+    .unwrap();
+    let read = workspace.get_settings().unwrap();
+    assert!(!read.updates.check_on_launch);
+    assert_eq!(read.font_size, 15);
+
+    // The user's own file can, and a workspace false does not override it.
+    fs::write(&user, "{ \"updates\": { \"checkOnLaunch\": true } }").unwrap();
+    assert!(workspace.get_settings().unwrap().updates.check_on_launch);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"updates\": { \"checkOnLaunch\": false } }",
+    )
+    .unwrap();
+    assert!(workspace.get_settings().unwrap().updates.check_on_launch);
+
+    // Typed saves leave the user-only key out of the workspace file.
+    let typed = workspace.get_settings().unwrap();
+    workspace.update_settings(typed).unwrap();
+    let written = fs::read_to_string(directory.path().join(".span/settings.jsonc")).unwrap();
+    assert!(!written.contains("checkOnLaunch"), "{written}");
+
+    // Unknown sibling keys are still rejected and an older literal keeps the default.
+    assert!(workspace
+        .update_settings_jsonc("{ \"updates\": { \"auto\": true } }")
+        .is_err());
+    let legacy: Settings = serde_json::from_value(serde_json::json!({ "fontSize": 14 })).unwrap();
+    assert!(!legacy.updates.check_on_launch);
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    let key = &schema["properties"]["updates"]["properties"]["checkOnLaunch"];
+    assert_eq!(key["default"], false);
+    assert!(key["description"]
+        .as_str()
+        .unwrap()
+        .contains("user settings"));
+}
+
+#[test]
+fn unrelated_workspace_writes_pass_beside_user_only_keys_that_stay_ignored() {
+    use span_core::SettingsScope::Workspace;
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(home.path().join("settings.jsonc")));
+    let file = directory.path().join(".span/settings.jsonc");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    // A cloned repository ships every kind of user-only key in its workspace file.
+    fs::write(
+        &file,
+        "{\n  // cloned\n  \"agents\": { \"delegation\": { \"enabled\": true } },\n  \"updates\": { \"checkOnLaunch\": true },\n  \"languageServers\": { \"nodePath\": \"/tmp/evil\", \"runProjectCode\": true }\n}\n",
+    )
+    .unwrap();
+
+    // Unrelated single key writes and whole file writes that keep those keys still work.
+    let merged = workspace
+        .update_setting(Workspace, "fontSize", Some("15"))
+        .unwrap();
+    assert_eq!(merged.font_size, 15);
+    let text = fs::read_to_string(&file).unwrap();
+    let merged = workspace
+        .update_settings_jsonc(&text.replace("// cloned", "// cloned, reviewed"))
+        .unwrap();
+    assert_eq!(merged.font_size, 15);
+
+    // None of the pre-existing keys turns anything on.
+    for settings in [merged, workspace.get_settings().unwrap()] {
+        assert!(!settings.agents.delegation.enabled);
+        assert!(!settings.updates.check_on_launch);
+        assert_eq!(settings.language_servers.node_path, None);
+        assert!(!settings.language_servers.run_project_code);
+    }
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(
+        text.contains("checkOnLaunch") && text.contains("/tmp/evil"),
+        "{text}"
+    );
+
+    // Changing a language server user-only key in the workspace file is still refused.
+    let err = workspace
+        .update_setting(Workspace, "languageServers.nodePath", Some("\"/other\""))
+        .unwrap_err();
+    assert!(err.to_string().contains("user settings only"), "{err}");
+}
