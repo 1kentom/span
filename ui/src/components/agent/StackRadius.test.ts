@@ -51,8 +51,18 @@ describe("composer stack shape", () => {
         const sel = selector.replace(/\/\*[\s\S]*?\*\//g, "").trim();
         if (!sel.startsWith(".agent-footer") || !/\.sb-(drawer|dock|activity)\b/.test(sel)) continue;
         if (sel === shared || sel.startsWith(`${shared} ~`)) continue;
+        // The one deliberate exception: the activity bar is a compact tab when it tops the stack (pinned by its own test).
+        if (sel === ".agent-footer > .sb-activity") continue;
         expect(body, `${sel} must not set its own margin or radius`).not.toMatch(/(^|;|\s)(margin|border-radius)\s*:/);
       }
     }
+  });
+});
+
+describe("activity tab inside a stack", () => {
+  it("is only a tab when it tops the stack: below another bar it is full width and square", () => {
+    const below = block(".agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) ~ :is(.sb-drawer, .sb-dock, .sb-activity)");
+    expect(below).toMatch(/margin-inline:\s*0;/);
+    expect(below).toMatch(/border-radius:\s*0;/);
   });
 });

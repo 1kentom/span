@@ -337,8 +337,9 @@
   border-color: var(--sb-border);
   background: var(--sb-raised);
 }
-/* Only the top element of a stack is rounded: any stacked bar below another one (even with a running step between) is square. */
+/* Only the top element of a stack is rounded: any stacked bar below another one (even with a running step between) is square and full width, so the activity tab is only a tab when it tops the stack. */
 .agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) ~ :is(.sb-drawer, .sb-dock, .sb-activity) {
+  margin-inline: 0;
   border-radius: 0;
 }
 .sb-urlbox .sb-mono.sb-ellipsis {
