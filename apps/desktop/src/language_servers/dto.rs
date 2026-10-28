@@ -479,10 +479,7 @@ pub fn map_hover(hover: Option<lsp::Hover>) -> Option<HoverDto> {
 
 /// Workspace relative path (forward slashes) inside `root`, else the absolute path.
 pub fn display_path(root: &Path, path: &Path) -> String {
-    match path.strip_prefix(root) {
-        Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
-        Err(_) => path.to_string_lossy().into_owned(),
-    }
+    super::paths::display_path_text(&root.to_string_lossy(), &path.to_string_lossy())
 }
 
 fn location(root: &Path, uri: &lsp::Uri, range: lsp::Range) -> Option<LocationDto> {

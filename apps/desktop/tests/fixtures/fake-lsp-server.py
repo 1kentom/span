@@ -1,7 +1,7 @@
 """Fake language server for the desktop service tests.
 
 Usage: fake-lsp-server.py MODE
-Modes: normal, slow-hover, fail-format, hang-format
+Modes: normal, slow-hover, fail-format, hang-format, slow-shutdown
 Every message received is appended as one JSON line to $FAKE_LSP_LOG, together with the
 server's pid so tests can check that the process is gone.
 """
@@ -56,7 +56,7 @@ while True:
     if method == "initialize":
         reply(msg, {"capabilities": {
             "positionEncoding": "utf-16",
-            "textDocumentSync": {"openClose": True, "change": 2},
+            "textDocumentSync": {"openClose": True, "change": 2, "save": True},
             "hoverProvider": True,
             "completionProvider": {},
             "definitionProvider": True,
@@ -88,6 +88,8 @@ while True:
             reply(msg, [{"range": {"start": {"line": 0, "character": 0},
                                    "end": {"line": 0, "character": 0}}, "newText": "// "}])
     elif method == "shutdown":
+        if mode == "slow-shutdown":
+            time.sleep(30)
         reply(msg, None)
     elif method == "exit":
         sys.exit(0)

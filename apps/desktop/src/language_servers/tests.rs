@@ -316,7 +316,7 @@ async fn open_edit_completion_discard_close_flow() {
         Err(LspErrorDto::Unsupported { .. })
     ));
 
-    // Discard closes the document and opens it again from disk, version restarting at 1.
+    // Discard closes the document and opens it again from disk, versions continuing from the closed life.
     let discarded = f.ws.discard_buffer("a.json").unwrap();
     f.svc.on_discard(&discarded);
     f.svc.flush().await;
@@ -675,4 +675,111 @@ async fn status_reports_capabilities_only_for_ready_servers() {
     assert!(caps.completion && caps.hover && caps.definition && caps.formatting);
     assert!(!caps.range_formatting && !caps.rename && !caps.references);
     let _ = ServerState::Ready;
+}
+
+/// `shutdown_blocking` is called from the app exit hook, a plain thread with no Tokio
+/// context. It must neither panic nor hang when the children are slow.
+#[tokio::test]
+async fn shutdown_blocking_from_a_plain_thread_is_bounded() {
+    for (mode, limit) in [("normal", 8), ("slow-shutdown", 1)] {
+        let mut f = fixture(true, mode, Duration::from_secs(5));
+        f.open_ready().await;
+        let pid = log_entries(&f.log)[0]["pid"].as_i64().unwrap();
+        let svc = f.svc.clone();
+        let started = Instant::now();
+        let thread = std::thread::spawn(move || svc.shutdown_blocking(Duration::from_secs(limit)));
+        tokio::task::spawn_blocking(move || thread.join())
+            .await
+            .unwrap()
+            .expect("shutdown_blocking must not panic");
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "{mode} took {:?}",
+            started.elapsed()
+        );
+        eventually(
+            &format!("{mode} server process to exit on app exit"),
+            || !alive(pid),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn created_saved_renamed_and_trashed_files_reach_the_servers() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    f.open_ready().await;
+
+    // A created file is opened in the server.
+    let created = f.ws.new_file("b.json").unwrap();
+    f.svc.on_snapshot(&created);
+    f.svc.flush().await;
+    eventually("didOpen for b.json", || {
+        log_entries(&f.log).iter().any(|e| {
+            e["method"] == "textDocument/didOpen"
+                && e["params"]["textDocument"]["uri"]
+                    .as_str()
+                    .is_some_and(|u| u.ends_with("/b.json"))
+        })
+    })
+    .await;
+
+    // A save sends didSave for a tracked document and for nothing else.
+    f.svc.on_saved(&created);
+    f.svc.on_saved(&f.ws.open_buffer("notes.txt").unwrap());
+    f.svc.flush().await;
+    eventually("didSave", || {
+        methods(&f.log).iter().any(|m| m == "textDocument/didSave")
+    })
+    .await;
+    assert_eq!(
+        methods(&f.log)
+            .iter()
+            .filter(|m| *m == "textDocument/didSave")
+            .count(),
+        1
+    );
+
+    // Rename: the old path is closed, the moved buffer is opened under the new path.
+    let entry = f.ws.rename_path("b.json", "c.json").unwrap();
+    assert_eq!(f.svc.on_closed("b.json"), vec!["b.json".to_string()]);
+    let moved = f.ws.buffer_snapshot(&entry.path).unwrap();
+    f.svc.on_snapshot(&moved);
+    f.svc.flush().await;
+    let uris = |method: &str| -> Vec<String> {
+        log_entries(&f.log)
+            .iter()
+            .filter(|e| e["method"] == method)
+            .filter_map(|e| {
+                e["params"]["textDocument"]["uri"]
+                    .as_str()
+                    .map(String::from)
+            })
+            .collect()
+    };
+    eventually("close of b.json and open of c.json", || {
+        uris("textDocument/didClose")
+            .iter()
+            .any(|u| u.ends_with("/b.json"))
+            && uris("textDocument/didOpen")
+                .iter()
+                .any(|u| u.ends_with("/c.json"))
+    })
+    .await;
+
+    // Trash closes the document and a second close is a no-op.
+    assert_eq!(f.svc.on_closed("c.json"), vec!["c.json".to_string()]);
+    assert!(f.svc.on_closed("c.json").is_empty());
+    f.svc.flush().await;
+    eventually("close of c.json", || {
+        uris("textDocument/didClose")
+            .iter()
+            .any(|u| u.ends_with("/c.json"))
+    })
+    .await;
+    assert!(f
+        .svc
+        .completion("c.json", pos(0, 0), None, None)
+        .await
+        .is_err());
 }

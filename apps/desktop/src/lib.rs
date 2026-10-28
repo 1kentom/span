@@ -204,6 +204,7 @@ async fn save_buffer(
     )
     .await?;
     lsp.on_snapshot(&snapshot);
+    lsp.on_saved(&snapshot);
     if snapshot.path.ends_with(".span/settings.jsonc") {
         if let Ok(settings) = with_workspace(state.inner().clone(), |w| w.get_settings()).await {
             lsp.inner().apply_settings(&settings);
@@ -406,9 +407,16 @@ async fn syntax(state: State<'_, DesktopState>, path: String) -> Result<SyntaxSn
 
 #[tauri::command]
 #[specta::specta]
-async fn new_file(state: State<'_, DesktopState>, path: String) -> Result<BufferSnapshot, String> {
+async fn new_file(
+    state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
+    path: String,
+) -> Result<BufferSnapshot, String> {
+    let lsp = lsp.inner().clone();
     with_workspace(state.inner().clone(), move |workspace| {
-        workspace.new_file(&path)
+        let snapshot = workspace.new_file(&path)?;
+        lsp.on_snapshot(&snapshot);
+        Ok(snapshot)
     })
     .await
 }
@@ -426,11 +434,23 @@ async fn new_directory(state: State<'_, DesktopState>, path: String) -> Result<F
 #[specta::specta]
 async fn rename_path(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     from: String,
     to: String,
 ) -> Result<FileEntry, String> {
+    let lsp = lsp.inner().clone();
     with_workspace(state.inner().clone(), move |workspace| {
-        workspace.rename_path(&from, &to)
+        let entry = workspace.rename_path(&from, &to)?;
+        // The old paths leave the servers; the buffers that moved with the rename
+        // are opened again under their new paths.
+        for old in lsp.on_closed(&from) {
+            let suffix = old.strip_prefix(from.as_str()).unwrap_or("");
+            let new = format!("{}{suffix}", entry.path);
+            if let Ok(snapshot) = workspace.buffer_snapshot(&new) {
+                lsp.on_snapshot(&snapshot);
+            }
+        }
+        Ok(entry)
     })
     .await
 }
@@ -439,20 +459,36 @@ async fn rename_path(
 #[specta::specta]
 async fn duplicate_path(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     from: String,
     to: String,
 ) -> Result<FileEntry, String> {
+    let lsp = lsp.inner().clone();
     with_workspace(state.inner().clone(), move |workspace| {
-        workspace.duplicate_path(&from, &to)
+        let entry = workspace.duplicate_path(&from, &to)?;
+        // A copied source file reaches the servers like any created file.
+        if !entry.is_dir && lsp.handles_path(&entry.path) {
+            if let Ok(snapshot) = workspace.open_buffer(&entry.path) {
+                lsp.on_snapshot(&snapshot);
+            }
+        }
+        Ok(entry)
     })
     .await
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn trash_path(state: State<'_, DesktopState>, path: String) -> Result<Vec<String>, String> {
+async fn trash_path(
+    state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
+    path: String,
+) -> Result<Vec<String>, String> {
+    let lsp = lsp.inner().clone();
     with_workspace(state.inner().clone(), move |workspace| {
-        workspace.trash_path(&path)
+        let removed = workspace.trash_path(&path)?;
+        lsp.on_closed(&path);
+        Ok(removed)
     })
     .await
 }

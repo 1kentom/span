@@ -13,6 +13,7 @@
 //!   against and dropped as [`LspErrorDto::Stale`] if either moved.
 
 mod dto;
+mod paths;
 mod position;
 mod provision;
 
@@ -148,8 +149,18 @@ impl From<&Settings> for LspSettings {
                 .copied()
                 .filter(|id| !ls.is_enabled(dto::settings_key(*id)))
                 .collect(),
-            java_home: ls.java_home.as_ref().map(PathBuf::from),
-            node_path: ls.node_path.as_ref().map(PathBuf::from),
+            // Defence in depth: core already rejects relative paths and ignores these
+            // keys in workspace files; the provisioner must never probe anything else.
+            java_home: ls
+                .java_home
+                .as_ref()
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute()),
+            node_path: ls
+                .node_path
+                .as_ref()
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute()),
             tab_size: settings.tab_size,
         }
     }
@@ -196,6 +207,10 @@ enum Op {
         revision: u64,
     },
     Close {
+        d: DocRef,
+    },
+    /// `textDocument/didSave`, when the server asks for it.
+    Save {
         d: DocRef,
     },
     Reset {
@@ -294,9 +309,9 @@ fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 fn absolute(root: &Path, path: &str) -> PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
-        p.to_path_buf()
+        paths::normalize_path(p)
     } else {
-        root.join(p)
+        paths::join_normalized(root, path)
     }
 }
 
@@ -402,7 +417,7 @@ impl LanguageServers {
         st.runtime_ok.clear();
         st.gates.retain(|_, g| *g == Gate::Installing);
         st.settings = new;
-        st.root = Some(root);
+        st.root = Some(paths::normalize_path(&root));
         self.push(
             &mut st,
             Op::Reset {
@@ -462,12 +477,58 @@ impl LanguageServers {
         self.sync_snapshot(snapshot, true);
     }
 
+    /// Whether a workspace relative path is a file a language server handles.
+    pub fn handles_path(&self, path: &str) -> bool {
+        catalog::lookup_path(Path::new(path)).is_some()
+    }
+
+    /// The buffer was written to disk: tell the server (`didSave`) if it tracks the
+    /// document. Queued, so saving never waits for a server. Call after `on_snapshot`
+    /// with the saved snapshot so a formatted save is sent first.
+    pub fn on_saved(&self, snapshot: &BufferSnapshot) {
+        let mut st = lock(&self.state);
+        let Some(root) = st.root.clone() else { return };
+        let abs = paths::join_normalized(&root, &snapshot.path);
+        let Some(d) = st.docs.get(&abs).map(|doc| doc.r.clone()) else {
+            return;
+        };
+        self.push(&mut st, Op::Save { d });
+    }
+
+    /// A file or folder left its path (deleted, trashed or renamed away): close every
+    /// tracked document at or under it and forget its versions. Returns the workspace
+    /// relative paths that were closed.
+    pub fn on_closed(&self, path: &str) -> Vec<String> {
+        let mut st = lock(&self.state);
+        let Some(root) = st.root.clone() else {
+            return Vec::new();
+        };
+        let prefix = paths::join_normalized(&root, path);
+        let mut gone: Vec<PathBuf> = st
+            .docs
+            .keys()
+            .filter(|abs| abs.starts_with(&prefix))
+            .cloned()
+            .collect();
+        gone.sort();
+        let mut closed = Vec::new();
+        for abs in gone {
+            let Some(doc) = st.docs.remove(&abs) else {
+                continue;
+            };
+            st.versions.remove(&abs);
+            self.push(&mut st, Op::Close { d: doc.r });
+            closed.push(dto::display_path(&root, &abs));
+        }
+        closed
+    }
+
     fn sync_snapshot(&self, snapshot: &BufferSnapshot, reopen: bool) {
         let mut st = lock(&self.state);
         let Some(workspace) = st.root.clone() else {
             return;
         };
-        let abs = workspace.join(&snapshot.path);
+        let abs = paths::join_normalized(&workspace, &snapshot.path);
         let Some((server, language_id)) = catalog::lookup_path(&abs) else {
             return;
         };
@@ -539,7 +600,7 @@ impl LanguageServers {
     ) {
         let mut st = lock(&self.state);
         let Some(root) = st.root.clone() else { return };
-        let abs = root.join(&result.path);
+        let abs = paths::join_normalized(&root, &result.path);
         let (r, converted) = {
             let Some(doc) = st.docs.get_mut(&abs) else {
                 return;
@@ -549,16 +610,18 @@ impl LanguageServers {
             } else {
                 None
             };
-            if let Some(converted) = &converted {
-                doc.text = converted.text.clone();
+            // Move the new text into the shadow copy; only the changes go to the queue.
+            let changes = converted.map(|converted| {
+                doc.text = converted.text;
                 doc.revision = result.revision;
-            }
-            (doc.r.clone(), converted)
+                converted.changes
+            });
+            (doc.r.clone(), changes)
         };
         let op = match converted {
-            Some(converted) => Op::Change {
+            Some(changes) => Op::Change {
                 d: r,
-                changes: converted.changes,
+                changes,
                 revision: result.revision,
             },
             None => {
@@ -594,7 +657,9 @@ impl LanguageServers {
         while let Some(queued) = rx.recv().await {
             let seq = queued.seq;
             let server = match &queued.op {
-                Op::Open { d, .. } | Op::Change { d, .. } | Op::Close { d } => Some(d.server),
+                Op::Open { d, .. } | Op::Change { d, .. } | Op::Close { d } | Op::Save { d } => {
+                    Some(d.server)
+                }
                 Op::Stop { server } | Op::Resume { server } | Op::Restart { server } => {
                     Some(*server)
                 }
@@ -648,6 +713,11 @@ impl LanguageServers {
                 }
                 let _ = self.manager.close_document(d.server, &d.root, &d.abs).await;
                 lock(&self.state).versions.remove(&d.abs);
+            }
+            Op::Save { d } => {
+                // A notification only: failures here are not worth a visible error, the
+                // next edit resynchronises the document anyway.
+                let _ = self.manager.save_document(d.server, &d.root, &d.abs).await;
             }
             Op::Reset { keys } => {
                 for (server, root) in keys {
@@ -993,6 +1063,14 @@ impl LanguageServers {
                 let dto = LanguageServerStateDto::from(&state);
                 {
                     let mut st = lock(&self.state);
+                    // A server stopped by a workspace change reports `Stopped` after the
+                    // reset already forgot its root; that late event must not bring the
+                    // old root back into the status list.
+                    if dto == LanguageServerStateDto::Stopped
+                        && !st.states.contains_key(&(server, root.clone()))
+                    {
+                        return;
+                    }
                     st.states.insert((server, root.clone()), dto.clone());
                     if dto == LanguageServerStateDto::Ready {
                         st.last_error.remove(&server);
@@ -1009,6 +1087,7 @@ impl LanguageServers {
                     return;
                 };
                 let Ok(abs) = url.to_file_path() else { return };
+                let abs = paths::normalize_path(&abs);
                 let (path, revision) = {
                     let st = lock(&self.state);
                     if !st.docs.contains_key(&abs) {
@@ -1458,9 +1537,11 @@ impl LanguageServers {
     /// App exit: stop every server, bounded so quitting can never hang.
     pub fn shutdown_blocking(self: &Arc<Self>, limit: Duration) {
         let manager = self.manager.clone();
-        let _ = tauri::async_runtime::block_on(tokio::time::timeout(limit, async move {
-            manager.shutdown_all().await;
-        }));
+        // The runtime must exist before any timer is created, so everything that
+        // uses a timeout lives inside the future handed to block_on.
+        tauri::async_runtime::block_on(async move {
+            manager.shutdown_all_within(Some(limit)).await;
+        });
     }
 }
 
