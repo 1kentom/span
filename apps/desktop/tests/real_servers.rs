@@ -2243,7 +2243,7 @@ impl Env {
     }
 }
 
-const TS_NAV: &str = "export {};\ninterface Shape {\n  area(): number;\n}\nclass Circle implements Shape {\n  area(): number {\n    return 3;\n  }\n}\nfunction describe(s: Shape): number {\n  return s.area();\n}\nfunction helper(): number {\n  return 1;\n}\nfunction caller(): number {\n  return helper();\n}\nfunction add(a: number, b: number): number {\n  return a + b;\n}\nconst c = new Circle();\nconst emoji = \"😀日本\"; const target = 1;\nconsole.log(target, target, add(1, 2), c, emoji, describe(c));\n";
+const TS_NAV: &str = "export {};\ninterface Shape {\n  area(): number;\n}\nclass Circle implements Shape {\n  area(): number {\n    return 3;\n  }\n}\nfunction describe(s: Shape): number {\n  return s.area();\n}\nfunction helper(): number {\n  return 1;\n}\nfunction caller(): number {\n  return helper();\n}\nfunction add(a: number, b: number): number {\n  return a + b;\n}\nconst c = new Circle();\nconst emoji = \"😀日本\"; const target = 1;\nconsole.log(target, target, add(1, 2), c, emoji, describe(c), JSON.stringify(c));\n";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn navigation_typescript() {
@@ -2300,7 +2300,8 @@ async fn navigation_typescript() {
         before(TS_NAV, "Circle implements")
     );
 
-    env.check_external(id, "a.ts", before(TS_NAV, "log(target"), "log")
+    // lib.dom.d.ts (where `console` lives) is over the 1 MiB preview cap, lib.es5.d.ts is not.
+    env.check_external(id, "a.ts", before(TS_NAV, "stringify(c"), "stringify")
         .await;
     env.nav_stale_after_edit(id, "a.ts", before(TS_NAV, "target = 1"))
         .await;
