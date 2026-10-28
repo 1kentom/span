@@ -16,7 +16,7 @@ async function complete(marked: string) {
   return { state, text, result };
 }
 
-function labels(result: CompletionResult | null) { return result?.options.map((option) => option.label) ?? []; }
+function labels(result: CompletionResult | null) { return result?.options.map((option) => option.displayLabel ?? option.label) ?? []; }
 
 describe("settings JSONC language", () => {
   it("recognizes only the trusted settings URIs and keeps ordinary JSON strict", async () => {
@@ -50,7 +50,7 @@ describe("settings JSONC language", () => {
     expect(labels(result)).toContain("editor.fontSize");
     expect(labels(result)).toContain("fontSize");
     expect(labels(result)).not.toContain("chatgpt.apiKey");
-    const option = result!.options.find((item) => item.label === "editor.fontSize")!;
+    const option = result!.options.find((item) => item.displayLabel === "editor.fontSize")!;
     expect(option.detail).toContain("default 13");
     expect(option.info).toBeTruthy();
     expect(typeof option.apply).toBe("function");
@@ -60,6 +60,8 @@ describe("settings JSONC language", () => {
     const { text, result } = await complete('{ "editor.fo|" }');
     expect(text.slice(result!.from, result!.to)).toBe('"editor.fo"');
     expect(labels(result)).toContain("editor.formatOnSave");
+    const option = result!.options.find(item => item.displayLabel === "editor.formatOnSave")!;
+    expect(option.label).toBe('"editor.formatOnSave"');
   });
 
   it("suggests schema enum/default values and nested known action names", async () => {
@@ -81,7 +83,7 @@ describe("settings JSONC language", () => {
   it("inserts a valid schema default snippet and selects its editable value", async () => {
     const completed = await complete("{ | }");
     let state = completed.state;
-    const option = completed.result!.options.find((item) => item.label === "editor.fontSize")!;
+    const option = completed.result!.options.find((item) => item.displayLabel === "editor.fontSize")!;
     const editor = { get state() { return state; }, dispatch: (transaction: { state: EditorState }) => { state = transaction.state; } } as EditorView;
     if (typeof option.apply !== "function") throw new Error("Expected a property snippet.");
     option.apply(editor, option, completed.result!.from, completed.result!.to ?? completed.result!.from);

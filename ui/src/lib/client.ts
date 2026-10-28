@@ -134,6 +134,11 @@ function previewEntries(path: string): FileEntry[] {
 }
 
 export const api = {
+  async pickFile(): Promise<string | null> {
+    if (!isDesktop) nativeRequired('Opening files');
+    const selected = await open({ directory: false, multiple: false, title: 'Open a file in span' });
+    return typeof selected === 'string' ? selected : null;
+  },
   async openWorkspace(path?: string): Promise<Workspace | null> {
     if (!isDesktop) {
       if (path && path !== previewWorkspace.root) nativeRequired('Opening folders');
