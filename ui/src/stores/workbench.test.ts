@@ -8,7 +8,8 @@ const client = vi.hoisted(() => ({
   openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
-import { createWorkbench, settleIntent, SETTINGS_TAB } from "./workbench";
+import { createWorkbench, settleIntent, SETTINGS_TAB, tabName } from "./workbench";
+import { viewerTabPath } from "../lib/viewer-tabs";
 
 const initial = (): BufferSnapshot => ({ path: "src/file.ts", text: "const value = 1;\n", revision: 0, savedRevision: 0, language: "typescript" });
 let server: Map<string, BufferSnapshot>;
@@ -186,6 +187,48 @@ describe("workspace views and session state", () => {
     await workbench.reopenClosedTab(); expect(workbench.activePath()).toBe("src/file.ts");
     expect(workbench.documents()["src/file.ts"].document).toBe(document);
     expect(client.openBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens an attachment viewer tab once, without a buffer, an active file path or a session entry", async () => {
+    client.getSession.mockResolvedValue({ workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts"], activePath: "src/file.ts" }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: true }, markdownViews: {} } satisfies SessionState);
+    const workbench = testWorkbench(); await workbench.initialize();
+    const path = viewerTabPath("att-1", "shot.png");
+    workbench.openViewerTab(path); workbench.openViewerTab(path);
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts", path]);
+    expect(workbench.activeTab()).toBe(path);
+    expect(workbench.activePath()).toBeUndefined();
+    expect(tabName(path)).toBe("shot.png");
+    expect(client.openBuffer).toHaveBeenCalledTimes(1);
+    await workbench.persistSession();
+    const saved = client.saveSession.mock.lastCall?.[0] as SessionState;
+    expect(saved.groups.flatMap(group => group.paths)).toEqual(["src/file.ts"]);
+    expect(saved.groups[0].activePath).toBe("src/file.ts");
+  });
+
+  it("routes a viewer tab through openFile and never records it as a reopenable file", async () => {
+    const workbench = await setup();
+    const path = viewerTabPath("att-2", "notes.md");
+    await workbench.openFile(path);
+    expect(workbench.activeTab()).toBe(path);
+    expect(client.openBuffer).toHaveBeenCalledTimes(1);
+    workbench.closeTab(path, 1);
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts"]);
+    expect(client.releaseBuffer).not.toHaveBeenCalledWith(path);
+    await workbench.reopenClosedTab();
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts"]);
+    expect(client.openBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it("focuses an open viewer tab in its own group instead of duplicating it", async () => {
+    const workbench = await setup();
+    const path = viewerTabPath("att-3", "a.json");
+    workbench.openViewerTab(path); workbench.splitEditor();
+    expect(workbench.groups()[1].tabs).toEqual([path]);
+    workbench.closeTab(path, 1);
+    workbench.setActiveGroup(1);
+    workbench.openViewerTab(path);
+    expect(workbench.activeGroup()).toBe(2);
+    expect(workbench.groups().flatMap(group => group.tabs).filter(tab => tab === path)).toHaveLength(1);
   });
 
   it("restores saved file groups, panel sizes and Markdown view overrides", async () => {
