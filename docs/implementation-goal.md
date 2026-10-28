@@ -14,17 +14,9 @@ This checklist expands the approved goal for the Phase 0.1 foundation. It guides
 
 ## Research and acceptance matrix
 
-Complete a feature-specific matrix before implementation. A broad product comparison does not substitute for checking the actual behavior relevant to the change.
+Use the [dated primary-source behavior matrix](editor-behavior-research.md) as the current research baseline. Its ten rows cover windows/tabs/splits, dirty close, file operations, settings, keybindings, autosave, zoom/panels, modal/menu access, ACP, and CLI ownership. It records source URLs, historical Fleet limits, Span's selected behavior, existing tests, and unverified acceptance boundaries.
 
-| Feature | VS Code primary source and observed behavior | Fleet primary source and observed behavior | Zed primary source and observed behavior | Span behavior and acceptance evidence |
-| --- | --- | --- | --- | --- |
-| Window, tabs, split panes, close and drag | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | State the supported workflow and test it against the supplied reference |
-| File operations, context menus and dirty state | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Include keyboard, pointer, cancellation, and unsaved-change outcomes |
-| Settings, keybindings, scopes and autosave | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Document supported settings and prove persistence and conflict behavior |
-| Zoom, panels, modal interactions and accessibility | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Verify keyboard access, focus handling, labels, and layout at supported zoom levels |
-| Agent Client Protocol providers and CLI lifecycle | Record exact source and behavior where applicable | Record exact source and behavior where applicable | Record exact source and behavior | Distinguish ACP protocol support from product-specific provider guarantees; test start, error, interrupt, quit, and recovery |
-
-For every row, include URLs and the date checked. Record unsupported or ambiguous behavior rather than filling gaps with assumptions. Convert the selected Span behavior into acceptance criteria before coding.
+Refresh the feature-specific row before further implementation. This audit documents existing code and does not establish that research preceded earlier changes. Familiar controls do not establish product parity, native performance, or provider interoperability. Keep the issue-specific verification status below separate from the research observations.
 
 ## Implementation and review sequence
 
@@ -63,7 +55,7 @@ Status checked on 2026-10-28. A source implementation, a browser check, a native
 
 | Active request | Current evidence and limit | Remaining acceptance |
 | --- | --- | --- |
-| Save, autosave, zoom, handles: #19, #18, #3 | The combined CUT2 and agent-redesign source passed 270 UI tests, typecheck, its production build, and 55 Chromium E2E checks against an isolated server. Backend validation passed 122 Rust tests, all-target release clippy, and generated IPC export. Installed verification of the combined app remains pending. | Publish the frozen source, complete hosted CI, then install and exercise that exact cut. Keep the updated handle criteria open until verified. |
+| Save, autosave, zoom, handles: #19, #18, #3 | The combined CUT2 and agent-redesign source passed 270 UI tests, typecheck, its production build, and 55 Chromium E2E checks against an isolated server. Backend validation passed 122 Rust tests, all-target release clippy, and generated IPC export. The installed editor/settings JSONC editor/rounded grips and redesigned agent panel were visibly verified with the window activated. A controlled background-capture comparison found the DOM rendered with no engine errors; titlebar activation revealed the same baseline UI without a Reset Zoom action or product change. The observation in #48 was closed as not reproduced after that comparison. Native performance and real-provider gates remain open. | Publish the frozen source, complete hosted CI, then install and exercise that exact cut. Keep the updated handle criteria open until verified. |
 | Split lifecycle, menus, settings, modal controls: #21, #6, #20, #24 | Current source has focused tests and browser coverage. Settings compatibility research is recorded in `docs/settings-compatibility.md`. Windows WebView2 internal HTML5 dragging conflicts with the enabled native external-drop handler and remains unverified or unsupported. | Resolve final review findings and record exact native verification. A pointer-based internal drag strategy is a candidate for Windows, not completed evidence. |
 | ACP catalog, removal, and installation feedback: #22, #23, #38 | Catalog and lifecycle implementation is in the current source cut. Per-provider loader and nonblocking installation feedback are a separate active review request. | Verify metadata, process/error behavior, scoped removal, retries, and native interaction. A listed tool is not a verified provider integration. |
 | Detached CLI: #26 | Source and installed CLI lifecycle checks passed according to the implementation owner. | Publish the tested source and link its commit before closure. |
