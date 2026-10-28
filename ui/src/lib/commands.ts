@@ -12,6 +12,10 @@ export const actionDefinitions = [
   { id: "save", label: "Save File", category: "File", keys: ["Mod+S"], inputs: true },
   { id: "openFolder", label: "Open Folder", category: "File", keys: ["Mod+O"], inputs: true },
   { id: "splitEditor", label: "Split Editor", category: "View", keys: ["Mod+\\"], inputs: true },
+  { id: "splitEditorDown", label: "Split Editor Down", category: "View", keys: ["Mod+Alt+\\"], inputs: true },
+  { id: "newFile", label: "New File", category: "File", keys: ["Mod+N"], inputs: true },
+  { id: "newFolder", label: "New Folder", category: "File", keys: ["Mod+Shift+N"], inputs: true },
+  { id: "newFromTemplate", label: "New from Template", category: "File", keys: ["Alt+Insert"], inputs: true },
   { id: "toggleProject", label: "Toggle Project Panel", category: "View", keys: ["Mod+B"], inputs: true },
   { id: "toggleAssistant", label: "Toggle AI Assistant", category: "View", keys: ["Mod+Alt+B"], inputs: true },
   { id: "toggleTerminal", label: "Toggle Terminal Panel", category: "View", keys: ["Mod+J"], inputs: true },
@@ -60,7 +64,7 @@ export function resolveKeybindings(overrides: KeybindingOverrides = {}, platform
   return Object.fromEntries(actionDefinitions.map(action => {
     const defaults: readonly string[] = action.id === "quickOpen" && platform === "mac" ? [...action.keys, "Ctrl+P"] : action.keys;
     // A newly introduced default must not invalidate an existing explicit binding.
-    const inherited = action.id === "toggleFiles" || action.id === "focusFiles" ? defaults.filter(key => !claimed.has(normalizeShortcut(key, platform))) : defaults;
+    const inherited = ["toggleFiles", "focusFiles", "splitEditorDown", "newFile", "newFolder", "newFromTemplate"].includes(action.id) ? defaults.filter(key => !claimed.has(normalizeShortcut(key, platform))) : defaults;
     const keys = Object.hasOwn(overrides, action.id) ? overrides[action.id] : inherited;
     return [action.id, [...new Set(keys.map(key => normalizeShortcut(key, platform)).filter((key): key is string => Boolean(key)))]];
   })) as ResolvedKeybindings;

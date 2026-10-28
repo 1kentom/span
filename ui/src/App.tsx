@@ -4,6 +4,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Editor, type EditorCommands, type EditorCursor } from "./components/Editor";
 import AgentPanel from "./components/AgentPanel";
 import { Explorer } from "./components/Explorer";
+import { NewPopup } from "./components/NewPopup";
+import { createExplorerState } from "./lib/explorer-state";
 import Icon, { FileIcon, MenuIcon } from "./components/Icon";
 import { Modal, modalAllowsGlobalShortcut } from "./components/Modal";
 import { QuickOpen } from "./components/QuickOpen";
@@ -28,20 +30,22 @@ import { ToolsSettings } from "./components/ToolsSettings";
 import { UpdatesSettings } from "./components/UpdatesSettings";
 import { agentUpdateError, agentUpdates, agentUpdatesBusy, appUpdate, appUpdateBusy, checkAllUpdates } from "./lib/updates";
 import { absolutePath, relativePath, fileName, parentPath, contextMenuPosition, isContextMenuKey } from "./lib/navigation";
+import { commonFolder, planStartup } from "./lib/startup-plan";
 import { SettingsPage } from "./components/SettingsPage";
 import { createWorkbench, settleIntent, SETTINGS_TAB, isSettingsBuffer, tabName, type EditorGroup } from "./stores/workbench";
 import { canDispatchAction, currentPlatform, dispatchKeyboard, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
 import { menuBindingsForFocus, terminalAllowsAppShortcut } from "./lib/terminal-shortcuts";
 import { createZoomController } from "./lib/zoom";
 import { createInternalDrag, type InternalDragState } from "./lib/internal-drag";
-import { compactFolders, setCompactFolders } from "./lib/explorer-prefs";
+import { zoneAt, zoneLabel, zoneStyle, type EditorDropTarget } from "./lib/drop-zones";
+import { autoReveal, compactFolders, setAutoReveal, setCompactFolders } from "./lib/explorer-prefs";
 import { api, isDesktop, lspPort, previewNotice } from "./lib/client";
 import { LanguageServerStatus } from "./components/LanguageServerStatus";
 import { LanguageServerSettings } from "./components/LanguageServerSettings";
 import { languageDisplayName } from "./editor/language-names";
 import { useLanguageServers } from "./stores/language-servers";
 import { serverForBuffer } from "./lib/lsp-client";
-import type { EditProposal, SyntaxSnapshot, ToolInfo, StartupRequest_Serialize as StartupRequest, RecentProject_Serialize as RecentProject } from "./bindings";
+import type { EditProposal, SyntaxSnapshot, ToolInfo, StartupRequest_Serialize as StartupRequest, StartupFile_Serialize as StartupFile, RecentProject_Serialize as RecentProject } from "./bindings";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -54,6 +58,7 @@ import "./styles/file-icons.css";
 
 export default function App() {
   const w = createWorkbench();
+  const explorer = createExplorerState(w);
   const languageServers = useLanguageServers(lspPort, { onError: message => w.setError(message) });
   createEffect(on(w.workspaceGeneration, () => { languageServers.pruneDiagnostics(); void languageServers.refresh(); }, { defer: true }));
   // Diagnostics are replayed only for buffers that are still open.
@@ -96,6 +101,7 @@ export default function App() {
   const [nativeTrafficLights, setNativeTrafficLights] = createSignal(false);
   const [recentProjects, setRecentProjects] = createSignal<RecentProject[]>([]);
   const [pendingExternal, setPendingExternal] = createSignal<{ request: StartupRequest; resolve: (open: boolean) => void }>();
+  const [outsideFiles, setOutsideFiles] = createSignal<{ files: StartupFile[]; folder: string; resolve: (open: boolean) => void }>();
   const [tools, setTools] = createSignal<ToolInfo[]>([]);
   const [toolsBusy, setToolsBusy] = createSignal(false);
   const [toolsLoaded, setToolsLoaded] = createSignal(false);
@@ -104,8 +110,13 @@ export default function App() {
   const [fileAction, setFileAction] = createSignal<FileAction>();
   const [fileClipboard, setFileClipboard] = createSignal<{ path: string; directory: boolean; workspace: string; cut: boolean }>();
   type DraggedFile = { path: string; group?: number; generation: number };
-  const [internalDrag, setInternalDrag] = createSignal<InternalDragState<DraggedFile>>();
-  const dropGroup = () => internalDrag()?.target;
+  const [internalDrag, setInternalDrag] = createSignal<InternalDragState<DraggedFile, EditorDropTarget>>();
+  const [explorerDropTarget, setExplorerDropTarget] = createSignal<EditorDropTarget>();
+  const dropTarget = () => explorerDropTarget() ?? internalDrag()?.target;
+  let groupsElement!: HTMLDivElement;
+  const [groupsHeight, setGroupsHeight] = createSignal(Math.round(window.innerHeight * .6));
+  const stacked = () => w.splitVertical() && w.groups().length > 1;
+  const groupsExtent = () => stacked() ? groupsHeight() : centerWidth();
   const [context, setContext] = createSignal<{ x: number; y: number; items: ContextMenuItem[]; label: string }>();
   const [quickOpen, setQuickOpen] = createSignal(false);
   const [paletteOpen, setPaletteOpen] = createSignal(false);
@@ -177,6 +188,21 @@ export default function App() {
     if (showLeft() && leftView() === "Files") setShowLeft(false);
     else focusFiles();
   }
+  /** Show the Files view, then run an Explorer action once the tree is mounted. */
+  async function withFiles(action: () => Promise<void>) {
+    batch(() => { setLeftView("Files"); setShowLeft(true); });
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    if (disposed || !w.workspace()) return;
+    await action();
+  }
+  function openTemplatePopup() {
+    void withFiles(async () => {
+      const folder = explorer.creationParent();
+      const anchor = document.querySelector<HTMLElement>(`.explorer-panel [role="treeitem"][data-path="${CSS.escape(explorer.focus() ?? "")}"]`) ?? document.querySelector<HTMLElement>(".explorer-panel .explorer-header");
+      const box = anchor?.getBoundingClientRect();
+      explorer.setTemplateRequest({ folder, x: box ? box.left + 24 : 40, y: box ? box.bottom + 2 : 80 });
+    });
+  }
   async function openFilePicker() {
     if (pickingFile) return;
     pickingFile = true;
@@ -197,8 +223,19 @@ export default function App() {
   const copyText = async (value: string) => { try { if (isDesktop || typeof navigator.clipboard !== "undefined") await api.writeClipboard(value); else { const previous = document.activeElement as HTMLElement | null; const input = document.createElement("textarea"); input.value = value; input.style.cssText = "position:fixed;opacity:0;pointer-events:none"; document.body.append(input); input.select(); const copied = document.execCommand("copy"); input.remove(); previous?.focus(); if (!copied) throw new Error("Clipboard access is unavailable"); } } catch (error) { w.setError(`Could not copy: ${String(error)}`); } };
   async function refreshRecentProjects() { try { setRecentProjects(await api.recentProjects()); } catch (error) { w.setError(String(error)); } }
   async function performStartup(request: StartupRequest) { const root = request.workspaceRoot; if (root && (!w.workspace() || relativePath(root, w.workspace()?.root) !== "")) await w.openWorkspace(root); for (const file of request.files) { const path = relativePath(file.path, w.workspace()?.root); await w.openFile(path); if (file.line) setReveal({ path, line: file.line, column: file.column || undefined }); } await refreshRecentProjects(); }
-  async function applyStartup(request: StartupRequest) { const changing = request.workspaceRoot && (!w.workspace() || relativePath(request.workspaceRoot, w.workspace()?.root) !== ""); if (changing && hasUnsaved()) { const open = await new Promise<boolean>(resolve => setPendingExternal({ request, resolve })); if (!open) return; } await performStartup(request); }
-  function openRecentProject(root: string) { void applyStartup({ workspaceRoot: root, files: [] }); }
+  async function applyStartup(request: StartupRequest) {
+    const plan = planStartup(request, w.workspace()?.root);
+    if (plan.outside.length) {
+      if (plan.open.length) await performStartup({ workspaceRoot: null, files: plan.open, impliedRoot: false });
+      const folder = commonFolder(plan.outside);
+      if (folder && await new Promise<boolean>(resolve => setOutsideFiles({ files: plan.outside, folder, resolve }))) await applyStartup({ workspaceRoot: folder, files: plan.outside, impliedRoot: false });
+      return;
+    }
+    const resolved = { workspaceRoot: plan.switchTo ?? null, files: plan.open, impliedRoot: false };
+    if (plan.switchTo && hasUnsaved()) { const open = await new Promise<boolean>(resolve => setPendingExternal({ request: { workspaceRoot: plan.switchTo!, files: plan.open, impliedRoot: false }, resolve })); if (!open) return; }
+    await performStartup(resolved);
+  }
+  function openRecentProject(root: string) { void applyStartup({ workspaceRoot: root, files: [], impliedRoot: false }); }
   function showProjectHistory(event: MouseEvent) { event.preventDefault(); const bounds = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : { left: event.clientX, bottom: event.clientY }; void refreshRecentProjects().then(() => setContext({ x: bounds.left, y: bounds.bottom, label: "Projects", items: [{ id: "open", label: "Open folder…", onSelect: requestWorkspace }, ...recentProjects().map(project => ({ id: project.root, label: `${project.name}${project.missing ? " (missing)" : ""}`, disabled: project.missing, onSelect: () => openRecentProject(project.root) })), { id: "clear", label: "Clear recent projects", separator: true, disabled: !recentProjects().length, onSelect: () => { void api.clearRecentProjects().then(refreshRecentProjects); } }] })); }
   const copyPath = (path: string, absolute = false) => { void copyText(absolute ? absolutePath(path, w.workspace()?.root) : relativePath(path, w.workspace()?.root)); };
   function requestFileAction(kind: FileAction["kind"], source: string, directory = false) {
@@ -206,28 +243,53 @@ export default function App() {
     const suggested = kind === "newFile" ? `${folder ? `${folder}/` : ""}new-file.ts` : kind === "newFolder" ? `${folder ? `${folder}/` : ""}new-folder` : kind === "duplicate" ? source.replace(/(\.[^/.]+)?$/, " copy$1") : source;
     setFileAction({ kind, source, directory, initial: suggested });
   }
-  const fileDrag = createInternalDrag<DraggedFile>({
+  /** Editor group and drop zone under a viewport point, shared by tab drags and Explorer drags. */
+  function editorTargetAt(x: number, y: number): EditorDropTarget | undefined {
+    const element = document.elementFromPoint(x, y);
+    let pane = element?.closest<HTMLElement>("[data-editor-group]");
+    if (!pane && element?.closest(".settings-view-layer")) pane = [...document.querySelectorAll<HTMLElement>("[data-editor-group]")].find(candidate => { const box = candidate.getBoundingClientRect(); return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom; });
+    const group = Number(pane?.dataset.editorGroup);
+    if (!pane || !w.groups().some(item => item.id === group)) return undefined;
+    return { group, zone: zoneAt(pane.getBoundingClientRect(), x, y) };
+  }
+  function dropFilesOnEditor(paths: string[], target: EditorDropTarget) {
+    for (const path of paths) void w.openInZone(path, target.group, paths.length > 1 && target.zone !== "center" ? "center" : target.zone);
+  }
+  const fileDrag = createInternalDrag<DraggedFile, EditorDropTarget>({
     valid: item => !disposed && !w.busy() && item.generation === w.workspaceGeneration() && (item.group === undefined ? w.files().some(file => file.path === item.path && !file.isDir) : !!w.groups().find(group => group.id === item.group)?.tabs.includes(item.path)),
-    targetAt: (x, y) => {
-      const element = document.elementFromPoint(x, y);
-      let pane = element?.closest<HTMLElement>("[data-editor-group]");
-      if (!pane && element?.closest(".settings-view-layer")) pane = [...document.querySelectorAll<HTMLElement>("[data-editor-group]")].find(candidate => { const box = candidate.getBoundingClientRect(); return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom; });
-      const group = Number(pane?.dataset.editorGroup);
-      return w.groups().some(item => item.id === group) ? group : undefined;
-    },
+    targetAt: editorTargetAt,
     preview: setInternalDrag,
-    drop: (item, target, copy) => { if (!w.groups().some(group => group.id === target)) return; if (item.group !== undefined) w.moveTab(item.path, item.group, target, copy); else void w.openFile(item.path, target); },
+    drop: (item, target, copy) => { if (!w.groups().some(group => group.id === target.group)) return; if (item.group !== undefined) w.moveTabToZone(item.path, item.group, target.group, target.zone, copy); else void w.openInZone(item.path, target.group, target.zone); },
   });
   function startFileDrag(event: PointerEvent, path: string, group?: number) { fileDrag.start(event, { path, group, generation: w.workspaceGeneration() }); }
   createEffect(() => { w.workspaceGeneration(); w.busy(); w.groups().map(group => group.id).join(","); fileDrag.cancel(); });
   onCleanup(fileDrag.dispose);
+  /** Explorer row menu in the design's order: open, new, view, collapse, clipboard, copy path, modify. */
+  function explorerMenu(path: string, directory: boolean, at: { x: number; y: number }): ContextMenuItem[] {
+    const mac = platform === "mac"; const key = (letter: string) => mac ? `\u2318${letter}` : `Ctrl+${letter}`;
+    const picked = explorer.targets(); const many = picked.length > 1;
+    const folder = directory ? path : parentPath(path);
+    const items: ContextMenuItem[] = [];
+    if (directory) items.push({ id: "toggle", label: w.expanded().has(path) ? "Collapse folder" : "Expand folder", icon: "menu-folder", onSelect: () => { void w.toggleDirectory(path); } });
+    else items.push({ id: "open", label: many ? `Open ${picked.length} Files` : "Open", icon: "menu-file", onSelect: () => { for (const item of picked.filter(entry => !explorer.isDirectory(entry))) navigate(item); } }, { id: "split", label: "Open to the Side", icon: "split-editor", shortcut: mac ? "\u2318\u21b5" : "Ctrl+Enter", disabled: many, onSelect: () => { void w.openToSide(path); } });
+    items.push({ id: "new-file", label: "New File…", icon: "menu-newFile", separator: true, disabled: many, shortcut: shortcut("newFile"), onSelect: () => { void explorer.startCreate("file", folder); } }, { id: "new", label: "New", icon: "menu-newFile", disabled: many, shortcut: shortcut("newFromTemplate"), onSelect: () => { explorer.setTemplateRequest({ folder, x: at.x, y: at.y }); } }, { id: "new-folder", label: "New Folder…", icon: "menu-newFolder", disabled: many, shortcut: shortcut("newFolder"), onSelect: () => { void explorer.startCreate("folder", folder); } });
+    if (!directory) items.push({ id: "reveal", label: "Reveal in Files View", icon: "menu-folder", separator: true, onSelect: () => { void explorer.reveal(path); } });
+    if (directory) items.push({ id: "compact-folders", label: compactFolders() ? "Show folders separately" : "Compact single-child folders", icon: "menu-folder", separator: true, onSelect: () => setCompactFolders(!compactFolders()) }, { id: "collapse-all", label: "Collapse All", icon: "menu-folder", shortcut: key("-"), onSelect: () => explorer.collapseAll() }, { id: "auto-reveal", label: autoReveal() ? "Stop revealing the active file" : "Reveal the active file automatically", icon: "menu-folder", onSelect: () => setAutoReveal(!autoReveal()) });
+    const clipboard = explorer.clipboard();
+    items.push({ id: "cut-file", label: "Cut", icon: "menu-cut", separator: true, shortcut: key("X"), onSelect: () => explorer.setClip(true) }, { id: "copy-file", label: "Copy", icon: "menu-copy", shortcut: key("C"), onSelect: () => explorer.setClip(false) }, { id: "paste-file", label: "Paste", icon: "menu-paste", shortcut: key("V"), disabled: !clipboard, onSelect: () => { void explorer.paste(folder); } }, { id: "duplicate", label: "Duplicate", icon: "menu-duplicate", disabled: many, onSelect: () => { void explorer.duplicate(path); } });
+    items.push({ id: "paths", label: "Copy path", icon: "menu-path", separator: true, children: [{ id: "copy-name", label: "Copy filename", icon: "menu-copy", onSelect: () => { void copyText(fileName(path || w.workspace()?.root || "")); } }, { id: "copy-relative", label: "Copy relative path", icon: "menu-path", onSelect: () => copyPath(path) }, { id: "copy-absolute", label: "Copy absolute path", icon: "menu-path", onSelect: () => copyPath(path, true) }] });
+    items.push({ id: "rename", label: "Rename…", icon: "menu-rename", separator: true, disabled: many, shortcut: mac ? "\u21b5" : "F2", onSelect: () => { void explorer.startRename(path); } }, { id: "trash", label: "Move to Trash…", icon: "menu-trash", shortcut: mac ? "\u2318\u232b" : "Delete", onSelect: () => { void explorer.trash(); } });
+    return items;
+  }
   function showContext(event: MouseEvent | KeyboardEvent, path: string, kind: "file" | "directory" | "tab" | "editor", group = w.activeGroup()) {
     event.preventDefault(); event.stopPropagation(); const position = contextMenuPosition(event); const items: ContextMenuItem[] = [];
-    const regular = path !== SETTINGS_TAB && !isSettingsBuffer(path); const directory = kind === "directory";
-    if (directory) items.push({ id: "toggle", label: w.expanded().has(path) ? "Collapse folder" : "Expand folder", icon: "menu-folder", onSelect: () => { void w.toggleDirectory(path); setShowLeft(true); setLeftView("Files"); } }, { id: "compact-folders", label: compactFolders() ? "Show folders separately" : "Compact single-child folders", icon: "menu-folder", onSelect: () => setCompactFolders(!compactFolders()) });
-    else if (kind === "file") items.push({ id: "open", label: "Open file", icon: "menu-file", onSelect: () => navigate(path) });
+    if (kind === "file" || kind === "directory") {
+      if (!explorer.selection().includes(path)) explorer.selectOnly(path);
+      setContext({ ...position, items: explorerMenu(path, kind === "directory", position), label: "File actions" }); return;
+    }
+    const regular = path !== SETTINGS_TAB && !isSettingsBuffer(path); const directory = false; // Explorer rows returned above.
     if (!directory) {
-      items.push({ id: "split", label: "Split editor", icon: "split-editor", children: [{ id: "split-right", label: "Open in split to the right", icon: "split-editor", onSelect: () => { void w.openToSide(path, group); } }] });
+      items.push({ id: "split", label: "Split editor", icon: "split-editor", children: [{ id: "split-right", label: "Open in split to the right", icon: "split-editor", onSelect: () => { void w.openToSide(path, group); } }, { id: "split-down", label: "Open in split below", icon: "split-editor", onSelect: () => { void w.openToSide(path, group, "down"); } }] });
       if (kind === "tab") items.push({ id: "close", label: "Close tab", icon: "menu-cancel", shortcut: shortcut("closeTab"), onSelect: () => requestCloseTab(path, group) }, { id: "close-group", label: "Close editor group", icon: "menu-cancel", disabled: w.groups().length < 2, onSelect: () => requestCloseGroup(group) });
       items.push({ id: "save", label: "Save file", icon: "menu-save", disabled: !w.buffers[path], shortcut: shortcut("save"), onSelect: () => { void w.save(path); } });
     }
@@ -260,7 +322,7 @@ export default function App() {
   const handlers: ActionHandlers = {
     quickOpen: () => setQuickOpen(true), toggleFiles, focusFiles, openFile: () => { void openFilePicker(); }, commandPalette: () => setPaletteOpen(true), findInFile: () => runEditor("find"), searchWorkspace: openSearch,
     settings: openSettings, closeTab: () => { if (document.activeElement?.closest(".terminal-dock") && terminalDock) { void terminalDock.closeCurrent().catch(error => w.setError(String(error))); return; } const path = w.activeTab(); if (path) requestCloseTab(path, w.activeGroup()); else requestCloseGroup(w.activeGroup()); }, save: saveActive, openFolder: requestWorkspace,
-    splitEditor: () => w.splitEditor(), toggleProject: () => setShowLeft(!showLeft()), toggleAssistant: () => setShowRight(!showRight()), toggleTerminal: () => setShowBottom(!showBottom()),
+    splitEditor: () => w.splitEditor(), newFile: () => { void withFiles(() => explorer.startCreate("file")); }, newFolder: () => { void withFiles(() => explorer.startCreate("folder")); }, newFromTemplate: openTemplatePopup, splitEditorDown: () => w.splitEditor(w.activeGroup(), undefined, "down"), toggleProject: () => setShowLeft(!showLeft()), toggleAssistant: () => setShowRight(!showRight()), toggleTerminal: () => setShowBottom(!showBottom()),
     markdownPreview: () => { const path = w.activePath(); if (path && w.isMarkdown(path)) w.setMarkdownView(path, w.markdownView(path) === "preview" ? "source" : "preview"); },
     formatDocument: () => { void w.format(); }, formatWithLanguageServer: () => runEditor("formatWithLanguageServer"), goToLine: () => runEditor("goToLine"),
     zoomIn: () => applyZoom(zoom.zoomIn), zoomOut: () => applyZoom(zoom.zoomOut), resetZoom: () => applyZoom(zoom.reset),
@@ -289,7 +351,8 @@ export default function App() {
     const terminalFocus = () => setTerminalFocused(!!document.activeElement?.closest(".xterm"));
     document.addEventListener("focusin", terminalFocus); onCleanup(() => document.removeEventListener("focusin", terminalFocus));
     const observer = new ResizeObserver(entries => { const width = entries[0]?.contentRect.width; if (width) setCenterWidth(width); });
-    observer.observe(centerElement); onCleanup(() => observer.disconnect());
+    observer.observe(centerElement);
+    const heights = new ResizeObserver(entries => { const height = entries[0]?.contentRect.height; if (height) setGroupsHeight(height); }); heights.observe(groupsElement); onCleanup(() => heights.disconnect()); onCleanup(() => observer.disconnect());
     const resize = () => setWindowWidth(window.innerWidth); window.addEventListener("resize", resize); onCleanup(() => window.removeEventListener("resize", resize));
     window.addEventListener("keydown", keyboard, true); window.addEventListener("beforeunload", beforeUnload); void w.initialize(applyStartup).then(async () => { setInitialized(true); await refreshRecentProjects(); const unlisten = await api.onOpenWorkspaceRequested(applyStartup); if (disposed) unlisten(); else unlistenStartup = unlisten; });
     if (isDesktop) {
@@ -305,6 +368,7 @@ export default function App() {
   createEffect(() => { document.documentElement.dataset.theme = theme(); });
   const configuredZoomLevel = createMemo(() => w.settings().zoomLevel);
   createEffect(on([w.workspaceGeneration, configuredZoomLevel], ([, level], previous) => { if (level !== null) applyZoom(() => zoom.setLevel(level)); else if (previous && previous[1] !== null) applyZoom(zoom.reset); }, { defer: true }));
+  createEffect(on(w.activePath, path => { if (path && autoReveal() && showLeft() && leftView() === "Files" && !isSettingsBuffer(path)) void explorer.reveal(path, !explorer.selection().includes(path) && explorer.selection().length < 2); }, { defer: true }));
   createEffect(on(w.workspaceGeneration, () => { setFileAction(undefined); fileDrag.cancel(); setContext(undefined); }, { defer: true }));
   // One check per launch, only when the user turned it on in their own settings file (ADR 0004).
   let launchChecked = false;
@@ -374,21 +438,22 @@ export default function App() {
     const group = () => w.groups().find(item => item.id === groupId) || { id: groupId, tabs: [] as string[], active: undefined };
     const active = () => group().active;
     const documentIsActive = (path: string) => active() === path && w.activeGroup() === group().id;
-    return <section class={`panel editor-pane ${w.activeGroup() === group().id ? "active-group" : ""}`} aria-label={`Editor group ${group().id}`} style={{ flex: props.width ? `0 0 ${props.width}px` : "1 1 0", "box-shadow": dropGroup() === group().id ? "inset 0 0 0 1px var(--accent)" : undefined }} data-editor-group={group().id} onPointerDown={() => w.setActiveGroup(group().id)} onFocusIn={() => w.setActiveGroup(group().id)}>
+    return <section class={`panel editor-pane ${w.activeGroup() === group().id ? "active-group" : ""}`} aria-label={`Editor group ${group().id}`} style={{ flex: props.width ? `0 0 ${props.width}px` : "1 1 0", "box-shadow": dropTarget()?.group === group().id ? "inset 0 0 0 1px var(--accent)" : undefined }} data-editor-group={group().id} onPointerDown={() => w.setActiveGroup(group().id)} onFocusIn={() => w.setActiveGroup(group().id)}>
+      <Show when={dropTarget()?.group === group().id ? dropTarget() : undefined}>{target => <div class="drop-zone" data-zone={target().zone} style={zoneStyle(target().zone)} aria-hidden="true" />}</Show>
       <div class="editor-header"><div class="editor-tabs" role="tablist" aria-label={`Open files in group ${group().id}`}><For each={group().tabs}>{path => <div draggable={false} onPointerDown={event => { if (!(event.target as Element).closest(".tab-close")) startFileDrag(event, path, group().id); }} class={`file-tab internal-drag-source ${active() === path ? "active" : ""}`} onContextMenu={event => showContext(event, path, "tab", group().id)} onKeyDown={event => { if (isContextMenuKey(event)) showContext(event, path, "tab", group().id); }}><button role="tab" aria-selected={active() === path} aria-controls={`editor-${group().id}`} title={isSettingsBuffer(path) || path === SETTINGS_TAB ? tabName(path) : path} onClick={() => path === SETTINGS_TAB ? w.openSettings() : void w.openFile(path, group().id)}><Show when={path !== SETTINGS_TAB} fallback={<Icon name="u-gear" size={15} />}><Show when={!isSettingsBuffer(path)} fallback={<Icon name="menu-file" size={15} />}><FileIcon path={path} /></Show></Show><span>{tabName(path)}</span></button><button class="tab-close" aria-label={`Close ${tabName(path)}`} title={(path === SETTINGS_TAB ? settingsDirty() : w.dirty(path)) ? "Unsaved changes, close file" : "Close file"} onClick={() => requestCloseTab(path, group().id)}><Show when={path === SETTINGS_TAB ? settingsDirty() : w.dirty(path)} fallback={<span class="cross" />}><span class="dirty-dot" /></Show></button></div>}</For></div><Show when={w.groups().length > 1}><button class="icon-button" aria-label={`Close editor group ${group().id}`} title="Close editor group" onClick={() => requestCloseGroup(group().id)}><MenuIcon name="cancel" size={15} /></button></Show><button class="icon-button save-file" aria-label="Save file" title={`Save (${shortcut("save")})`} disabled={!active()} onClick={saveActive}><Icon name="TickCircle" size={15} /></button><button class="icon-button split-editor" aria-label="Split editor" disabled={w.groups().length >= 2} title={`Split editor (${shortcut("splitEditor")})`} onClick={() => w.splitEditor()}><Icon name="split-editor" size={15} /></button></div>
       <div id={`editor-${group().id}`} class="editor-documents" role="tabpanel"><For each={group().tabs}>{path => <div class="editor-document" style={{ display: active() === path ? "flex" : "none" }}><Show when={path !== SETTINGS_TAB}><DocumentView path={path} group={group().id} active={documentIsActive(path)} /></Show></div>}</For><Show when={!active()}><Show when={w.groups().length === 1} fallback={<div class="editor-empty"><h2>No file open</h2><button onClick={() => void openFilePicker()}><span>Open a file</span><Show when={shortcut("openFile")}>{key => <kbd>{key()}</kbd>}</Show></button><button onClick={() => requestCloseGroup(group().id)}>Close group</button></div>}><div class="editor-empty"><AnimatedLogo size={96} /><h1>span</h1><p>A space for code and agents.</p><button onClick={() => void openFilePicker()}><span>Open a file</span><Show when={shortcut("openFile")}>{key => <kbd>{key()}</kbd>}</Show></button><button onClick={requestWorkspace}><span>Open a folder</span><kbd>{shortcut("openFolder")}</kbd></button><button onClick={openSearch}><span>Search workspace</span><kbd>{shortcut("searchWorkspace")}</kbd></button><button onClick={() => setPaletteOpen(true)}><span>Show commands</span><kbd>{shortcut("commandPalette")}</kbd></button><Show when={recentProjects().length}><div class="welcome-recents"><span>Recent projects</span><For each={recentProjects().slice(0, 5)}>{project => <button disabled={project.missing} title={project.root} onClick={() => openRecentProject(project.root)}><Icon name="Folder2" size={14} /><span>{project.name}</span><Show when={project.missing}><small>Missing</small></Show></button>}</For></div></Show></div></Show></Show></div>
     </section>;
   }
   const settingsGroup = () => w.groups().findIndex(group => group.active === SETTINGS_TAB);
-  const settingsLayerStyle = () => ({ display: settingsGroup() >= 0 ? "flex" : "none", left: `${settingsGroup() > 0 ? centerWidth() * splitFraction() + 4 : 0}px`, width: w.groups().length < 2 ? "100%" : `${settingsGroup() === 0 ? centerWidth() * splitFraction() - 4 : centerWidth() * (1 - splitFraction()) - 4}px` });
+  const settingsLayerStyle = () => stacked() ? { display: settingsGroup() >= 0 ? "flex" : "none", left: "0px", width: "100%", top: `${(settingsGroup() > 0 ? groupsHeight() * splitFraction() + 4 : 0) + 40}px`, bottom: settingsGroup() === 0 ? `${groupsHeight() * (1 - splitFraction()) + 4}px` : "0px" } : ({ display: settingsGroup() >= 0 ? "flex" : "none", left: `${settingsGroup() > 0 ? centerWidth() * splitFraction() + 4 : 0}px`, width: w.groups().length < 2 ? "100%" : `${settingsGroup() === 0 ? centerWidth() * splitFraction() - 4 : centerWidth() * (1 - splitFraction()) - 4}px` });
 
   return <main class={`ide theme-${theme()} ${isDesktop ? "desktop" : ""} ${fullscreen() ? "is-fullscreen" : ""} ${nativeTrafficLights() ? "native-traffic-lights" : ""}`} style={{ "--ui-font-size": `${w.settings().uiFontSize}px`, "--ui-font-family": w.settings().uiFontFamily, "--editor-font-family": w.settings().editorFontFamily }} aria-label="span editor" aria-busy={w.busy()} inert={w.busy()}>
-    <Show when={internalDrag()}>{state => <div class="internal-drag-preview" role="status" aria-live="off" style={{ left: `${(state().x + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px`, top: `${(state().y + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px` }}><FileIcon path={state().item.path} /><span>{tabName(state().item.path)}</span><small>{state().target === undefined ? "No drop target" : state().item.group === undefined ? "Open" : state().copy && state().item.path !== SETTINGS_TAB ? "Copy" : "Move"}</small></div>}</Show>
+    <Show when={internalDrag()}>{state => <div class="internal-drag-preview" role="status" aria-live="off" style={{ left: `${(state().x + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px`, top: `${(state().y + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px` }}><FileIcon path={state().item.path} /><span>{tabName(state().item.path)}</span><small>{state().target === undefined ? "No drop target" : zoneLabel(state().target!.zone, state().item.group !== undefined, state().copy && state().item.path !== SETTINGS_TAB)}</small></div>}</Show>
     <header class="topbar" data-tauri-drag-region><div class="top-left"><span class="traffic-lights" aria-hidden="true"><i /><i /><i /></span><button class={`icon-button ${showLeft() ? "" : "off"}`} aria-label="Toggle project panel" aria-pressed={showLeft()} title={`Toggle project panel (${shortcut("toggleProject")})`} onClick={() => setShowLeft(!showLeft())}><Icon name="panel-left" /></button><button class={`icon-button ${showBottom() ? "" : "off"}`} aria-label="Toggle terminal panel" aria-pressed={showBottom()} title={`Toggle terminal panel (${shortcut("toggleTerminal")})`} onClick={() => setShowBottom(!showBottom())}><Icon name="panel-bottom" /></button><button class={`icon-button ${showRight() ? "" : "off"}`} aria-label="Toggle AI Assistant panel" aria-pressed={showRight()} title={`Toggle AI Assistant (${shortcut("toggleAssistant")})`} onClick={() => setShowRight(!showRight())}><Icon name="panel-right" /></button><span class="toolbar-separator" /><button class="icon-button" aria-label="Open quick open" title={`Go to file (${shortcut("quickOpen")})`} onClick={() => setQuickOpen(true)}><Icon name="goto" /></button><button class="icon-button open-folder-toolbar" aria-label="Open folder" title={`Open folder (${shortcut("openFolder")})`} onClick={requestWorkspace}><Icon name="Folder2" /></button></div><div class="top-center"><button class="project-title" aria-label="Recent projects" aria-haspopup="menu" onClick={showProjectHistory}>{w.workspace()?.name || "span"}</button><button class="branch-button" aria-label="Source control" title="Source control, phase 0.3" onClick={() => { setShowLeft(true); setLeftView("Git"); }}><Icon name="Hierarchy" size={14} /><span>{isDesktop ? "workspace" : "main"}</span></button></div><div class="top-right"><RunConfigurationSelect options={runOptions()} value={runs.selectedId()} disabled={w.busy() || runs.loading()} running={runs.running()} busy={!!runs.operation()} onSelect={runs.setSelectedId} onManage={() => setRunManagerOpen(true)} onRun={() => void runs.launch()} onStop={() => void runs.stop()} /><img class="product-logo" src="/span-logo.svg" alt="span" title="span, phase 0.1" /><button class="icon-button blue" aria-label="Show AI Assistant" onClick={() => setShowRight(true)}><Icon name="flash" /></button><button class="icon-button" aria-label="Show terminal" title="Show terminal" onClick={revealTerminal}><Icon name="u-play" /></button><button class="icon-button" aria-label="Search workspace" title={`Search workspace (${shortcut("searchWorkspace")})`} onClick={openSearch}><Icon name="SearchNormal1" /></button><button class="icon-button" aria-label="Settings" title={`Settings (${shortcut("settings")})`} onClick={openSettings}><Icon name="u-gear" /></button></div></header>
     <div class="workbench-main">
-      <aside class="panel explorer-panel" style={{ width: `${leftWidth()}px`, display: showLeft() ? "flex" : "none" }} aria-label="Project" onContextMenu={treeContext} onKeyDown={treeContext}><div class="panel-header explorer-header"><For each={["Files", "Search", "Git", "History"] as const}>{view => <button class={`panel-tab ${leftView() === view ? "selected" : ""}`} aria-pressed={leftView() === view} onClick={() => { setLeftView(view); if (view === "Search") openSearch(); }}>{view}</button>}</For><button class="icon-button" aria-label="New file" title="New file" disabled={!isDesktop || !w.workspace()} onClick={() => requestFileAction("newFile", "", true)}><MenuIcon name="newFile" /></button><button class="icon-button" aria-label="New folder" title="New folder" disabled={!isDesktop || !w.workspace()} onClick={() => requestFileAction("newFolder", "", true)}><MenuIcon name="newFolder" /></button></div><Explorer workbench={w} view={leftView()} onNavigate={navigate} onFilePointerDown={(event, path) => startFileDrag(event, path)} /></aside>
+      <aside class="panel explorer-panel" style={{ width: `${leftWidth()}px`, display: showLeft() ? "flex" : "none" }} aria-label="Project" onContextMenu={treeContext} onKeyDown={treeContext}><div class="panel-header explorer-header"><For each={["Files", "Search", "Git", "History"] as const}>{view => <button class={`panel-tab ${leftView() === view ? "selected" : ""}`} aria-pressed={leftView() === view} onClick={() => { setLeftView(view); if (view === "Search") openSearch(); }}>{view}</button>}</For><button class="icon-button" aria-label="New file" title="New file" disabled={!w.workspace()} onClick={() => void withFiles(() => explorer.startCreate("file"))}><MenuIcon name="newFile" /></button><button class="icon-button" aria-label="New folder" title="New folder" disabled={!w.workspace()} onClick={() => void withFiles(() => explorer.startCreate("folder"))}><MenuIcon name="newFolder" /></button></div><Explorer workbench={w} state={explorer} view={leftView()} onNavigate={navigate} onOpenToSide={path => { void w.openToSide(path); }} onEditorTarget={editorTargetAt} onEditorPreview={setExplorerDropTarget} onEditorDrop={dropFilesOnEditor} /></aside>
       <PanelHandle label="Resize project panel" restoreLabel="Restore project panel" shortcut={shortcut("toggleProject")} direction="horizontal" value={leftWidth()} min={200} max={Math.min(1000, windowWidth() * .42)} collapsed={!showLeft()} onResize={setLeftWidth} onShown={setShowLeft} />
-      <div class="center-area" ref={centerElement}><div class="editor-groups"><For each={w.groups().map(group => group.id)}>{(id, index) => <><Show when={index() > 0}><ResizeHandle label="Resize editor groups" direction="horizontal" value={centerWidth() * splitFraction()} min={centerWidth() * .2} max={centerWidth() * .8} onResize={width => setSplitFraction(width / centerWidth())} /></Show><EditorPane group={w.groups().find(group => group.id === id)!} width={w.groups().length > 1 && index() === 0 ? centerWidth() * splitFraction() - 4 : undefined} /></>}</For><div class="settings-view-layer" style={settingsLayerStyle()} onFocusIn={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }} onPointerDown={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }}><SettingsDocument /></div></div>
+      <div class="center-area" ref={centerElement}><div class={`editor-groups ${stacked() ? "stacked" : ""}`} ref={groupsElement}><For each={w.groups().map(group => group.id)}>{(id, index) => <><Show when={index() > 0}><ResizeHandle label="Resize editor groups" direction={stacked() ? "vertical" : "horizontal"} value={groupsExtent() * splitFraction()} min={groupsExtent() * .2} max={groupsExtent() * .8} onResize={size => setSplitFraction(size / groupsExtent())} /></Show><EditorPane group={w.groups().find(group => group.id === id)!} width={w.groups().length > 1 && index() === 0 ? groupsExtent() * splitFraction() - 4 : undefined} /></>}</For><div class="settings-view-layer" style={settingsLayerStyle()} onFocusIn={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }} onPointerDown={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }}><SettingsDocument /></div></div>
       <PanelHandle label="Resize terminal panel" restoreLabel="Restore terminal panel" shortcut={shortcut("toggleTerminal")} direction="vertical" reverse value={bottomHeight()} min={100} max={Math.min(1000, window.innerHeight * .7)} collapsed={!showBottom()} onResize={setBottomHeight} onShown={setShowBottom} />
       <section class="panel run-bottom-panel" style={{ height: `${bottomHeight()}px`, display: showBottom() ? "flex" : "none" }} aria-label="Workspace output"><div class="run-bottom-content" aria-hidden={bottomTab() !== "run"} inert={bottomTab() !== "run"} style={{ display: bottomTab() === "run" ? "flex" : "none" }}><RunOutput workbench={runs} available={isDesktop} headerStart={<OutputViewTabs />} onHide={() => setShowBottom(false)} /></div><div class="run-bottom-content" aria-hidden={bottomTab() !== "terminal"} inert={bottomTab() !== "terminal"} style={{ display: bottomTab() === "terminal" ? "flex" : "none" }}><Show when={isDesktop && initialized() && w.workspace()} fallback={<><div class="run-preview-toolbar"><OutputViewTabs /><button aria-label="Close terminal panel" onClick={() => setShowBottom(false)}><MenuIcon name="cancel" size={14} /></button></div><div class="terminal-empty" role="region" aria-label="Terminal"><Icon name="u-terminal" size={18} /><span>{isDesktop ? "Open a workspace folder to start a terminal." : "Interactive terminals require the span desktop app. Browser preview does not execute commands."}</span></div></>}><For each={[w.workspaceGeneration()]}>{() => { const transport = createTerminalTransport(w.workspace()?.root || null); return <TerminalDock headerStart={<OutputViewTabs />} visible={terminalVisible()} workspaceRoot={w.workspace()?.root || ""} transport={transport} fontSize={w.settings().fontSize} fontFamily={w.settings().editorFontFamily} onReveal={revealTerminal} onHide={() => setShowBottom(false)} onReady={controller => { terminalDock = controller; }} clipboard={{ readText: api.readClipboard, writeText: api.writeClipboard }} />; }}</For></Show></div></section></div>
       <PanelHandle label="Resize AI Assistant panel" restoreLabel="Restore AI Assistant panel" shortcut={shortcut("toggleAssistant")} direction="horizontal" reverse value={rightWidth()} min={260} max={Math.min(1000, windowWidth() * .42)} collapsed={!showRight()} onResize={setRightWidth} onShown={setShowRight} />
@@ -404,6 +469,9 @@ export default function App() {
     <Show when={paletteOpen()}><CommandPalette bindings={bindings()} handlers={handlers} onClose={() => setPaletteOpen(false)} platform={platform} /></Show>
     <Show when={pendingSettingsClose()}>{action => <Modal label="Unsaved settings" class="confirm-modal" initialFocus="[data-modal-default]" onSubmit={saveSettingsClose} onClose={() => setPendingSettingsClose(undefined)}><h2>Save changes to workspace settings?</h2><p>Your JSONC draft has unsaved changes.</p><div class="dialog-actions"><button class="button" onClick={() => { const next = action(); revertSettingsDraft?.(); setPendingSettingsClose(undefined); next(); }}><MenuIcon name="discard" size={15} />Discard changes</button><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Cancel</button><button class="button primary" data-modal-default ><MenuIcon name="save" size={15} />Save</button></div></Modal>}</Show>
     <Show when={pendingExternal()}>{pending => <Modal label="Open requested project" class="confirm-modal" initialFocus="[data-modal-default]" onSubmit={saveExternalClose} onClose={() => { pending().resolve(false); setPendingExternal(undefined); }}><h2>Open another project?</h2><p>A file or command-line request wants to open {pending().request.workspaceRoot}. This workspace has unsaved changes.</p><div class="dialog-actions"><button class="button" onClick={() => { revertSettingsDraft?.(); pending().resolve(true); setPendingExternal(undefined); }}><MenuIcon name="discard" size={15} />Discard changes</button><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Cancel</button><button class="button primary" data-modal-default ><MenuIcon name="save" size={15} />Save all</button></div></Modal>}</Show>
+    <Show when={outsideFiles()}>{pending => <Modal label="File outside the open folder" class="confirm-modal" initialFocus="[data-modal-default]" onSubmit={() => { pending().resolve(true); setOutsideFiles(undefined); }} onClose={() => { pending().resolve(false); setOutsideFiles(undefined); }}><h2>Open {fileName(pending().files[0].path)}{pending().files.length > 1 ? ` and ${pending().files.length - 1} more` : ""}?</h2><p>Span edits files inside the open folder, and {pending().files.length > 1 ? "these files are" : "this file is"} outside it. Your current project stays open unless you switch to {pending().folder}.</p><div class="dialog-actions"><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Keep current project</button><button class="button primary" data-modal-default>Open that folder</button></div></Modal>}</Show>
+    <Show when={explorer.templateRequest()}>{request => <NewPopup request={request()} where={request().folder ? fileName(request().folder) : (w.workspace()?.name ?? "project")} onClose={() => { explorer.setTemplateRequest(undefined); queueMicrotask(() => document.querySelector<HTMLElement>('.explorer-panel [role="treeitem"]')?.focus()); }} onPick={id => { const folder = request().folder; explorer.setTemplateRequest(undefined); void explorer.startTemplate(id, folder); }} />}</Show>
+    <Show when={explorer.dialog()}>{dialog => <Show when={dialog().kind === "conflict" ? (dialog() as Extract<ReturnType<typeof explorer.dialog> & object, { kind: "conflict" }>) : undefined} fallback={<Show when={dialog().kind === "delete" ? (dialog() as Extract<ReturnType<typeof explorer.dialog> & object, { kind: "delete" }>) : undefined}>{del => <Modal label="Delete" class="confirm-modal" initialFocus="[data-modal-default]" onClose={() => del().resolve(false)} onSubmit={() => { del().resolve(true); }}><h2>{del().paths.length === 1 ? `Are you sure you want to delete '${fileName(del().paths[0])}'?` : `Are you sure you want to delete the following ${del().paths.length} items?`}</h2><Show when={del().paths.length > 1}><ul class="dialog-list">{del().paths.map(path => <li>{fileName(path)}</li>)}</ul></Show><p>You can restore {del().paths.length === 1 ? "it" : "them"} from the Trash.</p><div class="dialog-actions"><span /><button class="button" data-modal-cancel>Cancel</button><button class="button primary danger" data-modal-default onClick={() => del().resolve(true)}>Move to Trash</button></div></Modal>}</Show>}>{conflict => <Modal label="File conflict" class="confirm-modal" initialFocus="[data-modal-default]" onClose={() => conflict().resolve("cancel")} onSubmit={() => { conflict().resolve("keep"); }}><h2>{conflict().names.length === 1 ? `A file or folder named '${conflict().names[0]}' already exists in '${conflict().folder ? fileName(conflict().folder) : (w.workspace()?.name ?? "project")}'.` : `${conflict().names.length} items already exist in '${conflict().folder ? fileName(conflict().folder) : (w.workspace()?.name ?? "project")}'.`}</h2><Show when={conflict().names.length > 1}><ul class="dialog-list">{conflict().names.map(name => <li>{name}</li>)}</ul></Show><p>Replace overwrites the existing {conflict().names.length === 1 ? "item" : "items"}. Keep Both adds "copy" to the name of the moved {conflict().names.length === 1 ? "item" : "items"}.</p><div class="dialog-actions"><button class="button" data-modal-cancel>Cancel</button><span /><button class="button primary" data-modal-default onClick={() => conflict().resolve("keep")}>Keep Both</button><button class="button danger" onClick={() => conflict().resolve("replace")}>Replace</button></div></Modal>}</Show>}</Show>
     <Show when={w.pendingClose()}>{pending => <Modal label="Unsaved changes" class="confirm-modal" onClose={() => void w.confirmClose("cancel")} onSubmit={() => w.confirmClose("save")} busy={w.closeBusy()} initialFocus="[data-modal-default]"><Icon name="DocumentText" size={28} /><h2>Save changes to {tabName(pending().path)}?</h2><p>Your changes will be lost if you close this file without saving.</p><div class="dialog-actions"><button class="button" onClick={() => void w.confirmClose("discard")}><MenuIcon name="discard" size={15} />Discard changes</button><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Cancel</button><button class="button primary" data-modal-default><MenuIcon name="save" size={15} />Save</button></div></Modal>}</Show>
     <Show when={pendingAppClose()}><Modal label="Close span" class="confirm-modal" initialFocus="[data-modal-default]" onSubmit={saveWindowClose} onClose={cancelClose}><h2>Save changes before closing?</h2><p>This workspace has unsaved changes.</p><div class="dialog-actions"><button class="button" onClick={() => { void closeWindow(true); }}><MenuIcon name="discard" size={15} />Discard changes</button><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Cancel</button><button class="button primary" data-modal-default ><MenuIcon name="save" size={15} />Save all</button></div></Modal></Show>
     <Show when={w.pendingRecovery()}>{recovery => <Modal label="Retained local draft" class="confirm-modal" onClose={() => w.resolveRecovery(false)}><h2>Your newer local draft was retained</h2><p>The current accepted document is open in {recovery().path.split("/").pop()}. You can keep it or restore your local draft for review.</p><div class="dialog-actions"><button class="button" onClick={() => w.resolveRecovery(false)}>Keep current document</button><span /><button class="button primary" data-modal-default onClick={() => w.resolveRecovery(true)}>Restore my draft</button></div></Modal>}</Show>

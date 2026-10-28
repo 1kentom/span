@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { render } from "solid-js/web";
+import { createExplorerState } from "../lib/explorer-state";
 import { Explorer } from "./Explorer";
 import { setCompactFolders } from "../lib/explorer-prefs";
 import type { FileEntry } from "../bindings";
@@ -27,8 +28,9 @@ function fake(disk: Record<string, FileEntry[]>, active = "") {
   };
   const workbench = { directories, expanded, loadDirectory, toggleDirectory, activePath: () => active, dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
   const root = document.createElement("div"); document.body.append(root);
-  disposers.push(render(() => <Explorer workbench={workbench as never} view="Files" onNavigate={() => {}} />, root));
-  return { root, expanded, listed, setDirectories, rows: () => Array.from(root.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')) };
+  const state = createExplorerState(workbench as never);
+  disposers.push(render(() => <Explorer workbench={workbench as never} state={state} view="Files" onNavigate={() => {}} onOpenToSide={() => {}} onEditorTarget={() => undefined} onEditorPreview={() => {}} onEditorDrop={() => {}} />, root));
+  return { root, state, expanded, listed, setDirectories, rows: () => Array.from(root.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')) };
 }
 const disk = {
   "": [dir("com"), file("README.md")],
@@ -100,5 +102,43 @@ describe("Explorer compact folders (fixture)", () => {
     t.rows()[2].click(); await tick();
     expect(t.rows()[2].textContent).toBe("com.example");
     expect(t.rows()[2].querySelector("img")!.getAttribute("src")).toMatch(/folder/);
+  });
+});
+
+describe("Explorer selection, inline editor and keyboard (fixture)", () => {
+  const tree = { "": [dir("src"), file("README.md")], src: [file("src/a.ts"), dir("src/lib")], "src/lib": [] as FileEntry[] };
+  const key = (target: Element, init: KeyboardEventInit) => target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  it("shows an inline row under the selected folder and reports an existing name", async () => {
+    const t = fake(tree); await tick();
+    t.state.selectOnly("src"); await t.state.startCreate("file"); await tick();
+    const input = t.root.querySelector<HTMLInputElement>(".tree-edit-input")!;
+    expect(input).toBeTruthy(); expect(input.getAttribute("aria-label")).toBe("New file name");
+    expect(t.root.querySelector(".file-tree [aria-level='1'][data-path='src']")!.nextElementSibling).toBe(input.closest(".tree-edit-row"));
+    input.value = "a.ts"; input.dispatchEvent(new InputEvent("input", { bubbles: true })); await tick();
+    expect(t.root.querySelector("[role=alert]")!.textContent).toContain("already exists at this location");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    key(input, { key: "Escape" }); await tick();
+    expect(t.root.querySelector(".tree-edit-input")).toBeNull();
+  });
+  it("creates under the folder of the selected file and under the root with no selection", async () => {
+    const t = fake(tree); await tick();
+    t.state.selectOnly("src/a.ts"); expect(t.state.creationParent()).toBe("src");
+    t.state.clearSelection(); t.state.setFocus(undefined); expect(t.state.creationParent()).toBe("");
+  });
+  it("selects the stem of a file name when renaming", async () => {
+    const t = fake({ "": [file("main.test.ts")] }); await tick();
+    await t.state.startRename("main.test.ts"); await tick();
+    const input = t.root.querySelector<HTMLInputElement>(".tree-edit-input")!;
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 4]);
+  });
+  it("moves focus with the arrow keys and toggles multi selection", async () => {
+    const t = fake(tree); await tick();
+    const rows = t.rows(); rows[0].focus(); t.state.selectOnly("src");
+    key(rows[0], { key: "ArrowDown" }); await tick();
+    expect(t.state.focus()).toBe("README.md");
+    key(t.rows()[0], { key: "ArrowDown", shiftKey: true }); await tick();
+    expect(t.state.selection().length).toBeGreaterThan(0);
+    key(t.rows()[0], { key: "Escape" }); await tick();
+    expect(t.state.selection()).toEqual([]);
   });
 });

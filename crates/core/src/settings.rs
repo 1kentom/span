@@ -315,6 +315,10 @@ const COMMAND_IDS: &[&str] = &[
     "save",
     "openFolder",
     "splitEditor",
+    "splitEditorDown",
+    "newFile",
+    "newFolder",
+    "newFromTemplate",
     "toggleProject",
     "toggleAssistant",
     "toggleTerminal",
@@ -484,6 +488,10 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("save", vec!["Mod+S"]),
         ("openFolder", vec!["Mod+O"]),
         ("splitEditor", vec!["Mod+\\"]),
+        ("splitEditorDown", vec!["Mod+Alt+\\"]),
+        ("newFile", vec!["Mod+N"]),
+        ("newFolder", vec!["Mod+Shift+N"]),
+        ("newFromTemplate", vec!["Alt+Insert"]),
         ("toggleProject", vec!["Mod+B"]),
         ("toggleAssistant", vec!["Mod+Alt+B"]),
         ("toggleTerminal", vec!["Mod+J"]),
@@ -503,7 +511,15 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         .collect::<Result<std::collections::HashSet<_>>>()?;
     let mut assigned = HashMap::new();
     for (command, mut defaults) in defaults {
-        if command == "toggleFiles" || command == "focusFiles" {
+        if matches!(
+            command,
+            "toggleFiles"
+                | "focusFiles"
+                | "splitEditorDown"
+                | "newFile"
+                | "newFolder"
+                | "newFromTemplate"
+        ) {
             defaults.retain(|shortcut| {
                 !claimed.contains(&shortcut_conflict_key(shortcut).expect("valid default shortcut"))
             });
