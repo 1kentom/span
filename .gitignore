@@ -1,0 +1,9 @@
+/_work/
+/target/
+node_modules/
+ui/dist/
+.DS_Store
+*.log
+playwright-report/
+test-results/
+apps/desktop/gen/schemas/
