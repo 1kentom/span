@@ -10,6 +10,7 @@ mod agents;
 mod cli;
 mod menu;
 mod services;
+pub mod session_meta;
 mod startup;
 
 /// The authoritative workspace is only accessed by blocking workers.
@@ -618,6 +619,12 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             services::read_image,
             menu::sync_native_menu,
             syntax,
+            session_meta::session_meta_list,
+            session_meta::session_meta_update,
+            session_meta::session_meta_set_title,
+            session_meta::session_meta_set_archived,
+            session_meta::session_meta_delete,
+            session_meta::session_export_markdown,
             agents::agent_registry,
             agents::agent_installed,
             agents::agent_install,
