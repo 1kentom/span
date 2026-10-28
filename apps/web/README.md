@@ -8,7 +8,16 @@ Browser QA covers desktop and mobile layout, navigation, FAQ disclosure, local a
 
 See `ASSETS.md` for image, logo, and icon provenance.
 
-Refresh the release manifest after publication with `node apps/web/scripts/sync-releases.mjs`. The script accepts `GH_TOKEN` or `GITHUB_TOKEN` for server-side API authentication when available. Credentials are never written into the public manifest.
+Refresh one published release using a required server-side `GH_TOKEN` or `GITHUB_TOKEN` environment variable:
+
+```sh
+node apps/web/scripts/sync-releases.mjs \
+  --tag v0.1.0-nightly.20261028.7 --channel nightly
+```
+
+The helper validates the exact published tag, repository, five installer formats, asset URLs, sizes, digests, and checksums before atomically updating `releases.json`. It retains the newest release per channel and preserves the previous bytes on failure. Credentials are never written into the public manifest. The release publication job runs this helper and commits only the generated manifest through bounded fast-forward retries. Verify the resulting external Vercel deployment separately; Actions recursion suppression does not establish that deployment.
+
+Run the helper regression suite with `node --test apps/web/scripts/sync-releases.test.mjs`. For a failed post-publication metadata update, use the main-only `Refresh release metadata` dispatch described in `docs/releases.md`; do not recreate the release tag or rerun installer publication.
 
 
 ## Download page

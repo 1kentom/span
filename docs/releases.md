@@ -19,6 +19,27 @@ Nightly is a development channel rebuilt after green main commits. It is not a p
 5. Allow the workflow token to write repository contents in the publication job. Other jobs use read-only contents permissions; preparation also reads Actions runs. No personal token is needed for publishing to this repository.
 6. After reviewing repository configuration and the development-artifact publication policy, explicitly set repository variable `RELEASE_CHANNELS_ENABLED=true` to activate the channels. This is an operational enablement step, not performed by the setup scripts or initial push.
 
+## Website release metadata
+
+After atomic installer publication, the same publish job refreshes `apps/web/releases.json` through the authenticated exact-tag helper. It verifies release state, repository and tag, the complete installer matrix, download URLs, sizes, GitHub digests, and `SHA256SUMS`. Invalid data or a failed refresh preserves the existing manifest. An older late-finishing channel release does not replace a newer recorded release.
+
+The Git step fetches current `main`, stages only the generated manifest, and attempts a normal fast-forward push as the Actions bot. A concurrent source push causes a fresh-main retry, bounded to three attempts. It never forces a push or bypasses branch rules. A failed post-publication metadata update surfaces in that job even though the already published, complete installer release remains available.
+
+[GitHub documents that pushes made with `GITHUB_TOKEN` do not start another push-triggered Actions run](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow). This avoids a recursive nightly release. The generated data commit is not a new verified desktop build. External Vercel delivery is separate: verify its Git-triggered production deployment and served manifest bytes before calling the update path complete. The first end-to-end check is tracked in [#39](https://github.com/1kentom/span/issues/39).
+
+### Recovering a metadata-only failure
+
+A failed metadata refresh after publication does not unpublish the complete installer release. Do not delete or recreate its tag, and do not rerun the whole publication job: prerelease publication deliberately refuses an existing tag.
+
+Use the separate metadata-only recovery workflow for that already published tag:
+
+```sh
+gh workflow run refresh-release-metadata.yml --repo 1kentom/span --ref main \
+  -f tag=v0.1.0-nightly.20261028.8 -f channel=nightly
+```
+
+This main-only workflow runs the same validation and fast-forward update script. It never builds installers, creates tags, or publishes a release. Select the actual failed release tag and matching channel. It preserves newer channel metadata if a late older release is retried. Inspect the workflow result and verify the subsequent external Vercel deployment; a successful unchanged result creates no commit.
+
 ## Signing secrets
 
 | Platform | Environment secrets | Behavior |
