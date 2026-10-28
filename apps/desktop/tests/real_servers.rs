@@ -2592,3 +2592,58 @@ async fn navigation_java() {
         .await;
     env.finish().await;
 }
+
+/// Per-workspace trust against the real JDT LS: a Maven project is imported (m2e writes
+/// `.project` and `.classpath` next to the pom) only once the workspace is trusted. The
+/// pom has no dependencies, so nothing is fetched from Maven Central for the project.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn java_maven_import_only_runs_in_a_trusted_workspace() {
+    let id = ServerId::Jdtls;
+    let pom = "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>demo</groupId>\n  <artifactId>demo</artifactId>\n  <version>1</version>\n  <properties>\n    <maven.compiler.source>21</maven.compiler.source>\n    <maven.compiler.target>21</maven.compiler.target>\n  </properties>\n</project>\n";
+    let mut env = Env::start(&[
+        ("pom.xml", pom),
+        (
+            "src/main/java/demo/Hello.java",
+            "package demo;\npublic class Hello {}\n",
+        ),
+        (
+            "src/main/java/demo/Other.java",
+            "package demo;\npublic class Other { Hello h; }\n",
+        ),
+    ])
+    .await;
+    env.open("src/main/java/demo/Hello.java");
+    env.wait_ready(id).await;
+    let row = env.ready_row(id).await.unwrap();
+    assert!(!row.trust.workspace_trusted);
+    assert!(row.trust.needs_trust, "{:?}", row.trust);
+    assert_eq!(
+        row.trust.reason.as_deref(),
+        Some("This Maven project's dependencies can only be loaded by running Maven.")
+    );
+    // Restricted: the server works on a synthetic project and writes nothing next to the pom.
+    env.settle(id, "document symbols", || {
+        env.svc
+            .document_symbols("src/main/java/demo/Hello.java", None)
+    })
+    .await
+    .unwrap();
+    assert!(!env.path(".project").exists() && !env.path(".classpath").exists());
+
+    let mut settings = env.settings.clone();
+    settings.language_servers.trusted_workspaces = vec![env.root.to_string_lossy().into_owned()];
+    env.svc.apply_settings(&settings);
+    let deadline = Instant::now() + Duration::from_secs(420);
+    while !(env.path(".project").exists() && env.path(".classpath").exists()) {
+        assert!(
+            Instant::now() < deadline,
+            "trusting the workspace never started the Maven import. events:\n  {}",
+            env.event_dump()
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    eprintln!("[evidence] Jdtls Maven import ran after trust: .project and .classpath written");
+    let row = env.wait_ready(id).await;
+    assert!(row.trust.workspace_trusted && !row.trust.needs_trust);
+    env.finish().await;
+}
