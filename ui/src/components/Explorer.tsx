@@ -1,7 +1,9 @@
-import { For, Show, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { FileEntry } from "../bindings";
 import type { Workbench } from "../stores/workbench";
 import Icon, { FileIcon } from "./Icon";
+import { MAX_CHAIN_DEPTH, compactChain, isSourceRoot } from "../lib/compact-tree";
+import { compactFolders } from "../lib/explorer-prefs";
 
 export function Explorer(props: { workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onFileDragStart?: (event: DragEvent, path: string) => void }) {
   const w = props.workbench;
@@ -16,18 +18,60 @@ export function Explorer(props: { workbench: Workbench; view: "Files" | "Search"
     const index = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, current + (event.key === "ArrowDown" ? 1 : -1)));
     rows[index]?.focus(); event.preventDefault();
   }
+  // Compact folder chains: one row per chain, identified by its deepest directory.
+  const [pending, setPending] = createSignal<ReadonlySet<string>>(new Set());
+  const attempted = new Set<string>();
+  const markPending = (path: string, on: boolean) => setPending(current => { const next = new Set(current); if (on) next.add(path); else next.delete(path); return next; });
+  async function toggleChain(paths: string[]) {
+    const deepest = paths[paths.length - 1];
+    if (w.expanded().has(deepest)) { await w.toggleDirectory(deepest); return; }
+    for (const path of paths) if (!w.expanded().has(path)) await w.toggleDirectory(path);
+  }
+  /** Load the only child directory of an expanded chain so the chain can continue. Reuses the cached lazy listing. */
+  async function extendChain(parent: string, child: string) {
+    const generation = w.workspaceGeneration(); attempted.add(`${generation}\0${child}`);
+    markPending(child, true);
+    try {
+      await w.loadDirectory(child);
+      if (generation !== w.workspaceGeneration() || !w.directories[child] || !w.expanded().has(parent)) return;
+      if (!w.expanded().has(child)) await w.toggleDirectory(child);
+    } finally { markPending(child, false); }
+  }
   const TreeRows = (rowProps: { path: string; depth: number }) => <For each={w.directories[rowProps.path] || []}>{entry => <TreeRow entry={entry} depth={rowProps.depth} />}</For>;
   const TreeRow = (rowProps: { entry: FileEntry; depth: number }) => {
     const entry = rowProps.entry;
-    const expanded = () => w.expanded().has(entry.path);
+    const chain = createMemo(() => entry.isDir && compactFolders() ? compactChain(entry.path, w.directories) : undefined);
+    const target = () => chain()?.deepest ?? entry.path;
+    /** A tail directory discovered below an expanded parent whose listing has not arrived yet. It is shown open so the row does not flip. */
+    const awaitingTail = () => { const current = chain(); if (!current || current.segments.length < 2 || w.directories[current.deepest]) return false; return w.expanded().has(current.segments[current.segments.length - 2].path) && !attempted.has(`${w.workspaceGeneration()}\0${current.deepest}`) || pending().has(current.deepest); };
+    const expanded = () => entry.isDir && (w.expanded().has(target()) || pending().has(target()) || awaitingTail());
+    const merged = () => (chain()?.segments.length ?? 1) > 1;
+    createEffect(() => {
+      const current = chain();
+      if (!current || current.segments.length > MAX_CHAIN_DEPTH) return;
+      const tail = current.segments[current.segments.length - 1].path;
+      const previous = current.segments[current.segments.length - 2]?.path;
+      // Case 1: the tail was just discovered below an expanded directory, so load and open it.
+      if (previous !== undefined && !w.directories[tail] && w.expanded().has(previous) && !attempted.has(`${w.workspaceGeneration()}\0${tail}`)) { void extendChain(previous, tail); return; }
+      // Case 2: the open tail lists exactly one directory, so continue the chain.
+      if (!expanded() || current.segments.length >= MAX_CHAIN_DEPTH) return;
+      const listing = w.directories[current.deepest];
+      if (!listing || listing.length !== 1 || !listing[0].isDir) return;
+      const child = listing[0].path;
+      if (isSourceRoot(child) || w.directories[child] || attempted.has(`${w.workspaceGeneration()}\0${child}`)) return;
+      void extendChain(current.deepest, child);
+    });
+    const toggle = () => void toggleChain(chain()?.segments.map(segment => segment.path) ?? [entry.path]);
     return <>
-      <button class={`tree-row ${w.activePath() === entry.path ? "selected" : ""}`} role="treeitem" aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-selected={!entry.isDir && w.activePath() === entry.path} draggable={!entry.isDir && !!props.onFileDragStart} onDragStart={event => { if (!entry.isDir) props.onFileDragStart?.(event, entry.path); }} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={() => entry.isDir ? void w.toggleDirectory(entry.path) : props.onNavigate(entry.path)} onKeyDown={e => {
-        if (entry.isDir && ((e.key === "ArrowRight" && !expanded()) || (e.key === "ArrowLeft" && expanded()))) { e.preventDefault(); void w.toggleDirectory(entry.path); }
-      }} title={entry.path}>
+      <button class={`tree-row ${w.activePath() === entry.path ? "selected" : ""}`} role="treeitem" data-path={target()} aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-label={entry.isDir && merged() ? target() : undefined} aria-selected={!entry.isDir && w.activePath() === entry.path} draggable={!entry.isDir && !!props.onFileDragStart} onDragStart={event => { if (!entry.isDir) props.onFileDragStart?.(event, entry.path); }} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={() => entry.isDir ? toggle() : props.onNavigate(entry.path)} onKeyDown={e => {
+        if (entry.isDir && ((e.key === "ArrowRight" && !expanded()) || (e.key === "ArrowLeft" && expanded()))) { e.preventDefault(); toggle(); }
+      }} title={target()}>
         <Show when={entry.isDir} fallback={<span class="tree-indent" />}><Icon name={expanded() ? "arrow-down4" : "arrow-right4"} size={13} /></Show>
-        <FileIcon path={entry.path} directory={entry.isDir} open={expanded()} /><span class="tree-name">{entry.name}</span><Show when={w.dirty(entry.path)}><span class="dirty-dot" aria-label="Unsaved changes" /></Show>
+        <FileIcon path={target()} directory={entry.isDir} open={expanded()} plain={chain()?.inSourceRoot} />
+        <span class="tree-name"><Show when={merged()} fallback={entry.name}><For each={chain()!.segments}>{(segment, index) => <>{index() > 0 && <span class="tree-separator" aria-hidden="true">{chain()!.separator}</span>}<span class="tree-segment" data-segment-path={segment.path}>{segment.name}</span></>}</For></Show></span>
+        <Show when={w.dirty(entry.path)}><span class="dirty-dot" aria-label="Unsaved changes" /></Show>
       </button>
-      <Show when={entry.isDir && expanded()}><TreeRows path={entry.path} depth={rowProps.depth + 1} /></Show>
+      <Show when={entry.isDir && expanded()}><TreeRows path={target()} depth={rowProps.depth + 1} /></Show>
     </>;
   };
   return <>

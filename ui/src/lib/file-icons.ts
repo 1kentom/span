@@ -5,7 +5,7 @@ type Associations = { fileNames: Association; fileExtensions: Association; folde
 const theme = definitions as typeof definitions & Associations;
 const light = theme.light as Associations;
 
-export interface FileIconOptions { directory?: boolean; open?: boolean; light?: boolean }
+export interface FileIconOptions { directory?: boolean; open?: boolean; light?: boolean; plain?: boolean }
 
 /** Resolve upstream filename associations before compound extensions, just like the pack manifest. */
 export function materialIconName(path: string, options: FileIconOptions = {}): string {
@@ -21,7 +21,7 @@ export function materialIconName(path: string, options: FileIconOptions = {}): s
   };
   if (options.directory) {
     const key = options.open ? 'folderNamesExpanded' : 'folderNames';
-    return named(key) ?? (options.open ? variant?.folderExpanded ?? theme.folderExpanded : variant?.folder ?? theme.folder);
+    return (options.plain ? undefined : named(key)) ?? (options.open ? variant?.folderExpanded ?? theme.folderExpanded : variant?.folder ?? theme.folder);
   }
   const fileMatch = named('fileNames');
   if (fileMatch) return fileMatch;
