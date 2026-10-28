@@ -1074,6 +1074,33 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn library_uris_never_reach_the_workspace_filesystem() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = super::DesktopState::default();
+        let workspace = span_core::CoreWorkspace::open(directory.path()).unwrap();
+        *state.workspace.lock().unwrap() =
+            Some(std::sync::Arc::new(std::sync::Mutex::new(workspace)));
+        let uri = "jdt://contents/javafx-fxml-21.0.2-mac-aarch64.jar/javafx.fxml/FXMLLoader.java?=todo/%5C/Users%5C/user%5C/.m2%5C/repository/x.jar=/maven.pomderived=/true";
+        // The commands open_buffer, peek_buffer and save_buffer reach the workspace through these calls.
+        let opened = super::with_workspace(state.clone(), move |w| w.open_buffer(uri)).await;
+        let peeked = super::with_workspace(state.clone(), move |w| w.peek_buffer(uri)).await;
+        let saved = super::with_workspace(state.clone(), move |w| w.save_buffer(uri, 0)).await;
+        for result in [opened.map(|_| ()), peeked.map(|_| ()), saved.map(|_| ())] {
+            let message = result.unwrap_err();
+            assert!(
+                message.contains("library source, not a file in your project"),
+                "{message}"
+            );
+            assert!(!message.contains("No such file"), "{message}");
+            assert!(!message.contains("Resolve parent"), "{message}");
+        }
+        assert!(std::fs::read_dir(directory.path())
+            .unwrap()
+            .next()
+            .is_none());
+    }
+
     #[test]
     fn export_typescript_bindings() -> Result<(), Box<dyn std::error::Error>> {
         super::export_bindings()

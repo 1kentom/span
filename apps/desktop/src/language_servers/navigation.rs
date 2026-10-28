@@ -275,12 +275,25 @@ fn is_library_path(relative: &str) -> bool {
 }
 
 /// `jdt://contents/java.base/java.lang/String.class?=...` shown as
-/// `java.base/java.lang/String.class`.
+/// `java.base/java.lang/String.class`. For a Maven or Gradle jar the jar file name leads the
+/// path (`x.jar/javafx.fxml/FXMLLoader.java`) and is dropped here, the UI shows it as secondary text.
+/// The query holds encoded project information and is never shown. Display only: the URI itself
+/// is passed to the server untouched.
 fn nice_uri(uri: &str) -> String {
     let rest = uri.split_once("://").map(|(_, r)| r).unwrap_or(uri);
     let rest = rest.strip_prefix("contents/").unwrap_or(rest);
     let rest = rest.split(['?', '#']).next().unwrap_or(rest);
-    rest.to_owned()
+    match rest.split_once('/') {
+        Some((first, tail))
+            if !tail.is_empty()
+                && (first.ends_with(".jar")
+                    || first.ends_with(".jmod")
+                    || first.ends_with(".zip")) =>
+        {
+            tail.to_owned()
+        }
+        _ => rest.to_owned(),
+    }
 }
 
 /// Map a protocol URI and range to a location. Never drops a location: a URI that is not a

@@ -77,6 +77,22 @@ fn non_file_uris_are_kept_and_external() {
     assert_eq!(loc.display_path, "java.base/java.lang/String.class");
 }
 
+const REPORTED_JDT_URI: &str = "jdt://contents/javafx-fxml-21.0.2-mac-aarch64.jar/javafx.fxml/FXMLLoader.java?=todo/%5C/Users%5C/user%5C/.m2%5C/repository%5C/org%5C/openjfx%5C/javafx-fxml%5C/21.0.2%5C/javafx-fxml-21.0.2-mac-aarch64.jar=/maven.pomderived=/true=/=/module=/true=/=/javadoc_location=/jar:file:...";
+
+#[test]
+fn maven_jar_class_uri_keeps_the_raw_uri_and_shows_a_clean_name() {
+    let located = locate(&root(), REPORTED_JDT_URI, lsp::Range::default());
+    assert!(located.external);
+    assert_eq!(located.path, REPORTED_JDT_URI, "the URI is kept verbatim");
+    assert_eq!(located.display_path, "javafx.fxml/FXMLLoader.java");
+    let t = tree();
+    assert_eq!(
+        resolve_source(&t.workspace, &loc(REPORTED_JDT_URI, true)).unwrap(),
+        ResolvedSource::Jdt(REPORTED_JDT_URI.into()),
+        "the server receives exactly the URI it sent"
+    );
+}
+
 #[test]
 fn hierarchical_and_flat_document_symbols_map() {
     let nested: lsp::DocumentSymbolResponse = from(json!([
