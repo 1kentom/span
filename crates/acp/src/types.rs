@@ -187,6 +187,28 @@ pub enum AgentHint {
     Compacting,
     /// "Preparing tool". The agent has not named the tool call yet.
     ToolPending,
+    /// "it will not ask before running tools, and Span's approval prompts
+    /// will not appear". The session's mode lets the
+    /// agent run tools without asking (bypassPermissions, agent-full-access,
+    /// yolo, never); the notice title is the mode's name.
+    PermissionsBypassed,
+    /// "Stopped after you rejected a request". The turn ended `cancelled`
+    /// after the user rejected a permission or an edit in it.
+    RejectedByUser,
+    /// "The agent still lists a conversation you deleted. Span hides it until
+    /// you reconnect." The agent answered `session/delete` but kept the session.
+    DeletedStillListed,
+    /// "Run `opencode auth login` in a terminal, or choose another model,
+    /// then retry". The current model's provider lacks credentials and the
+    /// model option offers others.
+    RunOpencodeAuthLoginOrSwitchModel,
+    /// "needs setup in a terminal or environment variables, which Span does
+    /// not do. Set it up, then reconnect." A sign-in method with no input
+    /// Span can collect.
+    NeedsEnvironmentSetup,
+    /// "Request interrupted by user". A restored session replays an
+    /// interrupted turn.
+    InterruptedByUser,
 }
 
 /// A file a tool call touches.
@@ -337,6 +359,12 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[specta(optional)]
         hint: Option<AgentHint>,
+        /// The agent's own error text, set when it does not read as a
+        /// sign-in request (for example an account or plan notice). Show it
+        /// first; the sign-in methods are secondary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        agent_message: Option<String>,
     },
     AvailableCommands {
         session_id: String,

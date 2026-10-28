@@ -3,6 +3,7 @@ import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
 import { isNearBottom, relativeTime } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
+import type { AgentHint } from "../bindings";
 import { curatedAgent } from "../lib/acp-catalog";
 import { capabilityChips, classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
@@ -19,14 +20,16 @@ import { EditorToast } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
 import { HistoryList } from "./agent/HistoryList";
+import { ENTER_KEY } from "./agent/KeyGlyph";
 import { HintLine, SignIn } from "./agent/SignIn";
 import type { ActionView, KeyHint } from "./agent/types";
 import { modalOpen } from "./agent/util";
+import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } from "../lib/updates";
 import "../styles/agent.css";
 
 const KEYS: KeyHint[] = [
   { keys: ["⌘", "."], label: "Ask agent", where: "Editor & Terminal" },
-  { keys: ["⌥", "↩"], label: "Add context", where: "Chat" },
+  { keys: ["⌥", ENTER_KEY], label: "Add context", where: "Chat" },
   { keys: ["/"], label: "Commands", where: "Chat" },
 ];
 
@@ -89,7 +92,9 @@ export function AgentPanel(props: AgentPanelProps) {
       updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
       inWorkspace: true,
       current: session.sessionId === a.state().sessionId,
-      locked: !a.state().canLoad,
+      // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
+      locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
+      status: a.rowStatus(session.sessionId),
     })),
   );
   const recents = createMemo(() =>
@@ -103,10 +108,17 @@ export function AgentPanel(props: AgentPanelProps) {
   );
   /** Methods that cannot run from Span and need nothing typed. Methods that take a key or gateway get a form instead. */
   const unsupportedAuth = () => a.state().auth?.methods.filter((method) => !method.supported && !method.input) ?? [];
-  /** Per-method hints that the header hint does not already say. */
+  /** One method's hint line. Environment setup names the method, since several methods can need it. */
+  const methodHint = (method: { name: string; hint?: AgentHint | null }) => {
+    const line = hintText(method.hint);
+    return line && method.hint === "needsEnvironmentSetup" ? `${method.name} ${line}` : line;
+  };
+  /** Per-method hints that the header hint does not already say. The model-aware OpenCode hint already covers its login method. */
   const methodHints = () => {
-    const shown = hintText(a.state().auth?.hint);
-    return [...new Set(unsupportedAuth().flatMap((method) => (hintText(method.hint) ? [hintText(method.hint)!] : [])))].filter((line) => line !== shown);
+    const header = a.state().auth?.hint;
+    const shown = hintText(header);
+    const covered = (method: { hint?: AgentHint | null }) => header === "runOpencodeAuthLoginOrSwitchModel" && method.hint === "runOpencodeAuthLogin";
+    return [...new Set(unsupportedAuth().flatMap((method) => (!covered(method) && methodHint(method) ? [methodHint(method)!] : [])))].filter((line) => line !== shown);
   };
   const unhinted = () => unsupportedAuth().filter((method) => !method.hint);
   const presetRows = () => a.presets().map((preset) => ({ id: preset.id, name: preset.name, description: preset.description, command: [preset.launch.command, ...preset.launch.args].join(" ") }));
@@ -169,6 +181,8 @@ export function AgentPanel(props: AgentPanelProps) {
       onDragLeave={a.intake.onDragLeave}
       onDrop={a.intake.onDrop}
     >
+      {/* Read once when a background chat newly waits for the user. Elapsed timers never reach it. */}
+      <p class="sb-visually-hidden" aria-live="polite" aria-atomic="true">{a.attentionAnnouncement()}</p>
       <header class="agent-header">
         <Show when={hasAgent()} fallback={<span class="agent-logo" aria-hidden="true" />}>
           <BrandIcon id={brand().id} name={brand().name} size={15} />
@@ -187,8 +201,16 @@ export function AgentPanel(props: AgentPanelProps) {
           <FollowPill following={a.following()} onToggle={a.toggleFollow} />
         </Show>
         <Show when={a.connected() && a.state().canList && a.view() !== "history"}>
-          <button class="agent-icon-button" aria-label="Earlier sessions" title="Earlier sessions" onClick={openHistory}>
+          <button
+            class="agent-icon-button agent-history-button"
+            aria-label={a.attentionCount() ? `Earlier sessions, ${a.attentionCount()} waiting for you` : "Earlier sessions"}
+            title={a.attentionCount() ? `${a.attentionCount()} background ${a.attentionCount() === 1 ? "chat waits" : "chats wait"} for you` : "Earlier sessions"}
+            onClick={openHistory}
+          >
             <Icon name="Clock" size={15} />
+            <Show when={a.attentionCount()}>
+              <span class="agent-attention-badge" aria-hidden="true">{a.attentionCount()}</span>
+            </Show>
           </button>
         </Show>
         <Show when={isDesktop}>
@@ -196,7 +218,7 @@ export function AgentPanel(props: AgentPanelProps) {
             class="agent-icon-button"
             aria-label={a.connected() ? "New chat" : "Connect an agent"}
             title={a.connected() ? "New chat" : "Connect an agent"}
-            disabled={a.working() || a.running()}
+            disabled={a.working()}
             onClick={() => (a.connected() ? void a.newChat() : a.setView("connect"))}
           >
             <Icon name="Add" size={16} />
@@ -313,6 +335,10 @@ export function AgentPanel(props: AgentPanelProps) {
                 customDraft={customDraft()}
                 found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${leaf(entry.launch.command)}` }))}
                 presets={presetRows()}
+                updates={agentUpdates()}
+                checkingUpdates={agentUpdatesBusy()}
+                updateError={agentUpdateError()}
+                onCheckUpdates={() => void checkAgentUpdates(true)}
                 onPreset={a.connectPreset}
                 registry={a
                   .registry()
@@ -341,11 +367,15 @@ export function AgentPanel(props: AgentPanelProps) {
           </Match>
           <Match when={body() === "signin"}>
             <div class="agent-body">
+              <Show when={a.state().auth!.agentMessage}>
+                {(message) => <ErrorCard level="error" title={`${label()} reported a problem`} text={message()} actions={[]} />}
+              </Show>
               <SignIn
                 id={brand().id}
                 name={label()}
-                title={`Sign in to ${label()}`}
-                text={a.state().auth!.message}
+                title={a.state().auth!.agentMessage ? "Other sign-in options" : `Sign in to ${label()}`}
+                text={a.state().auth!.agentMessage ? undefined : a.state().auth!.message}
+                secondary={Boolean(a.state().auth!.agentMessage)}
                 hint={hintText(a.state().auth!.hint)}
                 methods={a
                   .state()
@@ -353,6 +383,7 @@ export function AgentPanel(props: AgentPanelProps) {
                   .map((method) => ({ id: method.id, name: method.name, description: method.description ?? undefined, input: method.input ?? undefined }))}
                 busy={a.pendingAction() === "auth"}
                 onPick={(id) => void a.authenticate(id)}
+                onRetry={a.reconnect}
                 onSubmit={(id, secret) => void a.authenticateWith(id, secret)}
               />
               <Show when={unsupportedAuth().length}>

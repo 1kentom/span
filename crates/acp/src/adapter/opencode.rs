@@ -161,8 +161,22 @@ impl Quirks for OpenCode {
         }
     }
 
-    fn auth_hint(&self) -> Option<AgentHint> {
-        Some(AgentHint::RunOpencodeAuthLogin)
+    /// A live run (2.0.32) showed the default model's provider can lack
+    /// credentials while other models work, so when the model option offers
+    /// another model the hint says so too.
+    fn auth_hint(&self, state: Option<&SessionState>) -> Option<AgentHint> {
+        let other_models = state.is_some_and(|state| {
+            state
+                .config
+                .iter()
+                .filter(|option| option.category.as_deref() == Some("model"))
+                .any(|option| option.groups.iter().map(|g| g.choices.len()).sum::<usize>() > 1)
+        });
+        Some(if other_models {
+            AgentHint::RunOpencodeAuthLoginOrSwitchModel
+        } else {
+            AgentHint::RunOpencodeAuthLogin
+        })
     }
 
     /// Slash commands return `end_turn` at once and stream nothing.

@@ -132,7 +132,7 @@ describe("composer keys", () => {
     const { host } = await composer();
     expect(host.querySelectorAll(".sb-hint-key .key-enter").length).toBe(3);
     expect(host.textContent).not.toMatch(/[\u21b5\u21a9\u23ce]/);
-    expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["Enter Send", "⇧Enter Newline", "↑ Earlier prompts", "/ Commands", "⌥Enter Attach"]);
+    expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["Enter Send", "⇧Enter Newline", "/ Commands", "⌥Enter Attach"]);
     expect(composerHints({ dockFocused: true, permission: [] }).permission).toEqual([]);
   });
 });

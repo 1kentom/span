@@ -100,6 +100,7 @@ function mount() {
 }
 const listener = () => mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
 beforeEach(() => {
+  window.localStorage.clear();
   vi.clearAllMocks();
   HTMLElement.prototype.scrollTo = vi.fn();
   mocks.installed.mockResolvedValue([managed]);
@@ -127,7 +128,7 @@ describe("agent menu", () => {
     receive({ kind: "capabilities", canLoadSession: true, canListSessions: true });
     receive({ kind: "config", sessionId: "session-1", options: [{ id: "model", name: "Model", category: "model", currentValue: "fast", groups: [{ name: "", choices: [{ value: "fast", name: "Fast model" }, { value: "deep", name: "Deep model" }] }] }] } as AgentEvent);
     await flush();
-    root.querySelector<HTMLButtonElement>('[aria-label^="Agent and model:"]')!.click(); await flush();
+    root.querySelector<HTMLButtonElement>('[aria-label^="Model:"]')!.click(); await flush();
     button("Deep model").click(); await flush();
     expect(mocks.setConfig).toHaveBeenCalledWith("model", "deep");
     const input = root.querySelector<HTMLTextAreaElement>("#agent-prompt")!;
@@ -236,7 +237,8 @@ describe("agent menu", () => {
     expect(root.textContent).not.toContain("Connected and ready");
     expect(root.querySelector(".agent-catalog")).not.toBeNull();
     expect(root.querySelector('[aria-label="Select agent"]')).not.toBeNull();
-    expect(root.querySelector('[aria-label^="Agent and model:"]')).toBeNull();
+    expect(root.querySelector('[aria-label^="Model:"]')).toBeNull();
+    expect(root.querySelector('[aria-label^="Agent:"]')).toBeNull();
   });
 
   it("keeps installation state on its row while search, close, and other agents stay usable", async () => {

@@ -100,11 +100,11 @@ export function HistoryList(props: HistoryListProps) {
               <div class="sb-eyebrow">{group.label}</div>
               <For each={group.rows}>
                 {(row) => (
-                  <div class="sb-session" classList={{ locked: row.locked }}>
+                  <div class="sb-session" classList={{ locked: row.locked, live: Boolean(row.status && row.status.kind !== "idle"), attention: Boolean(row.status?.attention) }}>
                     <Show
                       when={renaming() === row.id}
                       fallback={
-                        <button class="sb-session-main" disabled={row.locked} aria-disabled={row.locked} onClick={() => props.onOpen(row.id)}>
+                        <button class="sb-session-main" disabled={row.locked} aria-disabled={row.locked} aria-label={row.status ? `${row.title}, ${row.status.label}` : undefined} onClick={() => props.onOpen(row.id)}>
                           <span class="sb-session-brand"><BrandIcon id={row.brand?.id} name={row.brand?.name} size={14} /></span>
                           <span class="sb-option-text">
                             <span class="sb-session-title">
@@ -115,6 +115,14 @@ export function HistoryList(props: HistoryListProps) {
                               <span class="sb-chips inline">
                                 <For each={row.models}>{(model) => <span class="sb-chip mono">{model}</span>}</For>
                               </span>
+                            </Show>
+                            <Show when={row.status}>
+                              {(status) => (
+                                <span class={`sb-session-state ${status().kind}`} classList={{ attention: status().attention }}>
+                                  <Show when={status().kind !== "idle"}><span class="sb-dot" aria-hidden="true" /></Show>
+                                  {status().label}
+                                </span>
+                              )}
                             </Show>
                             <span class="sb-session-meta">
                               <span>{row.meta}</span>

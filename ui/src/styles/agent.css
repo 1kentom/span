@@ -229,6 +229,49 @@
 .agent-summary[open] summary {
   margin-bottom: 6px;
 }
+/* Agent switch divider (issue #87): the title on the rule, the honest limits under it. */
+.agent-handoff {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-handoff .sb-notice .sb-ellipsis {
+  min-width: 0;
+}
+.agent-handoff-note {
+  margin: 0;
+  padding: 0 4px;
+  text-align: center;
+}
+/* The carried context sent with the first prompt after a switch. Collapsed, never hidden. */
+.agent-context-sent {
+  margin-bottom: 6px;
+}
+.agent-context-sent summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  list-style: none;
+}
+.agent-context-sent summary::-webkit-details-marker {
+  display: none;
+}
+.agent-context-sent summary .icon {
+  flex: none;
+  transition: transform 0.12s ease;
+}
+.agent-context-sent[open] summary .icon {
+  transform: rotate(90deg);
+}
+.agent-context-text {
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 11px/1.5 "JetBrains Mono", ui-monospace, monospace;
+  color: var(--sb-dim);
+}
 .agent-changes {
   display: flex;
   flex-direction: column;
@@ -316,33 +359,31 @@
 .agent-footer > .sb-banner {
   margin: 0 0 6px;
 }
-.agent-footer > .sb-drawer {
-  margin: 0 6px;
+/*
+ * One rule for everything stacked on the prompt box (plan and queue drawers, the activity bar, question,
+ * permission and URL docks): the prompt box's width and top radius (20px, see .agent-composer).
+ * A dock is one card, its question, error and Skip live inside.
+ */
+.agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) {
+  margin: 0;
+  border-radius: 20px 20px 0 0;
 }
 .agent-footer > :is(.sb-dock, .sb-activity) {
-  margin: 0 6px;
   border: 1px solid var(--sb-accent-border);
   border-bottom: 0;
 }
+/* The activity bar is a compact tab on the prompt box: a little narrower and a smaller radius than the card it sits on. */
 .agent-footer > .sb-activity {
+  margin-inline: 14px;
+  padding-inline: 14px;
+  border-radius: 12px 12px 0 0;
   border-color: var(--sb-border);
-  border-radius: 8px 8px 0 0;
   background: var(--sb-raised);
 }
-.agent-footer > :is(.sb-drawer, .sb-activity) + :is(.sb-drawer, .sb-activity, .sb-dock) {
+/* Only the top element of a stack is rounded: any stacked bar below another one (even with a running step between) is square and full width, so the activity tab is only a tab when it tops the stack. */
+.agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) ~ :is(.sb-drawer, .sb-dock, .sb-activity) {
+  margin-inline: 0;
   border-radius: 0;
-}
-.agent-dock-note,
-.agent-dock-error {
-  margin: 0 6px;
-  padding: 0 12px 8px;
-  border: 1px solid var(--sb-accent-border);
-  border-top: 0;
-  border-bottom: 0;
-  background: var(--sb-accent-surface);
-}
-.agent-dock-error {
-  color: var(--sb-error);
 }
 .sb-urlbox .sb-mono.sb-ellipsis {
   overflow: visible;
@@ -351,17 +392,20 @@
 }
 .agent-composer {
   position: relative;
-  border: 1.5px solid var(--sb-accent);
-  border-radius: 7px;
-  background: var(--sb-surface);
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--sb-fg) 14%, transparent);
+  border-radius: 20px;
+  background: linear-gradient(180deg, color-mix(in srgb, white 5%, var(--sb-surface)), color-mix(in srgb, black 8%, var(--sb-surface)));
 }
 .agent-composer:focus-within {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sb-accent) 17%, transparent);
+  border-color: color-mix(in srgb, var(--sb-accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sb-accent) 9%, transparent);
 }
 .agent-popover-anchor {
   position: absolute;
-  left: -1.5px;
-  right: -1.5px;
+  left: -1px;
+  right: -1px;
   bottom: calc(100% + 8px);
   z-index: 31;
 }
@@ -395,16 +439,38 @@
 .agent-input {
   display: block;
   width: 100%;
-  min-height: 61px;
-  max-height: 180px;
-  overflow: auto;
+  min-height: 60px;
+  max-height: 178px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   resize: none;
-  padding: 10px 10px 8px;
+  padding: 12px 14px 8px;
   border: 0;
+  border-radius: 20px 20px 0 0;
   background: transparent;
   color: var(--sb-fg);
-  font-size: 12.5px;
-  line-height: 19px;
+  font-size: 13.5px;
+  line-height: 20px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll) transparent;
+}
+.agent-composer.expanded .agent-input {
+  max-height: none;
+}
+/* Tiles wrap onto new rows. A sideways scroller showed a thick scrollbar and left half tiles with a stray round remove button at its edge. */
+.agent-composer .att-tray {
+  flex-wrap: wrap;
+  max-height: 220px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-width: 0;
+}
+.agent-composer .att-tray:empty {
+  display: none;
 }
 .agent-input:focus-visible {
   outline: 0;
@@ -413,15 +479,30 @@
   color: var(--sb-faint);
   opacity: 1;
 }
+/* One row when it fits. When it does not, the model chip and the usage ring text give way first (small flex bases
+   that grow back to their content), and only then does a group move to the next line. Nothing is pushed out of the
+   card and the mode chip is never cut. */
 .agent-composer-toolbar {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 3px;
+  min-width: 0;
+  margin: 0 8px 8px;
+  padding: 0;
+}
+.agent-composer-toolbar > * {
+  min-width: 0;
+}
+/* Every control except the model chip and the usage ring keeps its size, the mode chip included. */
+.agent-composer-toolbar > :is(.agent-send, .agent-tool-button:not(.agent-model-button), .agent-toolbar-end) {
+  flex: none;
+}
+.agent-toolbar-end {
+  display: inline-flex;
   align-items: center;
   gap: 3px;
-  min-width: 0;
-  margin: 0 4px 4px;
-  padding: 2px;
-  border-radius: 4px;
-  background: var(--sb-field);
+  margin-left: auto;
 }
 .agent-tool-button {
   display: inline-flex;
@@ -441,10 +522,18 @@
   background: var(--sb-control);
   color: var(--sb-fg);
 }
-.agent-model-button,
+/* The model chip gives way first: it is placed at its minimum and grows back to its content when there is room. */
+.agent-model-button {
+  min-width: 52px;
+  max-width: max-content;
+  flex: 10000 1000 52px;
+  color: var(--sb-fg);
+}
+/* The mode chip never shrinks: it shows its whole label up to a cap. Only past the cap does the label ellipsise, and
+   then the chip's title carries the full text. */
 .agent-mode-button {
-  min-width: 0;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
+  max-width: 168px;
   color: var(--sb-fg);
 }
 .agent-model-name {
@@ -456,8 +545,31 @@
   max-width: 128px;
 }
 .agent-mode-button .agent-model-name {
-  max-width: 96px;
   color: var(--sb-dim);
+}
+.agent-model-button .sb-trait-badge.inline {
+  position: static;
+  flex: none;
+  box-shadow: none;
+}
+/* A mode that skips approval prompts is never cut to an ambiguous "Bypass permi...": the chip grows and turns warning coloured. */
+.agent-mode-button.warn {
+  flex: none;
+  max-width: none;
+  gap: 4px;
+  margin-left: 4px;
+}
+.agent-mode-button.warn > .sb-glyph {
+  flex: none;
+}
+/* The model chip gives way first, and clips rather than spilling its chevron over the mode chip. */
+.agent-composer-toolbar > .agent-model-button {
+  overflow: hidden;
+}
+.agent-mode-button.warn .agent-model-name {
+  max-width: none;
+  overflow: visible;
+  color: var(--sb-warning);
 }
 .agent-level {
   display: inline-flex;
@@ -481,40 +593,53 @@
   height: 27px;
   flex: none;
   padding: 0;
-  border-radius: 4px;
-  background: var(--sb-accent);
-  color: var(--sb-on-accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--sb-accent) 26%, transparent);
+  color: var(--sb-accent-fg);
+}
+.agent-send:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sb-accent) 40%, transparent);
 }
 .agent-send:disabled {
   opacity: 1;
-  background: var(--sb-control);
+  background: color-mix(in srgb, var(--sb-fg) 6%, transparent);
   color: var(--sb-faint);
+}
+.agent-expand[aria-pressed="true"] {
+  background: var(--sb-control);
+  color: var(--sb-fg);
 }
 .agent-send.stop {
   background: var(--sb-accent-surface);
   color: var(--sb-accent-fg);
 }
-.agent-composer-hint {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-  padding: 5px 2px 0;
-  color: var(--sb-faint);
-  font-size: 10px;
-}
 .agent-panel .sb-ring {
   flex: none;
+}
+/* "Bypass permissions" when the toolbar has room, "Bypass" when it does not. */
+@container (max-width: 460px) {
+  .agent-mode-suffix {
+    display: none;
+  }
+}
+/* The usage ring gives way after the model chip: its percentage is cut before anything wraps, the ring itself stays. */
+.agent-composer-toolbar > .sb-ring {
+  flex: 10 1 24px;
+  min-width: 24px;
+  max-width: max-content;
+  overflow: hidden;
+}
+.agent-composer-toolbar > .sb-ring > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 @container (max-width: 340px) {
   .agent-model-button .agent-model-name {
     max-width: 78px;
   }
   .agent-mode-button {
-    display: none;
-  }
-  .agent-composer-hint > :last-child {
-    display: none;
+    max-width: 120px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

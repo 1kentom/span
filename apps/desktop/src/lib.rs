@@ -16,7 +16,9 @@ pub mod language_servers;
 mod menu;
 #[doc(hidden)]
 pub mod services;
+pub mod session_meta;
 mod startup;
+mod uploads;
 
 /// The authoritative workspace is only accessed by blocking workers.
 type FormatterJobs =
@@ -822,7 +824,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::LanguageServerWorkProgress,
             language_servers::DiagnosticsPublished,
             language_servers::LanguageServerError,
-            startup::StartupRequestError
+            startup::StartupRequestError,
+            agents::AgentSessionStatesChanged
         ])
         .commands(collect_commands![
             open_workspace,
@@ -876,10 +879,18 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             services::read_image,
             menu::sync_native_menu,
             syntax,
+            session_meta::session_meta_list,
+            session_meta::session_meta_update,
+            session_meta::session_meta_set_title,
+            session_meta::session_meta_set_archived,
+            session_meta::session_meta_delete,
+            session_meta::session_export_markdown,
             agents::agent_registry,
             agents::agent_installed,
             agents::agent_install,
             agents::agent_remove,
+            agents::agent_update_status,
+            agents::app_update_check,
             agents::agent_connect,
             agents::agent_new_session,
             agents::agent_list_sessions,
@@ -887,6 +898,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_close_session,
             agents::agent_delete_session,
             agents::agent_prompt,
+            agents::agent_session_states,
             agents::agent_authenticate,
             agents::agent_authenticate_with,
             agents::agent_presets,
@@ -926,7 +938,18 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::lsp_status,
             agents::agent_delegation_status,
             agents::agent_child_permission,
-            agents::agent_cancel_task
+            agents::agent_cancel_task,
+            uploads::uploads_list,
+            uploads::uploads_usage,
+            uploads::uploads_add,
+            uploads::uploads_read,
+            uploads::uploads_rename,
+            uploads::uploads_duplicate,
+            uploads::uploads_remove,
+            uploads::uploads_save_to_workspace,
+            uploads::uploads_copy_path,
+            uploads::uploads_reveal,
+            uploads::uploads_open
         ])
 }
 
@@ -969,6 +992,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 cache,
                 language_servers::tauri_sink(app.handle().clone()),
             ));
+            agents::watch_session_states(app.handle());
             menu::install(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();

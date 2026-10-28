@@ -10,12 +10,14 @@ mod registry;
 mod service;
 pub mod tools;
 mod types;
+pub mod update;
 pub use adapter::agent_presets;
 pub use managed::remove_installed_agent;
 pub use manager::{
-    AgentControl, ConnectionInfo, PendingKind, PendingRequest, SessionEndHook, SessionEvent,
-    SessionEventSink, SessionInfo, SessionKey, SessionManager, SessionOrigin, Subscription,
-    DEPTH_EXCEEDED,
+    AgentControl, ConnectionInfo, PendingKind, PendingRequest, PromptError, SessionActivity,
+    SessionEndHook, SessionEvent, SessionEventSink, SessionInfo, SessionKey, SessionManager,
+    SessionOrigin, SessionRuntimeState, SessionStateSink, SessionStates, Subscription,
+    DEPTH_EXCEEDED, PROMPT_ALREADY_RUNNING,
 };
 pub use registry::{fetch_registry, install_registry_agent, list_installed_agents};
 pub use service::{AgentService, EventSink};

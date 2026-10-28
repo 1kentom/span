@@ -156,8 +156,15 @@ export function dispatchKeyboard(event: KeyboardEvent, options: { bindings: Reso
   event.preventDefault(); event.stopPropagation(); handler(); return true;
 }
 /** Only primary native accelerators are installed. Alternate keys use the same webview dispatcher. */
+/**
+ * Actions that only the keyboard dispatcher and the command palette handle. The native menu has no item
+ * for them, and sending one makes `sync_native_menu` fail with "Unknown native menu action".
+ * `commands.test.ts` checks this list against the ids in `apps/desktop/src/menu.rs`.
+ */
+const uiOnlyActions: ReadonlySet<string> = new Set(["formatWithLanguageServer"]);
+
 export function nativeMenuBindings(bindings: ResolvedKeybindings): Record<string, string[]> {
-  return Object.fromEntries(actionDefinitions.map(action => {
+  return Object.fromEntries(actionDefinitions.filter(action => !uiOnlyActions.has(action.id)).map(action => {
     const primary = bindings[action.id][0];
     // Native Alt-letter accelerators consume Option characters before a text field can receive them.
     const textSensitive = !action.inputs && primary?.startsWith("Alt+");

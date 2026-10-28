@@ -65,10 +65,38 @@ export const commands = {
 	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
 	syntax: (path: string) => __TAURI_INVOKE<SyntaxSnapshot>("syntax", { path }),
+	/**
+	 *  Every recorded session of the active workspace, most recently active first.
+	 *  Empty when no folder is open.
+	 */
+	sessionMetaList: () => __TAURI_INVOKE<SessionMeta_Serialize[]>("session_meta_list"),
+	/**  Merges `patch` into its session (created when missing) and returns the result. */
+	sessionMetaUpdate: (patch: SessionMetaPatch_Deserialize) => __TAURI_INVOKE<SessionMeta_Serialize>("session_meta_update", { patch }),
+	/**  A null or blank title clears the user's title. */
+	sessionMetaSetTitle: (agentId: string, sessionId: string, title: string | null) => __TAURI_INVOKE<SessionMeta_Serialize>("session_meta_set_title", { agentId, sessionId, title }),
+	sessionMetaSetArchived: (agentId: string, sessionId: string, archived: boolean) => __TAURI_INVOKE<SessionMeta_Serialize>("session_meta_set_archived", { agentId, sessionId, archived }),
+	/**  Forgets Span's metadata for a session. The agent's own session is untouched. */
+	sessionMetaDelete: (agentId: string, sessionId: string) => __TAURI_INVOKE<boolean>("session_meta_delete", { agentId, sessionId }),
+	/**
+	 *  Renders a transcript as Markdown with the workspace root shown as `.` and
+	 *  the home directory as `~`. Works without an open folder.
+	 */
+	sessionExportMarkdown: (transcript: Transcript_Deserialize) => __TAURI_INVOKE<string>("session_export_markdown", { transcript }),
 	agentRegistry: () => __TAURI_INVOKE<RegistryAgent_Serialize[]>("agent_registry"),
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
 	agentRemove: (id: string, uninstall: boolean) => __TAURI_INVOKE<null>("agent_remove", { id, uninstall }),
+	/**
+	 *  Check-only: compares installed agents with the ACP registry and reads
+	 *  local versions through the tool probe. Nothing is installed or run to
+	 *  update (ADR 0004).
+	 */
+	agentUpdateStatus: () => __TAURI_INVOKE<AgentUpdate_Serialize[]>("agent_update_status"),
+	/**
+	 *  Check-only: reads the public GitHub release list for this build's channel.
+	 *  Opening the release page is a separate, user-initiated `open_external`.
+	 */
+	appUpdateCheck: () => __TAURI_INVOKE<AppUpdate_Serialize>("app_update_check"),
 	agentConnect: (command: AgentCommand_Deserialize, cwd: string, onEvent: Channel<AgentEvent_Deserialize>) => __TAURI_INVOKE<string>("agent_connect", { command, cwd, onEvent }),
 	/**  Start a fresh conversation on the connected agent process. */
 	agentNewSession: () => __TAURI_INVOKE<string>("agent_new_session"),
@@ -84,7 +112,20 @@ export const commands = {
 	 *  cancelled first by the service.
 	 */
 	agentDeleteSession: (sessionId: string) => __TAURI_INVOKE<null>("agent_delete_session", { sessionId }),
+	/**
+	 *  Run a prompt in the active session and resolve when its turn ends. A
+	 *  session that already runs a turn refuses it with the typed
+	 *  `PromptError::Busy` (nothing is sent or queued), so the UI can offer
+	 *  steer or queue instead of showing an error.
+	 */
 	agentPrompt: (text: string, attachments: PromptAttachment_Deserialize[] | null) => __TAURI_INVOKE<null>("agent_prompt", { text, attachments }),
+	/**
+	 *  Runtime state of every session on the active connection: idle, running,
+	 *  waiting for an approval or an answer, queued follow-ups, when the current
+	 *  turn started and its current tool. `connectionId` is null without a
+	 *  connection. Changes arrive as `AgentSessionStatesChanged`.
+	 */
+	agentSessionStates: () => __TAURI_INVOKE<SessionStates_Serialize>("agent_session_states"),
 	/**
 	 *  Sign in with an advertised method, then create the session that was blocked.
 	 *  Returns the new session id, or the current one when a session already exists.
@@ -114,48 +155,7 @@ export const commands = {
 	 *  buffer is not changed; apply the edits in the editor, then it syncs as usual.
 	 */
 	lspFormat: (path: string, range: RangeDto | null, requestId: string | null) => __TAURI_INVOKE<LspResponse<TextEditDto[]>>("lsp_format", { path, range, requestId }),
-	lspReferences: (path: string, position: PositionDto, includeDeclaration: boolean, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_references", { path, position, includeDeclaration, requestId }),
-	lspImplementation: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_implementation", { path, position, requestId }),
-	lspTypeDefinition: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_type_definition", { path, position, requestId }),
-	lspDeclaration: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_declaration", { path, position, requestId }),
-	lspDocumentSymbols: (path: string, requestId: string | null) => __TAURI_INVOKE<LspResponse<SymbolDto_Serialize[]>>("lsp_document_symbols", { path, requestId }),
-	/**
-	 *  Capped at 200 results. With `path_hint` the server of that file answers; without it
-	 *  every ready server is asked.
-	 */
-	lspWorkspaceSymbols: (query: string, pathHint: string | null, requestId: string | null) => __TAURI_INVOKE<LspResponse<WorkspaceSymbolDto_Serialize[]>>("lsp_workspace_symbols", { query, pathHint, requestId }),
-	lspCallHierarchyPrepare: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<CallHierarchyItemDto_Serialize[]>>("lsp_call_hierarchy_prepare", { path, position, requestId }),
-	lspCallHierarchyIncoming: (item: CallHierarchyItemDto_Deserialize, requestId: string | null) => __TAURI_INVOKE<LspResponse<IncomingCallDto_Serialize[]>>("lsp_call_hierarchy_incoming", { item, requestId }),
-	lspCallHierarchyOutgoing: (item: CallHierarchyItemDto_Deserialize, requestId: string | null) => __TAURI_INVOKE<LspResponse<OutgoingCallDto_Serialize[]>>("lsp_call_hierarchy_outgoing", { item, requestId }),
-	lspTypeHierarchyPrepare: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<TypeHierarchyItemDto_Serialize[]>>("lsp_type_hierarchy_prepare", { path, position, requestId }),
-	lspTypeHierarchySupertypes: (item: TypeHierarchyItemDto_Deserialize, requestId: string | null) => __TAURI_INVOKE<LspResponse<TypeHierarchyItemDto_Serialize[]>>("lsp_type_hierarchy_supertypes", { item, requestId }),
-	lspTypeHierarchySubtypes: (item: TypeHierarchyItemDto_Deserialize, requestId: string | null) => __TAURI_INVOKE<LspResponse<TypeHierarchyItemDto_Serialize[]>>("lsp_type_hierarchy_subtypes", { item, requestId }),
-	lspDocumentHighlights: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<DocumentHighlightDto[]>>("lsp_document_highlights", { path, position, requestId }),
-	lspSignatureHelp: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<SignatureHelpDto_Serialize | null>>("lsp_signature_help", { path, position, requestId }),
-	lspPrepareRename: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<PrepareRenameDto_Serialize | null>>("lsp_prepare_rename", { path, position, requestId }),
-	/**
-	 *  Returns the edit as data (UTF-16 per file). The buffers are not changed: the UI
-	 *  applies it through the buffer edit path.
-	 */
-	lspRename: (path: string, position: PositionDto, newName: string, requestId: string | null) => __TAURI_INVOKE<LspResponse<WorkspaceEditDto>>("lsp_rename", { path, position, newName, requestId }),
-	/**
-	 *  A read-only excerpt for peeks, hover previews and library source. At most 1 MiB, and
-	 *  at most 400 lines of context on each side.
-	 */
-	lspReadSource: (location: LocationDto, contextLines: number) => __TAURI_INVOKE<SourceSnippetDto>("lsp_read_source", { location, contextLines }),
 	lspCancel: (requestId: string) => __TAURI_INVOKE<null>("lsp_cancel", { requestId }),
-	/**
-	 *  Cancel an install in flight. Quiet and safe when nothing is installing: the server goes
-	 *  back to `needs-install` and a `cancelled` install progress event is emitted.
-	 */
-	lspCancelInstall: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_cancel_install", { server }),
-	/**
-	 *  Trust (or stop trusting) the CURRENT workspace root: rust-analyzer and JDT LS may then
-	 *  run the project's own build code (Maven and Gradle import, build scripts). Writes
-	 *  `languageServers.trustedWorkspaces` in the user settings, restarts the running servers
-	 *  that execute build code, and returns the updated status.
-	 */
-	lspTrustWorkspace: (trusted: boolean) => __TAURI_INVOKE<ServerStatusDto_Serialize[]>("lsp_trust_workspace", { trusted }),
 	lspInstall: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_install", { server }),
 	lspRestart: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_restart", { server }),
 	lspStatus: () => __TAURI_INVOKE<ServerStatusDto_Serialize[]>("lsp_status"),
@@ -182,41 +182,38 @@ export const commands = {
 	 *  active chat's lead is searched first.
 	 */
 	agentCancelTask: (taskId: string) => __TAURI_INVOKE<null>("agent_cancel_task", { taskId }),
+	uploadsList: () => __TAURI_INVOKE<Upload_Serialize[]>("uploads_list"),
+	uploadsUsage: () => __TAURI_INVOKE<UploadUsage>("uploads_usage"),
+	uploadsAdd: (name: string, dataBase64: string, source: UploadSource_Deserialize) => __TAURI_INVOKE<Upload_Serialize>("uploads_add", { name, dataBase64, source }),
+	uploadsRead: (id: string, offset: number, len: number) => __TAURI_INVOKE<UploadChunk>("uploads_read", { id, offset, len }),
+	uploadsRename: (id: string, name: string) => __TAURI_INVOKE<Upload_Serialize>("uploads_rename", { id, name }),
+	uploadsDuplicate: (id: string) => __TAURI_INVOKE<Upload_Serialize>("uploads_duplicate", { id }),
+	uploadsRemove: (id: string) => __TAURI_INVOKE<null>("uploads_remove", { id }),
+	/**  Saves into workspace-relative `dir` through `save_attachment`: never overwrites. */
+	uploadsSaveToWorkspace: (id: string, dir: string) => __TAURI_INVOKE<SavedAttachment>("uploads_save_to_workspace", { id, dir }),
+	/**
+	 *  Path of a named copy of the upload in app data, for an explicit "Copy path".
+	 *  The copy is outside the workspace and is replaced on the next open or reveal.
+	 */
+	uploadsCopyPath: (id: string) => __TAURI_INVOKE<string>("uploads_copy_path", { id }),
+	uploadsReveal: (id: string) => __TAURI_INVOKE<null>("uploads_reveal", { id }),
+	uploadsOpen: (id: string) => __TAURI_INVOKE<null>("uploads_open", { id }),
 };
 
 /** Events */
 export const events = {
+	agentSessionStatesChanged: makeEvent<AgentSessionStatesChanged_Serialize, AgentSessionStatesChanged_Deserialize>("agent-session-states-changed"),
 	diagnosticsPublished: makeEvent<DiagnosticsPublished_Serialize, DiagnosticsPublished_Deserialize>("diagnostics-published"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
 	languageServerError: makeEvent<LanguageServerError_Serialize, LanguageServerError_Deserialize>("language-server-error"),
 	languageServerInstallProgress: makeEvent<LanguageServerInstallProgress_Serialize, LanguageServerInstallProgress_Deserialize>("language-server-install-progress"),
 	languageServerStateChanged: makeEvent<LanguageServerStateChanged_Serialize, LanguageServerStateChanged_Deserialize>("language-server-state-changed"),
-	languageServerWorkProgress: makeEvent<LanguageServerWorkProgress_Serialize, LanguageServerWorkProgress_Deserialize>("language-server-work-progress"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
 	startupRequestError: makeEvent<StartupRequestError, StartupRequestError>("startup-request-error"),
 	startupRequestsChanged: makeEvent<StartupRequestsChanged, StartupRequestsChanged>("startup-requests-changed"),
 };
 
 /* Types */
-/**  One running piece of work, for late subscribers (`ServerStatusDto.activity`). */
-export type ActivityDto = ActivityDto_Serialize | ActivityDto_Deserialize;
-
-/**  One running piece of work, for late subscribers (`ServerStatusDto.activity`). */
-export type ActivityDto_Deserialize = {
-	token: string,
-	title?: string | null,
-	message?: string | null,
-	percentage?: number | null,
-};
-
-/**  One running piece of work, for late subscribers (`ServerStatusDto.activity`). */
-export type ActivityDto_Serialize = {
-	token: string,
-	title: string | null,
-	message: string | null,
-	percentage: number | null,
-};
-
 export type AgentCommand = AgentCommand_Serialize | AgentCommand_Deserialize;
 
 export type AgentCommand_Deserialize = {
@@ -245,7 +242,13 @@ newBlock?: boolean | null } |
 /**  Session creation needs `agent_authenticate` first. */
 { kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Deserialize[]; 
 /**  Set when the user must sign in outside Span. */
-hint?: AgentHint | null } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Deserialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title?: string | null; updatedAt?: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount?: number | null; costCurrency?: string | null } | { kind: "notice"; sessionId: string; 
+hint?: AgentHint | null; 
+/**
+ *  The agent's own error text, set when it does not read as a
+ *  sign-in request (for example an account or plan notice). Show it
+ *  first; the sign-in methods are secondary.
+ */
+agentMessage?: string | null } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Deserialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title?: string | null; updatedAt?: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount?: number | null; costCurrency?: string | null } | { kind: "notice"; sessionId: string; 
 /**  `info`, `warning`, `error`, or an agent specific value. */
 severity: string; title: string; description?: string | null; 
 /**  Set for a notice the agent later clears with `noticeCleared`. */
@@ -300,7 +303,13 @@ newBlock?: boolean } |
 /**  Session creation needs `agent_authenticate` first. */
 { kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Serialize[]; 
 /**  Set when the user must sign in outside Span. */
-hint?: AgentHint } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Serialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title: string | null; updatedAt: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount: number | null; costCurrency: string | null } | { kind: "notice"; sessionId: string; 
+hint?: AgentHint; 
+/**
+ *  The agent's own error text, set when it does not read as a
+ *  sign-in request (for example an account or plan notice). Show it
+ *  first; the sign-in methods are secondary.
+ */
+agentMessage?: string } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Serialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title: string | null; updatedAt: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount: number | null; costCurrency: string | null } | { kind: "notice"; sessionId: string; 
 /**  `info`, `warning`, `error`, or an agent specific value. */
 severity: string; title: string; description: string | null; 
 /**  Set for a notice the agent later clears with `noticeCleared`. */
@@ -404,7 +413,41 @@ export type AgentHint =
 /**  "Compacting conversation". */
 "compacting" | 
 /**  "Preparing tool". The agent has not named the tool call yet. */
-"toolPending";
+"toolPending" | 
+/**
+ *  "it will not ask before running tools, and Span's approval prompts
+ *  will not appear". The session's mode lets the
+ *  agent run tools without asking (bypassPermissions, agent-full-access,
+ *  yolo, never); the notice title is the mode's name.
+ */
+"permissionsBypassed" | 
+/**
+ *  "Stopped after you rejected a request". The turn ended `cancelled`
+ *  after the user rejected a permission or an edit in it.
+ */
+"rejectedByUser" | 
+/**
+ *  "The agent still lists a conversation you deleted. Span hides it until
+ *  you reconnect." The agent answered `session/delete` but kept the session.
+ */
+"deletedStillListed" | 
+/**
+ *  "Run `opencode auth login` in a terminal, or choose another model,
+ *  then retry". The current model's provider lacks credentials and the
+ *  model option offers others.
+ */
+"runOpencodeAuthLoginOrSwitchModel" | 
+/**
+ *  "needs setup in a terminal or environment variables, which Span does
+ *  not do. Set it up, then reconnect." A sign-in method with no input
+ *  Span can collect.
+ */
+"needsEnvironmentSetup" | 
+/**
+ *  "Request interrupted by user". A restored session replays an
+ *  interrupted turn.
+ */
+"interruptedByUser";
 
 /**  A launch command for an agent that is not installed from the registry. */
 export type AgentPreset = AgentPreset_Serialize | AgentPreset_Deserialize;
@@ -427,6 +470,31 @@ export type AgentPreset_Serialize = {
 	launch: AgentCommand_Serialize,
 };
 
+/**
+ *  The session states of one agent connection changed: a turn started or
+ *  ended, a request for the user was raised or answered, or a session was
+ *  added or removed. The UI shows these as they are and never infers them.
+ */
+export type AgentSessionStatesChanged = AgentSessionStatesChanged_Serialize | AgentSessionStatesChanged_Deserialize;
+
+/**
+ *  The session states of one agent connection changed: a turn started or
+ *  ended, a request for the user was raised or answered, or a session was
+ *  added or removed. The UI shows these as they are and never infers them.
+ */
+export type AgentSessionStatesChanged_Deserialize = {
+	states: SessionStates_Deserialize,
+};
+
+/**
+ *  The session states of one agent connection changed: a turn started or
+ *  ended, a request for the user was raised or answered, or a session was
+ *  added or removed. The UI shows these as they are and never infers them.
+ */
+export type AgentSessionStatesChanged_Serialize = {
+	states: SessionStates_Serialize,
+};
+
 /**  `agents.*` settings. */
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 
@@ -438,6 +506,105 @@ export type AgentSettings_Deserialize = {
 /**  `agents.*` settings. */
 export type AgentSettings_Serialize = {
 	delegation: DelegationSettings_Serialize,
+};
+
+export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
+
+export type AgentUpdate_Deserialize = {
+	id: string,
+	name: string,
+	installedVersion?: string | null,
+	latestVersion?: string | null,
+	status: UpdateStatus,
+	/**
+	 *  True for agents Span installed from the registry, false for programs
+	 *  found on the user's PATH that Span does not manage.
+	 */
+	managed: boolean,
+	/**  How to update, as text only. Span never runs it from this check. */
+	howToUpdate?: string | null,
+	/**  The registry's repository link for the agent, when it has one. */
+	repository?: string | null,
+	/**  Why the status is what it is, when that is not obvious. */
+	note?: string | null,
+};
+
+export type AgentUpdate_Serialize = {
+	id: string,
+	name: string,
+	installedVersion: string | null,
+	latestVersion: string | null,
+	status: UpdateStatus,
+	/**
+	 *  True for agents Span installed from the registry, false for programs
+	 *  found on the user's PATH that Span does not manage.
+	 */
+	managed: boolean,
+	/**  How to update, as text only. Span never runs it from this check. */
+	howToUpdate: string | null,
+	/**  The registry's repository link for the agent, when it has one. */
+	repository: string | null,
+	/**  Why the status is what it is, when that is not obvious. */
+	note: string | null,
+};
+
+/**  One agent that took part in a session, for example a delegated child. */
+export type AgentUse = AgentUse_Serialize | AgentUse_Deserialize;
+
+/**  One agent that took part in a session, for example a delegated child. */
+export type AgentUse_Deserialize = {
+	agentId: string,
+	name: string,
+	/**  `delegated` for a child started through span-agents. */
+	role?: string | null,
+	/**  True when the agent itself reported the work as a subagent. */
+	subagent: boolean,
+};
+
+/**  One agent that took part in a session, for example a delegated child. */
+export type AgentUse_Serialize = {
+	agentId: string,
+	name: string,
+	/**  `delegated` for a child started through span-agents. */
+	role: string | null,
+	/**  True when the agent itself reported the work as a subagent. */
+	subagent: boolean,
+};
+
+export type AppUpdate = AppUpdate_Serialize | AppUpdate_Deserialize;
+
+export type AppUpdateStatus = "upToDate" | "updateAvailable" | "notConfigured" | "error";
+
+export type AppUpdate_Deserialize = {
+	currentVersion: string,
+	/**
+	 *  `nightly`, `preview`, `stable`, or `unknown` for a version that does not
+	 *  follow the release scheme.
+	 */
+	channel: string,
+	latestVersion?: string | null,
+	newer: boolean,
+	/**  The GitHub release page. Opened only by a user click. */
+	releaseUrl?: string | null,
+	status: AppUpdateStatus,
+	/**  The error, or the reason the check is not configured. */
+	message?: string | null,
+};
+
+export type AppUpdate_Serialize = {
+	currentVersion: string,
+	/**
+	 *  `nightly`, `preview`, `stable`, or `unknown` for a version that does not
+	 *  follow the release scheme.
+	 */
+	channel: string,
+	latestVersion: string | null,
+	newer: boolean,
+	/**  The GitHub release page. Opened only by a user click. */
+	releaseUrl: string | null,
+	status: AppUpdateStatus,
+	/**  The error, or the reason the check is not configured. */
+	message: string | null,
 };
 
 /**  A file the child produced or changed, inside the workspace. */
@@ -546,43 +713,8 @@ export type BufferSnapshot = {
 };
 
 /**
- *  A call hierarchy item. `token` is opaque: it carries the server item (including its
- *  private `data`) and which server and root produced it, and goes back unchanged into
- *  `lsp_call_hierarchy_incoming` and `lsp_call_hierarchy_outgoing`.
- */
-export type CallHierarchyItemDto = CallHierarchyItemDto_Serialize | CallHierarchyItemDto_Deserialize;
-
-/**
- *  A call hierarchy item. `token` is opaque: it carries the server item (including its
- *  private `data`) and which server and root produced it, and goes back unchanged into
- *  `lsp_call_hierarchy_incoming` and `lsp_call_hierarchy_outgoing`.
- */
-export type CallHierarchyItemDto_Deserialize = {
-	name: string,
-	kind: SymbolKindDto,
-	detail?: string | null,
-	location: LocationDto,
-	selectionRange: RangeDto,
-	token: string,
-};
-
-/**
- *  A call hierarchy item. `token` is opaque: it carries the server item (including its
- *  private `data`) and which server and root produced it, and goes back unchanged into
- *  `lsp_call_hierarchy_incoming` and `lsp_call_hierarchy_outgoing`.
- */
-export type CallHierarchyItemDto_Serialize = {
-	name: string,
-	kind: SymbolKindDto,
-	detail: string | null,
-	location: LocationDto,
-	selectionRange: RangeDto,
-	token: string,
-};
-
-/**
- *  What a ready server advertised, as reported by `lsp_status`. A request the server did
- *  not advertise answers `Unsupported` without reaching it.
+ *  What a ready server advertised. `rename` and `references` are reported for
+ *  completeness; this backend exposes no commands for them yet.
  */
 export type CapabilitiesDto = {
 	completion: boolean,
@@ -591,22 +723,7 @@ export type CapabilitiesDto = {
 	formatting: boolean,
 	rangeFormatting: boolean,
 	rename: boolean,
-	/**  `renameProvider.prepareProvider`. */
-	prepareRename: boolean,
 	references: boolean,
-	implementation: boolean,
-	typeDefinition: boolean,
-	declaration: boolean,
-	documentSymbol: boolean,
-	workspaceSymbol: boolean,
-	callHierarchy: boolean,
-	/**
-	 *  Not part of `lsp_types::ServerCapabilities`: filled from the raw `initialize`
-	 *  result by the service (always false from `From<&ServerCapabilities>`).
-	 */
-	typeHierarchy: boolean,
-	documentHighlight: boolean,
-	signatureHelp: boolean,
 };
 
 export type CompletionItemDto = CompletionItemDto_Serialize | CompletionItemDto_Deserialize;
@@ -958,13 +1075,6 @@ export type DiagnosticsPublished_Serialize = {
 	diagnostics: DiagnosticDto_Serialize[],
 };
 
-export type DocumentHighlightDto = {
-	range: RangeDto,
-	kind: DocumentHighlightKindDto,
-};
-
-export type DocumentHighlightKindDto = "text" | "read" | "write";
-
 export type EditProposal = {
 	id: string,
 	path: string,
@@ -974,15 +1084,6 @@ export type EditProposal = {
 
 /**  Why a delegation failed. Closed set: the lead can branch on it. */
 export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout";
-
-/**  Edits of one file, in UTF-16 positions of the file as the server saw it. */
-export type FileEditsDto = {
-	/**  Workspace relative, or absolute / server URI when `external`. */
-	path: string,
-	/**  The file is outside the workspace or a library file: the UI must not apply it. */
-	external: boolean,
-	edits: TextEditDto[],
-};
 
 export type FileEntry = {
 	path: string,
@@ -1043,10 +1144,7 @@ export type FormatWarning = {
 export type HighlightSpan = {
 	from: number,
 	to: number,
-	/**
-	 *  Colour token id, for example `keyword` or `importPath`. Markdown keeps its
-	 *  raw capture names such as `text.title`.
-	 */
+	/**  Tree-sitter capture name, for example `keyword` or `function.method`. */
 	kind: string,
 };
 
@@ -1067,18 +1165,6 @@ export type ImageSource = {
 	dataUrl: string,
 };
 
-export type IncomingCallDto = IncomingCallDto_Serialize | IncomingCallDto_Deserialize;
-
-export type IncomingCallDto_Deserialize = {
-	from: CallHierarchyItemDto_Deserialize,
-	fromRanges: RangeDto[],
-};
-
-export type IncomingCallDto_Serialize = {
-	from: CallHierarchyItemDto_Serialize,
-	fromRanges: RangeDto[],
-};
-
 export type IndentGuide = {
 	/**  Zero-based document line. */
 	line: number,
@@ -1088,30 +1174,7 @@ export type IndentGuide = {
 
 export type InsertTextFormatDto = "plainText" | "snippet";
 
-export type InstallPhase = "started" | "alreadyInstalled" | "waitingForLock" | "downloading" | "reused" | "verifying" | "extracting" | "finalizing" | "finished" | "failed" | 
-/**  The user cancelled; the server is back to needing an install. */
-"cancelled";
-
-/**  Where an in-flight install stands, as carried by `lsp_status` rows. */
-export type InstallStatusDto = InstallStatusDto_Serialize | InstallStatusDto_Deserialize;
-
-/**  Where an in-flight install stands, as carried by `lsp_status` rows. */
-export type InstallStatusDto_Deserialize = {
-	phase: InstallPhase,
-	overallReceived: number,
-	overallTotal?: number | null,
-	artifactIndex: number,
-	artifactCount: number,
-};
-
-/**  Where an in-flight install stands, as carried by `lsp_status` rows. */
-export type InstallStatusDto_Serialize = {
-	phase: InstallPhase,
-	overallReceived: number,
-	overallTotal: number | null,
-	artifactIndex: number,
-	artifactCount: number,
-};
+export type InstallPhase = "started" | "alreadyInstalled" | "waitingForLock" | "downloading" | "reused" | "verifying" | "extracting" | "finalizing" | "finished" | "failed";
 
 export type InstalledAgent = InstalledAgent_Serialize | InstalledAgent_Deserialize;
 
@@ -1155,13 +1218,6 @@ export type LanguageServerInstallProgress_Deserialize = {
 	received?: number | null,
 	total?: number | null,
 	message?: string | null,
-	/**  Bytes received across every artifact of the install. Never decreases. */
-	overallReceived: number,
-	/**  Bytes expected across every artifact, when known. */
-	overallTotal?: number | null,
-	/**  Zero based index of the artifact being worked on. */
-	artifactIndex: number,
-	artifactCount: number,
 };
 
 export type LanguageServerInstallProgress_Serialize = {
@@ -1171,13 +1227,6 @@ export type LanguageServerInstallProgress_Serialize = {
 	received: number | null,
 	total: number | null,
 	message: string | null,
-	/**  Bytes received across every artifact of the install. Never decreases. */
-	overallReceived: number,
-	/**  Bytes expected across every artifact, when known. */
-	overallTotal: number | null,
-	/**  Zero based index of the artifact being worked on. */
-	artifactIndex: number,
-	artifactCount: number,
 };
 
 /**  Language server behaviour, stored under the `languageServers` settings key. */
@@ -1205,11 +1254,6 @@ export type LanguageServerSettings_Deserialize = {
 	 *  because opening an untrusted project would otherwise execute its code.
 	 */
 	runProjectCode?: boolean,
-	/**
-	 *  Canonical absolute workspace roots whose build code may run (per-workspace trust).
-	 *  `run_project_code` stays as a global override meaning "trust every folder".
-	 */
-	trustedWorkspaces?: string[],
 };
 
 /**  Language server behaviour, stored under the `languageServers` settings key. */
@@ -1234,11 +1278,6 @@ export type LanguageServerSettings_Serialize = {
 	 *  because opening an untrusted project would otherwise execute its code.
 	 */
 	runProjectCode: boolean,
-	/**
-	 *  Canonical absolute workspace roots whose build code may run (per-workspace trust).
-	 *  `run_project_code` stays as a global override meaning "trust every folder".
-	 */
-	trustedWorkspaces: string[],
 };
 
 export type LanguageServerStateChanged = LanguageServerStateChanged_Serialize | LanguageServerStateChanged_Deserialize;
@@ -1284,53 +1323,12 @@ export type LanguageServerStateDto_Serialize = { kind: "notStarted" } | { kind: 
 { kind: "runtimeMissing"; runtime: string; requiredVersion: number; found: string[] };
 
 /**
- *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
- *  at most about four `report` events per second per token; `begin` and `end` always
- *  arrive.
- */
-export type LanguageServerWorkProgress = LanguageServerWorkProgress_Serialize | LanguageServerWorkProgress_Deserialize;
-
-/**
- *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
- *  at most about four `report` events per second per token; `begin` and `end` always
- *  arrive.
- */
-export type LanguageServerWorkProgress_Deserialize = {
-	server: LanguageServerId,
-	root: string,
-	token: string,
-	title?: string | null,
-	message?: string | null,
-	percentage?: number | null,
-	kind: WorkProgressKindDto,
-};
-
-/**
- *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
- *  at most about four `report` events per second per token; `begin` and `end` always
- *  arrive.
- */
-export type LanguageServerWorkProgress_Serialize = {
-	server: LanguageServerId,
-	root: string,
-	token: string,
-	title: string | null,
-	message: string | null,
-	percentage: number | null,
-	kind: WorkProgressKindDto,
-};
-
-/**
  *  `path` is workspace relative with forward slashes when inside the workspace,
- *  otherwise the absolute path (or the server URI, for `jdt:` class files). `external`
- *  marks everything outside the workspace and library files inside it (`node_modules`):
- *  those are read only and never become buffers. `display_path` is what to show.
+ *  otherwise the absolute path.
  */
 export type LocationDto = {
 	path: string,
 	range: RangeDto,
-	external: boolean,
-	displayPath: string,
 };
 
 /**  Typed errors of every `lsp_*` command. */
@@ -1363,7 +1361,63 @@ export type LspResponse<T> = {
 
 export type MarkdownView = "source" | "preview" | "both";
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+/**  One model a session used. */
+export type ModelUse = ModelUse_Serialize | ModelUse_Deserialize;
+
+/**
+ *  A model use to merge into a session: merged by `name`, `turns` is added
+ *  (absent means one turn, zero records a selection without a turn) and
+ *  `usedMs` becomes the update time.
+ */
+export type ModelUsePatch = ModelUsePatch_Serialize | ModelUsePatch_Deserialize;
+
+/**
+ *  A model use to merge into a session: merged by `name`, `turns` is added
+ *  (absent means one turn, zero records a selection without a turn) and
+ *  `usedMs` becomes the update time.
+ */
+export type ModelUsePatch_Deserialize = {
+	name: string,
+	effort?: string | null,
+	turns?: number | null,
+};
+
+/**
+ *  A model use to merge into a session: merged by `name`, `turns` is added
+ *  (absent means one turn, zero records a selection without a turn) and
+ *  `usedMs` becomes the update time.
+ */
+export type ModelUsePatch_Serialize = {
+	name: string,
+	effort?: string | null,
+	turns?: number | null,
+};
+
+/**  One model a session used. */
+export type ModelUse_Deserialize = {
+	/**  The model as the agent names it, for example its config option value. */
+	name: string,
+	/**  Reasoning effort or thought level, when the agent exposes one. */
+	effort?: string | null,
+	/**  Unix milliseconds of the last turn or selection with this model. */
+	usedMs: number,
+	/**  Prompt turns sent while this model was selected. */
+	turns: number,
+};
+
+/**  One model a session used. */
+export type ModelUse_Serialize = {
+	/**  The model as the agent names it, for example its config option value. */
+	name: string,
+	/**  Reasoning effort or thought level, when the agent exposes one. */
+	effort: string | null,
+	/**  Unix milliseconds of the last turn or selection with this model. */
+	usedMs: number,
+	/**  Prompt turns sent while this model was selected. */
+	turns: number,
+};
+
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
@@ -1373,36 +1427,6 @@ export type NativeWindowState = {
 	fullscreen: boolean,
 	maximized: boolean,
 	hasNativeTrafficLights: boolean,
-};
-
-export type OutgoingCallDto = OutgoingCallDto_Serialize | OutgoingCallDto_Deserialize;
-
-export type OutgoingCallDto_Deserialize = {
-	to: CallHierarchyItemDto_Deserialize,
-	fromRanges: RangeDto[],
-};
-
-export type OutgoingCallDto_Serialize = {
-	to: CallHierarchyItemDto_Serialize,
-	fromRanges: RangeDto[],
-};
-
-export type ParameterInformationDto = ParameterInformationDto_Serialize | ParameterInformationDto_Deserialize;
-
-export type ParameterInformationDto_Deserialize = {
-	label: string,
-	/**  UTF-16 offsets of the parameter inside the signature label, when known. */
-	labelStart?: number | null,
-	labelEnd?: number | null,
-	documentation?: string | null,
-};
-
-export type ParameterInformationDto_Serialize = {
-	label: string,
-	/**  UTF-16 offsets of the parameter inside the signature label, when known. */
-	labelStart: number | null,
-	labelEnd: number | null,
-	documentation: string | null,
 };
 
 export type PermissionOption = {
@@ -1421,32 +1445,6 @@ export type PlanEntry = {
 export type PositionDto = {
 	line: number,
 	character: number,
-};
-
-/**
- *  Result of `lsp_prepare_rename`. `range` is `None` when the server uses its default
- *  identifier behaviour (the UI then selects the word under the cursor).
- */
-export type PrepareRenameDto = PrepareRenameDto_Serialize | PrepareRenameDto_Deserialize;
-
-/**
- *  Result of `lsp_prepare_rename`. `range` is `None` when the server uses its default
- *  identifier behaviour (the UI then selects the word under the cursor).
- */
-export type PrepareRenameDto_Deserialize = {
-	range?: RangeDto | null,
-	placeholder?: string | null,
-	defaultBehavior: boolean,
-};
-
-/**
- *  Result of `lsp_prepare_rename`. `range` is `None` when the server uses its default
- *  identifier behaviour (the UI then selects the word under the cursor).
- */
-export type PrepareRenameDto_Serialize = {
-	range: RangeDto | null,
-	placeholder: string | null,
-	defaultBehavior: boolean,
 };
 
 /**  Extra prompt content. Plain text always travels in the prompt text itself. */
@@ -1469,6 +1467,29 @@ export type PromptAttachment_Serialize =
 { kind: "resourceLink"; uri: string; name: string; mimeType: string | null; description: string | null } | 
 /**  Needs the agent's `embeddedContext` prompt capability. Give `text` or base64 `blob`. */
 { kind: "resource"; uri: string; mimeType: string | null; text: string | null; blob: string | null };
+
+/**  Why a user prompt did not start. */
+export type PromptError = PromptError_Serialize | PromptError_Deserialize;
+
+/**  Why a user prompt did not start. */
+export type PromptError_Deserialize = 
+/**
+ *  The session already runs a turn. Nothing was sent or queued. `state`
+ *  is the session's state at the time of the refusal, when known.
+ */
+{ kind: "busy"; message: string; state?: SessionRuntimeState_Deserialize | null } | 
+/**  Any other failure, with the message for the user. */
+{ kind: "failed"; message: string };
+
+/**  Why a user prompt did not start. */
+export type PromptError_Serialize = 
+/**
+ *  The session already runs a turn. Nothing was sent or queued. `state`
+ *  is the session's state at the time of the refusal, when known.
+ */
+{ kind: "busy"; message: string; state: SessionRuntimeState_Serialize | null } | 
+/**  Any other failure, with the message for the user. */
+{ kind: "failed"; message: string };
 
 export type ProposalHunk = {
 	id: string,
@@ -1527,24 +1548,6 @@ export type RegistryAgent_Serialize = {
 	package: string | null,
 };
 
-export type RuntimeDto = RuntimeDto_Serialize | RuntimeDto_Deserialize;
-
-export type RuntimeDto_Deserialize = {
-	/**  `Node.js` or `JDK`. */
-	name: string,
-	requiredVersion: number,
-	foundVersion?: string | null,
-	foundPath?: string | null,
-};
-
-export type RuntimeDto_Serialize = {
-	/**  `Node.js` or `JDK`. */
-	name: string,
-	requiredVersion: number,
-	foundVersion: string | null,
-	foundPath: string | null,
-};
-
 export type SavedAttachment = {
 	/**  Workspace-relative path with forward slashes. */
 	path: string,
@@ -1588,24 +1591,6 @@ export type ServerStatusDto_Deserialize = {
 	epoch: number,
 	/**  Only known while the server is ready. */
 	capabilities?: CapabilitiesDto | null,
-	/**  Human name, e.g. "Java (Eclipse JDT LS)". */
-	displayName: string,
-	/**  Human language names the server covers. */
-	languages: string[],
-	/**  Size of the installed files on disk, when installed. */
-	installedSizeBytes?: number | null,
-	/**  The runtime the server needs (Node.js or a JDK), with what was found. */
-	runtime?: RuntimeDto_Deserialize | null,
-	/**  Plain-language sentence for failed states. */
-	failureReason?: string | null,
-	/**  The technical error behind `failure_reason`. */
-	failureDetails?: string | null,
-	/**  Per-workspace trust for servers that execute project build code. */
-	trust: TrustDto_Deserialize,
-	/**  Work the server reports it is doing (indexing, importing), for late subscribers. */
-	activity: ActivityDto_Deserialize[],
-	/**  Overall progress while this server is installing. */
-	install?: InstallStatusDto_Deserialize | null,
 };
 
 export type ServerStatusDto_Serialize = {
@@ -1618,25 +1603,18 @@ export type ServerStatusDto_Serialize = {
 	epoch: number,
 	/**  Only known while the server is ready. */
 	capabilities: CapabilitiesDto | null,
-	/**  Human name, e.g. "Java (Eclipse JDT LS)". */
-	displayName: string,
-	/**  Human language names the server covers. */
-	languages: string[],
-	/**  Size of the installed files on disk, when installed. */
-	installedSizeBytes: number | null,
-	/**  The runtime the server needs (Node.js or a JDK), with what was found. */
-	runtime: RuntimeDto_Serialize | null,
-	/**  Plain-language sentence for failed states. */
-	failureReason: string | null,
-	/**  The technical error behind `failure_reason`. */
-	failureDetails: string | null,
-	/**  Per-workspace trust for servers that execute project build code. */
-	trust: TrustDto_Serialize,
-	/**  Work the server reports it is doing (indexing, importing), for late subscribers. */
-	activity: ActivityDto_Serialize[],
-	/**  Overall progress while this server is installing. */
-	install: InstallStatusDto_Serialize | null,
 };
+
+/**  What a session is doing right now, as the user should see it. */
+export type SessionActivity = 
+/**  No turn in flight. */
+"idle" | 
+/**  A turn is in flight and nothing waits for the user. */
+"running" | 
+/**  A turn waits for the user to answer a permission request. */
+"waitingForApproval" | 
+/**  A turn waits for the user to answer an input request (elicitation). */
+"waitingForAnswer";
 
 export type SessionGroup = SessionGroup_Serialize | SessionGroup_Deserialize;
 
@@ -1659,6 +1637,121 @@ export type SessionKey = {
 	sessionId: string,
 };
 
+/**
+ *  What Span knows about one agent session. Sessions are keyed by
+ *  `(agentId, sessionId)` because two agents may reuse a session id.
+ */
+export type SessionMeta = SessionMeta_Serialize | SessionMeta_Deserialize;
+
+/**
+ *  A merge patch for one session. Absent fields leave the stored value as it
+ *  is. `models` and `agents` are merged (model by name, agent by agent id);
+ *  the counters and `stopReasonLast` replace the stored value, so the caller
+ *  sends session totals, not deltas. The session is created when missing.
+ */
+export type SessionMetaPatch = SessionMetaPatch_Serialize | SessionMetaPatch_Deserialize;
+
+/**
+ *  A merge patch for one session. Absent fields leave the stored value as it
+ *  is. `models` and `agents` are merged (model by name, agent by agent id);
+ *  the counters and `stopReasonLast` replace the stored value, so the caller
+ *  sends session totals, not deltas. The session is created when missing.
+ */
+export type SessionMetaPatch_Deserialize = {
+	agentId: string,
+	sessionId: string,
+	connectionName?: string | null,
+	models?: ModelUsePatch_Deserialize[],
+	agents?: AgentUse_Deserialize[],
+	filesChanged?: number | null,
+	linesAdded?: number | null,
+	linesRemoved?: number | null,
+	stopReasonLast?: string | null,
+	parent?: SessionParent | null,
+};
+
+/**
+ *  A merge patch for one session. Absent fields leave the stored value as it
+ *  is. `models` and `agents` are merged (model by name, agent by agent id);
+ *  the counters and `stopReasonLast` replace the stored value, so the caller
+ *  sends session totals, not deltas. The session is created when missing.
+ */
+export type SessionMetaPatch_Serialize = {
+	agentId: string,
+	sessionId: string,
+	connectionName?: string | null,
+	models?: ModelUsePatch_Serialize[],
+	agents?: AgentUse_Serialize[],
+	filesChanged?: number | null,
+	linesAdded?: number | null,
+	linesRemoved?: number | null,
+	stopReasonLast?: string | null,
+	parent?: SessionParent | null,
+};
+
+/**
+ *  What Span knows about one agent session. Sessions are keyed by
+ *  `(agentId, sessionId)` because two agents may reuse a session id.
+ */
+export type SessionMeta_Deserialize = {
+	/**
+	 *  The UI's agent catalog entry id: the ACP registry id for registry
+	 *  agents, the preset id for presets, and `custom:<executable name>` for
+	 *  a custom command line (the UI gives those no catalog id).
+	 */
+	agentId: string,
+	/**  The agent's display name when the session was last active. */
+	connectionName: string,
+	sessionId: string,
+	/**  A title the user chose, shown instead of the agent's title. */
+	titleOverride?: string | null,
+	archived: boolean,
+	firstSeenMs: number,
+	lastActiveMs: number,
+	models: ModelUse_Deserialize[],
+	agents: AgentUse_Deserialize[],
+	filesChanged: number,
+	linesAdded: number,
+	linesRemoved: number,
+	stopReasonLast?: string | null,
+	parent?: SessionParent | null,
+};
+
+/**
+ *  What Span knows about one agent session. Sessions are keyed by
+ *  `(agentId, sessionId)` because two agents may reuse a session id.
+ */
+export type SessionMeta_Serialize = {
+	/**
+	 *  The UI's agent catalog entry id: the ACP registry id for registry
+	 *  agents, the preset id for presets, and `custom:<executable name>` for
+	 *  a custom command line (the UI gives those no catalog id).
+	 */
+	agentId: string,
+	/**  The agent's display name when the session was last active. */
+	connectionName: string,
+	sessionId: string,
+	/**  A title the user chose, shown instead of the agent's title. */
+	titleOverride: string | null,
+	archived: boolean,
+	firstSeenMs: number,
+	lastActiveMs: number,
+	models: ModelUse_Serialize[],
+	agents: AgentUse_Serialize[],
+	filesChanged: number,
+	linesAdded: number,
+	linesRemoved: number,
+	stopReasonLast: string | null,
+	parent: SessionParent | null,
+};
+
+/**  Who started a session. */
+export type SessionOrigin = 
+/**  Created by the user through the editor. */
+"user" | 
+/**  Created by another agent's delegation. */
+"delegated";
+
 export type SessionPanels = SessionPanels_Serialize | SessionPanels_Deserialize;
 
 export type SessionPanels_Deserialize = {
@@ -1679,6 +1772,52 @@ export type SessionPanels_Serialize = {
 	terminalCollapsed: boolean,
 };
 
+/**  The lead session that started a delegated session. */
+export type SessionParent = {
+	agentId: string,
+	sessionId: string,
+};
+
+/**
+ *  Runtime state of one managed session: the source of truth the UI shows in
+ *  the session list and the activity bar.
+ */
+export type SessionRuntimeState = SessionRuntimeState_Serialize | SessionRuntimeState_Deserialize;
+
+/**
+ *  Runtime state of one managed session: the source of truth the UI shows in
+ *  the session list and the activity bar.
+ */
+export type SessionRuntimeState_Deserialize = {
+	connectionId: string,
+	sessionId: string,
+	origin: SessionOrigin,
+	state: SessionActivity,
+	/**  Follow-ups waiting behind the turn in flight. */
+	queued: number,
+	/**  Unix time in milliseconds when the current turn started. `None` while idle. */
+	startedAtMs?: number | null,
+	/**  Title of the newest tool call of the current turn that has not finished. */
+	currentTool?: string | null,
+};
+
+/**
+ *  Runtime state of one managed session: the source of truth the UI shows in
+ *  the session list and the activity bar.
+ */
+export type SessionRuntimeState_Serialize = {
+	connectionId: string,
+	sessionId: string,
+	origin: SessionOrigin,
+	state: SessionActivity,
+	/**  Follow-ups waiting behind the turn in flight. */
+	queued: number,
+	/**  Unix time in milliseconds when the current turn started. `None` while idle. */
+	startedAtMs: number | null,
+	/**  Title of the newest tool call of the current turn that has not finished. */
+	currentTool: string | null,
+};
+
 export type SessionState = SessionState_Serialize | SessionState_Deserialize;
 
 export type SessionState_Deserialize = {
@@ -1695,6 +1834,36 @@ export type SessionState_Serialize = {
 	activeGroup: number,
 	panels: SessionPanels_Serialize,
 	markdownViews: { [key in string]: MarkdownView },
+};
+
+/**
+ *  Every session of one connection, sorted by session id. Published whenever
+ *  any of them changes (turn start, turn end, request raised or resolved, a
+ *  session added or removed). An ended connection is published once with no
+ *  sessions. `connection_id` is `None` when no agent is connected.
+ */
+export type SessionStates = SessionStates_Serialize | SessionStates_Deserialize;
+
+/**
+ *  Every session of one connection, sorted by session id. Published whenever
+ *  any of them changes (turn start, turn end, request raised or resolved, a
+ *  session added or removed). An ended connection is published once with no
+ *  sessions. `connection_id` is `None` when no agent is connected.
+ */
+export type SessionStates_Deserialize = {
+	connectionId?: string | null,
+	sessions: SessionRuntimeState_Deserialize[],
+};
+
+/**
+ *  Every session of one connection, sorted by session id. Published whenever
+ *  any of them changes (turn start, turn end, request raised or resolved, a
+ *  session added or removed). An ended connection is published once with no
+ *  sessions. `connection_id` is `None` when no agent is connected.
+ */
+export type SessionStates_Serialize = {
+	connectionId: string | null,
+	sessions: SessionRuntimeState_Serialize[],
 };
 
 /**  A past conversation the agent can restore. */
@@ -1739,17 +1908,12 @@ export type Settings_Deserialize = {
 	formatters?: { [key in string]: string[] },
 	languageServers?: LanguageServerSettings_Deserialize,
 	/**
-	 *  `editor.syntaxColors`: per theme (`dark`, `light`, `purple`) overrides of the built in
-	 *  syntax palette, keyed by token id (see `SYNTAX_TOKEN_IDS`) with `#rgb`, `#rrggbb` or
-	 *  `#rrggbbaa` values. Empty means the UI default palettes. Optional in TypeScript so
-	 *  existing literals stay valid.
-	 */
-	syntaxColors?: { [key in string]: { [key in string]: string } },
-	/**
 	 *  Agent features. Optional in TypeScript so existing literals stay valid;
 	 *  a missing value means the defaults.
 	 */
 	agents?: AgentSettings_Deserialize,
+	/**  Update checks. Optional in TypeScript like `agents`. */
+	updates?: UpdateSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -1773,47 +1937,12 @@ export type Settings_Serialize = {
 	formatters: { [key in string]: string[] },
 	languageServers: LanguageServerSettings_Serialize,
 	/**
-	 *  `editor.syntaxColors`: per theme (`dark`, `light`, `purple`) overrides of the built in
-	 *  syntax palette, keyed by token id (see `SYNTAX_TOKEN_IDS`) with `#rgb`, `#rrggbb` or
-	 *  `#rrggbbaa` values. Empty means the UI default palettes. Optional in TypeScript so
-	 *  existing literals stay valid.
-	 */
-	syntaxColors?: { [key in string]: { [key in string]: string } },
-	/**
 	 *  Agent features. Optional in TypeScript so existing literals stay valid;
 	 *  a missing value means the defaults.
 	 */
 	agents?: AgentSettings_Serialize,
-};
-
-export type SignatureHelpDto = SignatureHelpDto_Serialize | SignatureHelpDto_Deserialize;
-
-export type SignatureHelpDto_Deserialize = {
-	signatures: SignatureInformationDto_Deserialize[],
-	activeSignature?: number | null,
-	activeParameter?: number | null,
-};
-
-export type SignatureHelpDto_Serialize = {
-	signatures: SignatureInformationDto_Serialize[],
-	activeSignature: number | null,
-	activeParameter: number | null,
-};
-
-export type SignatureInformationDto = SignatureInformationDto_Serialize | SignatureInformationDto_Deserialize;
-
-export type SignatureInformationDto_Deserialize = {
-	label: string,
-	documentation?: string | null,
-	parameters: ParameterInformationDto_Deserialize[],
-	activeParameter?: number | null,
-};
-
-export type SignatureInformationDto_Serialize = {
-	label: string,
-	documentation: string | null,
-	parameters: ParameterInformationDto_Serialize[],
-	activeParameter: number | null,
+	/**  Update checks. Optional in TypeScript like `agents`. */
+	updates?: UpdateSettings_Serialize,
 };
 
 /**  A slash command the agent advertises. Run it by sending `/name args` as prompt text. */
@@ -1831,20 +1960,6 @@ export type SlashCommand_Serialize = {
 	name: string,
 	description: string,
 	inputHint: string | null,
-};
-
-/**  A read-only excerpt of a source file, for peek and hover previews. */
-export type SourceSnippetDto = {
-	path: string,
-	displayPath: string,
-	language: string,
-	/**  Zero based line number of the first line of `text`. */
-	startLine: number,
-	text: string,
-	/**  The requested range, in line numbers of the whole file (subtract `start_line`). */
-	highlightRange: RangeDto,
-	external: boolean,
-	readOnly: boolean,
 };
 
 export type StartupFile = StartupFile_Serialize | StartupFile_Deserialize;
@@ -1882,29 +1997,6 @@ export type StartupRequest_Serialize = {
 export type StartupRequestsChanged = {
 	pending: boolean,
 };
-
-export type SymbolDto = SymbolDto_Serialize | SymbolDto_Deserialize;
-
-export type SymbolDto_Deserialize = {
-	name: string,
-	kind: SymbolKindDto,
-	detail?: string | null,
-	range: RangeDto,
-	selectionRange: RangeDto,
-	children: SymbolDto_Deserialize[],
-};
-
-export type SymbolDto_Serialize = {
-	name: string,
-	kind: SymbolKindDto,
-	detail: string | null,
-	range: RangeDto,
-	selectionRange: RangeDto,
-	children: SymbolDto_Serialize[],
-};
-
-/**  Mirrors LSP `SymbolKind` (File = 1 ... TypeParameter = 26). */
-export type SymbolKindDto = "file" | "module" | "namespace" | "package" | "class" | "method" | "property" | "field" | "constructor" | "enum" | "interface" | "function" | "variable" | "constant" | "string" | "number" | "boolean" | "array" | "object" | "key" | "null" | "enumMember" | "struct" | "event" | "operator" | "typeParameter";
 
 export type SyntaxSnapshot = {
 	revision: number,
@@ -2018,53 +2110,165 @@ export type ToolLocation_Serialize = {
 	line: number | null,
 };
 
-/**
- *  Whether running a project's own build code is allowed for it, and whether the
- *  restricted mode is costing results.
- */
-export type TrustDto = TrustDto_Serialize | TrustDto_Deserialize;
+/**  A transcript to export. */
+export type Transcript = Transcript_Serialize | Transcript_Deserialize;
 
-/**
- *  Whether running a project's own build code is allowed for it, and whether the
- *  restricted mode is costing results.
- */
-export type TrustDto_Deserialize = {
-	workspaceTrusted: boolean,
-	needsTrust: boolean,
-	reason?: string | null,
+/**  One record of a chat transcript. */
+export type TranscriptItem = TranscriptItem_Serialize | TranscriptItem_Deserialize;
+
+/**  One record of a chat transcript. */
+export type TranscriptItem_Deserialize = 
+/**  A user prompt. Starts a new turn. */
+{ kind: "user"; text: string } | 
+/**  Agent reply text (Markdown, kept as is). */
+{ kind: "agent"; text: string } | 
+/**  Agent reasoning, exported as a quote. */
+{ kind: "thought"; text: string } | 
+/**  A tool step. Consecutive steps form one bulleted list. */
+{ kind: "tool"; title: string; status?: string | null } | 
+/**  A file change, exported as a fenced unified diff. */
+{ kind: "diff"; path: string; oldText?: string | null; newText: string } | 
+/**  A notice, error or status line. */
+{ kind: "notice"; text: string };
+
+/**  One record of a chat transcript. */
+export type TranscriptItem_Serialize = 
+/**  A user prompt. Starts a new turn. */
+{ kind: "user"; text: string } | 
+/**  Agent reply text (Markdown, kept as is). */
+{ kind: "agent"; text: string } | 
+/**  Agent reasoning, exported as a quote. */
+{ kind: "thought"; text: string } | 
+/**  A tool step. Consecutive steps form one bulleted list. */
+{ kind: "tool"; title: string; status?: string | null } | 
+/**  A file change, exported as a fenced unified diff. */
+{ kind: "diff"; path: string; oldText?: string | null; newText: string } | 
+/**  A notice, error or status line. */
+{ kind: "notice"; text: string };
+
+/**  A transcript to export. */
+export type Transcript_Deserialize = {
+	title?: string | null,
+	items: TranscriptItem_Deserialize[],
 };
 
-/**
- *  Whether running a project's own build code is allowed for it, and whether the
- *  restricted mode is costing results.
- */
-export type TrustDto_Serialize = {
-	workspaceTrusted: boolean,
-	needsTrust: boolean,
-	reason: string | null,
+/**  A transcript to export. */
+export type Transcript_Serialize = {
+	title?: string | null,
+	items: TranscriptItem_Serialize[],
 };
 
-/**  Same shape as [`CallHierarchyItemDto`], for `lsp_type_hierarchy_*`. */
-export type TypeHierarchyItemDto = TypeHierarchyItemDto_Serialize | TypeHierarchyItemDto_Deserialize;
+/**  `updates.*`: update checks for the app and for agents (ADR 0004). */
+export type UpdateSettings = UpdateSettings_Serialize | UpdateSettings_Deserialize;
 
-/**  Same shape as [`CallHierarchyItemDto`], for `lsp_type_hierarchy_*`. */
-export type TypeHierarchyItemDto_Deserialize = {
+/**  `updates.*`: update checks for the app and for agents (ADR 0004). */
+export type UpdateSettings_Deserialize = {
+	/**
+	 *  Check once per launch, check-only, with a plain GET. Off by default.
+	 *  Honoured only from the user's own settings file.
+	 */
+	checkOnLaunch?: boolean,
+};
+
+/**  `updates.*`: update checks for the app and for agents (ADR 0004). */
+export type UpdateSettings_Serialize = {
+	/**
+	 *  Check once per launch, check-only, with a plain GET. Off by default.
+	 *  Honoured only from the user's own settings file.
+	 */
+	checkOnLaunch: boolean,
+};
+
+export type UpdateStatus = "upToDate" | "updateAvailable" | "unknown" | "notInstalled";
+
+export type Upload = Upload_Serialize | Upload_Deserialize;
+
+/**  One bounded read, base64 encoded for IPC. */
+export type UploadChunk = {
+	dataBase64: string,
+	offset: number,
+	/**  Size of the whole upload. */
+	size: number,
+	eof: boolean,
+};
+
+/**  Panel grouping. Derived from the sniffed type, never used to decide execution. */
+export type UploadKind = "document" | "data" | "media" | "code" | "archive" | "image" | "font" | "other";
+
+export type UploadOrigin = "sent" | "pasted" | "dropped" | "picked" | "agent-generated";
+
+/**  Where an upload came from. Ids are opaque labels for "Show in session". */
+export type UploadSource = UploadSource_Serialize | UploadSource_Deserialize;
+
+/**  Where an upload came from. Ids are opaque labels for "Show in session". */
+export type UploadSource_Deserialize = {
+	sessionId?: string | null,
+	agentId?: string | null,
+	messageId?: string | null,
+	origin: UploadOrigin,
+};
+
+/**  Where an upload came from. Ids are opaque labels for "Show in session". */
+export type UploadSource_Serialize = {
+	sessionId: string | null,
+	agentId: string | null,
+	messageId: string | null,
+	origin: UploadOrigin,
+};
+
+export type UploadUsage = {
+	count: number,
+	totalBytes: number,
+	maxCount: number,
+	maxTotalBytes: number,
+	maxFileBytes: number,
+	/**  Blob files with no index entry, kept rather than deleted silently. */
+	orphanBlobs: number,
+	orphanBytes: number,
+	/**  Unreadable index files moved aside as `index.corrupt-*.json`. */
+	quarantinedIndexes: number,
+};
+
+export type Upload_Deserialize = {
+	/**  32 lowercase hex characters, random and opaque. */
+	id: string,
+	/**  Display name, validated with the workspace attachment rules. */
 	name: string,
-	kind: SymbolKindDto,
-	detail?: string | null,
-	location: LocationDto,
-	selectionRange: RangeDto,
-	token: string,
+	/**  Sniffed from the extension and magic bytes. Informational only. */
+	mime: string,
+	size: number,
+	kind: UploadKind,
+	/**
+	 *  `fnv1a128:<hex>` over the bytes. A cheap non-cryptographic fingerprint for
+	 *  spotting duplicates, not an integrity or security check (ADR 0006).
+	 */
+	fingerprint: string,
+	source: UploadSource_Deserialize,
+	/**  Unix milliseconds. */
+	createdMs: number,
+	/**  True when the blob file is gone from the store. Computed on list. */
+	missing: boolean,
 };
 
-/**  Same shape as [`CallHierarchyItemDto`], for `lsp_type_hierarchy_*`. */
-export type TypeHierarchyItemDto_Serialize = {
+export type Upload_Serialize = {
+	/**  32 lowercase hex characters, random and opaque. */
+	id: string,
+	/**  Display name, validated with the workspace attachment rules. */
 	name: string,
-	kind: SymbolKindDto,
-	detail: string | null,
-	location: LocationDto,
-	selectionRange: RangeDto,
-	token: string,
+	/**  Sniffed from the extension and magic bytes. Informational only. */
+	mime: string,
+	size: number,
+	kind: UploadKind,
+	/**
+	 *  `fnv1a128:<hex>` over the bytes. A cheap non-cryptographic fingerprint for
+	 *  spotting duplicates, not an integrity or security check (ADR 0006).
+	 */
+	fingerprint: string,
+	source: UploadSource_Serialize,
+	/**  Unix milliseconds. */
+	createdMs: number,
+	/**  True when the blob file is gone from the store. Computed on list. */
+	missing: boolean,
 };
 
 /**  Usage reported for a delegation. Every field is only set when reported. */
@@ -2113,40 +2317,9 @@ export type UserAttachment_Serialize = {
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
 
-export type WorkProgressKindDto = "begin" | "report" | "end";
-
 export type Workspace = {
 	root: string,
 	name: string,
-};
-
-/**
- *  A rename result. Nothing is applied here: the UI applies it through the buffer edit
- *  path.
- */
-export type WorkspaceEditDto = {
-	files: FileEditsDto[],
-	/**
-	 *  File create, rename and delete operations the server sent anyway. Span declares
-	 *  no resource operation support and never performs them.
-	 */
-	skippedOperations: number,
-};
-
-export type WorkspaceSymbolDto = WorkspaceSymbolDto_Serialize | WorkspaceSymbolDto_Deserialize;
-
-export type WorkspaceSymbolDto_Deserialize = {
-	name: string,
-	kind: SymbolKindDto,
-	containerName?: string | null,
-	location: LocationDto,
-};
-
-export type WorkspaceSymbolDto_Serialize = {
-	name: string,
-	kind: SymbolKindDto,
-	containerName: string | null,
-	location: LocationDto,
 };
 
 /* Tauri Specta runtime */

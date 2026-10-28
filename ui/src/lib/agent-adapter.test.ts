@@ -11,7 +11,7 @@ const live = () => apply([{ kind: "session", sessionId: "s1" }]);
 const tool = (patch: Partial<ToolEvent> = {}): ToolEvent => ({ kind: "tool", sessionId: "s1", toolCallId: "t1", title: null, status: null, toolKind: null, parentToolCallId: null, contentJson: "{}", ...patch }) as ToolEvent;
 const permission = (patch: Record<string, unknown> = {}): PermissionEvent => ({ kind: "permission", sessionId: "s1", requestId: "r1", toolCallId: "t1", title: "Edit file", options: [], ...patch }) as PermissionEvent;
 const text = (kind: "text" | "thought", value: string, extra: Record<string, unknown> = {}): AgentEvent => ({ kind, sessionId: "s1", text: value, ...extra }) as AgentEvent;
-const ALL_HINTS: AgentHint[] = ["turnLimitOrLoop", "noOutputStreamed", "outputUnavailable", "runOpencodeAuthLogin", "retrying", "compacting", "toolPending"];
+const ALL_HINTS: AgentHint[] = ["turnLimitOrLoop", "noOutputStreamed", "outputUnavailable", "runOpencodeAuthLogin", "retrying", "compacting", "toolPending", "permissionsBypassed", "rejectedByUser", "deletedStillListed", "runOpencodeAuthLoginOrSwitchModel", "needsEnvironmentSetup", "interruptedByUser"];
 
 describe("hint table", () => {
   it("has copy for every backend hint and none for unknown ids", () => {

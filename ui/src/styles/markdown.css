@@ -26,7 +26,8 @@
 .markdown-body a { color: color-mix(in srgb, var(--accent), var(--text) 34%); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent), transparent 50%); text-underline-offset: 3px; }
 .markdown-body a:hover { text-decoration-color: currentColor; }
 .markdown-body a:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
-.markdown-body .markdown-invalid-link { color: var(--dim); text-decoration: line-through; cursor: default; }
+/* A link Span will not open reads as plain text. A line-through here looked like "deleted file" in agent summaries. */
+.markdown-body .markdown-invalid-link { color: inherit; text-decoration: none; cursor: default; }
 .markdown-body ul, .markdown-body ol { margin: 0 0 16px; padding-left: 25px; }
 .markdown-body li { margin: 3px 0; padding-left: 2px; }
 .markdown-body li > p { margin-bottom: 8px; }

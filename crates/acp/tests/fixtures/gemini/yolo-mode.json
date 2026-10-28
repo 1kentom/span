@@ -1,0 +1,61 @@
+{
+  "quirk": "The legacy mode yolo auto-approves every tool call: switching to it raises the permissionsBypassed warning Notice and switching back to default clears it.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setConfig",
+      "id": "mode",
+      "value": "yolo"
+    },
+    {
+      "do": "setConfig",
+      "id": "mode",
+      "value": "default"
+    }
+  ],
+  "events": [
+    {
+      "kind": "config"
+    },
+    {
+      "kind": "_step",
+      "do": "newSession"
+    },
+    {
+      "kind": "config"
+    },
+    {
+      "kind": "notice",
+      "severity": "warning",
+      "title": "YOLO",
+      "noticeId": "span/permission-bypass",
+      "hint": "permissionsBypassed"
+    },
+    {
+      "kind": "_step",
+      "do": "setConfig"
+    },
+    {
+      "kind": "config"
+    },
+    {
+      "kind": "noticeCleared",
+      "noticeId": "span/permission-bypass"
+    },
+    {
+      "kind": "_step",
+      "do": "setConfig"
+    }
+  ],
+  "counts": [
+    {
+      "match": {
+        "kind": "notice",
+        "hint": "permissionsBypassed"
+      },
+      "count": 1
+    }
+  ]
+}

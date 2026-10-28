@@ -119,6 +119,8 @@ async fn new_generation_cancels_old_scan_and_old_handles_cannot_mutate_it() {
     ));
 }
 
+// Creating symlinks needs elevated rights on Windows, so this boundary test only runs on unix.
+#[cfg(unix)]
 #[tokio::test]
 async fn canonical_boundary_rejects_external_symlink_and_dangling_links_are_skipped() {
     let temp = tempfile::tempdir().unwrap();
@@ -126,7 +128,6 @@ async fn canonical_boundary_rejects_external_symlink_and_dangling_links_are_skip
     let outside = write(external.path(), "outside.rs", "outside");
     let (index, workspace) = indexed(temp.path()).await;
 
-    #[cfg(unix)]
     {
         std::os::unix::fs::symlink(&outside, temp.path().join("external.rs")).unwrap();
         std::os::unix::fs::symlink(
