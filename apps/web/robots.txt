@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://span.kentom.co.ke/sitemap.xml
