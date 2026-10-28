@@ -13,8 +13,12 @@ pub enum Theme {
 }
 
 /// Language server behaviour, stored under the `languageServers` settings key.
+///
+/// Nested settings objects ignore keys this build does not know, so a file written by a
+/// newer build still loads in an older one (and is rewritten without losing them, see
+/// `keep_unknown_nested`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct LanguageServerSettings {
     /// Download missing language servers on first use. When false, nothing is
     /// downloaded until the user asks for an install.
@@ -30,23 +34,22 @@ pub struct LanguageServerSettings {
     /// procedural macros, `cargo check` on save, Gradle and Maven import). Off by default
     /// because opening an untrusted project would otherwise execute its code.
     pub run_project_code: bool,
-    /// Canonical absolute workspace roots whose build code may run (per-workspace trust).
-    /// `run_project_code` stays as a global override meaning "trust every folder".
+    /// DEPRECATED, read only. Preview builds stored per-workspace trust here. It is now kept
+    /// in `trusted-workspaces.json` beside the other per-user state; a value found here is
+    /// imported into that store once and never written back. `run_project_code` stays as a
+    /// global override meaning "trust every folder".
     pub trusted_workspaces: Vec<String>,
 }
 
 /// Settings under `languageServers` that choose executables or trigger downloads. They are
 /// honoured from user settings only: a workspace file is untrusted input.
-pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] = &[
-    "autoInstall",
-    "javaHome",
-    "nodePath",
-    "runProjectCode",
-    "trustedWorkspaces",
-];
+pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] =
+    &["autoInstall", "javaHome", "nodePath", "runProjectCode"];
 
-/// At most this many trusted workspace roots are kept.
-pub const MAX_TRUSTED_WORKSPACES: usize = 200;
+/// Keys under `languageServers` that older preview builds wrote. They are accepted when
+/// reading (never an error), dropped from workspace files like the user-only keys, and
+/// refused for writing.
+pub const DEPRECATED_LANGUAGE_SERVER_KEYS: &[&str] = &["trustedWorkspaces"];
 
 /// Absolute on any OS, judged from the text alone: `/x`, `C:\x`, `C:/x` or `\\server\share`.
 pub(crate) fn is_absolute_path_text(path: &str) -> bool {
@@ -97,23 +100,6 @@ impl LanguageServerSettings {
                         "languageServers.{name} must be an absolute path"
                     )));
                 }
-            }
-        }
-        if self.trusted_workspaces.len() > MAX_TRUSTED_WORKSPACES {
-            return Err(CoreError::Settings(format!(
-                "languageServers.trustedWorkspaces holds at most {MAX_TRUSTED_WORKSPACES} entries"
-            )));
-        }
-        for root in &self.trusted_workspaces {
-            if root.trim().is_empty()
-                || root.len() > 4096
-                || root.chars().any(char::is_control)
-                || !is_absolute_path_text(root)
-            {
-                return Err(CoreError::Settings(
-                    "languageServers.trustedWorkspaces entries must be absolute paths without control characters"
-                        .into(),
-                ));
             }
         }
         Ok(())
@@ -185,7 +171,7 @@ pub struct Settings {
 
 /// `updates.*`: update checks for the app and for agents (ADR 0004).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct UpdateSettings {
     /// Check once per launch, check-only, with a plain GET. Off by default.
     /// Honoured only from the user's own settings file.
@@ -194,14 +180,14 @@ pub struct UpdateSettings {
 
 /// `agents.*` settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct AgentSettings {
     pub delegation: DelegationSettings,
 }
 
 /// `agents.delegation.*`: the span-agents tool server (#52).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct DelegationSettings {
     /// Offer the delegation tools to new lead sessions of agents that
     /// advertise MCP over HTTP. Off by default.
@@ -714,7 +700,7 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
 /// `.span/settings.jsonc` arrives with the repository, so a cloned project
 /// must not be able to switch these on: `agents.delegation.enabled` lets an
 /// agent start other agents (ADR 0003). The key is dropped from workspace
-/// settings before merging; unknown sibling keys are still rejected.
+/// settings before merging.
 const USER_ONLY: &[&[&str]] = &[
     &["agents", "delegation", "enabled"],
     // A cloned project must not make Span contact the network at launch.
@@ -771,7 +757,10 @@ fn drop_user_only(value: &mut Value) {
         .get_mut("languageServers")
         .and_then(Value::as_object_mut)
     {
-        for key in USER_ONLY_LANGUAGE_SERVER_KEYS {
+        for key in USER_ONLY_LANGUAGE_SERVER_KEYS
+            .iter()
+            .chain(DEPRECATED_LANGUAGE_SERVER_KEYS)
+        {
             servers.remove(*key);
         }
     }
@@ -808,6 +797,73 @@ fn user_only_error(key: &str) -> CoreError {
     CoreError::Settings(format!(
         "languageServers.{key} can be set in user settings only"
     ))
+}
+
+/// Nested settings objects (dotted path) whose keys are a fixed list in this build.
+const STRUCT_PATHS: &[&[&str]] = &[
+    &["languageServers"],
+    &["agents"],
+    &["agents", "delegation"],
+    &["updates"],
+];
+
+fn at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter().try_fold(value, |node, key| node.get(*key))
+}
+
+/// Loading ignores nested keys this build does not know (they may come from a newer build).
+/// An explicit edit of the settings text is still checked: a typo in a nested key is an
+/// error, unless the previous text already held that key (it arrived from elsewhere and an
+/// unrelated edit must not fail because of it).
+pub(crate) fn reject_new_unknown_nested(previous: &str, text: &str) -> Result<()> {
+    let now = normalize(parse(text)?)?;
+    let before = parse(previous).and_then(normalize).unwrap_or(Value::Null);
+    let template = serde_json::to_value(Settings::default())
+        .map_err(|error| CoreError::Settings(error.to_string()))?;
+    for path in STRUCT_PATHS {
+        let (Some(Value::Object(current)), Some(Value::Object(known))) =
+            (at_path(&now, path), at_path(&template, path))
+        else {
+            continue;
+        };
+        for key in current.keys() {
+            let is_known = known.contains_key(key);
+            let was_there = at_path(&before, path).and_then(|b| b.get(key)).is_some();
+            if !is_known && !was_there {
+                return Err(CoreError::Settings(format!(
+                    "unknown field `{key}` in {}",
+                    path.join(".")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A typed save rewrites a whole nested object. Keys this build does not know are carried
+/// over from the raw file verbatim so a write never drops what a newer build stored.
+pub(crate) fn keep_unknown_nested(raw: &Value, key: &str, value: &mut Value) {
+    for path in STRUCT_PATHS {
+        if path[0] != key {
+            continue;
+        }
+        let rest = &path[1..];
+        let (Some(Value::Object(old)), Some(target)) = (
+            at_path(raw, &path[..1]).and_then(|v| at_path(v, rest)),
+            rest.iter()
+                .try_fold(&mut *value, |node, k| node.get_mut(*k)),
+        ) else {
+            continue;
+        };
+        let Some(new) = target.as_object_mut() else {
+            continue;
+        };
+        for (k, v) in old {
+            if !new.contains_key(k) {
+                new.insert(k.clone(), v.clone());
+            }
+        }
+    }
 }
 
 pub(crate) fn parse(text: &str) -> Result<Value> {
@@ -882,7 +938,7 @@ pub(crate) fn canonical_key(key: &str) -> Option<String> {
 
 /// Edits one setting in `scope`. Besides top-level keys it accepts exactly
 /// `languageServers.enabled.<serverId>` and, in user scope only,
-/// `languageServers.autoInstall`, `languageServers.runProjectCode`, `languageServers.trustedWorkspaces`, `languageServers.javaHome`
+/// `languageServers.autoInstall`, `languageServers.runProjectCode`, `languageServers.javaHome`
 /// and `languageServers.nodePath`.
 /// A missing value removes the key.
 pub(crate) fn patch_in_scope(
@@ -964,32 +1020,6 @@ pub(crate) fn patch_in_scope(
                     "languageServers.{rest} must be true or false"
                 )))
             }
-            ("trustedWorkspaces", Some(Value::Array(items))) => {
-                let roots = items
-                    .into_iter()
-                    .map(|v| match v {
-                        Value::String(s) => Ok(s),
-                        _ => Err(CoreError::Settings(
-                            "languageServers.trustedWorkspaces must be an array of strings".into(),
-                        )),
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let candidate = LanguageServerSettings {
-                    trusted_workspaces: roots.clone(),
-                    ..Default::default()
-                };
-                candidate.validate()?;
-                if roots.is_empty() {
-                    servers.remove(rest);
-                } else {
-                    servers.insert(rest.into(), serde_json::json!(roots));
-                }
-            }
-            ("trustedWorkspaces", Some(_)) => {
-                return Err(CoreError::Settings(
-                    "languageServers.trustedWorkspaces must be an array of strings".into(),
-                ))
-            }
             (_, Some(Value::String(path))) => {
                 let candidate = LanguageServerSettings {
                     java_home: (rest == "javaHome").then(|| path.clone()),
@@ -1005,6 +1035,13 @@ pub(crate) fn patch_in_scope(
                 )))
             }
         }
+    } else if DEPRECATED_LANGUAGE_SERVER_KEYS.contains(&rest)
+        && scope == crate::SettingsScope::User
+        && value.is_none()
+    {
+        // Only removal: the key is never written again, but it can be cleaned out once its
+        // entries were imported, which also lets older builds read the file.
+        servers.remove(rest);
     } else {
         return Err(unsupported());
     }
@@ -1379,10 +1416,15 @@ mod language_server_tests {
             r#"{ "languageServers": { "enabled": { "gopls": true } } }"#,
             r#"{ "languageServers": { "javaHome": "" } }"#,
             r#"{ "languageServers": { "nodePath": "a\u0000b" } }"#,
-            r#"{ "languageServers": { "bogus": 1 } }"#,
         ] {
             assert!(load_with_texts(text, "{}").is_err(), "{text}");
         }
+        // An unknown sibling key is no longer a load error (it may come from a newer build),
+        // but a hand edit that introduces one is still refused, see
+        // `explicit_edits_reject_new_unknown_nested_keys_but_tolerate_existing_ones`.
+        let unknown = r#"{ "languageServers": { "bogus": 1 } }"#;
+        assert!(load_with_texts(unknown, "{}").is_ok());
+        assert!(reject_new_unknown_nested("{}", unknown).is_err());
     }
 }
 
@@ -1734,59 +1776,95 @@ mod language_server_key_tests {
     }
 
     #[test]
-    fn trusted_workspaces_are_user_only_validated_and_dotted() {
-        let roots = r#"["/home/me/a", "C:\\work\\b"]"#;
-        let t = set(User, "{}", "languageServers.trustedWorkspaces", Some(roots)).unwrap();
-        let s = load_with_texts(&t, "{}").unwrap().language_servers;
-        assert_eq!(s.trusted_workspaces, vec!["/home/me/a", "C:\\work\\b"]);
-        // A workspace file cannot trust itself: ignored on read, refused on write.
+    fn deprecated_trusted_workspaces_is_read_but_never_written() {
+        // A preview build wrote the key. It loads (even with odd entries), and a workspace
+        // file cannot use it.
+        let file = r#"{ "languageServers": { "trustedWorkspaces": ["/home/me/a", "C:\\work\\b", "rel", ""] } }"#;
+        let s = load_with_texts(file, "{}").unwrap().language_servers;
+        assert_eq!(s.trusted_workspaces.len(), 4);
         let ws = r#"{ "languageServers": { "trustedWorkspaces": ["/home/me/evil"] } }"#;
         assert!(load_with_texts("{}", ws)
             .unwrap()
             .language_servers
             .trusted_workspaces
             .is_empty());
-        assert!(reject_user_only(ws).is_err());
-        assert!(set(
-            Workspace,
-            "{}",
-            "languageServers.trustedWorkspaces",
-            Some(roots)
-        )
-        .is_err());
-        // Removal and an empty list drop the key.
-        let back = set(User, &t, "languageServers.trustedWorkspaces", None).unwrap();
-        assert!(!back.contains("trustedWorkspaces"), "{back}");
-        let empty = set(User, &t, "languageServers.trustedWorkspaces", Some("[]")).unwrap();
-        assert!(!empty.contains("trustedWorkspaces"), "{empty}");
-        // Validation: absolute paths, string entries, no control characters, at most 200.
-        let many = serde_json::to_string(
-            &(0..=MAX_TRUSTED_WORKSPACES)
-                .map(|i| format!("/w/{i}"))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-        for bad in [
-            r#"["relative/dir"]"#.to_string(),
-            r#"[""]"#.to_string(),
-            r#"["/a\u0000b"]"#.to_string(),
-            r#"["/a\nb"]"#.to_string(),
-            "[1]".to_string(),
-            "\"/a\"".to_string(),
-            many.clone(),
-        ] {
-            assert!(
-                set(User, "{}", "languageServers.trustedWorkspaces", Some(&bad)).is_err(),
-                "{bad}"
-            );
+        // Writing it is refused in both scopes; only removal is allowed in user scope.
+        for scope in [User, Workspace] {
+            assert!(set(
+                scope,
+                "{}",
+                "languageServers.trustedWorkspaces",
+                Some(r#"["/a"]"#)
+            )
+            .is_err());
         }
-        let file = format!(r#"{{ "languageServers": {{ "trustedWorkspaces": {many} }} }}"#);
-        assert!(load_with_texts(&file, "{}").is_err());
+        let back = set(User, file, "languageServers.trustedWorkspaces", None).unwrap();
+        assert!(!back.contains("trustedWorkspaces"), "{back}");
+        assert!(set(Workspace, file, "languageServers.trustedWorkspaces", None).is_err());
+        assert!(!USER_ONLY_LANGUAGE_SERVER_KEYS.contains(&"trustedWorkspaces"));
+    }
+
+    #[test]
+    fn unknown_nested_keys_load_validate_and_survive_a_write() {
+        let text = "{\n  // mine\n  \"languageServers\": {\n    \"autoInstall\": true,\n    \"futureKnob\": { \"a\": [1, 2] }\n  },\n  \"agents\": { \"delegation\": { \"enabled\": true, \"mode\": \"x\" }, \"other\": 1 },\n  \"updates\": { \"channel\": \"beta\" },\n  \"someTopLevelKey\": 3\n}\n";
+        let loaded = load_with_texts(text, "{}").unwrap();
+        assert!(loaded.language_servers.auto_install);
+        assert!(loaded.agents.delegation.enabled);
+        // The write goes through the dotted key path and keeps every unknown key verbatim.
+        let written = set(User, text, "languageServers.runProjectCode", Some("true")).unwrap();
+        let value = parse(&written).unwrap();
+        assert_eq!(
+            value["languageServers"]["futureKnob"],
+            serde_json::json!({ "a": [1, 2] })
+        );
+        assert_eq!(value["languageServers"]["runProjectCode"], true);
+        assert_eq!(value["languageServers"]["autoInstall"], true);
+        assert_eq!(value["agents"]["other"], 1);
+        assert_eq!(value["agents"]["delegation"]["mode"], "x");
+        assert_eq!(value["updates"]["channel"], "beta");
+        assert_eq!(value["someTopLevelKey"], 3);
+        load_with_texts(&written, "{}").unwrap();
+        // Removing the last known key keeps the object because of the unknown one.
+        let cleared = set(User, &written, "languageServers.runProjectCode", None).unwrap();
+        assert!(cleared.contains("futureKnob"), "{cleared}");
+        // Known keys are still validated strictly.
         assert!(load_with_texts(
-            r#"{ "languageServers": { "trustedWorkspaces": ["rel"] } }"#,
+            r#"{ "languageServers": { "futureKnob": 1, "autoInstall": "yes" } }"#,
             "{}"
         )
         .is_err());
+    }
+
+    #[test]
+    fn typed_nested_rewrite_keeps_unknown_keys() {
+        let raw = parse(r#"{ "languageServers": { "futureKnob": 1, "nodePath": "/n" } }"#).unwrap();
+        let mut value = serde_json::json!({ "autoInstall": false, "enabled": {} });
+        keep_unknown_nested(&raw, "languageServers", &mut value);
+        assert_eq!(value["futureKnob"], 1);
+        assert_eq!(value["autoInstall"], false);
+        // Maps are not struct paths: stale entries are not resurrected.
+        let raw = parse(r#"{ "keybindings": { "save": ["Mod+S"] } }"#).unwrap();
+        let mut value = serde_json::json!({});
+        keep_unknown_nested(&raw, "keybindings", &mut value);
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn explicit_edits_reject_new_unknown_nested_keys_but_tolerate_existing_ones() {
+        let old = r#"{ "languageServers": { "futureKnob": 1 } }"#;
+        assert!(reject_new_unknown_nested(old, old).is_ok());
+        assert!(reject_new_unknown_nested(
+            old,
+            r#"{ "languageServers": { "futureKnob": 2, "autoInstall": true } }"#
+        )
+        .is_ok());
+        assert!(reject_new_unknown_nested(
+            old,
+            r#"{ "languageServers": { "futureKnob": 1, "typo": 1 } }"#
+        )
+        .is_err());
+        assert!(reject_new_unknown_nested("{}", r#"{ "updates": { "auto": true } }"#).is_err());
+        assert!(reject_new_unknown_nested("{}", r#"{ "topLevelUnknown": true }"#).is_ok());
     }
 
     #[test]

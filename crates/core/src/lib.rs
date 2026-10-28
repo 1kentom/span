@@ -47,7 +47,7 @@ pub use uploads::{
     UploadLimits, UploadOrigin, UploadSource, UploadStore, UploadUsage, MAX_UPLOADS_TOTAL_BYTES,
     MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, MAX_UPLOAD_READ_BYTES,
 };
-pub use workspace::{CoreWorkspace, FileEntry, Workspace};
+pub use workspace::{atomic_write, CoreWorkspace, FileEntry, Workspace};
 
 use std::path::Path;
 

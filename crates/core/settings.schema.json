@@ -420,15 +420,11 @@
         },
         "trustedWorkspaces": {
           "type": "array",
-          "maxItems": 200,
-          "uniqueItems": true,
           "items": {
-            "type": "string",
-            "maxLength": 4096,
-            "description": "Canonical absolute workspace root."
+            "type": "string"
           },
-          "default": [],
-          "description": "Workspace roots whose build code (Maven and Gradle import, build scripts, procedural macros) may run in rust-analyzer and JDT LS. Honoured only in your user settings; ignored in a workspace .span/settings.jsonc. runProjectCode trusts every folder."
+          "deprecated": true,
+          "description": "Deprecated and read only. Workspace trust is kept in trusted-workspaces.json beside your other per-user state; entries found here are imported once and the key is no longer written."
         },
         "javaHome": {
           "type": [

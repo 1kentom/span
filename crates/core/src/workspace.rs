@@ -696,6 +696,10 @@ impl CoreWorkspace {
     ) -> Result<Settings> {
         // Validate the edited scope independently so a narrower override cannot hide invalid data.
         crate::settings::load_with_texts(text, "{}")?;
+        crate::settings::reject_new_unknown_nested(
+            &self.get_settings_jsonc_for_scope(scope)?,
+            text,
+        )?;
         if scope == crate::SettingsScope::Workspace {
             // Workspace files may not choose executables or trigger downloads. A key the
             // file already holds is ignored on read, so it does not block other writes.
@@ -756,6 +760,9 @@ impl CoreWorkspace {
             // `without_user_only` also drops the languageServers user-only keys, so
             // neither kind of user-only key is written into the workspace file.
             if before.get(key) != Some(value) || raw.get(key) != raw_allowed.get(key) {
+                // Keys a newer build stored in a nested object survive the rewrite.
+                let mut value = value.clone();
+                crate::settings::keep_unknown_nested(&raw_allowed, key, &mut value);
                 text = crate::settings::patch(&text, key, Some(&value.to_string()))?;
             }
         }
@@ -794,7 +801,8 @@ fn reject_non_file_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Writes `bytes` to a temp file beside `path`, flushes it and renames it over `path`.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| CoreError::OutsideWorkspace(path.display().to_string()))?;
