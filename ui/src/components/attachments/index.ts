@@ -6,3 +6,4 @@ export * from './intake';
 export * from './AttachMenu';
 export * from './DropOverlay';
 export * from './AttachmentTray';
+export * from './SessionPicker';

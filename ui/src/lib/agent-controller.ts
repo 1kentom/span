@@ -26,7 +26,9 @@ import {
 } from "./agent-session";
 
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
-import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
+import { bytesToBase64, createFileAttachment, createFolderAttachment, folderOutline, isInWorkspace, needsStoredLink, planAttachment, redactPaths, type Attachment, type PromptCapabilities } from "./attachments";
+import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
+import { feedTurns } from "./agent-handoff";
 import { moveItem } from "./agent-queue";
 import { noteAgentUsed, readLastSession, readRecentAgents, writeLastSession } from "./last-session";
 import { chooseRestores, readLastConfig, writeLastConfig, type SavedConfig } from "./last-config";
@@ -60,7 +62,16 @@ export type AgentPanelProps = {
   onReviewReady?: (review: (proposalId: string, acceptedHunkIds: string[]) => Promise<void>) => void;
   /** Opens an attachment as a workbench viewer tab. Without it attachments open in the panel's modal viewer. */
   onOpenAttachment?: (view: AttachmentTabView) => void;
+  /** The uploads store (ADR 0006). With it, sent attachments are recorded and link fallbacks point at stored copies. */
+  uploads?: UploadRecorder;
+  /** Reads a PDF's page count for its tile. Without it the count is left out. */
+  countPdfPages?: (bytes: Uint8Array) => Promise<number | undefined>;
+  /** Asks the user for a folder, starting in `defaultPath`. Resolves the absolute path, or null when cancelled. */
+  pickFolder?: (defaultPath?: string) => Promise<string | null>;
 };
+
+/** Shown when a path from an agent or a message points outside the open workspace. */
+export const OUTSIDE_WORKSPACE = "Outside this workspace, so it cannot be opened here";
 
 export type View = "session" | "history" | "connect" | "logs";
 /** The one open composer or header popover. A single value, so opening one closes any other. */
@@ -139,6 +150,8 @@ export function createAgentController(props: AgentPanelProps) {
   const [following, setFollowing] = createSignal(false);
   /** Name of the file the UI just opened for the user. `equals: false` restarts the toast for the same name. */
   const [toast, setToast] = createSignal<string | undefined>(undefined, { equals: false });
+  /** A click that could not open its path (outside the workspace), with the reason. Cleared by the note. */
+  const [openRefusal, setOpenRefusal] = createSignal<{ path: string; reason: string } | undefined>(undefined, { equals: false });
   const [turnStart, setTurnStart] = createSignal(0);
   const [clock, setClock] = createSignal(Date.now());
   const [form, setForm] = createSignal<{ requestId: string; index: number; values: Record<string, string | number | boolean>; error?: string }>();
@@ -206,7 +219,11 @@ export function createAgentController(props: AgentPanelProps) {
   /** Name shown for the connected agent in sentences. */
   const agentLabel = () => state().agent?.title || state().agent?.name || agentName();
   const connected = createMemo(() => Boolean(sessionId()) && !["disconnected", "error", "unavailable", "connecting"].includes(state().status));
-  const caps = createMemo(() => promptCapabilities(state().agent?.features));
+  /** The agent's prompt capabilities, plus Span's own `storeLinks` when the uploads store can hold link fallbacks. */
+  const caps = createMemo<PromptCapabilities | undefined>(() => {
+    const base = promptCapabilities(state().agent?.features);
+    return base && props.uploads ? { ...base, storeLinks: true } : base;
+  });
   /** Attachments the connected agent cannot take, with the reason. Unknown capabilities block nothing. */
   const blocked = createMemo(() => {
     const capabilities = caps();
@@ -272,6 +289,7 @@ export function createAgentController(props: AgentPanelProps) {
     onPending: (placeholders) => setAttachments((previous) => [...previous, ...placeholders]),
     onSettled: (ids) => setAttachments((previous) => previous.filter((item) => !ids.includes(item.id))),
     unavailable: () => (isDesktop ? undefined : ATTACH_UNAVAILABLE),
+    countPages: (bytes) => props.countPdfPages?.(bytes) ?? Promise.resolve(undefined),
   });
 
   createEffect(on(proposals, (list) => props.onProposalsChange?.(list)));
@@ -965,6 +983,7 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       await api.agentPrompt(message, entry.attachments);
       if (turnMeta) void recordSessionMeta(turnMeta);
+      void recordSent(entry.items, { sessionId: promptSession ?? null, agentId: agentId() ?? null, messageId: String(itemId) });
     } catch (cause) {
       if (!current()) return;
       if (isBusyPromptError(cause)) {
@@ -1029,9 +1048,15 @@ export function createAgentController(props: AgentPanelProps) {
     const capabilities = caps();
     if (!canSend() || !capabilities) return;
     const text = prompt().trim();
-    const items = attachments();
     setWorking(true);
     try {
+      const stored = await storeLinkTargets(attachments(), capabilities);
+      if (!current()) return;
+      if (stored.failed.length) {
+        intake.reject(stored.failed);
+        return;
+      }
+      const items = stored.items;
       const built = buildPrompt(await compose(text, selection()), items, capabilities, props.workspacePath);
       if (!current()) return;
       if (built.blocked.length) {
@@ -1672,6 +1697,129 @@ export function createAgentController(props: AgentPanelProps) {
   }
   const removeAttachment = (item: Attachment) => setAttachments((items) => items.filter((other) => other.id !== item.id));
 
+  /** Attachment ids already written to the uploads store, so each sent attachment is recorded once. */
+  const recordedIds = new Set<string>();
+  /** The bytes the store keeps for an item: raw bytes, else its text. Workspace files and folder outlines are not stored. */
+  const storableBytes = (item: Attachment) => (isInWorkspace(item) || item.kind === "folder" ? undefined : item.bytes ?? (item.text !== undefined ? utf8.encode(item.text) : undefined));
+  /**
+   * Link fallback (#91): content the agent cannot take inline is saved to the uploads store first and the item then
+   * points at the stored copy, so the resource link names a file that exists. A failed save blocks the send with the reason.
+   */
+  async function storeLinkTargets(items: readonly Attachment[], capabilities: PromptCapabilities): Promise<{ items: Attachment[]; failed: { name: string; reason: string }[] }> {
+    const recorder = props.uploads;
+    const failed: { name: string; reason: string }[] = [];
+    if (!recorder) return { items: [...items], failed };
+    const out = await Promise.all(items.map(async (item) => {
+      if (!needsStoredLink(item, capabilities) || (item.uploadId && item.path)) return item;
+      try {
+        const id = item.uploadId ?? (await recorder.add(saveName(item), bytesToBase64(item.bytes!), { origin: uploadOrigin(item.source), sessionId: state().sessionId ?? null, agentId: agentId() ?? null })).id;
+        recordedIds.add(item.id);
+        const next = { ...item, uploadId: id, path: await recorder.copyPath(id) };
+        replaceAttachment(next);
+        return next;
+      } catch (cause) {
+        failed.push({ name: item.name, reason: `Could not save it to Uploads for the link: ${errorText(cause)}` });
+        return item;
+      }
+    }));
+    return { items: out, failed };
+  }
+  /** Recording (#91): every sent attachment with content goes into the uploads store once, with its session, agent and message. */
+  async function recordSent(items: readonly Attachment[], source: { sessionId: string | null; agentId: string | null; messageId: string }) {
+    const recorder = props.uploads;
+    if (!recorder) return;
+    for (const item of items) {
+      const data = storableBytes(item);
+      if (!data?.length || item.uploadId || recordedIds.has(item.id)) continue;
+      recordedIds.add(item.id);
+      try {
+        const { id } = await recorder.add(saveName(item), bytesToBase64(data), { ...source, origin: uploadOrigin(item.source) });
+        replaceAttachment({ ...item, uploadId: id });
+      } catch (cause) {
+        intake.reject([{ name: item.name, reason: `Sent, but not saved to Uploads: ${errorText(cause)}` }]);
+      }
+    }
+  }
+
+  /** Paste screenshot: reads a clipboard image from this click. Where the webview refuses, it says how to paste instead. */
+  async function pasteScreenshot() {
+    const keys = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd+V" : "Ctrl+V";
+    const fallback = () => {
+      intake.reject([{ name: "Paste screenshot", reason: `The clipboard image cannot be read from here. Click the prompt box and press ${keys}.` }]);
+      focusPrompt();
+    };
+    const clipboard = typeof navigator !== "undefined" ? (navigator.clipboard as (Clipboard & { read?: () => Promise<ClipboardItem[]> }) | undefined) : undefined;
+    if (!clipboard?.read) return fallback();
+    try {
+      for (const entry of await clipboard.read()) {
+        const type = entry.types.find((value) => value.startsWith("image/"));
+        if (!type) continue;
+        const blob = await entry.getType(type);
+        await intake.addFiles([new File([blob], `Screenshot.${type.slice(6).replace("jpeg", "jpg")}`, { type })], "pasted");
+        return;
+      }
+      intake.reject([{ name: "Paste screenshot", reason: "The clipboard holds no image. Copy a screenshot first." }]);
+    } catch {
+      fallback();
+    }
+  }
+
+  /** Folder: a workspace folder becomes a bounded outline (text) plus a link to the folder. Folders outside the workspace are refused. */
+  async function addFolder() {
+    const root = props.workspacePath;
+    if (!root || !props.pickFolder) {
+      intake.reject([{ name: "Folder", reason: root ? "Folder picking needs the desktop app." : "Open a folder first." }]);
+      return;
+    }
+    let chosen: string | null;
+    try {
+      chosen = await props.pickFolder(root);
+    } catch (cause) {
+      intake.reject([{ name: "Folder", reason: errorText(cause) }]);
+      return;
+    }
+    if (!chosen) return;
+    const trimmed = chosen.replace(/[\\/]+$/, "");
+    const relative = trimmed === root.replace(/[\\/]+$/, "") ? "" : workspaceRelative(root, trimmed);
+    if (relative === undefined) {
+      intake.reject([{ name: leaf(trimmed) || trimmed, reason: "Outside this workspace, so it cannot be attached. Pick a folder inside it." }]);
+      return;
+    }
+    const name = relative ? leaf(relative) : leaf(root.replace(/[\\/]+$/, "")) || "workspace";
+    const outline = await folderOutline(name, async (inner) => {
+      const path = [relative, inner].filter(Boolean).join("/");
+      return (await api.listDirectory(path)).map((entry) => ({ name: entry.name, isDir: entry.isDir }));
+    });
+    intake.addItems([createFolderAttachment({ name, ...outline, path: relative || ".", source: "workspace-file" })]);
+  }
+
+  /** Earlier chats this window holds (other than the open one) that have something to export. */
+  const earlierChats = createMemo(() => {
+    chatVersion();
+    const open = state().sessionId;
+    return chats.keys().flatMap((key) => {
+      const sessionId = key.slice(key.indexOf("\u0000") + 1);
+      const chat = chats.get(key);
+      if (!chat || sessionId === open) return [];
+      const turns = feedTurns(chat.conversation.feed).length;
+      return turns ? [{ key, sessionId, title: chatTitle(sessionId), turns }] : [];
+    });
+  });
+  /** Earlier session: attaches that chat as a Markdown transcript built here, with absolute paths redacted. */
+  function attachSession(key: string) {
+    const chat = chats.get(key);
+    const entry = earlierChats().find((item) => item.key === key);
+    if (!chat || !entry) {
+      intake.reject([{ name: "Earlier session", reason: "That chat is no longer held in this window." }]);
+      return;
+    }
+    const agent = chat.conversation.agent?.title || chat.conversation.agent?.name || "Agent";
+    const body = feedTurns(chat.conversation.feed).map((turn) => `## ${turn.role === "user" ? "You" : agent}\n\n${turn.text}`).join("\n\n");
+    const markdown = redactPaths(`# ${entry.title}\n\nTranscript exported by Span from an earlier chat. Absolute paths are redacted.\n\n${body}\n`, props.workspacePath);
+    const slug = entry.title.replace(/[^A-Za-z0-9 _-]+/g, "").trim().replace(/\s+/g, "-").slice(0, 60) || "session";
+    intake.addItems([createFileAttachment({ name: `${slug}.md`, mime: "text/markdown", bytes: utf8.encode(markdown), source: "picked" })]);
+  }
+
   /**
    * Opens a workspace file for the user and confirms it with a toast. The path is checked against the workspace
    * root first, because most callers pass a path an agent supplied. `opener` lets the changes card use the
@@ -1679,7 +1827,12 @@ export function createAgentController(props: AgentPanelProps) {
    */
   function openInEditor(path: string, line?: number, opener: ((path: string, line?: number) => void) | undefined = props.onOpenFile): boolean {
     const relative = workspaceRelative(props.workspacePath, path);
-    if (!relative || !opener) return false;
+    if (!relative) {
+      // Never silent: the user clicked something, so say why nothing opened and offer the path.
+      if (path.trim()) setOpenRefusal({ path, reason: props.workspacePath ? OUTSIDE_WORKSPACE : "No folder is open, so it cannot be opened here" });
+      return false;
+    }
+    if (!opener) return false;
     opener(relative, line);
     setToast(leaf(relative));
     return true;
@@ -1821,6 +1974,12 @@ export function createAgentController(props: AgentPanelProps) {
     toggleFollow,
     toast,
     clearToast: () => setToast(undefined),
+    openRefusal,
+    clearOpenRefusal: () => setOpenRefusal(undefined),
+    pasteScreenshot,
+    addFolder,
+    earlierChats,
+    attachSession,
     openInEditor,
     canClose,
     canDelete,

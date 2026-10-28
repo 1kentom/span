@@ -70,15 +70,15 @@ describe("attach menu wiring", () => {
   it("offers only items with a real handler, and gives the reason for disabled ones", async () => {
     const { host } = await composer();
     openMenu(host);
-    expect(items(host).map(label)).toEqual(["Upload files", "Add image", "Current file", "Selection"]);
+    // Paste screenshot and Earlier session have real handlers now (#91); Folder still needs the desktop folder picker.
+    expect(items(host).map(label)).toEqual(["Upload files", "Add image", "Paste screenshot", "Current file", "Selection", "Earlier session"]);
     const byName = Object.fromEntries(items(host).map((item) => [label(item), item]));
     expect(byName["Current file"].getAttribute("aria-disabled")).toBe("true");
     expect(byName["Current file"].textContent).toContain("No file is open");
     expect(byName["Selection"].textContent).toContain("Nothing is selected");
     expect(byName["Upload files"].getAttribute("aria-disabled")).toBeNull();
-    expect(host.textContent).not.toContain("Paste screenshot");
+    expect(byName["Earlier session"].textContent).toContain("No earlier chat open");
     expect(host.textContent).not.toContain("Folder");
-    expect(host.textContent).not.toContain("Earlier session");
   });
 
   it("enables Current file and Selection from the editor state and disables images the agent cannot read", async () => {

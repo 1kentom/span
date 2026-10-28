@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { FileIcon, Icon } from "../Icon";
-import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } from "../attachments";
+import { AttachMenu, AttachmentNotices, AttachmentTray, SessionPicker, type AttachMenuItemId } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
@@ -146,18 +146,28 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   const runStatus = () => (a.running() ? "Agent is working" : ran() ? "Agent finished" : "");
   const field = () => a.fields()[a.form()?.index ?? 0];
   const unavailable = isDesktop ? undefined : ATTACH_UNAVAILABLE;
-  /** Only items with a real handler are offered. Folder, Earlier session and Paste screenshot have none (no folder picker, no session attach, no image clipboard command), so they are omitted rather than stubbed. */
+  /** The Earlier session picker, opened from the attach menu. */
+  const [sessionPick, setSessionPick] = createSignal(false);
+  /**
+   * Only items with a real handler are offered. Paste screenshot reads the clipboard from the click and falls back to
+   * the paste shortcut; Folder needs the desktop folder picker; Earlier session lists the chats this window holds.
+   */
   const attachHandlers = (): Partial<Record<AttachMenuItemId, () => void>> => ({
     upload: () => uploadInput.click(),
     image: () => imageInput.click(),
+    screenshot: () => void a.pasteScreenshot(),
     file: a.addCurrentFile,
     selection: a.showSelection,
+    ...(a.props.pickFolder ? { folder: () => void a.addFolder() } : {}),
+    session: () => setSessionPick(true),
   });
   const attachReasons = (): Partial<Record<AttachMenuItemId, string>> => {
     const path = a.props.activePath;
     return {
       file: !path ? "No file is open" : a.contextPaths().includes(path) ? "Already added" : undefined,
       selection: !a.props.selectionContext?.text ? "Nothing is selected" : a.selection() ? "Already included" : undefined,
+      folder: !a.props.workspacePath ? "No folder is open" : undefined,
+      session: a.earlierChats().length ? undefined : "No earlier chat open",
     };
   };
   const pickFiles = (event: Event & { currentTarget: HTMLInputElement }) => {
@@ -361,6 +371,9 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         </div>
         <Show when={a.menu() === "attach"}>
           <AttachMenu agentName={props.label} capabilities={a.caps()} handlers={attachHandlers()} disabledReasons={attachReasons()} onClose={() => a.setMenu(null)} returnFocus={() => plus} />
+        </Show>
+        <Show when={sessionPick()}>
+          <SessionPicker sessions={a.earlierChats()} onPick={a.attachSession} onClose={() => setSessionPick(false)} returnFocus={() => plus} />
         </Show>
         <Show when={a.selection() || a.contextPaths().length}>
           <ul class="att-chips agent-contexts" aria-label="Editor context">
