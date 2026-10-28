@@ -23,7 +23,7 @@ use lsp_types::{
     TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, TextDocumentSyncKind,
     TextEdit, VersionedTextDocumentIdentifier,
 };
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -46,12 +46,24 @@ pub enum ServerError {
 pub trait LaunchResolver: Send + Sync + 'static {
     fn resolve(&self, id: ServerId)
         -> impl Future<Output = Result<LaunchSpec, ServerError>> + Send;
+
+    /// Like [`resolve`](Self::resolve) but also told the workspace root the instance
+    /// is for, so a resolver can allocate per-workspace state (for example the JDT LS
+    /// data directory). The default ignores the root and calls `resolve`.
+    fn resolve_for(
+        &self,
+        id: ServerId,
+        _root: &Path,
+    ) -> impl Future<Output = Result<LaunchSpec, ServerError>> + Send {
+        self.resolve(id)
+    }
 }
 
 trait ErasedResolver: Send + Sync + 'static {
     fn resolve<'a>(
         &'a self,
         id: ServerId,
+        root: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<LaunchSpec, ServerError>> + Send + 'a>>;
 }
 
@@ -59,8 +71,9 @@ impl<R: LaunchResolver> ErasedResolver for R {
     fn resolve<'a>(
         &'a self,
         id: ServerId,
+        root: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<LaunchSpec, ServerError>> + Send + 'a>> {
-        Box::pin(LaunchResolver::resolve(self, id))
+        Box::pin(LaunchResolver::resolve_for(self, id, root))
     }
 }
 
@@ -133,6 +146,10 @@ struct Inner {
     docs: HashMap<String, TrackedDocument>,
     client: Option<Arc<LspClient>>,
     ready: bool,
+    /// Set under the instance lock once the buffers were handed to a replacement or
+    /// the instance was shut down. A caller that finds it set must look the instance
+    /// up again, so an edit or open can never land in an orphaned instance.
+    retired: bool,
 }
 
 struct Instance {
@@ -140,7 +157,7 @@ struct Instance {
     root: PathBuf,
     state_tx: watch::Sender<ServerState>,
     events: broadcast::Sender<ManagerEvent>,
-    inner: Mutex<Inner>,
+    inner: Arc<Mutex<Inner>>,
     stop: CancellationToken,
     task: StdMutex<Option<JoinHandle<()>>>,
 }
@@ -215,6 +232,17 @@ impl Manager {
         id: ServerId,
         root: &Path,
     ) -> Result<watch::Receiver<ServerState>, ManagerError> {
+        self.start_impl(id, root, true).await
+    }
+
+    /// `replace_failed` is false for implicit starts (opening a document): a `Failed`
+    /// instance is then kept, so a broken install is not retried on every open.
+    async fn start_impl(
+        &self,
+        id: ServerId,
+        root: &Path,
+        replace_failed: bool,
+    ) -> Result<watch::Receiver<ServerState>, ManagerError> {
         let spec = self
             .shared
             .specs
@@ -226,10 +254,14 @@ impl Manager {
         let mut map = self.shared.instances.lock().await;
         let mut docs = HashMap::new();
         if let Some(existing) = map.get(&key) {
-            if existing.is_live() {
+            let keep = existing.is_live()
+                || (!replace_failed && matches!(existing.state(), ServerState::Failed(_)));
+            if keep {
                 return Ok(existing.state_tx.subscribe());
             }
-            docs = std::mem::take(&mut existing.inner.lock().await.docs);
+            let mut old = existing.inner.lock().await;
+            old.retired = true;
+            docs = std::mem::take(&mut old.docs);
         }
 
         let (state_tx, state_rx) = watch::channel(ServerState::Starting);
@@ -238,11 +270,12 @@ impl Manager {
             root: root.to_path_buf(),
             state_tx,
             events: self.shared.events.clone(),
-            inner: Mutex::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 docs,
                 client: None,
                 ready: false,
-            }),
+                retired: false,
+            })),
             stop: CancellationToken::new(),
             task: StdMutex::new(None),
         });
@@ -301,41 +334,21 @@ impl Manager {
         language_id: &str,
         text: String,
     ) -> Result<i32, ManagerError> {
-        self.start(id, root).await?;
-        let inst = self.get(id, root).await.ok_or(ManagerError::NotStarted)?;
         let uri = path_to_uri(path).map_err(ManagerError::Lsp)?;
-        let key = uri.to_string();
-
-        let mut inner = inst.inner.lock().await;
-        if inner.docs.contains_key(&key) {
-            drop(inner);
-            let change = TextDocumentContentChangeEvent {
-                range: None,
-                range_length: None,
-                text,
+        loop {
+            self.start_impl(id, root, false).await?;
+            let Some((inst, mut inner)) = self.lock_current(id, root).await else {
+                continue;
             };
-            return self.change_document(id, root, path, vec![change]).await;
-        }
-        inner.docs.insert(
-            key.clone(),
-            TrackedDocument::new(key, language_id.to_string(), 1, text.clone()),
-        );
-        if inner.ready {
-            if let Some(client) = inner.client.clone() {
-                client
-                    .did_open(DidOpenTextDocumentParams {
-                        text_document: TextDocumentItem {
-                            uri,
-                            language_id: language_id.to_string(),
-                            version: 1,
-                            text,
-                        },
-                    })
-                    .await
-                    .map_err(|e| map_err(&client, e))?;
+            let result = open_locked(&mut inner, uri.clone(), language_id, text.clone()).await;
+            // A Failed server is not respawned by an implicit open: the text stays
+            // buffered for the next explicit start, and the caller is told why.
+            if let ServerState::Failed(m) = inst.state() {
+                result?;
+                return Err(ManagerError::NotReady(ServerState::Failed(m)));
             }
+            return result;
         }
-        Ok(1)
     }
 
     /// Apply edits to the buffered document and forward them to the server if it is
@@ -347,43 +360,12 @@ impl Manager {
         path: &Path,
         changes: Vec<TextDocumentContentChangeEvent>,
     ) -> Result<i32, ManagerError> {
-        let inst = self.get(id, root).await.ok_or(ManagerError::NotStarted)?;
         let uri = path_to_uri(path).map_err(ManagerError::Lsp)?;
-        let mut inner = inst.inner.lock().await;
-        let client = if inner.ready {
-            inner.client.clone()
-        } else {
-            None
-        };
-        let doc = inner
-            .docs
-            .get_mut(&uri.to_string())
-            .ok_or_else(|| ManagerError::Lsp(LspError::DocumentNotTracked(uri.to_string())))?;
-        let version = doc.version + 1;
-        doc.apply_changes(changes.clone(), version)
-            .map_err(ManagerError::Lsp)?;
-        let full_text = doc.content().to_string();
-
-        let Some(client) = client else {
-            return Ok(version);
-        };
-        let content_changes = match client.text_document_sync_kind() {
-            Some(TextDocumentSyncKind::FULL) => vec![TextDocumentContentChangeEvent {
-                range: None,
-                range_length: None,
-                text: full_text,
-            }],
-            Some(_) => changes,
-            None => return Ok(version),
-        };
-        client
-            .did_change(DidChangeTextDocumentParams {
-                text_document: VersionedTextDocumentIdentifier { uri, version },
-                content_changes,
-            })
+        let (_inst, mut inner) = self
+            .lock_current(id, root)
             .await
-            .map_err(|e| map_err(&client, e))?;
-        Ok(version)
+            .ok_or(ManagerError::NotStarted)?;
+        change_locked(&mut inner, uri, changes).await
     }
 
     pub async fn close_document(
@@ -392,9 +374,11 @@ impl Manager {
         root: &Path,
         path: &Path,
     ) -> Result<(), ManagerError> {
-        let inst = self.get(id, root).await.ok_or(ManagerError::NotStarted)?;
         let uri = path_to_uri(path).map_err(ManagerError::Lsp)?;
-        let mut inner = inst.inner.lock().await;
+        let (_inst, mut inner) = self
+            .lock_current(id, root)
+            .await
+            .ok_or(ManagerError::NotStarted)?;
         inner.docs.remove(&uri.to_string());
         if inner.ready {
             if let Some(client) = inner.client.clone() {
@@ -526,6 +510,7 @@ impl Manager {
         let client = {
             let mut inner = inst.inner.lock().await;
             inner.ready = false;
+            inner.retired = true;
             inner.client.take()
         };
         if let Some(client) = client {
@@ -534,6 +519,25 @@ impl Manager {
                 .await;
         }
         inst.set_state(ServerState::Stopped);
+    }
+
+    /// Lock the current instance for `(id, root)`. If the instance was retired between
+    /// the lookup and the lock (replaced by a restart, or shut down), look again, so
+    /// the caller always works on the instance that owns the buffers.
+    async fn lock_current(
+        &self,
+        id: ServerId,
+        root: &Path,
+    ) -> Option<(Arc<Instance>, OwnedMutexGuard<Inner>)> {
+        loop {
+            let inst = self.get(id, root).await?;
+            let guard = inst.inner.clone().lock_owned().await;
+            if !guard.retired {
+                return Some((inst, guard));
+            }
+            drop(guard);
+            tokio::task::yield_now().await;
+        }
     }
 
     async fn get(&self, id: ServerId, root: &Path) -> Option<Arc<Instance>> {
@@ -566,6 +570,84 @@ impl Manager {
     }
 }
 
+async fn open_locked(
+    inner: &mut Inner,
+    uri: lsp_types::Uri,
+    language_id: &str,
+    text: String,
+) -> Result<i32, ManagerError> {
+    let key = uri.to_string();
+    if inner.docs.contains_key(&key) {
+        let change = TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text,
+        };
+        return change_locked(inner, uri, vec![change]).await;
+    }
+    inner.docs.insert(
+        key.clone(),
+        TrackedDocument::new(key, language_id.to_string(), 1, text.clone()),
+    );
+    if inner.ready {
+        if let Some(client) = inner.client.clone() {
+            client
+                .did_open(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri,
+                        language_id: language_id.to_string(),
+                        version: 1,
+                        text,
+                    },
+                })
+                .await
+                .map_err(|e| map_err(&client, e))?;
+        }
+    }
+    Ok(1)
+}
+
+async fn change_locked(
+    inner: &mut Inner,
+    uri: lsp_types::Uri,
+    changes: Vec<TextDocumentContentChangeEvent>,
+) -> Result<i32, ManagerError> {
+    let client = if inner.ready {
+        inner.client.clone()
+    } else {
+        None
+    };
+    let doc = inner
+        .docs
+        .get_mut(&uri.to_string())
+        .ok_or_else(|| ManagerError::Lsp(LspError::DocumentNotTracked(uri.to_string())))?;
+    let version = doc.version + 1;
+    doc.apply_changes(changes.clone(), version)
+        .map_err(ManagerError::Lsp)?;
+    let full_text = doc.content().to_string();
+
+    let Some(client) = client else {
+        return Ok(version);
+    };
+    let content_changes = match client.text_document_sync_kind() {
+        Some(TextDocumentSyncKind::FULL) => vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: full_text,
+        }],
+        Some(_) => changes,
+        None => return Ok(version),
+    };
+    client
+        .did_change(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier { uri, version },
+            content_changes,
+        })
+        .await
+        .map_err(|e| map_err(&client, e))?;
+    Ok(version)
+}
+
 fn crashed() -> ManagerError {
     ManagerError::ServerCrashed("process exited".into())
 }
@@ -588,7 +670,7 @@ async fn run_instance(
 ) {
     let launch = tokio::select! {
         _ = inst.stop.cancelled() => return,
-        r = resolver.resolve(spec.id) => r,
+        r = resolver.resolve(spec.id, &inst.root) => r,
     };
     let launch = match launch {
         Ok(l) => l,

@@ -113,23 +113,6 @@ impl Message {
         serde_json::from_value(value)
             .map_err(|e| LspError::Protocol(format!("Failed to parse message: {}", e)))
     }
-
-    pub fn to_value(&self) -> Result<Value> {
-        serde_json::to_value(self)
-            .map_err(|e| LspError::Protocol(format!("Failed to serialize message: {}", e)))
-    }
-
-    pub fn is_request(&self) -> bool {
-        matches!(self, Message::Request(_))
-    }
-
-    pub fn is_response(&self) -> bool {
-        matches!(self, Message::Response(_))
-    }
-
-    pub fn is_notification(&self) -> bool {
-        matches!(self, Message::Notification(_))
-    }
 }
 
 impl Request {
@@ -195,12 +178,5 @@ impl ResponseError {
 
 // LSP standard error codes
 pub mod error_codes {
-    pub const PARSE_ERROR: i64 = -32700;
-    pub const INVALID_REQUEST: i64 = -32600;
     pub const METHOD_NOT_FOUND: i64 = -32601;
-    pub const INVALID_PARAMS: i64 = -32602;
-    pub const INTERNAL_ERROR: i64 = -32603;
-    pub const SERVER_NOT_INITIALIZED: i64 = -32002;
-    pub const REQUEST_CANCELLED: i64 = -32800;
-    pub const CONTENT_MODIFIED: i64 = -32801;
 }

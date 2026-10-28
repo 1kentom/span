@@ -1,7 +1,7 @@
 //! Integration tests using real subprocess LSP server.
 
 use lsp_types::*;
-use span_lsp::{LspClient, LspError, RequestId, ServerEvent};
+use span_lsp::{LspClient, LspError, ServerEvent};
 use std::path::PathBuf;
 use std::time::Duration;
 

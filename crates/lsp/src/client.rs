@@ -256,6 +256,19 @@ impl LspClient {
         }
     }
 
+    /// Complete every in-flight request with [`LspError::Shutdown`] right away.
+    async fn fail_pending_with_shutdown(
+        pending_requests: &Arc<RwLock<HashMap<RequestId, PendingRequest>>>,
+    ) {
+        let pending = {
+            let mut requests = pending_requests.write().await;
+            std::mem::take(&mut *requests)
+        };
+        for (_, req) in pending {
+            let _ = req.sender.send(Err(LspError::Shutdown));
+        }
+    }
+
     pub async fn next_event(&self) -> Option<ServerEvent> {
         self.event_rx.lock().await.recv().await
     }
@@ -277,6 +290,9 @@ impl LspClient {
         if *self.shutdown_flag.read().await {
             return Err(LspError::Shutdown);
         }
+        if self.is_closed() {
+            return Err(LspError::Protocol("server transport is closed".to_string()));
+        }
 
         let id = self.id_gen.next();
         let request = Request::new(id.clone(), method.clone(), params);
@@ -286,6 +302,12 @@ impl LspClient {
         {
             let mut pending = self.pending_requests.write().await;
             pending.insert(id.clone(), PendingRequest { sender: tx });
+        }
+        // The receiver marks the client closed before it drains pending requests, so a
+        // close that raced the insert above is caught here instead of waiting for the timeout.
+        if self.is_closed() {
+            self.pending_requests.write().await.remove(&id);
+            return Err(LspError::Protocol("server transport is closed".to_string()));
         }
 
         let value = match request.to_value() {
@@ -442,6 +464,9 @@ impl LspClient {
     pub async fn shutdown_with_timeout(&self, grace: Duration) -> Result<()> {
         let mut outcome = Ok(());
 
+        // Requests already in flight must not wait out their own timeout.
+        Self::fail_pending_with_shutdown(&self.pending_requests).await;
+
         if *self.initialized.read().await && !self.is_closed() {
             if let Err(e) = self
                 .send_request_inner("shutdown".to_string(), None, grace, None)
@@ -452,11 +477,13 @@ impl LspClient {
 
             // Stop treating transport EOF as an error before the child goes away.
             *self.shutdown_flag.write().await = true;
+            Self::fail_pending_with_shutdown(&self.pending_requests).await;
 
             // Send exit even if shutdown failed, so a half-alive server can leave.
             let _ = self.send_notification("exit".to_string(), None).await;
         } else {
             *self.shutdown_flag.write().await = true;
+            Self::fail_pending_with_shutdown(&self.pending_requests).await;
         }
 
         self.reap(grace).await;
@@ -471,6 +498,7 @@ impl LspClient {
     /// Kill the child immediately and reap it. Used when a server is unusable.
     pub async fn terminate(&self) {
         *self.shutdown_flag.write().await = true;
+        Self::fail_pending_with_shutdown(&self.pending_requests).await;
         self.reap(Duration::ZERO).await;
         if let Some(task) = self.receiver_task.lock().await.take() {
             let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
@@ -512,12 +540,14 @@ impl LspClient {
     }
 
     pub async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        self.require(self.supports_completion(), "completion")?;
         let value = serde_json::to_value(params)?;
         self.typed_request("textDocument/completion", value, None)
             .await
     }
 
     pub async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        self.require(self.supports_hover(), "hover")?;
         let value = serde_json::to_value(params)?;
         self.typed_request("textDocument/hover", value, None).await
     }
@@ -662,6 +692,7 @@ impl LspClient {
         params: CompletionParams,
         cancel_token: CancellationToken,
     ) -> Result<Option<CompletionResponse>> {
+        self.require(self.supports_completion(), "completion")?;
         let value = serde_json::to_value(params)?;
         self.typed_request("textDocument/completion", value, Some(&cancel_token))
             .await
@@ -672,6 +703,7 @@ impl LspClient {
         params: HoverParams,
         cancel_token: CancellationToken,
     ) -> Result<Option<Hover>> {
+        self.require(self.supports_hover(), "hover")?;
         let value = serde_json::to_value(params)?;
         self.typed_request("textDocument/hover", value, Some(&cancel_token))
             .await
@@ -705,14 +737,16 @@ impl LspClient {
         params: Option<&Value>,
     ) -> Result<()> {
         let result = match method {
-            // One (empty) configuration section per requested item.
+            // One empty settings object per requested item. `null` is legal LSP but
+            // the VS Code CSS/SCSS/Less server then silently skips validation, while
+            // `{}` makes it fall back to its defaults.
             "workspace/configuration" => {
                 let count = params
                     .and_then(|p| p.get("items"))
                     .and_then(|i| i.as_array())
                     .map(|a| a.len())
                     .unwrap_or(0);
-                Value::Array(vec![Value::Null; count])
+                Value::Array(vec![serde_json::json!({}); count])
             }
             "client/registerCapability"
             | "client/unregisterCapability"
@@ -786,7 +820,10 @@ pub fn client_capabilities() -> ClientCapabilities {
             completion: Some(CompletionClientCapabilities {
                 dynamic_registration: Some(false),
                 completion_item: Some(CompletionItemCapability {
-                    snippet_support: Some(false),
+                    // The VS Code HTML, CSS and JSON servers only advertise
+                    // `completionProvider` to clients that support snippets, so
+                    // declaring `false` made completion "unsupported" for them.
+                    snippet_support: Some(true),
                     documentation_format: markup.clone(),
                     ..Default::default()
                 }),

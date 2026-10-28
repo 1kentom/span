@@ -54,7 +54,8 @@ while True:
     if method is None:
         log({"method": "response", "id": msg.get("id"), "result": msg.get("result")})
         continue
-    log({"method": method, "params": msg.get("params")})
+    log({"method": method, "params": msg.get("params"), "id": msg.get("id"),
+         "pid": os.getpid()})
 
     if method == "initialize":
         if mode == "bad-init":
