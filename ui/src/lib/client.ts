@@ -523,3 +523,37 @@ export async function agentCancelTask(taskId: string): Promise<void> {
   if (!isDesktop) nativeRequired('Cancelling an agent task');
   await commands.agentCancelTask(taskId);
 }
+
+/** Session history metadata of the active workspace (ADR 0005), most recently active first. Browser preview has no history and returns an empty list. */
+export async function sessionMetaList(): Promise<import('../bindings').SessionMeta_Serialize[]> {
+  return isDesktop ? commands.sessionMetaList() : [];
+}
+
+/** Merge a patch into one session's metadata: model and agent uses add up, counters and stop reason replace. Debouncing is the caller's job. */
+export async function sessionMetaUpdate(patch: import('../bindings').SessionMetaPatch_Deserialize): Promise<import('../bindings').SessionMeta_Serialize> {
+  if (!isDesktop) nativeRequired('Saving session history');
+  return commands.sessionMetaUpdate(patch);
+}
+
+/** Set or clear (null or blank) the user's title for a session. */
+export async function sessionMetaSetTitle(agentId: string, sessionId: string, title: string | null): Promise<import('../bindings').SessionMeta_Serialize> {
+  if (!isDesktop) nativeRequired('Renaming sessions');
+  return commands.sessionMetaSetTitle(agentId, sessionId, title);
+}
+
+export async function sessionMetaSetArchived(agentId: string, sessionId: string, archived: boolean): Promise<import('../bindings').SessionMeta_Serialize> {
+  if (!isDesktop) nativeRequired('Archiving sessions');
+  return commands.sessionMetaSetArchived(agentId, sessionId, archived);
+}
+
+/** Forget Span's metadata for a session; the agent's own session is not deleted. Resolves true when something was removed. */
+export async function sessionMetaDelete(agentId: string, sessionId: string): Promise<boolean> {
+  if (!isDesktop) nativeRequired('Removing session history');
+  return commands.sessionMetaDelete(agentId, sessionId);
+}
+
+/** Render a transcript as Markdown for "Export as Markdown"; workspace paths become `.` and the home directory `~`. */
+export async function sessionExportMarkdown(transcript: import('../bindings').Transcript_Deserialize): Promise<string> {
+  if (!isDesktop) nativeRequired('Exporting chats as Markdown');
+  return commands.sessionExportMarkdown(transcript);
+}

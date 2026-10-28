@@ -9,8 +9,10 @@ mod proposal_diff;
 mod recent;
 mod search;
 mod session;
+mod session_meta;
 mod settings;
 mod tools;
+mod transcript_export;
 mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
@@ -22,10 +24,17 @@ pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
+pub use session_meta::{
+    patch_for_file_stats, patch_for_model_selected, patch_for_turn_complete, patch_for_turn_start,
+    patches_for_delegation, workspace_hash, workspace_key, AgentUse, FileChangeStats, ModelUse,
+    ModelUsePatch, SessionMeta, SessionMetaPatch, SessionMetaStore, SessionParent,
+    SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS, SESSION_META_SCHEMA_VERSION,
+};
 pub use settings::{
     AgentSettings, AutoSaveMode, DelegationSettings, Settings, SettingsScope, Theme,
 };
 pub use tools::{list_tools, ToolInfo};
+pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
 
 use std::path::Path;

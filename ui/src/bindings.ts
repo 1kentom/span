@@ -50,6 +50,23 @@ export const commands = {
 	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
 	syntax: (path: string) => __TAURI_INVOKE<SyntaxSnapshot>("syntax", { path }),
+	/**
+	 *  Every recorded session of the active workspace, most recently active first.
+	 *  Empty when no folder is open.
+	 */
+	sessionMetaList: () => __TAURI_INVOKE<SessionMeta_Serialize[]>("session_meta_list"),
+	/**  Merges `patch` into its session (created when missing) and returns the result. */
+	sessionMetaUpdate: (patch: SessionMetaPatch_Deserialize) => __TAURI_INVOKE<SessionMeta_Serialize>("session_meta_update", { patch }),
+	/**  A null or blank title clears the user's title. */
+	sessionMetaSetTitle: (agentId: string, sessionId: string, title: string | null) => __TAURI_INVOKE<SessionMeta_Serialize>("session_meta_set_title", { agentId, sessionId, title }),
+	sessionMetaSetArchived: (agentId: string, sessionId: string, archived: boolean) => __TAURI_INVOKE<SessionMeta_Serialize>("session_meta_set_archived", { agentId, sessionId, archived }),
+	/**  Forgets Span's metadata for a session. The agent's own session is untouched. */
+	sessionMetaDelete: (agentId: string, sessionId: string) => __TAURI_INVOKE<boolean>("session_meta_delete", { agentId, sessionId }),
+	/**
+	 *  Renders a transcript as Markdown with the workspace root shown as `.` and
+	 *  the home directory as `~`. Works without an open folder.
+	 */
+	sessionExportMarkdown: (transcript: Transcript_Deserialize) => __TAURI_INVOKE<string>("session_export_markdown", { transcript }),
 	agentRegistry: () => __TAURI_INVOKE<RegistryAgent_Serialize[]>("agent_registry"),
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
@@ -346,6 +363,29 @@ export type AgentSettings_Deserialize = {
 /**  `agents.*` settings. */
 export type AgentSettings_Serialize = {
 	delegation: DelegationSettings_Serialize,
+};
+
+/**  One agent that took part in a session, for example a delegated child. */
+export type AgentUse = AgentUse_Serialize | AgentUse_Deserialize;
+
+/**  One agent that took part in a session, for example a delegated child. */
+export type AgentUse_Deserialize = {
+	agentId: string,
+	name: string,
+	/**  `delegated` for a child started through span-agents. */
+	role?: string | null,
+	/**  True when the agent itself reported the work as a subagent. */
+	subagent: boolean,
+};
+
+/**  One agent that took part in a session, for example a delegated child. */
+export type AgentUse_Serialize = {
+	agentId: string,
+	name: string,
+	/**  `delegated` for a child started through span-agents. */
+	role: string | null,
+	/**  True when the agent itself reported the work as a subagent. */
+	subagent: boolean,
 };
 
 /**  A file the child produced or changed, inside the workspace. */
@@ -777,6 +817,62 @@ export type InstalledAgent_Serialize = {
 
 export type MarkdownView = "source" | "preview" | "both";
 
+/**  One model a session used. */
+export type ModelUse = ModelUse_Serialize | ModelUse_Deserialize;
+
+/**
+ *  A model use to merge into a session: merged by `name`, `turns` is added
+ *  (absent means one turn, zero records a selection without a turn) and
+ *  `usedMs` becomes the update time.
+ */
+export type ModelUsePatch = ModelUsePatch_Serialize | ModelUsePatch_Deserialize;
+
+/**
+ *  A model use to merge into a session: merged by `name`, `turns` is added
+ *  (absent means one turn, zero records a selection without a turn) and
+ *  `usedMs` becomes the update time.
+ */
+export type ModelUsePatch_Deserialize = {
+	name: string,
+	effort?: string | null,
+	turns?: number | null,
+};
+
+/**
+ *  A model use to merge into a session: merged by `name`, `turns` is added
+ *  (absent means one turn, zero records a selection without a turn) and
+ *  `usedMs` becomes the update time.
+ */
+export type ModelUsePatch_Serialize = {
+	name: string,
+	effort?: string | null,
+	turns?: number | null,
+};
+
+/**  One model a session used. */
+export type ModelUse_Deserialize = {
+	/**  The model as the agent names it, for example its config option value. */
+	name: string,
+	/**  Reasoning effort or thought level, when the agent exposes one. */
+	effort?: string | null,
+	/**  Unix milliseconds of the last turn or selection with this model. */
+	usedMs: number,
+	/**  Prompt turns sent while this model was selected. */
+	turns: number,
+};
+
+/**  One model a session used. */
+export type ModelUse_Serialize = {
+	/**  The model as the agent names it, for example its config option value. */
+	name: string,
+	/**  Reasoning effort or thought level, when the agent exposes one. */
+	effort: string | null,
+	/**  Unix milliseconds of the last turn or selection with this model. */
+	usedMs: number,
+	/**  Prompt turns sent while this model was selected. */
+	turns: number,
+};
+
 export type NativeAction = "quickOpen" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
@@ -926,6 +1022,114 @@ export type SessionKey = {
 	sessionId: string,
 };
 
+/**
+ *  What Span knows about one agent session. Sessions are keyed by
+ *  `(agentId, sessionId)` because two agents may reuse a session id.
+ */
+export type SessionMeta = SessionMeta_Serialize | SessionMeta_Deserialize;
+
+/**
+ *  A merge patch for one session. Absent fields leave the stored value as it
+ *  is. `models` and `agents` are merged (model by name, agent by agent id);
+ *  the counters and `stopReasonLast` replace the stored value, so the caller
+ *  sends session totals, not deltas. The session is created when missing.
+ */
+export type SessionMetaPatch = SessionMetaPatch_Serialize | SessionMetaPatch_Deserialize;
+
+/**
+ *  A merge patch for one session. Absent fields leave the stored value as it
+ *  is. `models` and `agents` are merged (model by name, agent by agent id);
+ *  the counters and `stopReasonLast` replace the stored value, so the caller
+ *  sends session totals, not deltas. The session is created when missing.
+ */
+export type SessionMetaPatch_Deserialize = {
+	agentId: string,
+	sessionId: string,
+	connectionName?: string | null,
+	models?: ModelUsePatch_Deserialize[],
+	agents?: AgentUse_Deserialize[],
+	filesChanged?: number | null,
+	linesAdded?: number | null,
+	linesRemoved?: number | null,
+	stopReasonLast?: string | null,
+	parent?: SessionParent | null,
+};
+
+/**
+ *  A merge patch for one session. Absent fields leave the stored value as it
+ *  is. `models` and `agents` are merged (model by name, agent by agent id);
+ *  the counters and `stopReasonLast` replace the stored value, so the caller
+ *  sends session totals, not deltas. The session is created when missing.
+ */
+export type SessionMetaPatch_Serialize = {
+	agentId: string,
+	sessionId: string,
+	connectionName?: string | null,
+	models?: ModelUsePatch_Serialize[],
+	agents?: AgentUse_Serialize[],
+	filesChanged?: number | null,
+	linesAdded?: number | null,
+	linesRemoved?: number | null,
+	stopReasonLast?: string | null,
+	parent?: SessionParent | null,
+};
+
+/**
+ *  What Span knows about one agent session. Sessions are keyed by
+ *  `(agentId, sessionId)` because two agents may reuse a session id.
+ */
+export type SessionMeta_Deserialize = {
+	/**
+	 *  The UI's agent catalog entry id: the ACP registry id for registry
+	 *  agents, the preset id for presets, and `custom:<executable name>` for
+	 *  a custom command line (the UI gives those no catalog id).
+	 */
+	agentId: string,
+	/**  The agent's display name when the session was last active. */
+	connectionName: string,
+	sessionId: string,
+	/**  A title the user chose, shown instead of the agent's title. */
+	titleOverride?: string | null,
+	archived: boolean,
+	firstSeenMs: number,
+	lastActiveMs: number,
+	models: ModelUse_Deserialize[],
+	agents: AgentUse_Deserialize[],
+	filesChanged: number,
+	linesAdded: number,
+	linesRemoved: number,
+	stopReasonLast?: string | null,
+	parent?: SessionParent | null,
+};
+
+/**
+ *  What Span knows about one agent session. Sessions are keyed by
+ *  `(agentId, sessionId)` because two agents may reuse a session id.
+ */
+export type SessionMeta_Serialize = {
+	/**
+	 *  The UI's agent catalog entry id: the ACP registry id for registry
+	 *  agents, the preset id for presets, and `custom:<executable name>` for
+	 *  a custom command line (the UI gives those no catalog id).
+	 */
+	agentId: string,
+	/**  The agent's display name when the session was last active. */
+	connectionName: string,
+	sessionId: string,
+	/**  A title the user chose, shown instead of the agent's title. */
+	titleOverride: string | null,
+	archived: boolean,
+	firstSeenMs: number,
+	lastActiveMs: number,
+	models: ModelUse_Serialize[],
+	agents: AgentUse_Serialize[],
+	filesChanged: number,
+	linesAdded: number,
+	linesRemoved: number,
+	stopReasonLast: string | null,
+	parent: SessionParent | null,
+};
+
 export type SessionPanels = SessionPanels_Serialize | SessionPanels_Deserialize;
 
 export type SessionPanels_Deserialize = {
@@ -944,6 +1148,12 @@ export type SessionPanels_Serialize = {
 	projectCollapsed: boolean,
 	assistantCollapsed: boolean,
 	terminalCollapsed: boolean,
+};
+
+/**  The lead session that started a delegated session. */
+export type SessionParent = {
+	agentId: string,
+	sessionId: string,
 };
 
 export type SessionState = SessionState_Serialize | SessionState_Deserialize;
@@ -1194,6 +1404,54 @@ export type ToolLocation_Deserialize = {
 export type ToolLocation_Serialize = {
 	path: string,
 	line: number | null,
+};
+
+/**  A transcript to export. */
+export type Transcript = Transcript_Serialize | Transcript_Deserialize;
+
+/**  One record of a chat transcript. */
+export type TranscriptItem = TranscriptItem_Serialize | TranscriptItem_Deserialize;
+
+/**  One record of a chat transcript. */
+export type TranscriptItem_Deserialize = 
+/**  A user prompt. Starts a new turn. */
+{ kind: "user"; text: string } | 
+/**  Agent reply text (Markdown, kept as is). */
+{ kind: "agent"; text: string } | 
+/**  Agent reasoning, exported as a quote. */
+{ kind: "thought"; text: string } | 
+/**  A tool step. Consecutive steps form one bulleted list. */
+{ kind: "tool"; title: string; status?: string | null } | 
+/**  A file change, exported as a fenced unified diff. */
+{ kind: "diff"; path: string; oldText?: string | null; newText: string } | 
+/**  A notice, error or status line. */
+{ kind: "notice"; text: string };
+
+/**  One record of a chat transcript. */
+export type TranscriptItem_Serialize = 
+/**  A user prompt. Starts a new turn. */
+{ kind: "user"; text: string } | 
+/**  Agent reply text (Markdown, kept as is). */
+{ kind: "agent"; text: string } | 
+/**  Agent reasoning, exported as a quote. */
+{ kind: "thought"; text: string } | 
+/**  A tool step. Consecutive steps form one bulleted list. */
+{ kind: "tool"; title: string; status?: string | null } | 
+/**  A file change, exported as a fenced unified diff. */
+{ kind: "diff"; path: string; oldText?: string | null; newText: string } | 
+/**  A notice, error or status line. */
+{ kind: "notice"; text: string };
+
+/**  A transcript to export. */
+export type Transcript_Deserialize = {
+	title?: string | null,
+	items: TranscriptItem_Deserialize[],
+};
+
+/**  A transcript to export. */
+export type Transcript_Serialize = {
+	title?: string | null,
+	items: TranscriptItem_Serialize[],
 };
 
 /**  Usage reported for a delegation. Every field is only set when reported. */
