@@ -1,8 +1,8 @@
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
+import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
 import { createAttachmentIntake } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop } from "./client";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionMetaList, sessionMetaSetTitle } from "./client";
 import { childPermissions, isFinished, type ChildPermission } from "./agent-delegation";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, isBusyPromptError, newAttention, reduceBackground, rowStatus, toBackground, withConversation, type ChatSnapshot } from "./agent-chats";
@@ -109,6 +109,8 @@ export function createAgentController(props: AgentPanelProps) {
   const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
   const [sessionsBusy, setSessionsBusy] = createSignal(false);
   const [sessionsError, setSessionsError] = createSignal("");
+  /** Span's stored metadata for the workspace's sessions (ADR 0005). Empty when none is stored or it cannot be read. */
+  const [sessionMeta, setSessionMeta] = createSignal<SessionMeta[]>([]);
   const [queue, setQueue] = createSignal<Queued[]>([]);
   /**
    * True when the queue must not drain on its own: the last turn ended with an error, the connection dropped, or a
@@ -1042,6 +1044,7 @@ export function createAgentController(props: AgentPanelProps) {
     const current = guard(agentEpoch);
     setSessionsBusy(true);
     setSessionsError("");
+    void loadSessionMeta();
     try {
       const found = await api.agentListSessions();
       if (current()) setSessions(found);
@@ -1049,6 +1052,35 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setSessionsError(errorText(cause));
     } finally {
       if (current()) setSessionsBusy(false);
+    }
+  }
+  /** Metadata only adds chips and titles to History rows, so a failed read leaves the rows as the agent lists them. */
+  async function loadSessionMeta() {
+    const current = guard(agentEpoch);
+    try {
+      const found = await sessionMetaList();
+      if (current()) setSessionMeta(found);
+    } catch {
+      if (current()) setSessionMeta([]);
+    }
+  }
+  /** Stored metadata for one of the connected agent's sessions. Sessions are keyed by agent and id (ADR 0005). */
+  const sessionMetaOf = (sessionId: string) => {
+    const agent = agentId();
+    return agent ? sessionMeta().find((entry) => entry.agentId === agent && entry.sessionId === sessionId) : undefined;
+  };
+  /** Renaming stores a title in Span's metadata, which needs the desktop app and a known agent catalog id. */
+  const canRename = () => isDesktop && Boolean(agentId());
+  async function renameChat(id: string, title: string) {
+    const agent = agentId();
+    if (!canRename() || !agent) return;
+    const current = guard(agentEpoch);
+    setSessionsError("");
+    try {
+      const saved = await sessionMetaSetTitle(agent, id, title);
+      if (current()) setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
+    } catch (cause) {
+      if (current()) setSessionsError(`Could not rename that chat: ${errorText(cause)}`);
     }
   }
   /** The open chat as a snapshot: its conversation, draft, attachments, queue and where it was scrolled. */
@@ -1500,6 +1532,9 @@ export function createAgentController(props: AgentPanelProps) {
     canDelete,
     deleteChat,
     closeChat,
+    sessionMetaOf,
+    canRename,
+    renameChat,
     showSelection,
     turnStart,
     clock,

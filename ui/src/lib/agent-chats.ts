@@ -1,4 +1,4 @@
-import type { AgentEvent, SessionRuntimeState_Serialize as SessionRuntimeState, SessionStates_Serialize as SessionStates } from "../bindings";
+import type { AgentEvent, SessionMeta_Serialize as SessionMeta, SessionRuntimeState_Serialize as SessionRuntimeState, SessionStates_Serialize as SessionStates } from "../bindings";
 import type { Queued } from "./agent-controller";
 import { RUN_TEXT } from "./agent-hint-text";
 import { clockText } from "./agent-running";
@@ -134,6 +134,26 @@ export function rowStatus(state: SessionRuntimeState | undefined, options: { now
     default:
       return { kind: "idle", label: queued ? `${RUN_TEXT.idle}${queued}` : RUN_TEXT.idle, attention: false };
   }
+}
+
+/** What a History row shows from Span's stored session metadata (ADR 0005). */
+export type RowMeta = { title?: string; agents: { id: string; name: string }[]; models: string[] };
+
+/**
+ * The agent and model chips and user title for a History row. Empty, zero and null fields mean unknown in the store,
+ * so they produce no chip: a session Span never observed shows only what the agent lists.
+ */
+export function rowMeta(meta: SessionMeta | undefined): RowMeta {
+  if (!meta) return { agents: [], models: [] };
+  const agents: RowMeta["agents"] = [];
+  const addAgent = (id: string, name: string) => {
+    if (name.trim() && !agents.some((agent) => agent.id === id)) agents.push({ id, name: name.trim() });
+  };
+  addAgent(meta.agentId, meta.connectionName);
+  for (const agent of meta.agents) addAgent(agent.agentId, agent.name);
+  const models = meta.models.filter((model) => model.name.trim()).map((model) => (model.effort ? `${model.name} · ${model.effort}` : model.name));
+  const title = meta.titleOverride?.trim();
+  return { ...(title ? { title } : {}), agents, models };
 }
 
 const waiting = (state: SessionRuntimeState) => state.state === "waitingForApproval" || state.state === "waitingForAnswer";
