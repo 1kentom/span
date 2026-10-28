@@ -1,0 +1,50 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Seven selected icons for the composer Mode popover rows. Original SVG bytes and geometry are preserved.",
+  "processing": "SVG XML inspected for active content and external references. Application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied from the user-provided local icon library at the user’s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "ModeReadOnly.svg",
+      "source": "security/iconsax-lock-9e9fec35ef39-.svg",
+      "sourceSha256": "ba973fe245d5592c89ba4666e17e3907a24eef413d3d7f94e3a4fae406518d9f",
+      "assetSha256": "ba973fe245d5592c89ba4666e17e3907a24eef413d3d7f94e3a4fae406518d9f"
+    },
+    {
+      "asset": "ModeWorkspace.svg",
+      "source": "files/iconsax-folder-open-fae6d17fd215-.svg",
+      "sourceSha256": "2b41d954cd04097a50f0cc011ecf2acf8f4ef129bd376702c839f000ee4831cc",
+      "assetSha256": "2b41d954cd04097a50f0cc011ecf2acf8f4ef129bd376702c839f000ee4831cc"
+    },
+    {
+      "asset": "ModeAuto.svg",
+      "source": "security/iconsax-shield-tick-d90a4728503d-.svg",
+      "sourceSha256": "21a56c19308045f86918ed8261d59fa5d9aeffd9687120795f02bb9b062afdbc",
+      "assetSha256": "21a56c19308045f86918ed8261d59fa5d9aeffd9687120795f02bb9b062afdbc"
+    },
+    {
+      "asset": "ModeDanger.svg",
+      "source": "essential/iconsax-danger-9621aac884fe-.svg",
+      "sourceSha256": "8e8a9580bc90ec728d93c71fb7f897bf7ee1423e94d81ccf6769fe47625f4aea",
+      "assetSha256": "8e8a9580bc90ec728d93c71fb7f897bf7ee1423e94d81ccf6769fe47625f4aea"
+    },
+    {
+      "asset": "ModePlan.svg",
+      "source": "programming/iconsax-clip-board-120475eb21cc-.svg",
+      "sourceSha256": "c900b1613bc3a3fc4074cb595a49eefa07575b09388ae50b44d3a9300ec9f926",
+      "assetSha256": "c900b1613bc3a3fc4074cb595a49eefa07575b09388ae50b44d3a9300ec9f926"
+    },
+    {
+      "asset": "ModeDefault.svg",
+      "source": "essential/iconsax-slider-cad450c7a0c8-.svg",
+      "sourceSha256": "281dbeeb6ead30a9ab0f26293d52e94300ad0e2b520f9b5d00e29ee0597da85b",
+      "assetSha256": "281dbeeb6ead30a9ab0f26293d52e94300ad0e2b520f9b5d00e29ee0597da85b"
+    },
+    {
+      "asset": "ModeOther.svg",
+      "source": "essential/iconsax-status-f2d7c84d68e2-.svg",
+      "sourceSha256": "fef409bb327a2b123ab56f44a19ea6acd8644bdf16b5ed830e08d87cc6d69406",
+      "assetSha256": "fef409bb327a2b123ab56f44a19ea6acd8644bdf16b5ed830e08d87cc6d69406"
+    }
+  ]
+}
