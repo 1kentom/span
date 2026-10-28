@@ -491,4 +491,41 @@ describe("file operations reconcile editor state", () => {
     expect(workbench.pendingClose()).toBeUndefined(); expect(workbench.groups().find(group => group.id === 2)?.tabs).toContain("src/file.ts");
     expect(workbench.documents()["src/file.ts"].document).toBe(document);
   });
+
+  it("enforces the per-group limit after copying a tab into a split", async () => {
+    const workbench = await setup();
+    for (const path of ["src/a.ts", "src/b.ts"]) server.set(path, { ...initial(), path });
+    workbench.setSettings({ ...preferences, tabLimit: 2, tabLimitPerGroup: true });
+    await workbench.openFile("src/a.ts", 1); workbench.splitEditor(); await workbench.openFile("src/b.ts", 2);
+    workbench.moveTab("src/file.ts", 1, 2, true);
+    expect(workbench.groups().find(group => group.id === 2)?.tabs).toHaveLength(2);
+  });
+
+  it("keeps a renamed file's recency when choosing the next eviction", async () => {
+    const workbench = await setup();
+    for (const path of ["src/a.ts", "src/b.ts", "src/c.ts"]) server.set(path, { ...initial(), path });
+    workbench.setSettings({ ...preferences, tabLimit: 3 });
+    await workbench.openFile("src/a.ts"); await workbench.openFile("src/b.ts"); await workbench.openFile("src/file.ts");
+    client.renamePath.mockImplementationOnce(async (from: string, to: string) => {
+      const old = server.get(from)!; server.delete(from); server.set(to, { ...old, path: to, revision: 1, savedRevision: 1 });
+      return { path: to, name: "renamed.ts", isDir: false };
+    });
+    await workbench.renamePath("src/file.ts", "src/renamed.ts");
+    await workbench.openFile("src/a.ts"); await workbench.openFile("src/c.ts");
+    expect(workbench.groups()[0].tabs).toContain("src/renamed.ts");
+    expect(workbench.groups()[0].tabs).not.toContain("src/b.ts");
+  });
+
+  it("retains recency while one copy of a shared tab remains in another group", async () => {
+    const workbench = await setup();
+    for (const path of ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]) server.set(path, { ...initial(), path });
+    workbench.setSettings({ ...preferences, tabLimit: 2, tabLimitPerGroup: true });
+    workbench.splitEditor();
+    await workbench.openFile("src/a.ts", 1); await workbench.openFile("src/file.ts", 1);
+    await workbench.openFile("src/b.ts", 2); await workbench.openFile("src/c.ts", 2);
+    expect(workbench.groups().find(group => group.id === 2)?.tabs).not.toContain("src/file.ts");
+    await workbench.openFile("src/d.ts", 1);
+    expect(workbench.groups().find(group => group.id === 1)?.tabs).toContain("src/file.ts");
+    expect(workbench.groups().find(group => group.id === 1)?.tabs).not.toContain("src/a.ts");
+  });
 });

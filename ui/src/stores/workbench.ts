@@ -105,8 +105,9 @@ export function createWorkbench() {
     const removed = new Map<number, Set<string>>();
     for (const item of removals) {
       const paths = removed.get(item.group) || new Set<string>(); paths.add(item.path); removed.set(item.group, paths);
-      tabRecency.delete(item.path);
     }
+    const remaining = new Set(groups().flatMap(group => group.tabs.filter(path => !removed.get(group.id)?.has(path))));
+    for (const item of removals) if (!remaining.has(item.path)) tabRecency.delete(item.path);
     setGroups(current => current.map(group => {
       const paths = removed.get(group.id);
       if (!paths) return group;
@@ -367,6 +368,8 @@ export function createWorkbench() {
     setGroups(current => current.map(group => group.id === toGroup ? { ...group, tabs: group.tabs.includes(path) ? group.tabs : [...group.tabs, path], active: path } : group));
     if (!copy) removeTab(path, fromGroup, false);
     setActiveGroup(toGroup);
+    rememberTab(path);
+    enforceTabLimit();
   }
   async function search(query: string) {
     const version = ++searchVersion;
@@ -429,6 +432,11 @@ export function createWorkbench() {
         accepted.delete(previous); accepted.set(next, snapshot); histories.delete(previous); if (history) histories.set(next, history);
         setBuffers(previous, undefined!); setBuffers(next, snapshot);
         setDocuments(current => { const value = { ...current }; delete value[previous]; value[next] = { document }; return value; });
+      }
+      const movedTabs = new Set(groups().flatMap(group => group.tabs).filter(path => inSubtree(path, from)));
+      for (const previous of movedTabs) {
+        const next = mapped(previous); const priorRecency = tabRecency.get(previous); tabRecency.delete(previous);
+        if (priorRecency !== undefined) tabRecency.set(next, Math.max(priorRecency, tabRecency.get(next) || 0));
       }
       batch(() => { setGroups(current => current.map(group => ({ ...group, tabs: group.tabs.map(mapped), active: group.active ? mapped(group.active) : undefined }))); setRecentPaths(current => current.map(mapped)); setExpanded(current => new Set([...current].map(mapped))); setMarkdownViews(current => Object.fromEntries(Object.entries(current).map(([path, view]) => [mapped(path), view]))); setEditCounters(current => Object.fromEntries(Object.entries(current).map(([path, revision]) => [mapped(path), revision]))); });
       for (const directory of Object.keys(directories)) if (inSubtree(directory, from)) setDirectories(directory, undefined!);
