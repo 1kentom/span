@@ -191,12 +191,18 @@ export const commands = {
 	 */
 	lspCancelInstall: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_cancel_install", { server }),
 	/**
-	 *  Trust (or stop trusting) the CURRENT workspace root: rust-analyzer and JDT LS may then
-	 *  run the project's own build code (Maven and Gradle import, build scripts). Writes
-	 *  `languageServers.trustedWorkspaces` in the user settings, restarts the running servers
-	 *  that execute build code, and returns the updated status.
+	 *  Compatibility wrapper over the trust store: trust (`true`) or restrict (`false`) the
+	 *  CURRENT workspace folder. Same as `workspace_trust_decide` with the folder scope; returns
+	 *  the updated status.
 	 */
 	lspTrustWorkspace: (trusted: boolean) => __TAURI_INVOKE<ServerStatusDto_Serialize[]>("lsp_trust_workspace", { trusted }),
+	/**  The trust state of the open workspace folder (see [`WorkspaceTrustStateDto`]). */
+	workspaceTrustState: () => __TAURI_INVOKE<WorkspaceTrustStateDto_Serialize>("workspace_trust_state"),
+	/**
+	 *  Store the user's decision for the open folder (`folder`) or for its parent folder
+	 *  (`parent`, which then covers the folder's siblings too). Idempotent.
+	 */
+	workspaceTrustDecide: (decision: TrustChoice, scope: TrustScope) => __TAURI_INVOKE<WorkspaceTrustStateDto_Serialize>("workspace_trust_decide", { decision, scope }),
 	lspInstall: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_install", { server }),
 	lspRestart: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_restart", { server }),
 	lspStatus: () => __TAURI_INVOKE<ServerStatusDto_Serialize[]>("lsp_status"),
@@ -253,6 +259,7 @@ export const events = {
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
 	startupRequestError: makeEvent<StartupRequestError, StartupRequestError>("startup-request-error"),
 	startupRequestsChanged: makeEvent<StartupRequestsChanged, StartupRequestsChanged>("startup-requests-changed"),
+	workspaceTrustChanged: makeEvent<WorkspaceTrustChanged, WorkspaceTrustChanged>("workspace-trust-changed"),
 };
 
 /* Types */
@@ -1408,10 +1415,22 @@ export type LanguageServerInstallProgress_Serialize = {
 	artifactCount: number,
 };
 
-/**  Language server behaviour, stored under the `languageServers` settings key. */
+/**
+ *  Language server behaviour, stored under the `languageServers` settings key.
+ * 
+ *  Nested settings objects ignore keys this build does not know, so a file written by a
+ *  newer build still loads in an older one (and is rewritten without losing them, see
+ *  `keep_unknown_nested`).
+ */
 export type LanguageServerSettings = LanguageServerSettings_Serialize | LanguageServerSettings_Deserialize;
 
-/**  Language server behaviour, stored under the `languageServers` settings key. */
+/**
+ *  Language server behaviour, stored under the `languageServers` settings key.
+ * 
+ *  Nested settings objects ignore keys this build does not know, so a file written by a
+ *  newer build still loads in an older one (and is rewritten without losing them, see
+ *  `keep_unknown_nested`).
+ */
 export type LanguageServerSettings_Deserialize = {
 	/**
 	 *  Download missing language servers on first use. When false, nothing is
@@ -1434,13 +1453,21 @@ export type LanguageServerSettings_Deserialize = {
 	 */
 	runProjectCode?: boolean,
 	/**
-	 *  Canonical absolute workspace roots whose build code may run (per-workspace trust).
-	 *  `run_project_code` stays as a global override meaning "trust every folder".
+	 *  DEPRECATED, read only. Preview builds stored per-workspace trust here. It is now kept
+	 *  in `trusted-workspaces.json` beside the other per-user state; a value found here is
+	 *  imported into that store once and never written back. `run_project_code` stays as a
+	 *  global override meaning "trust every folder".
 	 */
 	trustedWorkspaces?: string[],
 };
 
-/**  Language server behaviour, stored under the `languageServers` settings key. */
+/**
+ *  Language server behaviour, stored under the `languageServers` settings key.
+ * 
+ *  Nested settings objects ignore keys this build does not know, so a file written by a
+ *  newer build still loads in an older one (and is rewritten without losing them, see
+ *  `keep_unknown_nested`).
+ */
 export type LanguageServerSettings_Serialize = {
 	/**
 	 *  Download missing language servers on first use. When false, nothing is
@@ -1463,8 +1490,10 @@ export type LanguageServerSettings_Serialize = {
 	 */
 	runProjectCode: boolean,
 	/**
-	 *  Canonical absolute workspace roots whose build code may run (per-workspace trust).
-	 *  `run_project_code` stays as a global override meaning "trust every folder".
+	 *  DEPRECATED, read only. Preview builds stored per-workspace trust here. It is now kept
+	 *  in `trusted-workspaces.json` beside the other per-user state; a value found here is
+	 *  imported into that store once and never written back. `run_project_code` stays as a
+	 *  global override meaning "trust every folder".
 	 */
 	trustedWorkspaces: string[],
 };
@@ -2579,6 +2608,9 @@ export type Transcript_Serialize = {
 	items: TranscriptItem_Serialize[],
 };
 
+/**  What the user chose for a folder. */
+export type TrustChoice = "trusted" | "restricted";
+
 /**
  *  Whether running a project's own build code is allowed for it, and whether the
  *  restricted mode is costing results.
@@ -2604,6 +2636,9 @@ export type TrustDto_Serialize = {
 	needsTrust: boolean,
 	reason: string | null,
 };
+
+/**  Where a decision is stored: the open folder, or its parent (covering its siblings). */
+export type TrustScope = "folder" | "parent";
 
 /**  Same shape as [`CallHierarchyItemDto`], for `lsp_type_hierarchy_*`. */
 export type TypeHierarchyItemDto = TypeHierarchyItemDto_Serialize | TypeHierarchyItemDto_Deserialize;
@@ -2821,6 +2856,41 @@ export type WorkspaceSymbolDto_Serialize = {
 	kind: SymbolKindDto,
 	containerName: string | null,
 	location: LocationDto,
+};
+
+/**  A decision was stored for `root` (the open workspace folder). */
+export type WorkspaceTrustChanged = {
+	root: string,
+	decision: WorkspaceTrustDecision,
+};
+
+/**  The decision for the current workspace, including "not decided yet". */
+export type WorkspaceTrustDecision = "trusted" | "restricted" | "undecided";
+
+export type WorkspaceTrustStateDto = WorkspaceTrustStateDto_Serialize | WorkspaceTrustStateDto_Deserialize;
+
+export type WorkspaceTrustStateDto_Deserialize = {
+	decision: WorkspaceTrustDecision,
+	/**  The decision comes from a parent folder (or the global override), not from this folder. */
+	inherited: boolean,
+	/**  The folder that decided. Absent when undecided or when the global override applies. */
+	source?: string | null,
+	/**  Undecided and the folder holds files that make language servers run project code. */
+	needsPrompt: boolean,
+	reason?: string | null,
+	buildFiles: string[],
+};
+
+export type WorkspaceTrustStateDto_Serialize = {
+	decision: WorkspaceTrustDecision,
+	/**  The decision comes from a parent folder (or the global override), not from this folder. */
+	inherited: boolean,
+	/**  The folder that decided. Absent when undecided or when the global override applies. */
+	source: string | null,
+	/**  Undecided and the folder holds files that make language servers run project code. */
+	needsPrompt: boolean,
+	reason: string | null,
+	buildFiles: string[],
 };
 
 /* Tauri Specta runtime */
