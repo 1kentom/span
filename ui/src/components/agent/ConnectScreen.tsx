@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, on, type JSX } from "solid-js";
+import { For, Show, createEffect, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { AnimatedLogo } from "../AnimatedLogo";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
@@ -27,7 +27,36 @@ type ConnectScreenProps = {
   catalog?: JSX.Element;
   /** A command to place in the custom ACP row and open it for review. The user still presses Connect. */
   customDraft?: { command: string };
+  /** Copies a shown launch command. Without it the browser clipboard is used. */
+  onCopyCommand?: (command: string) => unknown;
 };
+
+/**
+ * A launch command on one line that fills the text column: the command on the left, cut with an ellipsis when it
+ * does not fit (the full text is in the title), and an icon-only copy button on the right. It never wraps or stacks.
+ */
+export function CommandChip(props: { command: string; label?: string; onCopy?: (command: string) => unknown }) {
+  const [copied, setCopied] = createSignal(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const copy = async () => {
+    try {
+      await (props.onCopy ? props.onCopy(props.command) : navigator.clipboard.writeText(props.command));
+      setCopied(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => setCopied(false), 1500);
+    } catch { /* the command stays selectable */ }
+  };
+  onCleanup(() => clearTimeout(timer));
+  return (
+    <span class="sb-command-chip">
+      <code class="sb-preset-command sb-mono" aria-label={props.label} title={props.command}>{props.command}</code>
+      <button type="button" class="sb-icon-btn sb-command-copy" classList={{ copied: copied() }} aria-label="Copy command" title={copied() ? "Copied" : "Copy command"} onClick={() => void copy()}>
+        <Icon name={copied() ? "TickCircle" : "Copy"} size={13} />
+      </button>
+      <span class="sb-visually-hidden" role="status" aria-live="polite">{copied() ? "Copied" : ""}</span>
+    </span>
+  );
+}
 
 /** First-run screen: agents found on this computer, the ACP registry, and a custom command. */
 export function ConnectScreen(props: ConnectScreenProps) {
@@ -80,17 +109,15 @@ export function ConnectScreen(props: ConnectScreenProps) {
           <div class="sb-eyebrow">Known commands</div>
           <For each={props.presets}>
             {(preset) => (
-              <div class="sb-agent-row stacked">
-                <div class="sb-agent-line">
-                  <BrandIcon id={preset.id} name={preset.name} size={18} />
-                  <span class="sb-agent-text">
-                    <span class="sb-agent-name">{preset.name}</span>
-                    <Show when={preset.description}><span class="sb-sub">{preset.description}</span></Show>
-                    <UpdateBadge update={updateFor(preset.id)} />
-                  </span>
-                  <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${preset.name}`} onClick={() => props.onPreset?.(preset.id)}>Connect</button>
-                </div>
-                <code class="sb-preset-command sb-mono" aria-label={`Command for ${preset.name}`}>{preset.command}</code>
+              <div class="sb-agent-row sb-preset-row">
+                <BrandIcon id={preset.id} name={preset.name} size={18} />
+                <span class="sb-agent-text">
+                  <span class="sb-agent-name">{preset.name}</span>
+                  <Show when={preset.description}><span class="sb-sub">{preset.description}</span></Show>
+                  <CommandChip command={preset.command} label={`Command for ${preset.name}`} onCopy={props.onCopyCommand} />
+                  <UpdateBadge update={updateFor(preset.id)} />
+                </span>
+                <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${preset.name}`} onClick={() => props.onPreset?.(preset.id)}>Connect</button>
               </div>
             )}
           </For>

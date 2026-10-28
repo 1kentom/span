@@ -402,7 +402,13 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-header-row { display: flex; gap: 4px; align-items: center; }
 .sb-header-row .sb-input { flex: 1; min-width: 0; }
 .sb-auth-hint code, .sb-fine code { padding: 0 4px; border-radius: 3px; background: var(--sb-field); color: var(--sb-fg); font-size: 11px; }
-.sb-preset-command { margin-left: 28px; padding: 4px 8px; border: 1px solid var(--sb-border); border-radius: 5px; background: var(--sb-field); font-size: 11px; color: var(--sb-fg); overflow-wrap: anywhere; }
+/* A launch command on one line that fills the text column. No border: the field background marks it. */
+.sb-command-chip { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; height: 28px; margin-top: 5px; padding: 0 3px 0 8px; border-radius: 6px; background: var(--sb-field); box-sizing: border-box; }
+.sb-command-chip .sb-preset-command { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 28px; color: var(--sb-fg); }
+.sb-command-copy { width: 22px; height: 22px; }
+.sb-command-copy.copied { color: var(--sb-accent-fg); }
+.sb-agent-row.sb-preset-row { align-items: flex-start; }
+.sb-preset-row > .brand-icon, .sb-preset-row > .icon { margin-top: 1px; }
 .agent-turn-tokens { align-self: center; }
 
 /* Decision and delegated-agent cards */

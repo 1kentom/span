@@ -384,6 +384,7 @@ export function AgentPanel(props: AgentPanelProps) {
                   />
                 }
                 customDraft={customDraft()}
+                onCopyCommand={(command) => api.writeClipboard(command)}
                 found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${leaf(entry.launch.command)}` }))}
                 presets={presetRows()}
                 updates={agentUpdates()}
