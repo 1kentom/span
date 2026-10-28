@@ -40,7 +40,6 @@ export function composerHints(input: HintInput): Record<ComposerHintMode, Compos
     idle: [
       { keys: ["↵"], label: "Send" },
       { keys: ["⇧", "↵"], label: "Newline" },
-      { keys: ["↑"], label: "Earlier prompts" },
       { keys: ["/"], label: "Commands" },
       { keys: ["⌥", "↵"], label: "Attach" },
     ],
