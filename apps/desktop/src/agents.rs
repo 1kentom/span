@@ -27,9 +27,9 @@ pub fn watch_session_states(app: &tauri::AppHandle) {
     let state = app.state::<DesktopState>();
     let handle = app.clone();
     let subscription = state.sessions.watch_states(Arc::new(move |states| {
-        if let Err(error) = (AgentSessionStatesChanged { states }).emit(&handle) {
-            eprintln!("Could not report agent session states: {error}");
-        }
+        // Goes through the mounted guard like every other event, so a state change can
+        // never panic for lack of the event registry.
+        crate::events::emit(&handle, &AgentSessionStatesChanged { states });
     }));
     // The watch lasts as long as the app: the manager lives in the app state.
     std::mem::forget(subscription);
