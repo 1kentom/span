@@ -598,6 +598,7 @@ async fn runtime_and_install_failures_are_typed_and_retryable() {
         runtime: "node".into(),
         required: 20,
         found: vec!["18.1.0".into()],
+        found_paths: Vec::new(),
     });
     let snapshot = f.ws.open_buffer("a.json").unwrap();
     f.svc.on_snapshot(&snapshot);
@@ -833,7 +834,10 @@ async fn project_code_servers_get_permissive_options_only_when_enabled() {
     let options = initialize_options(&f.log);
     assert_eq!(options.len(), 2, "{options:?}");
     assert_eq!(options[0], serde_json::json!({}));
-    assert_eq!(options[1]["settings"]["java"], serde_json::json!({}));
+    assert_eq!(
+        options[1]["settings"]["java"],
+        serde_json::json!({ "signatureHelp": { "enabled": true } })
+    );
 }
 
 #[tokio::test]
@@ -1351,4 +1355,449 @@ async fn read_source_is_read_only_and_never_opens_documents_in_the_server() {
         .as_str()
         .unwrap()
         .ends_with("a.json"));
+}
+
+// ---------------------------------------------------------------------------
+// Work done progress, install progress and cancel, per-workspace trust
+// ---------------------------------------------------------------------------
+
+fn work_events(f: &Fixture) -> Vec<LanguageServerWorkProgress> {
+    f.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            LspEvent::WorkProgress(w) => Some(w.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn server_work_progress_is_forwarded_throttled_and_cleared() {
+    let mut f = fixture(true, "progress", Duration::from_secs(5));
+    f.open_ready().await;
+    eventually("the end of the work", || {
+        work_events(&f)
+            .iter()
+            .any(|w| w.kind == WorkProgressKindDto::End)
+    })
+    .await;
+    let events = work_events(&f);
+    assert_eq!(events[0].kind, WorkProgressKindDto::Begin);
+    assert_eq!(events[0].title.as_deref(), Some("Indexing project"));
+    assert_eq!(events[0].token, "tok-1");
+    assert_eq!(events[0].server, LanguageServerId::Json);
+    assert_eq!(events.last().unwrap().kind, WorkProgressKindDto::End);
+    let reports = events
+        .iter()
+        .filter(|w| w.kind == WorkProgressKindDto::Report)
+        .count();
+    assert!(
+        reports <= 2,
+        "20 reports in a burst are throttled, got {reports}"
+    );
+    // Reports inherit the title of their begin.
+    assert!(events
+        .iter()
+        .all(|w| w.title.as_deref() == Some("Indexing project")));
+    // The create request was answered.
+    eventually("create answered", || {
+        log_entries(&f.log)
+            .iter()
+            .any(|e| e["method"] == "response")
+            || methods(&f.log).iter().any(|m| m == "initialized")
+    })
+    .await;
+    // Finished work is gone from the status.
+    let row = f
+        .svc
+        .status()
+        .await
+        .into_iter()
+        .find(|s| s.server == LanguageServerId::Json)
+        .unwrap();
+    assert!(row.activity.is_empty(), "{:?}", row.activity);
+}
+
+#[tokio::test]
+async fn running_work_is_visible_in_status_for_late_subscribers_and_dies_with_the_server() {
+    let mut f = fixture(true, "progress-open", Duration::from_secs(5));
+    f.open_ready().await;
+    let activity = || async {
+        f.svc
+            .status()
+            .await
+            .into_iter()
+            .find(|s| s.server == LanguageServerId::Json && s.root.is_some())
+            .map(|s| s.activity)
+            .unwrap_or_default()
+    };
+    let mut seen = Vec::new();
+    for _ in 0..200 {
+        seen = activity().await;
+        if seen.first().and_then(|a| a.percentage) == Some(35) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].title.as_deref(), Some("Indexing project"));
+    assert_eq!(seen[0].percentage, Some(35));
+    assert!(seen[0].message.is_some());
+    f.svc.restart(ID).await.unwrap();
+    // The old instance's work is forgotten; the new one reports its own.
+    eventually("fresh work after restart", || {
+        work_events(&f)
+            .iter()
+            .filter(|w| w.kind == WorkProgressKindDto::Begin)
+            .count()
+            >= 2
+    })
+    .await;
+}
+
+#[test]
+fn overall_install_progress_never_goes_backwards_across_artifacts() {
+    let mut t = OverallTracker::new(Some(100));
+    t.apply(&InstallProgress::Started {
+        server: ServerId::Jdtls,
+        version: "1".into(),
+        artifacts: 3,
+    });
+    let mut last = Overall::default();
+    let steps = [
+        (0usize, 10u64, 40u64),
+        (0, 40, 40),
+        // The second artifact is bigger than the hint allowed for.
+        (1, 20, 200),
+        (1, 200, 200),
+        (2, 5, 10),
+        (2, 10, 10),
+    ];
+    for (index, received, total) in steps {
+        t.apply(&InstallProgress::Downloading {
+            index,
+            received,
+            total: Some(total),
+        });
+        let now = t.snapshot();
+        assert!(now.received >= last.received, "{now:?} after {last:?}");
+        let fraction = |o: Overall| o.received as f64 / o.total.unwrap() as f64;
+        if last.total.is_some() {
+            assert!(
+                fraction(now) + 1e-9 >= fraction(last),
+                "{now:?} after {last:?}"
+            );
+        }
+        assert_eq!((now.index as usize, now.count), (index, 3));
+        last = now;
+    }
+    t.apply(&InstallProgress::Verifying { index: 2 });
+    t.apply(&InstallProgress::Finalizing);
+    let done = t.complete();
+    assert_eq!(Some(done.received), done.total);
+}
+
+struct SlowFetch;
+
+struct Drip;
+
+impl span_lsp::servers::install::ByteStream for Drip {
+    fn next_chunk(
+        &mut self,
+    ) -> span_lsp::servers::install::BoxFuture<
+        '_,
+        Result<Option<span_lsp::Bytes>, span_lsp::servers::install::FetchError>,
+    > {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok(Some(vec![0u8; 16 * 1024].into()))
+        })
+    }
+}
+
+impl span_lsp::servers::install::Fetch for SlowFetch {
+    fn get<'a>(
+        &'a self,
+        _url: &'a str,
+    ) -> span_lsp::servers::install::BoxFuture<
+        'a,
+        Result<span_lsp::servers::install::FetchResponse, span_lsp::servers::install::FetchError>,
+    > {
+        Box::pin(async {
+            Ok(span_lsp::servers::install::FetchResponse {
+                status: 200,
+                content_length: Some(512 * 1024 * 1024),
+                body: Box::new(Drip),
+            })
+        })
+    }
+}
+
+fn install_events(events: &Arc<Mutex<Vec<LspEvent>>>) -> Vec<LanguageServerInstallProgress> {
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            LspEvent::Install(i) => Some(i.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn cancel_install_stops_the_download_cleans_up_and_returns_to_needs_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let events: Arc<Mutex<Vec<LspEvent>>> = Arc::default();
+    let sink = events.clone();
+    let svc = production_with_fetch(
+        cache.clone(),
+        Arc::new(SlowFetch),
+        Arc::new(move |e| sink.lock().unwrap().push(e)),
+        ServiceConfig::default(),
+    );
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    svc.workspace_changed(project, &Settings::default());
+
+    // Nothing installing: harmless.
+    svc.cancel_install(ServerId::Json).await;
+    assert!(install_events(&events).is_empty());
+
+    svc.install(ServerId::Json).await.unwrap();
+    eventually("bytes flowing", || {
+        install_events(&events)
+            .iter()
+            .any(|e| e.phase == InstallPhase::Downloading && e.overall_received > 64 * 1024)
+    })
+    .await;
+    let row = svc
+        .status()
+        .await
+        .into_iter()
+        .find(|s| s.server == LanguageServerId::Json)
+        .unwrap();
+    assert_eq!(row.state, LanguageServerStateDto::Installing);
+    let progress = row.install.expect("overall progress while installing");
+    assert!(progress.overall_received > 0 && progress.artifact_count >= 1);
+
+    svc.cancel_install(ServerId::Json).await;
+    let events_now = install_events(&events);
+    assert_eq!(events_now.last().unwrap().phase, InstallPhase::Cancelled);
+    let received: Vec<u64> = events_now.iter().map(|e| e.overall_received).collect();
+    assert!(
+        received.windows(2).all(|w| w[0] <= w[1] || w[1] == 0),
+        "overall bytes never decrease: {received:?}"
+    );
+    let row = svc
+        .status()
+        .await
+        .into_iter()
+        .find(|s| s.server == LanguageServerId::Json)
+        .unwrap();
+    assert!(
+        matches!(row.state, LanguageServerStateDto::NeedsInstall { .. }),
+        "{:?}",
+        row.state
+    );
+    assert!(row.install.is_none());
+    assert!(!events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e, LspEvent::Error(_))));
+
+    // Staging and partial files are gone and the lock is free: a second install can start.
+    let staging = span_lsp::servers::cache::ServerCache::new(cache.clone())
+        .staging_dir(ServerId::Json, &svc.provisioner.version(ServerId::Json));
+    assert!(!staging.exists(), "{}", staging.display());
+    svc.install(ServerId::Json).await.unwrap();
+    eventually("second install downloads", || {
+        install_events(&events)
+            .iter()
+            .filter(|e| e.phase == InstallPhase::Downloading)
+            .count()
+            > 1
+    })
+    .await;
+    svc.cancel_install(ServerId::Json).await;
+    svc.cancel_install(ServerId::Json).await;
+    assert!(!staging.exists());
+}
+
+fn trusting(f: &Fixture, roots: &[&Path]) -> Settings {
+    let mut settings = Settings::default();
+    settings.language_servers.trusted_workspaces = roots
+        .iter()
+        .map(|r| r.to_string_lossy().into_owned())
+        .collect();
+    let _ = f;
+    settings
+}
+
+#[tokio::test]
+async fn trusted_roots_start_permissive_and_untrusted_roots_stay_restricted() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    let settings = trusting(&f, &[&f.root]);
+    f.svc.apply_settings(&settings);
+    open_in(&mut f, "lib.rs", ServerId::RustAnalyzer).await;
+    assert_eq!(initialize_options(&f.log)[0], serde_json::json!({}));
+    f.svc.manager.shutdown_all().await;
+
+    // Another folder's trust does not carry over.
+    let mut g = fixture(true, "normal", Duration::from_secs(5));
+    let other = g.root.parent().unwrap().join("elsewhere");
+    let settings = trusting(&g, &[&other]);
+    g.svc.apply_settings(&settings);
+    open_in(&mut g, "lib.rs", ServerId::RustAnalyzer).await;
+    assert_eq!(initialize_options(&g.log)[0]["checkOnSave"], false);
+}
+
+#[tokio::test]
+async fn trusting_restarts_build_servers_and_replays_documents_and_untrusting_restricts_again() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    open_in(&mut f, "lib.rs", ServerId::RustAnalyzer).await;
+    assert_eq!(initialize_options(&f.log).len(), 1);
+    assert_eq!(initialize_options(&f.log)[0]["procMacro"]["enable"], false);
+    let opens = |log: &Path| {
+        methods(log)
+            .iter()
+            .filter(|m| *m == "textDocument/didOpen")
+            .count()
+    };
+    eventually("first open", || opens(&f.log) == 1).await;
+
+    let trusted = trusting(&f, &[&f.root]);
+    f.svc.apply_settings(&trusted);
+    eventually("restart with permissive options", || {
+        initialize_options(&f.log).len() == 2
+    })
+    .await;
+    assert_eq!(initialize_options(&f.log)[1], serde_json::json!({}));
+    eventually("document replayed", || opens(&f.log) == 2).await;
+
+    // Unrelated changes do not restart; removing the trust does.
+    f.svc.apply_settings(&trusted);
+    f.svc.flush().await;
+    assert_eq!(initialize_options(&f.log).len(), 2);
+    f.svc.apply_settings(&Settings::default());
+    eventually("restart restricted again", || {
+        initialize_options(&f.log).len() == 3
+    })
+    .await;
+    assert_eq!(initialize_options(&f.log)[2]["checkOnSave"], false);
+    eventually("document replayed again", || opens(&f.log) == 3).await;
+}
+
+#[tokio::test]
+async fn status_explains_when_trust_would_change_results() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    let row = |rows: Vec<ServerStatusDto>, id: LanguageServerId| {
+        rows.into_iter().find(|s| s.server == id).unwrap()
+    };
+    let rows = f.svc.status().await;
+    for id in [
+        LanguageServerId::Jdtls,
+        LanguageServerId::RustAnalyzer,
+        LanguageServerId::Json,
+    ] {
+        let r = row(rows.clone(), id);
+        assert!(
+            !r.trust.needs_trust && r.trust.reason.is_none(),
+            "{id:?}: no build files yet"
+        );
+        assert!(!r.trust.workspace_trusted);
+    }
+    std::fs::write(f.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(
+        f.root.join("Cargo.toml"),
+        "[package]\nname = \"x\"\n\n[dependencies]\nserde = \"1\"\n",
+    )
+    .unwrap();
+    let rows = f.svc.status().await;
+    let java = row(rows.clone(), LanguageServerId::Jdtls);
+    assert!(java.trust.needs_trust);
+    assert_eq!(
+        java.trust.reason.as_deref(),
+        Some("This Maven project's dependencies can only be loaded by running Maven.")
+    );
+    assert!(
+        row(rows.clone(), LanguageServerId::RustAnalyzer)
+            .trust
+            .needs_trust
+    );
+    assert!(!row(rows, LanguageServerId::Json).trust.needs_trust);
+
+    let settings = trusting(&f, &[&f.root]);
+    f.svc.apply_settings(&settings);
+    let rows = f.svc.status().await;
+    let java = row(rows, LanguageServerId::Jdtls);
+    assert!(java.trust.workspace_trusted && !java.trust.needs_trust && java.trust.reason.is_none());
+    // The global override trusts every folder.
+    let mut all = Settings::default();
+    all.language_servers.run_project_code = true;
+    f.svc.apply_settings(&all);
+    assert!(
+        row(f.svc.status().await, LanguageServerId::Jdtls)
+            .trust
+            .workspace_trusted
+    );
+    let _ = &mut f;
+}
+
+#[tokio::test]
+async fn status_rows_describe_the_server_and_its_runtime() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    *f.provisioner.runtime.lock().unwrap() = Some(RuntimeIssue {
+        runtime: "java".into(),
+        required: 25,
+        found: vec!["21.0.1".into()],
+        found_paths: vec!["/jdk21/bin/java".into()],
+    });
+    open_in_unready(&mut f, "Main.java").await;
+    let rows = f.svc.status().await;
+    let java = rows
+        .iter()
+        .find(|s| s.server == LanguageServerId::Jdtls)
+        .unwrap();
+    assert_eq!(java.display_name, "Java (Eclipse JDT LS)");
+    assert_eq!(java.languages, vec!["Java"]);
+    let runtime = java.runtime.as_ref().unwrap();
+    assert_eq!(
+        (runtime.name.as_str(), runtime.required_version),
+        ("JDK", 25)
+    );
+    assert_eq!(runtime.found_version.as_deref(), Some("21.0.1"));
+    assert_eq!(runtime.found_path.as_deref(), Some("/jdk21/bin/java"));
+    assert!(java.failure_reason.as_deref().unwrap().contains("JDK"));
+    assert!(java.failure_details.as_deref().unwrap().contains("25"));
+    let names: Vec<_> = rows
+        .iter()
+        .map(|r| (r.server, r.display_name.as_str()))
+        .collect();
+    for (id, name) in [
+        (LanguageServerId::Vtsls, "TypeScript and JavaScript (vtsls)"),
+        (LanguageServerId::Html, "HTML"),
+        (LanguageServerId::Css, "CSS, SCSS and Less"),
+        (LanguageServerId::Json, "JSON"),
+        (LanguageServerId::RustAnalyzer, "Rust (rust-analyzer)"),
+        (LanguageServerId::Basedpyright, "Python (basedpyright)"),
+    ] {
+        assert!(names.contains(&(id, name)), "{id:?}");
+    }
+    let json = rows
+        .iter()
+        .find(|s| s.server == LanguageServerId::Json)
+        .unwrap();
+    assert!(json.runtime.as_ref().is_some_and(|r| r.name == "Node.js"));
+}
+
+async fn open_in_unready(f: &mut Fixture, path: &str) {
+    std::fs::write(f.root.join(path), "").unwrap();
+    let snapshot = f.ws.open_buffer(path).unwrap();
+    f.svc.on_snapshot(&snapshot);
+    f.svc.flush().await;
 }

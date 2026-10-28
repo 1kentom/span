@@ -41,6 +41,28 @@ impl LspClient {
         self.typed_request(method, value, cancel).await
     }
 
+    /// `lsp-types` models `TypeHierarchyItem.tags` as a single tag, but the protocol sends an
+    /// array (JDT LS does), so the tags are dropped before the items are decoded.
+    async fn type_items<P: serde::Serialize>(
+        &self,
+        method: &'static str,
+        params: P,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        let raw: Option<serde_json::Value> = self
+            .nav(self.supports_type_hierarchy(), method, params, cancel)
+            .await?;
+        let Some(mut raw) = raw else { return Ok(None) };
+        if let Some(items) = raw.as_array_mut() {
+            for item in items {
+                if let Some(object) = item.as_object_mut() {
+                    object.remove("tags");
+                }
+            }
+        }
+        Ok(Some(serde_json::from_value(raw)?))
+    }
+
     pub fn supports_references(&self) -> bool {
         self.has_capability(|c| one_of_enabled(&c.references_provider))
     }
@@ -179,30 +201,58 @@ impl LspClient {
         "callHierarchy/outgoingCalls",
         supports_call_hierarchy
     );
-    nav_request!(
-        prepare_type_hierarchy,
-        prepare_type_hierarchy_with_cancel,
-        TypeHierarchyPrepareParams,
-        Vec<TypeHierarchyItem>,
-        "textDocument/prepareTypeHierarchy",
-        supports_type_hierarchy
-    );
-    nav_request!(
-        type_supertypes,
-        type_supertypes_with_cancel,
-        TypeHierarchySupertypesParams,
-        Vec<TypeHierarchyItem>,
-        "typeHierarchy/supertypes",
-        supports_type_hierarchy
-    );
-    nav_request!(
-        type_subtypes,
-        type_subtypes_with_cancel,
-        TypeHierarchySubtypesParams,
-        Vec<TypeHierarchyItem>,
-        "typeHierarchy/subtypes",
-        supports_type_hierarchy
-    );
+    pub async fn prepare_type_hierarchy(
+        &self,
+        params: TypeHierarchyPrepareParams,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        self.type_items("textDocument/prepareTypeHierarchy", params, None)
+            .await
+    }
+
+    pub async fn prepare_type_hierarchy_with_cancel(
+        &self,
+        params: TypeHierarchyPrepareParams,
+        cancel_token: CancellationToken,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        self.type_items(
+            "textDocument/prepareTypeHierarchy",
+            params,
+            Some(&cancel_token),
+        )
+        .await
+    }
+    pub async fn type_supertypes(
+        &self,
+        params: TypeHierarchySupertypesParams,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        self.type_items("typeHierarchy/supertypes", params, None)
+            .await
+    }
+
+    pub async fn type_supertypes_with_cancel(
+        &self,
+        params: TypeHierarchySupertypesParams,
+        cancel_token: CancellationToken,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        self.type_items("typeHierarchy/supertypes", params, Some(&cancel_token))
+            .await
+    }
+    pub async fn type_subtypes(
+        &self,
+        params: TypeHierarchySubtypesParams,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        self.type_items("typeHierarchy/subtypes", params, None)
+            .await
+    }
+
+    pub async fn type_subtypes_with_cancel(
+        &self,
+        params: TypeHierarchySubtypesParams,
+        cancel_token: CancellationToken,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        self.type_items("typeHierarchy/subtypes", params, Some(&cancel_token))
+            .await
+    }
     nav_request!(
         document_highlights,
         document_highlights_with_cancel,

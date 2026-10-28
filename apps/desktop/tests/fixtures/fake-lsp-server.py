@@ -1,7 +1,7 @@
 """Fake language server for the desktop service tests.
 
 Usage: fake-lsp-server.py MODE
-Modes: nav, nav-flat, nav-modified, nav-hang, nav-slow (navigation requests), normal, slow-hover, fail-format, hang-format, slow-shutdown
+Modes: progress, progress-open, nav, nav-flat, nav-modified, nav-hang, nav-slow (navigation requests), normal, slow-hover, fail-format, hang-format, slow-shutdown
 Every message received is appended as one JSON line to $FAKE_LSP_LOG, together with the
 server's pid so tests can check that the process is gone.
 """
@@ -46,6 +46,19 @@ def reply(msg, result):
 
 
 state = {}
+
+
+def progress_burst(mode):
+    """Work done progress: create, begin, a burst of reports, and end (not for -open)."""
+    send({"id": "wd-1", "method": "window/workDoneProgress/create", "params": {"token": "tok-1"}})
+    send({"method": "$/progress", "params": {"token": "tok-1", "value": {
+        "kind": "begin", "title": "Indexing project", "percentage": 0}}})
+    for i in range(1, 21):
+        send({"method": "$/progress", "params": {"token": "tok-1", "value": {
+            "kind": "report", "message": "%d/20" % i, "percentage": i * 5 if mode != "progress-open" else 35}}})
+    if mode != "progress-open":
+        send({"method": "$/progress", "params": {"token": "tok-1", "value": {
+            "kind": "end", "message": "done"}}})
 
 
 NAV_CAPS = {
@@ -157,6 +170,9 @@ while True:
         if mode.startswith("nav"):
             caps.update(NAV_CAPS)
         reply(msg, {"capabilities": caps})
+    elif method == "initialized":
+        if mode.startswith("progress"):
+            progress_burst(mode)
     elif method == "textDocument/didOpen":
         item = msg["params"]["textDocument"]
         send({"method": "textDocument/publishDiagnostics",

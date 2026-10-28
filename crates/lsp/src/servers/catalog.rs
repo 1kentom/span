@@ -341,6 +341,8 @@ pub fn initialization_options(id: ServerId, run_project_code: bool) -> serde_jso
             "bundles": [],
             "extendedClientCapabilities": { "classFileContentsSupport": true },
             "settings": { "java": {
+                // Off by default in JDT LS even though signatureHelpProvider is advertised.
+                "signatureHelp": { "enabled": true },
                 "import": {
                     "gradle": { "enabled": false, "wrapper": { "enabled": false } },
                     "maven": { "enabled": false },
@@ -352,7 +354,7 @@ pub fn initialization_options(id: ServerId, run_project_code: bool) -> serde_jso
         ServerId::Jdtls => json!({
             "bundles": [],
             "extendedClientCapabilities": { "classFileContentsSupport": true },
-            "settings": { "java": {} },
+            "settings": { "java": { "signatureHelp": { "enabled": true } } },
         }),
         // Servers whose spec options do not depend on the flag.
         _ => spec(id).initialization_options,
@@ -821,7 +823,7 @@ mod tests {
         assert_eq!(java["settings"]["java"]["autobuild"]["enabled"], false);
         assert_eq!(
             initialization_options(ServerId::Jdtls, true)["settings"]["java"],
-            json!({})
+            json!({ "signatureHelp": { "enabled": true } })
         );
         // The spec carries the permissive options; other servers ignore the flag.
         assert_eq!(

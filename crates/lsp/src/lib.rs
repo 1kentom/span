@@ -17,6 +17,7 @@ mod protocol;
 pub mod servers;
 mod transport;
 
+pub use bytes::Bytes;
 pub use client::{
     build_initialize_params, client_capabilities, path_to_uri, LspClient, ServerEvent,
 };

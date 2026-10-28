@@ -113,9 +113,58 @@ pub enum ServerState {
     Stopped,
 }
 
+/// The three stages of a `$/progress` work done report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkProgressKind {
+    Begin,
+    Report,
+    End,
+}
+
+/// Parse the params of a `$/progress` notification that carries work done progress.
+/// Other progress payloads (partial results) are ignored.
+pub fn parse_work_progress(
+    params: &serde_json::Value,
+) -> Option<(
+    String,
+    WorkProgressKind,
+    Option<String>,
+    Option<String>,
+    Option<u32>,
+)> {
+    let token = match params.get("token")? {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    let value = params.get("value")?;
+    let kind = match value.get("kind")?.as_str()? {
+        "begin" => WorkProgressKind::Begin,
+        "report" => WorkProgressKind::Report,
+        "end" => WorkProgressKind::End,
+        _ => return None,
+    };
+    let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+    let percentage = value
+        .get("percentage")
+        .and_then(|v| v.as_u64())
+        .map(|p| p.min(100) as u32);
+    Some((token, kind, text("title"), text("message"), percentage))
+}
+
 /// Broadcast to subscribers; slow receivers may lag and miss events.
 #[derive(Debug, Clone)]
 pub enum ManagerEvent {
+    /// Work done progress (`$/progress`) from a server: indexing, importing, building.
+    Progress {
+        server: ServerId,
+        root: PathBuf,
+        token: String,
+        kind: WorkProgressKind,
+        title: Option<String>,
+        message: Option<String>,
+        percentage: Option<u32>,
+    },
     StateChanged {
         server: ServerId,
         root: PathBuf,
@@ -202,7 +251,9 @@ impl Instance {
 
 /// Chooses the `initialize` options for a server at start time, given whether the
 /// project may run its own code (build scripts, proc macros, Gradle and Maven import).
-pub type OptionsProvider = Arc<dyn Fn(ServerId, bool) -> serde_json::Value + Send + Sync>;
+/// `(server, server root, global run project code flag)`; the root lets the provider decide
+/// per workspace trust.
+pub type OptionsProvider = Arc<dyn Fn(ServerId, &Path, bool) -> serde_json::Value + Send + Sync>;
 
 struct ManagerShared {
     run_project_code: AtomicBool,
@@ -348,7 +399,11 @@ impl Manager {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let options = match provider {
-            Some(provider) => provider(id, self.shared.run_project_code.load(Ordering::SeqCst)),
+            Some(provider) => provider(
+                id,
+                root,
+                self.shared.run_project_code.load(Ordering::SeqCst),
+            ),
             None => spec.initialization_options.clone(),
         };
         let handle = tokio::spawn(run_instance(
@@ -1048,7 +1103,23 @@ async fn pump_events(inst: Arc<Instance>, client: Arc<LspClient>) {
                     params,
                 });
             }
-            ServerEvent::Notification { .. } => {}
+            ServerEvent::Notification { method, params } => {
+                if method == "$/progress" {
+                    if let Some((token, kind, title, message, percentage)) =
+                        params.as_ref().and_then(parse_work_progress)
+                    {
+                        let _ = inst.events.send(ManagerEvent::Progress {
+                            server: inst.id,
+                            root: inst.root.clone(),
+                            token,
+                            kind,
+                            title,
+                            message,
+                            percentage,
+                        });
+                    }
+                }
+            }
         }
     }
     if inst.stop.is_cancelled() {

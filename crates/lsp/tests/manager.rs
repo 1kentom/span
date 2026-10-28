@@ -1158,3 +1158,63 @@ fn declared_client_capabilities_cover_navigation() {
         26
     );
 }
+
+#[tokio::test]
+async fn work_done_progress_is_forwarded_and_the_create_request_answered() {
+    use span_lsp::servers::manager::WorkProgressKind;
+    let f = fixture("progress");
+    let mut events = f.manager.subscribe();
+    f.ready().await;
+    let mut kinds = Vec::new();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while kinds.last() != Some(&WorkProgressKind::End) {
+        let event = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .expect("progress arrives")
+            .unwrap();
+        if let ManagerEvent::Progress {
+            token,
+            kind,
+            title,
+            percentage,
+            ..
+        } = event
+        {
+            assert_eq!(token, "tok-1");
+            if kind == WorkProgressKind::Begin {
+                assert_eq!(title.as_deref(), Some("Indexing project"));
+                assert_eq!(percentage, Some(0));
+            }
+            kinds.push(kind);
+        }
+    }
+    assert_eq!(kinds[0], WorkProgressKind::Begin);
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == WorkProgressKind::Report)
+            .count(),
+        20
+    );
+    f.wait_log("response", 2).await;
+    let answered = f.methods("response").iter().any(|e| e["id"] == "wd-1");
+    assert!(answered, "window/workDoneProgress/create must be answered");
+    f.manager.shutdown_all().await;
+}
+
+#[test]
+fn work_progress_params_parse() {
+    use span_lsp::servers::manager::{parse_work_progress, WorkProgressKind};
+    let begin = serde_json::json!({"token": 7, "value": {"kind": "begin", "title": "T", "percentage": 250}});
+    let (token, kind, title, _, pct) = parse_work_progress(&begin).unwrap();
+    assert_eq!(
+        (token.as_str(), kind, title.as_deref(), pct),
+        ("7", WorkProgressKind::Begin, Some("T"), Some(100))
+    );
+    assert!(
+        parse_work_progress(&serde_json::json!({"token": "x", "value": {"items": []}})).is_none()
+    );
+    assert!(
+        parse_work_progress(&serde_json::json!({"token": [1], "value": {"kind": "end"}})).is_none()
+    );
+}

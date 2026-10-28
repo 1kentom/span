@@ -421,6 +421,24 @@ pub struct ServerStatusDto {
     pub epoch: u64,
     /// Only known while the server is ready.
     pub capabilities: Option<CapabilitiesDto>,
+    /// Human name, e.g. "Java (Eclipse JDT LS)".
+    pub display_name: String,
+    /// Human language names the server covers.
+    pub languages: Vec<String>,
+    /// Size of the installed files on disk, when installed.
+    pub installed_size_bytes: Option<u64>,
+    /// The runtime the server needs (Node.js or a JDK), with what was found.
+    pub runtime: Option<super::intel::RuntimeDto>,
+    /// Plain-language sentence for failed states.
+    pub failure_reason: Option<String>,
+    /// The technical error behind `failure_reason`.
+    pub failure_details: Option<String>,
+    /// Per-workspace trust for servers that execute project build code.
+    pub trust: super::intel::TrustDto,
+    /// Work the server reports it is doing (indexing, importing), for late subscribers.
+    pub activity: Vec<super::intel::ActivityDto>,
+    /// Overall progress while this server is installing.
+    pub install: Option<super::intel::InstallStatusDto>,
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +458,8 @@ pub enum InstallPhase {
     Finalizing,
     Finished,
     Failed,
+    /// The user cancelled; the server is back to needing an install.
+    Cancelled,
 }
 
 // ---------------------------------------------------------------------------

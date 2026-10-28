@@ -444,6 +444,10 @@ impl Env {
                     d.revision,
                     describe(&d.diagnostics)
                 )),
+                LspEvent::WorkProgress(w) => lines.push(format!(
+                    "work {:?} {:?} {:?} {:?}%",
+                    w.server, w.kind, w.title, w.percentage
+                )),
                 LspEvent::State(s) => lines.push(format!("state {:?} {:?}", s.server, s.state)),
                 LspEvent::Error(x) => lines.push(format!("ERROR {:?}: {}", x.server, x.message)),
                 LspEvent::Install(i) => {
@@ -1818,6 +1822,8 @@ struct NavCase<'a> {
     caller_decl: &'a str,
     /// Query position inside a call to a function with two parameters.
     call_args: &'a str,
+    /// Where `declaration` has an answer (an override for JDT LS, a call elsewhere).
+    declaration_at: &'a str,
     /// Symbol names that document symbols must contain (prefix match, any depth).
     symbols: &'a [&'a str],
     workspace_query: &'a str,
@@ -1969,7 +1975,7 @@ impl Env {
             id,
             caps.declaration,
             "declaration",
-            || svc.declaration(rel, decl, None),
+            || svc.declaration(rel, before(text, c.declaration_at), None),
             |l: &Vec<LocationDto>| !l.is_empty(),
         )
         .await;
@@ -2272,6 +2278,7 @@ async fn navigation_typescript() {
             helper_decl: "helper(): number",
             caller_decl: "caller(): number",
             call_args: "add(1, ",
+            declaration_at: "add(1, ",
             symbols: &["Shape", "Circle", "describe", "helper", "caller", "add"],
             workspace_query: "Circle",
             type_hierarchy: None,
@@ -2462,6 +2469,7 @@ async fn navigation_rust() {
             helper_decl: "helper() -> i32",
             caller_decl: "caller() -> i32",
             call_args: "add(1, ",
+            declaration_at: "add(1, ",
             symbols: &["Shape", "Circle", "helper", "caller", "add", "main"],
             workspace_query: "Circle",
             type_hierarchy: None,
@@ -2512,6 +2520,7 @@ async fn navigation_python() {
             helper_decl: "helper() -> int",
             caller_decl: "caller() -> int",
             call_args: "add(1, ",
+            declaration_at: "add(1, ",
             symbols: &["Base", "Child", "helper", "caller", "add"],
             workspace_query: "Child",
             type_hierarchy: None,
@@ -2532,7 +2541,7 @@ async fn navigation_python() {
     env.finish().await;
 }
 
-const JAVA_NAV: &str = "public class Hello {\n    interface Shape { int area(); }\n    static class Circle implements Shape { public int area() { return 3; } }\n    static int helper() { return 1; }\n    static int caller() { return helper(); }\n    static int add(int a, int b) { return a + b; }\n    public static void main(String[] args) {\n        Circle c = new Circle();\n        String emoji = \"😀日本\"; int target = 1;\n        System.out.println(target + target + add(1, 2) + c.area() + emoji);\n    }\n}\n";
+const JAVA_NAV: &str = "public class Hello {\n    interface Shape { int area(); }\n    static class Circle implements Shape { public int area() { return 3; } }\n    static int helper() { return 1; }\n    static int caller() { return helper(); }\n    static int add(int a, int b) { return a + b; }\n    public static void main(String[] args) {\n        Circle c = new Circle();\n        int sum = add(1, 2);\n        String emoji = \"😀日本\"; int target = 1;\n        System.out.println(target + target + sum + c.area() + emoji);\n    }\n}\n";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn navigation_java() {
@@ -2558,6 +2567,7 @@ async fn navigation_java() {
             helper_decl: "helper() {",
             caller_decl: "caller() {",
             call_args: "add(1, ",
+            declaration_at: "area() { return 3",
             symbols: &[
                 "Hello", "Shape", "Circle", "helper", "caller", "add", "main",
             ],

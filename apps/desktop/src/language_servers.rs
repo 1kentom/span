@@ -13,6 +13,7 @@
 //!   against and dropped as [`LspErrorDto::Stale`] if either moved.
 
 mod dto;
+mod intel;
 mod nav_service;
 mod navigation;
 mod paths;
@@ -20,6 +21,7 @@ mod position;
 mod provision;
 
 pub use dto::*;
+pub use intel::*;
 pub use navigation::*;
 use provision::{CatalogProvisioner, GatedResolver, InstallFailure, Provisioner, RuntimeIssue};
 use serde::Serialize;
@@ -71,6 +73,13 @@ pub struct LanguageServerInstallProgress {
     pub received: Option<u64>,
     pub total: Option<u64>,
     pub message: Option<String>,
+    /// Bytes received across every artifact of the install. Never decreases.
+    pub overall_received: u64,
+    /// Bytes expected across every artifact, when known.
+    pub overall_total: Option<u64>,
+    /// Zero based index of the artifact being worked on.
+    pub artifact_index: u32,
+    pub artifact_count: u32,
 }
 
 /// `version` is the LSP document version the server reported on; `revision` is the
@@ -97,6 +106,7 @@ pub struct LanguageServerError {
 pub enum LspEvent {
     State(LanguageServerStateChanged),
     Install(LanguageServerInstallProgress),
+    WorkProgress(LanguageServerWorkProgress),
     Diagnostics(DiagnosticsPublished),
     Error(LanguageServerError),
 }
@@ -111,6 +121,7 @@ pub fn tauri_sink(app: tauri::AppHandle) -> EventSink {
         match event {
             LspEvent::State(e) => crate::events::emit(&app, &e),
             LspEvent::Install(e) => crate::events::emit(&app, &e),
+            LspEvent::WorkProgress(e) => crate::events::emit(&app, &e),
             LspEvent::Diagnostics(e) => crate::events::emit(&app, &e),
             LspEvent::Error(e) => crate::events::emit(&app, &e),
         };
@@ -129,6 +140,8 @@ pub struct LspSettings {
     pub node_path: Option<PathBuf>,
     /// Let rust-analyzer and JDT LS run the project's own build code.
     pub run_project_code: bool,
+    /// Workspace roots whose build code may run (`languageServers.trustedWorkspaces`).
+    pub trusted_workspaces: Vec<PathBuf>,
     pub tab_size: u32,
 }
 
@@ -140,6 +153,7 @@ impl Default for LspSettings {
             java_home: None,
             node_path: None,
             run_project_code: false,
+            trusted_workspaces: Vec::new(),
             tab_size: 2,
         }
     }
@@ -168,6 +182,12 @@ impl From<&Settings> for LspSettings {
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
             run_project_code: ls.run_project_code,
+            trusted_workspaces: ls
+                .trusted_workspaces
+                .iter()
+                .map(|p| paths::normalize_path(Path::new(p)))
+                .filter(|p| p.is_absolute())
+                .collect(),
             tab_size: settings.tab_size,
         }
     }
@@ -254,6 +274,19 @@ struct Shared {
     states: HashMap<(ServerId, PathBuf), LanguageServerStateDto>,
     versions: HashMap<PathBuf, VecDeque<(i32, u64)>>,
     last_error: HashMap<ServerId, String>,
+    /// Running install tasks, so `lsp_cancel_install` can drop them.
+    installs: HashMap<ServerId, tauri::async_runtime::JoinHandle<()>>,
+    /// Latest overall progress of each running install.
+    install_progress: HashMap<ServerId, InstallStatusDto>,
+    work: WorkTracker,
+}
+
+/// Which folders may run project code. Shared with the options provider, which runs when
+/// a server is started and decides per server root.
+#[derive(Default, Clone)]
+struct TrustState {
+    everything: bool,
+    roots: Vec<PathBuf>,
 }
 
 pub struct LanguageServers {
@@ -261,6 +294,7 @@ pub struct LanguageServers {
     provisioner: Arc<dyn Provisioner>,
     sink: EventSink,
     state: Mutex<Shared>,
+    trust: Arc<std::sync::RwLock<TrustState>>,
     tx: mpsc::UnboundedSender<Queued>,
     processed: watch::Sender<u64>,
     requests: Mutex<HashMap<String, CancellationToken>>,
@@ -381,13 +415,19 @@ impl LanguageServers {
         config: ServiceConfig,
     ) -> LspService {
         let manager = Manager::new(catalog::all_specs(), resolver, config.manager);
-        manager.set_options_provider(Arc::new(catalog::initialization_options));
+        let trust: Arc<std::sync::RwLock<TrustState>> = Arc::default();
+        let provider_trust = trust.clone();
+        manager.set_options_provider(Arc::new(move |id, root, global| {
+            let t = provider_trust.read().unwrap_or_else(|e| e.into_inner());
+            catalog::initialization_options(id, is_trusted(global || t.everything, &t.roots, root))
+        }));
         let (tx, rx) = mpsc::unbounded_channel();
         let service = Arc::new(Self {
             manager,
             provisioner,
             sink,
             state: Mutex::new(Shared::default()),
+            trust,
             tx,
             processed: watch::channel(0).0,
             requests: Mutex::new(HashMap::new()),
@@ -407,6 +447,18 @@ impl LanguageServers {
         let worker = service.clone();
         tauri::async_runtime::spawn(async move { worker.run(rx).await });
         service
+    }
+
+    fn set_trust(&self, settings: &LspSettings) {
+        let mut t = self.trust.write().unwrap_or_else(|e| e.into_inner());
+        t.everything = settings.run_project_code;
+        t.roots = settings.trusted_workspaces.clone();
+    }
+
+    /// Whether project code may run for `root` (a server root or the workspace root).
+    fn trusted(&self, root: &Path) -> bool {
+        let t = self.trust.read().unwrap_or_else(|e| e.into_inner());
+        is_trusted(t.everything, &t.roots, root)
     }
 
     fn emit(&self, event: LspEvent) {
@@ -444,7 +496,9 @@ impl LanguageServers {
         let new = LspSettings::from(settings);
         self.provisioner.configure(&new);
         self.manager.set_run_project_code(new.run_project_code);
+        self.set_trust(&new);
         let mut st = lock(&self.state);
+        st.work.clear_all();
         let mut keys: HashSet<(ServerId, PathBuf)> = st.states.keys().cloned().collect();
         keys.extend(st.docs.values().map(|d| (d.r.server, d.r.root.clone())));
         for server in ALL_SERVERS {
@@ -474,6 +528,7 @@ impl LanguageServers {
         let new = LspSettings::from(settings);
         self.provisioner.configure(&new);
         self.manager.set_run_project_code(new.run_project_code);
+        self.set_trust(&new);
         let mut pending_install = Vec::new();
         {
             let mut st = lock(&self.state);
@@ -493,7 +548,9 @@ impl LanguageServers {
                     self.push(&mut st, Op::Resume { server });
                 }
             }
-            if old.run_project_code != new.run_project_code {
+            if old.run_project_code != new.run_project_code
+                || old.trusted_workspaces != new.trusted_workspaces
+            {
                 // Running servers keep the options they were started with, so the two
                 // that execute project code are restarted with the new ones.
                 for server in PROJECT_CODE_SERVERS {
@@ -1029,7 +1086,8 @@ impl LanguageServers {
         }
         self.set_gate(server, Gate::Installing);
         let this = self.clone();
-        tauri::async_runtime::spawn(async move { this.install_task(server).await });
+        let handle = tauri::async_runtime::spawn(async move { this.install_task(server).await });
+        lock(&self.state).installs.insert(server, handle);
     }
 
     async fn install_task(self: Arc<Self>, server: ServerId) {
@@ -1039,13 +1097,27 @@ impl LanguageServers {
         }
         let version = self.provisioner.version(server);
         let (tx, mut rx) = mpsc::channel(256);
+        let hint = self.provisioner.size_hint(server);
         let forwarder = {
             let this = self.clone();
             let version = version.clone();
             tauri::async_runtime::spawn(async move {
+                let mut tracker = OverallTracker::new(hint);
                 let mut last = Instant::now() - Duration::from_secs(1);
                 while let Some(progress) = rx.recv().await {
-                    if let Some(event) = Self::progress_event(server, &version, progress) {
+                    tracker.apply(&progress);
+                    if let Some(mut event) = Self::progress_event(server, &version, progress) {
+                        Self::stamp(&mut event, tracker.snapshot());
+                        lock(&this.state).install_progress.insert(
+                            server,
+                            InstallStatusDto {
+                                phase: event.phase,
+                                overall_received: event.overall_received,
+                                overall_total: event.overall_total,
+                                artifact_index: event.artifact_index,
+                                artifact_count: event.artifact_count,
+                            },
+                        );
                         let chunk = event.phase == InstallPhase::Downloading;
                         let done = event.received.is_some() && event.received == event.total;
                         if chunk && !done && last.elapsed() < Duration::from_millis(100) {
@@ -1055,10 +1127,16 @@ impl LanguageServers {
                         this.emit(LspEvent::Install(event));
                     }
                 }
+                tracker
             })
         };
         let result = self.provisioner.install(server, tx).await;
-        let _ = forwarder.await;
+        let mut tracker = forwarder.await.unwrap_or_default();
+        {
+            let mut st = lock(&self.state);
+            st.installs.remove(&server);
+            st.install_progress.remove(&server);
+        }
         match result {
             Ok(()) => {
                 {
@@ -1068,24 +1146,58 @@ impl LanguageServers {
                     st.last_error.remove(&server);
                     self.push(&mut st, Op::Resume { server });
                 }
-                self.emit(LspEvent::Install(Self::phase_event(
-                    server,
-                    &version,
-                    InstallPhase::Finished,
-                    None,
-                )));
+                let mut event = Self::phase_event(server, &version, InstallPhase::Finished, None);
+                Self::stamp(&mut event, tracker.complete());
+                self.emit(LspEvent::Install(event));
             }
             Err(InstallFailure { reason, retryable }) => {
-                self.emit(LspEvent::Install(Self::phase_event(
-                    server,
-                    &version,
-                    InstallPhase::Failed,
-                    Some(reason.clone()),
-                )));
+                let mut event =
+                    Self::phase_event(server, &version, InstallPhase::Failed, Some(reason.clone()));
+                Self::stamp(&mut event, tracker.snapshot());
+                self.emit(LspEvent::Install(event));
                 self.report(server, None, format!("install failed: {reason}"));
                 self.set_gate(server, Gate::InstallFailed { reason, retryable });
             }
         }
+    }
+
+    fn stamp(event: &mut LanguageServerInstallProgress, overall: Overall) {
+        event.overall_received = overall.received;
+        event.overall_total = overall.total;
+        event.artifact_index = overall.index;
+        event.artifact_count = overall.count;
+    }
+
+    /// Cancel an install in flight: drop the install (which releases its lock), remove the
+    /// staging tree with its partial downloads, and go back to `needs-install`. Quiet:
+    /// emits a `cancelled` progress event, never an error. Safe when nothing installs.
+    pub async fn cancel_install(self: &Arc<Self>, server: ServerId) {
+        let handle = {
+            let mut st = lock(&self.state);
+            if st.gates.get(&server) != Some(&Gate::Installing) {
+                return;
+            }
+            st.install_progress.remove(&server);
+            st.installs.remove(&server)
+        };
+        if let Some(handle) = handle {
+            handle.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(10), handle).await;
+        }
+        let provisioner = self.provisioner.clone();
+        let _ = tokio::task::spawn_blocking(move || provisioner.discard_partial(server)).await;
+        // A task that finished on its own just before the abort already set its result.
+        if lock(&self.state).gates.get(&server) != Some(&Gate::Installing) {
+            return;
+        }
+        self.set_gate(server, Gate::NeedsInstall);
+        let version = self.provisioner.version(server);
+        self.emit(LspEvent::Install(Self::phase_event(
+            server,
+            &version,
+            InstallPhase::Cancelled,
+            None,
+        )));
     }
 
     fn phase_event(
@@ -1101,6 +1213,10 @@ impl LanguageServers {
             received: None,
             total: None,
             message,
+            overall_received: 0,
+            overall_total: None,
+            artifact_index: 0,
+            artifact_count: 0,
         }
     }
 
@@ -1154,6 +1270,12 @@ impl LanguageServers {
                         return;
                     }
                     st.states.insert((server, root.clone()), dto.clone());
+                    if dto != LanguageServerStateDto::Ready
+                        && dto != LanguageServerStateDto::Starting
+                    {
+                        // Whatever it was busy with died with it.
+                        st.work.clear(server, &root);
+                    }
                     if dto == LanguageServerStateDto::Ready {
                         st.last_error.remove(&server);
                     }
@@ -1163,6 +1285,22 @@ impl LanguageServers {
                     root: root.to_string_lossy().into_owned(),
                     state: dto,
                 }));
+            }
+            ManagerEvent::Progress {
+                server,
+                root,
+                token,
+                kind,
+                title,
+                message,
+                percentage,
+            } => {
+                let event = lock(&self.state)
+                    .work
+                    .apply(server, &root, token, kind, title, message, percentage);
+                if let Some(event) = event {
+                    self.emit(LspEvent::WorkProgress(event));
+                }
             }
             ManagerEvent::Diagnostics { params, .. } => {
                 let Ok(url) = tauri::Url::parse(params.uri.as_str()) else {
@@ -1558,13 +1696,14 @@ impl LanguageServers {
     }
 
     pub async fn status(self: &Arc<Self>) -> Vec<ServerStatusDto> {
-        let (settings, gates, states, epochs) = {
+        let (settings, gates, states, epochs, workspace) = {
             let st = lock(&self.state);
             (
                 st.settings.clone(),
                 st.gates.clone(),
                 st.states.clone(),
                 st.epochs.clone(),
+                st.root.clone(),
             )
         };
         let mut rows = Vec::new();
@@ -1611,6 +1750,40 @@ impl LanguageServers {
                     }
                     _ => None,
                 };
+                let basis = root.clone().or_else(|| workspace.clone());
+                let installed_size_bytes = if installed {
+                    match self.provisioner.installed_dir(server) {
+                        Some(dir) => tokio::task::spawn_blocking(move || dir_size(&dir))
+                            .await
+                            .ok(),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let runtime = Self::runtime_dto(server, gates.get(&server));
+                let (failure_reason, failure_details) = match failure(&state) {
+                    Some((reason, details)) => (Some(reason), Some(details)),
+                    None => (None, None),
+                };
+                let workspace_trusted = basis.as_deref().is_some_and(|b| self.trusted(b));
+                let reason = if workspace_trusted || !enabled {
+                    None
+                } else {
+                    basis
+                        .as_deref()
+                        .filter(|_| PROJECT_CODE_SERVERS.contains(&server))
+                        .and_then(|b| trust_reason(server, b))
+                };
+                let (activity, install) = {
+                    let st = lock(&self.state);
+                    (
+                        root.as_deref()
+                            .map(|r| st.work.activity(server, r))
+                            .unwrap_or_default(),
+                        st.install_progress.get(&server).cloned(),
+                    )
+                };
                 rows.push(ServerStatusDto {
                     server: server.into(),
                     root: root.map(|r| r.to_string_lossy().into_owned()),
@@ -1620,10 +1793,50 @@ impl LanguageServers {
                     version: self.provisioner.version(server),
                     epoch,
                     capabilities,
+                    display_name: display_name(server).to_owned(),
+                    languages: languages(server),
+                    installed_size_bytes,
+                    runtime,
+                    failure_reason,
+                    failure_details,
+                    trust: TrustDto {
+                        workspace_trusted,
+                        needs_trust: reason.is_some(),
+                        reason,
+                    },
+                    activity,
+                    install,
                 });
             }
         }
         rows
+    }
+
+    /// The open workspace root, as the service tracks it.
+    pub fn workspace_root(&self) -> Option<PathBuf> {
+        lock(&self.state).root.clone()
+    }
+
+    fn runtime_dto(server: ServerId, gate: Option<&Gate>) -> Option<RuntimeDto> {
+        let req = catalog::spec(server).runtime;
+        let name = match req.runtime {
+            span_lsp::servers::spec::Runtime::Node => "Node.js",
+            span_lsp::servers::spec::Runtime::Java => "JDK",
+            span_lsp::servers::spec::Runtime::None => return None,
+        };
+        let (found_version, found_path) = match gate {
+            Some(Gate::RuntimeMissing(issue)) => (
+                issue.found.first().cloned(),
+                issue.found_paths.first().cloned(),
+            ),
+            _ => (None, None),
+        };
+        Some(RuntimeDto {
+            name: name.to_owned(),
+            required_version: req.min_major,
+            found_version,
+            found_path,
+        })
     }
 
     /// App exit: stop every server, bounded so quitting can never hang.
@@ -2013,6 +2226,53 @@ pub async fn lsp_read_source(
         .clone()
         .read_source(location, context_lines)
         .await
+}
+
+/// Cancel an install in flight. Quiet and safe when nothing is installing: the server goes
+/// back to `needs-install` and a `cancelled` install progress event is emitted.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_cancel_install(
+    lsp: State<'_, LspService>,
+    server: LanguageServerId,
+) -> Result<(), String> {
+    lsp.inner().clone().cancel_install(server.into()).await;
+    Ok(())
+}
+
+/// Trust (or stop trusting) the CURRENT workspace root: rust-analyzer and JDT LS may then
+/// run the project's own build code (Maven and Gradle import, build scripts). Writes
+/// `languageServers.trustedWorkspaces` in the user settings, restarts the running servers
+/// that execute build code, and returns the updated status.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_trust_workspace(
+    state: State<'_, crate::DesktopState>,
+    lsp: State<'_, LspService>,
+    trusted: bool,
+) -> Result<Vec<ServerStatusDto>, String> {
+    use span_core::SettingsScope::User;
+    let root = lsp
+        .workspace_root()
+        .ok_or_else(|| "open a folder first".to_string())?;
+    let canonical = paths::normalize_path(&std::fs::canonicalize(&root).unwrap_or(root));
+    let entry = canonical.to_string_lossy().into_owned();
+    let current = crate::with_settings(state.inner().clone(), User, |w| {
+        w.get_settings_for_scope(User)
+    })
+    .await?;
+    let mut list = current.language_servers.trusted_workspaces;
+    list.retain(|r| paths::normalize_path(Path::new(r)) != canonical);
+    if trusted {
+        list.push(entry);
+    }
+    let json = serde_json::to_string(&list).map_err(|e| e.to_string())?;
+    crate::with_settings(state.inner().clone(), User, move |w| {
+        w.update_setting(User, "languageServers.trustedWorkspaces", Some(&json))
+    })
+    .await?;
+    crate::apply_effective_settings(state.inner(), lsp.inner()).await;
+    Ok(lsp.inner().clone().status().await)
 }
 
 #[cfg(test)]

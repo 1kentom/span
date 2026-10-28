@@ -819,6 +819,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             startup::StartupRequestsChanged,
             language_servers::LanguageServerStateChanged,
             language_servers::LanguageServerInstallProgress,
+            language_servers::LanguageServerWorkProgress,
             language_servers::DiagnosticsPublished,
             language_servers::LanguageServerError,
             startup::StartupRequestError
@@ -918,6 +919,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::lsp_rename,
             language_servers::lsp_read_source,
             language_servers::lsp_cancel,
+            language_servers::lsp_cancel_install,
+            language_servers::lsp_trust_workspace,
             language_servers::lsp_install,
             language_servers::lsp_restart,
             language_servers::lsp_status,
