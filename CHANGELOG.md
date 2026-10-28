@@ -15,6 +15,7 @@ Changes to Span are recorded here. Release notes combine this curated section wi
 - Supported editor settings and custom shortcuts, Markdown and image previews, safe formatting paths, session history, and native CLI routing.
 - Material file and folder icons and SVG provider branding with vendored license and provenance records.
 - Public LSP client foundation, with native editor integration tracked separately.
+- Native PTY backend and typed desktop bridge, terminal tabs and clipboard controls, explicit Markdown Run, and a reviewable staged Send draft.
 - A production website with verified manual installer links and a local release manifest for public API rate limits.
 - Agent Markdown rendering, follow-latest scrolling, queued follow-ups, resumable sessions, and subagent metadata, combined with the scoped installation and settings workflow.
 
@@ -24,10 +25,12 @@ Changes to Span are recorded here. Release notes combine this curated section wi
 - Add HTML/CSS Emmet expansion, broader Markdown fence highlighting, Copy controls, and a shared source/preview toggle.
 - Refine Go to completion and line jumps, context menus, modal focus, rounded overlay resize handles, and a Find-first search panel with Replace behind an explicit toggle.
 - Add guarded native file operations, a detached desktop launcher, and more specific ACP catalog, installation, removal, and compatibility feedback.
+- Make Cmd+E open and focus Files, retain Cmd+P for Go to, and use the requested half-filled split icon after Save in editor actions.
 
 ### Fixed
 
 - Provide an explicit save fallback when formatting fails without discarding the user's edits.
+- Accept active completions before Tab indentation while preserving Emmet, snippet navigation, read-only safety, and public Tab focus mode.
 - Reconcile canceled discard requests and protect workspace transitions from stale or concurrent editor commands.
 - Derive dirty state from actual content changes, including edits reverted to their saved content.
 - Restrict numeric agent permission shortcuts to focused approval choices so normal editor typing cannot approve a request.
@@ -42,7 +45,7 @@ Changes to Span are recorded here. Release notes combine this curated section wi
 - The first nightly installer matrix and publication succeeded for macOS Apple Silicon, macOS Intel, Windows x64, and Linux x64. Installation checks and operating-system signing or notarization review across every target remain incomplete.
 - Preview configuration exists but has not been separately exercised. Stable publication remains gated.
 - Internal HTML5 dragging on Windows WebView2 conflicts with the enabled native external-drop handler and remains unverified or unsupported pending a platform-specific strategy.
-- New desktop work remains unreleased until its reviewed source, hosted checks, and installed behavior are recorded. In particular, automatic clean-tab LRU eviction and the application connection from Markdown Run to the real PTY backend are not complete. Folder opening still awaits a full scan, and saving still rescans.
+- New desktop work remains unreleased until its reviewed source, hosted checks, and installed behavior are recorded. Automatic clean-tab LRU eviction is not implemented. The application connection from Markdown Run to the native PTY backend is implemented but awaits installed-native acceptance; browser terminal checks use a fixture, and Windows/Linux runtime validation is still open. ACP terminal tools and agent execution permissions are not part of this desktop terminal. Folder opening still awaits a full scan, and saving still rescans.
 - The updater plugin, public-key trust configuration, signed updater manifests, and end-to-end channel switching are not implemented. Releases provide installers and checksums for manual installation.
 
 <!-- Move reviewed entries into a dated version section when preparing a stable release. -->
