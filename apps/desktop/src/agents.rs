@@ -129,7 +129,7 @@ pub async fn agent_connect(
     on_event: Channel<AgentEvent>,
 ) -> Result<Option<String>, String> {
     let state = state.inner().clone();
-    let _gate = state.connection_gate.lock().await;
+    let gate = state.connection_gate.lock().await;
     let workspace = state
         .workspace
         .lock()
@@ -156,6 +156,7 @@ pub async fn agent_connect(
         service: service.clone(),
         session: None,
     });
+    drop(gate);
     match tokio::time::timeout(std::time::Duration::from_secs(45), service.new_session()).await {
         Ok(Ok(session)) => {
             switch_session(&state, &service, &session)?;

@@ -63,6 +63,7 @@ struct Bridge {
     auth_methods: Vec<AuthMethod>,
     auth_required: bool,
     auth_in_progress: bool,
+    new_session_in_progress: bool,
 }
 
 impl AgentService {
@@ -529,26 +530,74 @@ async fn run(
                 };
                 match command {
                     Command::NewSession(reply) => {
-                        let result = tokio::time::timeout(std::time::Duration::from_secs(30), cx.send_request(NewSessionRequest::new(cwd.clone())).block_task()).await;
-                        let result = match result {
-                            Ok(result) => result,
-                            Err(_) => { let _ = reply.send(Err("Agent session creation timed out after 30 seconds".into())); break; }
-                        };
-                        let (id, options) = match result {
-                            Ok(response) => (response.session_id.to_string(), response.config_options.as_ref().map_or_else(Vec::new, |options| config_options(options))),
-                            Err(error) if matches!(&error.code, ErrorCode::AuthRequired) => {
-                                let message = auth_required_message(&state, &emit);
-                                let _ = reply.send(Err(message));
-                                continue;
-                            }
-                            Err(error) => { let message = crate::compatibility::user_error("session/new", &error, &emit); let _ = reply.send(Err(message)); break; }
-                        };
-                        if let Ok(mut bridge) = state.lock() { bridge.auth_required = false; }
-                        if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
-                        emit(AgentEvent::Session { session_id: id.clone() });
-                        if !options.is_empty() { emit(AgentEvent::Config { session_id: id.clone(), options }); }
-                        let _ = reply.send(Ok(id));
-
+                        let valid = state.lock().map(|mut bridge| {
+                            if bridge.closed { return Err("Agent connection is closed".to_string()); }
+                            if bridge.auth_required || bridge.auth_in_progress { return Err("Authenticate with the agent before starting a session".to_string()); }
+                            if bridge.new_session_in_progress { return Err("Agent session creation is already in progress".to_string()); }
+                            bridge.new_session_in_progress = true;
+                            Ok(())
+                        }).unwrap_or_else(|_| Err("Agent state lock poisoned".into()));
+                        if let Err(error) = valid { let _ = reply.send(Err(error)); continue; }
+                        let session_cx = cx.clone();
+                        let session_state = state.clone();
+                        let session_emit = emit.clone();
+                        let session_compatibility_failed = compatibility_failed.clone();
+                        let mut session_cancel = auth_cancel.clone();
+                        let session_cwd = cwd.clone();
+                        if *session_cancel.borrow() {
+                            if let Ok(mut bridge) = state.lock() { bridge.new_session_in_progress = false; }
+                            let _ = reply.send(Err("Agent session creation was cancelled because the connection closed".into()));
+                            continue;
+                        }
+                        cx.spawn(async move {
+                            let request = session_cx.send_request(NewSessionRequest::new(session_cwd));
+                            let cancellation = request.cancellation_handle();
+                            let response = tokio::select! {
+                                _ = session_cancel.changed() => {
+                                    let _ = cancellation.cancel();
+                                    None
+                                }
+                                response = tokio::time::timeout(std::time::Duration::from_secs(30), request.block_task()) => Some(response),
+                            };
+                            let (id, options) = match response {
+                                None => {
+                                    if let Ok(mut bridge) = session_state.lock() { bridge.new_session_in_progress = false; }
+                                    let _ = reply.send(Err("Agent session creation was cancelled because the connection closed".into()));
+                                    return Ok(());
+                                }
+                                Some(Ok(Ok(response))) => (response.session_id.to_string(), response.config_options.as_ref().map_or_else(Vec::new, |options| config_options(options))),
+                                Some(Ok(Err(error))) if matches!(&error.code, ErrorCode::AuthRequired) => {
+                                    let message = auth_required_message(&session_state, &session_emit);
+                                    let _ = reply.send(Err(message));
+                                    return Ok(());
+                                }
+                                Some(Ok(Err(error))) => {
+                                    let message = crate::compatibility::user_error("session/new", &error, &session_emit);
+                                    if let Ok(mut bridge) = session_state.lock() { bridge.new_session_in_progress = false; }
+                                    let _ = reply.send(Err(message));
+                                    let _ = session_compatibility_failed.send(());
+                                    return Ok(());
+                                }
+                                Some(Err(_)) => {
+                                    if let Ok(mut bridge) = session_state.lock() { bridge.new_session_in_progress = false; }
+                                    let _ = reply.send(Err("Agent session creation timed out after 30 seconds".into()));
+                                    let _ = session_compatibility_failed.send(());
+                                    return Ok(());
+                                }
+                            };
+                            let mut bridge = match session_state.lock() {
+                                Ok(bridge) if !bridge.closed => bridge,
+                                _ => { let _ = reply.send(Err("Agent session creation was cancelled because the connection closed".into())); return Ok(()); }
+                            };
+                            bridge.new_session_in_progress = false;
+                            bridge.auth_required = false;
+                            bridge.sessions.insert(id.clone());
+                            drop(bridge);
+                            session_emit(AgentEvent::Session { session_id: id.clone() });
+                            if !options.is_empty() { session_emit(AgentEvent::Config { session_id: id.clone(), options }); }
+                            let _ = reply.send(Ok(id));
+                            Ok(())
+                        })?;
                     }
                     Command::Authenticate(method_id, reply) => {
                         let validated = state.lock().map(|mut bridge| {
@@ -603,6 +652,7 @@ async fn run(
                             let still_open = auth_state.lock().map(|mut bridge| {
                                 if bridge.closed || !bridge.auth_required { return false; }
                                 bridge.auth_required = false;
+                                bridge.new_session_in_progress = true;
                                 true
                             }).unwrap_or(false);
                             if !still_open { let _ = reply.send(Err("Authentication was cancelled because the agent connection closed".into())); return Ok(()); }
@@ -625,13 +675,19 @@ async fn run(
                                 }
                                 Some(Ok(Err(error))) => {
                                     let message = crate::compatibility::user_error("session/new", &error, &auth_emit);
-                                    if let Ok(mut bridge) = auth_state.lock() { bridge.auth_in_progress = false; }
+                                    if let Ok(mut bridge) = auth_state.lock() {
+                                        bridge.auth_in_progress = false;
+                                        bridge.new_session_in_progress = false;
+                                    }
                                     let _ = reply.send(Err(message));
                                     let _ = auth_compatibility_failed.send(());
                                     return Ok(());
                                 }
                                 Some(Err(_)) => {
-                                    if let Ok(mut bridge) = auth_state.lock() { bridge.auth_in_progress = false; }
+                                    if let Ok(mut bridge) = auth_state.lock() {
+                                        bridge.auth_in_progress = false;
+                                        bridge.new_session_in_progress = false;
+                                    }
                                     let _ = reply.send(Err("Agent session creation timed out after 30 seconds. Disconnect and reconnect before retrying.".into()));
                                     let _ = auth_compatibility_failed.send(());
                                     return Ok(());
@@ -643,6 +699,7 @@ async fn run(
                             };
                             bridge.auth_required = false;
                             bridge.auth_in_progress = false;
+                            bridge.new_session_in_progress = false;
                             bridge.sessions.insert(id.clone());
                             drop(bridge);
                             auth_emit(AgentEvent::Session { session_id: id.clone() });
@@ -758,6 +815,7 @@ fn auth_required_message(state: &Arc<Mutex<Bridge>>, emit: &EventSink) -> String
         Ok(mut bridge) => {
             bridge.auth_required = true;
             bridge.auth_in_progress = false;
+            bridge.new_session_in_progress = false;
             bridge
                 .auth_methods
                 .iter()

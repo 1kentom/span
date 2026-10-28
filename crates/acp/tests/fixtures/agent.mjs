@@ -62,7 +62,7 @@ input.on('line', line => {
   } else if (message.method === 'session/new') {
     if (process.argv.includes('--missing-session')) { send({ id: message.id, error: { code: -32601, message: 'Method not found: session/new' } }); return; }
     if (process.argv.includes('--auth-required') && !authenticated) { send({ id: message.id, error: { code: -32000, message: 'Authentication required' } }); return; }
-    if (process.argv.includes('--hang-session')) return;
+    if (process.argv.includes('--hang-session')) { console.error('fixture session creation started'); return; }
     cwd = message.params.cwd;
     result(message.id, { sessionId: `fixture-${++sessions}`, ...(process.argv.includes('--config') ? { configOptions: modelConfig('fast') } : {}) });
   } else if (message.method === 'authenticate') {

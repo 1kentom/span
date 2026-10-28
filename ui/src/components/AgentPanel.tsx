@@ -275,7 +275,7 @@ export function AgentPanel(props: AgentPanelProps) {
       ([path, generation], previous) => {
         if (previous && path === previous[0] && generation === previous[1])
           return;
-        if (previous && (sessionId() || authMessage())) {
+        if (previous && (sessionId() || authMessage() || status() === "connecting")) {
           void api.agentDisconnect().catch(() => undefined);
         }
         agentEpoch += 1;
@@ -500,7 +500,7 @@ export function AgentPanel(props: AgentPanelProps) {
     onCleanup(() => window.removeEventListener("keydown", keyboard));
   });
   onCleanup(() => {
-    if (sessionId() || authMessage()) {
+    if (sessionId() || authMessage() || status() === "connecting") {
       void api.agentDisconnect().catch(() => undefined);
     }
     disposed = true;

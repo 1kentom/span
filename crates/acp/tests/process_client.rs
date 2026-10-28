@@ -174,6 +174,26 @@ async fn closing_connection_cancels_pending_authentication() {
         .expect("authentication task should join");
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn closing_connection_cancels_initial_session_creation() {
+    let (_directory, service, mut events) = setup_auth(&["--hang-session"]).await;
+    let pending_service = service.clone();
+    let pending = tokio::spawn(async move { pending_service.new_session().await });
+    let _ = next(&mut events, |event| {
+        matches!(event, AgentEvent::Log { line, .. } if line.contains("fixture session creation started"))
+    })
+    .await;
+    service
+        .shutdown_and_wait()
+        .await
+        .expect("close the owning process");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), pending)
+        .await
+        .expect("pending session should finish on close")
+        .expect("session task should join");
+    assert!(result.is_err());
+}
 #[tokio::test]
 async fn real_process_stream_permission_unsaved_read_and_review() {
     let (directory, workspace, service, mut events, session) = setup().await;
