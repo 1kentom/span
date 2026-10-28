@@ -97,7 +97,9 @@ export function AgentPanel(props: AgentPanelProps) {
     const open = props.onOpenAttachment;
     a.setAttachmentOpener(open ? (item) => open(attachmentTabView(item)) : undefined);
   });
-  const title = () => a.state().sessionTitle || (a.connected() || a.connecting() || a.state().auth ? label() : "AI Assistant");
+  const title = () => (a.view() === "history" ? "Earlier sessions" : a.state().sessionTitle || (a.connected() || a.connecting() || a.state().auth ? label() : "AI Assistant"));
+  /** The clock button lists sessions and, pressed while History shows, goes back to the chat. */
+  const canHistory = () => a.connected() && a.state().canList;
   const busyOverlay = () => a.connected() || a.feed().length > 0;
   const body = createMemo(() => {
     if (a.view() === "logs") return "logs";
@@ -145,8 +147,11 @@ export function AgentPanel(props: AgentPanelProps) {
         id: session.sessionId,
         brand: brand(),
         title: stored.title || session.title || "Untitled chat",
-        agents: stored.agents,
+        // The connected agent listed the session, so it is the one agent known even without stored metadata.
+        agents: stored.agents.length ? stored.agents : hasAgent() ? [{ id: brand().id ?? brand().name, name: brand().name }] : [],
         models: stored.models,
+        files: stored.files,
+        delta: stored.delta,
         updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
         inWorkspace: true,
         current: session.sessionId === a.state().sessionId,
@@ -217,8 +222,12 @@ export function AgentPanel(props: AgentPanelProps) {
   createEffect(() => {
     a.feed();
     a.state().logs;
-    a.view();
     a.queue();
+    // History reads from the top; it must not inherit the feed's pin to the latest message.
+    if (a.view() === "history") {
+      if (a.scrollers.content) a.scrollers.content.scrollTop = 0;
+      return;
+    }
     if (a.pinned()) a.scrollToLatest();
   });
   createEffect(() => {
@@ -253,7 +262,7 @@ export function AgentPanel(props: AgentPanelProps) {
         </span>
         <span class="agent-dot" classList={{ ready: a.connected(), busy: a.running(), connecting: a.working(), error: Boolean(failure()) }} aria-hidden="true" />
         <span class="agent-header-spacer" />
-        <Show when={(a.view() === "history" || a.view() === "connect") && busyOverlay()}>
+        <Show when={((a.view() === "history" && !canHistory()) || a.view() === "connect") && busyOverlay()}>
           <button class="agent-icon-button" aria-label="Back to session" title="Back to session" onClick={() => a.setView("session")}>
             <Icon name="arrow-left4" size={14} />
           </button>
@@ -261,11 +270,13 @@ export function AgentPanel(props: AgentPanelProps) {
         <Show when={isDesktop && a.connected()}>
           <FollowPill following={a.following()} onToggle={a.toggleFollow} />
         </Show>
-        <Show when={a.connected() && a.state().canList && a.view() !== "history"}>
+        <Show when={canHistory()}>
           <button
             class="agent-icon-button agent-history-button"
-            aria-label={a.attentionCount() ? `Earlier sessions, ${a.attentionCount()} waiting for you` : "Earlier sessions"}
-            title={a.attentionCount() ? `${a.attentionCount()} background ${a.attentionCount() === 1 ? "chat waits" : "chats wait"} for you` : "Earlier sessions"}
+            classList={{ on: a.view() === "history" }}
+            aria-pressed={a.view() === "history"}
+            aria-label={a.view() === "history" ? "Back to session" : a.attentionCount() ? `Earlier sessions, ${a.attentionCount()} waiting for you` : "Earlier sessions"}
+            title={a.view() === "history" ? "Back to session" : a.attentionCount() ? `${a.attentionCount()} background ${a.attentionCount() === 1 ? "chat waits" : "chats wait"} for you` : "Earlier sessions"}
             onClick={openHistory}
           >
             <Icon name="Clock" size={15} />
@@ -328,7 +339,7 @@ export function AgentPanel(props: AgentPanelProps) {
       <Show when={isDesktop && !a.online() && (a.connected() || a.queue().length > 0)}>
         <OfflineBar text={a.queue().length ? "Queued messages wait until the network is back." : "Agents that need the network will fail until you reconnect."} onRetry={() => a.setOnline(navigator.onLine !== false)} />
       </Show>
-      <div class="agent-content" ref={(element) => (a.scrollers.content = element)} onScroll={(event) => a.setPinned(isNearBottom(event.currentTarget))}>
+      <div class="agent-content" ref={(element) => (a.scrollers.content = element)} onScroll={(event) => a.view() !== "history" && a.setPinned(isNearBottom(event.currentTarget))}>
         <Switch>
           <Match when={body() === "logs"}>
             <div class="agent-log-note">
@@ -347,7 +358,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 {a.sessionsError()}
               </p>
             </Show>
-            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
+            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} onOpen={(id) => void a.resumeChat(id)} onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
               <p class="sb-fine agent-pad" role="status">
                 Loading chats…
               </p>

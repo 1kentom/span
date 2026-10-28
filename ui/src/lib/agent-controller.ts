@@ -1,11 +1,11 @@
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
+import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionMetaList, sessionMetaSetTitle } from "./client";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionMetaList, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
 import { childPermissions, isFinished, type ChildPermission } from "./agent-delegation";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
-import { attentionSessions, busyState, chatKey, createChatStore, isBusyPromptError, newAttention, reduceBackground, rowStatus, toBackground, withConversation, type ChatSnapshot } from "./agent-chats";
+import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { RUN_TEXT } from "./agent-hint-text";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
 
@@ -406,6 +406,10 @@ export function createAgentController(props: AgentPanelProps) {
     // Follow mode reveals the lead session's own work only. Delegated children run in other sessions.
     if (event.kind === "tool" && following() && session && event.sessionId === session) followTool(event);
     if (event.kind === "delegation" && (event.event.kind === "taskFinished" || event.event.kind === "delegated")) void refreshDelegation();
+    if (event.kind === "delegation" && event.event.kind === "delegated") {
+      const lead = delegationMetaPatch(agentId(), event.event.lead.sessionId, event.event.agentName);
+      if (lead) void recordSessionMeta(lead);
+    }
     if (event.kind === "complete" && (!session || event.sessionId === session)) queueMicrotask(() => (flushSteer(), drainQueue()));
     if (event.kind === "error" || (event.kind === "status" && ["error", "disconnected"].includes(event.state))) {
       // The turn ended abnormally: nothing queued or steered may go out on its own.
@@ -883,12 +887,15 @@ export function createAgentController(props: AgentPanelProps) {
       ),
     );
     const itemId = state().nextId;
+    // Captured now: the turn runs with this model, and the user may switch chats before it ends.
+    const turnMeta = turnMetaPatch({ agentId: agentId(), sessionId: state().sessionId, connectionName: agentLabel(), config: state().config });
     setTurnStart(Date.now());
     setView("session");
     followLatest();
     promptsInFlight += 1;
     try {
       await api.agentPrompt(message, entry.attachments);
+      if (turnMeta) void recordSessionMeta(turnMeta);
     } catch (cause) {
       if (!current()) return;
       if (isBusyPromptError(cause)) {
@@ -1121,6 +1128,20 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setSessionMeta(found);
     } catch {
       if (current()) setSessionMeta([]);
+    }
+  }
+  /**
+   * Writes what Span observed about a session to the metadata store (ADR 0005) and keeps the History rows in step.
+   * The store is a convenience: a failed write (no folder open, browser preview) never disturbs the chat.
+   */
+  async function recordSessionMeta(patch: SessionMetaPatch) {
+    if (!isDesktop) return;
+    const current = guard(agentEpoch);
+    try {
+      const saved = await sessionMetaUpdate(patch);
+      if (current()) setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
+    } catch {
+      // Nothing to show: History falls back to what the agent lists.
     }
   }
   /** Stored metadata for one of the connected agent's sessions. Sessions are keyed by agent and id (ADR 0005). */
