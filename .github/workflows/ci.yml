@@ -52,5 +52,27 @@ jobs:
             playwright-report/
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Diagnose Windows desktop test manifests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --workspace --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $diag = New-Item -ItemType Directory -Force ci-windows-diagnostics
+          $mt = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\*\x64\mt.exe') | Sort-Object FullName -Descending | Select-Object -First 1
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          $tests = Get-ChildItem target\debug\deps\*.exe | Where-Object { $_.Name -match '^(span_desktop_lib|span_desktop|export_bindings)-' }
+          foreach ($exe in $tests) {
+            Write-Output "Inspecting $($exe.Name)"
+            $manifest = Join-Path $diag.FullName "$($exe.Name).manifest"
+            & $mt.FullName "-inputresource:$($exe.FullName);#1" "-out:$manifest"
+            Write-Output "Manifest extraction status: $LASTEXITCODE"
+            if (Test-Path $manifest) { Get-Content $manifest }
+            & $dumpbin.FullName /imports $exe.FullName | Select-String 'COMCTL32|TaskDialogIndirect|SetWindowSubclass|RemoveWindowSubclass|DefSubclassProc' -Context 1,4
+          }
+          # The unchanged test step below establishes runtime success or failure.
+          exit 0
       - run: cargo test --workspace
       - run: pnpm desktop:build --no-bundle
