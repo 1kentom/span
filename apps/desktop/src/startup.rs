@@ -140,16 +140,142 @@ mod tests {
         assert!(super::paths_request(vec!["missing.txt".into()], directory.path()).is_err());
     }
 
+    fn canonical(path: &std::path::Path) -> String {
+        std::fs::canonicalize(path)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn a_dropped_file_alone_is_an_implied_root_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("note.txt");
+        std::fs::write(&file, "x").unwrap();
+        let request =
+            super::paths_request(vec![file.to_str().unwrap().to_owned()], directory.path())
+                .unwrap();
+        assert!(request.implied_root);
+        assert_eq!(request.files.len(), 1);
+        assert_eq!(request.files[0].path, canonical(&file));
+        assert_eq!(request.workspace_root, Some(canonical(directory.path())));
+    }
+
+    #[test]
+    fn a_dropped_folder_names_its_root_explicitly() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("project");
+        std::fs::create_dir(&folder).unwrap();
+        let request =
+            super::paths_request(vec![folder.to_str().unwrap().to_owned()], directory.path())
+                .unwrap();
+        assert!(!request.implied_root);
+        assert!(request.files.is_empty());
+        assert_eq!(request.workspace_root, Some(canonical(&folder)));
+    }
+
+    #[test]
+    fn mixed_folder_and_files_keep_the_folder_as_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("project");
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        let request = super::paths_request(
+            vec![
+                folder.to_str().unwrap().to_owned(),
+                file.to_str().unwrap().to_owned(),
+            ],
+            directory.path(),
+        )
+        .unwrap();
+        assert!(!request.implied_root);
+        assert_eq!(request.files.len(), 1);
+        let outside = directory.path().join("outside.txt");
+        std::fs::write(&outside, "x").unwrap();
+        assert!(super::paths_request(
+            vec![
+                folder.to_str().unwrap().to_owned(),
+                outside.to_str().unwrap().to_owned()
+            ],
+            directory.path(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn several_dropped_files_share_their_common_parent() {
+        let directory = tempfile::tempdir().unwrap();
+        let one = directory.path().join("a").join("one.txt");
+        let two = directory.path().join("b").join("two.txt");
+        for file in [&one, &two] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "x").unwrap();
+        }
+        let request = super::paths_request(
+            vec![
+                one.to_str().unwrap().to_owned(),
+                two.to_str().unwrap().to_owned(),
+            ],
+            directory.path(),
+        )
+        .unwrap();
+        assert!(request.implied_root);
+        assert_eq!(request.files.len(), 2);
+        assert_eq!(request.workspace_root, Some(canonical(directory.path())));
+    }
+
+    #[test]
+    fn nonexistent_and_foreign_style_paths_are_rejected_without_a_request() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(super::paths_request(vec!["nope.txt".into()], directory.path()).is_err());
+        if cfg!(not(windows)) {
+            assert!(super::paths_request(
+                vec!["C:\\Users\\nobody\\file.txt".into()],
+                directory.path()
+            )
+            .is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_style_paths_with_backslashes_resolve() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("note.txt");
+        std::fs::write(&file, "x").unwrap();
+        let text = file.to_str().unwrap().replace('/', "\\");
+        let request = super::paths_request(vec![text], directory.path()).unwrap();
+        assert_eq!(request.files.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_symlink_resolves_to_its_target_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("real.txt");
+        std::fs::write(&file, "x").unwrap();
+        let link = directory.path().join("link.txt");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let request =
+            super::paths_request(vec![link.to_str().unwrap().to_owned()], directory.path())
+                .unwrap();
+        assert_eq!(request.files[0].path, canonical(&file));
+    }
+
     #[test]
     fn requests_survive_until_frontend_drains_in_order() {
         let state = crate::DesktopState::default();
         let one = crate::cli::StartupRequest {
             workspace_root: Some("one".into()),
             files: vec![],
+            implied_root: false,
         };
         let two = crate::cli::StartupRequest {
             workspace_root: Some("two".into()),
             files: vec![],
+            implied_root: false,
         };
         assert!(super::enqueue(&state, one.clone()).is_ok());
         assert!(super::enqueue(&state, two.clone()).is_ok());
