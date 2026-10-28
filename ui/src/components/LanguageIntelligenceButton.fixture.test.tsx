@@ -33,27 +33,28 @@ describe("fixture: top bar button and status bar item", () => {
     expect(m.button.dataset.percent).toBe("42");
     const dash = m.button.querySelector(".hub-ring-bar")!.getAttribute("stroke-dasharray")!;
     expect(parseFloat(dash)).toBeCloseTo(2 * Math.PI * 12 * 0.42, 1);
-    expect(m.button.getAttribute("aria-label")).toBe("Language intelligence. Installing Java support (42%).");
-    expect(m.status!.textContent).toBe("Java: installing 42%");
+    expect(m.button.getAttribute("aria-label")).toBe("Language intelligence. Installing Java (42%).");
+    expect(m.status!.textContent).toBe("Java 42%");
     expect(m.status!.getAttribute("aria-label")).toBe(m.button.getAttribute("aria-label"));
   });
   it("shows a spinning ring while starting and a determinate one while indexing", () => {
     expect(mount(viewOf(java({ kind: "starting", server: "jdtls" }, { state: { kind: "starting" } }))).button.querySelector(".hub-ring-bar")!.classList.contains("spin")).toBe(true);
     expect(mount(viewOf(java({ kind: "ready", server: "jdtls" }, {}, [{ percentage: 35 }]))).button.dataset.percent).toBe("35");
   });
-  it("shows a check when ready and nothing else", () => {
+  it("is the blue bolt with no badge and no check when ready, and the status bar item is just the language", () => {
     const m = mount(viewOf(java({ kind: "ready", server: "jdtls" })));
     expect(m.button.dataset.tone).toBe("ok");
-    expect(m.button.querySelector(".hub-badge.check")).not.toBeNull();
-    expect(m.button.querySelector(".hub-badge.dot")).toBeNull();
-    expect(m.status!.textContent).toBe("Java: ready");
+    expect(m.button.classList.contains("blue")).toBe(true);
+    expect(m.button.querySelector(".hub-badge")).toBeNull();
+    expect(m.button.hasAttribute("data-check")).toBe(false);
+    expect(m.status!.textContent).toBe("Java");
   });
   it("shows an attention badge for needs install, runtime missing, failed and crashed", () => {
     const cases: [any, string][] = [
-      [{ kind: "needs-install", server: "jdtls", version: "1" }, "Language intelligence. Java support is not installed."],
-      [{ kind: "runtime-missing", server: "jdtls", runtime: "Java", requiredVersion: 25, found: [] }, "Language intelligence. Java support needs JDK."],
-      [{ kind: "install-failed", server: "jdtls", reason: "x", retryable: true }, "Language intelligence. Java support needs attention."],
-      [{ kind: "crashed", server: "jdtls" }, "Language intelligence. Java support stopped unexpectedly."],
+      [{ kind: "needs-install", server: "jdtls", version: "1" }, "Language intelligence. Java is not installed."],
+      [{ kind: "runtime-missing", server: "jdtls", runtime: "Java", requiredVersion: 25, found: [] }, "Language intelligence. Java needs JDK."],
+      [{ kind: "install-failed", server: "jdtls", reason: "x", retryable: true }, "Language intelligence. Java did not install."],
+      [{ kind: "crashed", server: "jdtls" }, "Language intelligence. Java stopped unexpectedly."],
     ];
     for (const [state, label] of cases) {
       const m = mount(viewOf(java(state, { state: { kind: "ready" } })));
@@ -66,15 +67,16 @@ describe("fixture: top bar button and status bar item", () => {
   it("shows a Restricted badge for a folder that needs trust", () => {
     const m = mount(viewOf(java({ kind: "ready", server: "jdtls" }, { hub: { trust: { workspaceTrusted: false, needsTrust: true } } })));
     expect(m.button.dataset.badge).toBe("restricted");
-    expect(m.button.getAttribute("aria-label")).toContain("restricted");
-    expect(m.button.querySelector(".hub-badge.check")).toBeNull();
+    expect(m.button.getAttribute("aria-label")).toBe("Language intelligence. Java is ready, folder not trusted.");
+    expect(m.status!.textContent).toBe("Java \u00b7 Trust");
+    expect(m.button.querySelector(".hub-badge.dot")).not.toBeNull();
   });
   it("has no title attribute, a tooltip that reads the same summary, and none while the panel is open", () => {
     const view = viewOf(javaInstalling(42, 134 * MB, 320 * MB));
     const m = mount(view);
     expect(m.root.querySelector("[title]")).toBeNull();
     m.button.dispatchEvent(new PointerEvent("pointerenter"));
-    expect(m.root.querySelector("[role=tooltip]")!.textContent).toBe("Installing Java support (42%)");
+    expect(m.root.querySelector("[role=tooltip]")!.textContent).toBe("Installing Java (42%)");
     m.button.dispatchEvent(new PointerEvent("pointerleave"));
     expect(m.root.querySelector("[role=tooltip]")).toBeNull();
     const open = mount(view, true);

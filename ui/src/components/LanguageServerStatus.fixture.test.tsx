@@ -20,8 +20,8 @@ describe("fixture: language server status item", () => {
   it("is a short summary with a label from the shared view and no title attribute", () => {
     const m = mount(makeServer("vtsls", { kind: "needs-install", server: "vtsls", version: "0.3" }, { state: { kind: "needsInstall", version: "0.3" }, installed: false }));
     const button = m.root.querySelector(".lsp-status-button")!;
-    expect(button.textContent).toBe("TypeScript: not installed");
-    expect(button.getAttribute("aria-label")).toBe("Language intelligence. TypeScript and JavaScript support is not installed.");
+    expect(button.textContent).toBe("TypeScript \u00b7 Install");
+    expect(button.getAttribute("aria-label")).toBe("Language intelligence. TypeScript is not installed.");
     expect(button.getAttribute("aria-expanded")).toBe("false");
     expect(button.getAttribute("aria-haspopup")).toBe("dialog");
     expect(button.hasAttribute("title")).toBe(false);
@@ -37,6 +37,6 @@ describe("fixture: language server status item", () => {
   it("shows a failed status read as unavailable instead of checking forever", () => {
     const m = mount(makeServer("vtsls", { kind: "unknown", server: "vtsls" }), false, { statusError: "Could not read language server status: boom" });
     expect(m.root.querySelector(".lsp-status")!.getAttribute("data-tone")).toBe("bad");
-    expect(m.root.querySelector(".lsp-status-button")!.textContent).toContain("status unavailable");
+    expect(m.root.querySelector(".lsp-status-button")!.textContent).toContain("Unavailable");
   });
 });
