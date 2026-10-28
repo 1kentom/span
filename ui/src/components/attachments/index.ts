@@ -1,6 +1,7 @@
 export * from './AttachmentChips';
 export * from './AttachmentIntake';
 export * from './AttachmentViewer';
+export * from './AttachmentTab';
 export * from './intake';
 export * from './AttachMenu';
 export * from './DropOverlay';
