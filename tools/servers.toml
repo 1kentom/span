@@ -1,0 +1,16 @@
+# Language server configurations for Span editor.
+#
+# Each server entry supports:
+# - command: Local command to execute (checked first)
+# - package: NPM package name and version for fallback installation
+# - args: Command-line arguments
+#
+# Pinned package versions follow the official Microsoft vscode-json-languageserver
+# repository recommendations.
+
+[json]
+name = "JSON/JSONC Language Server"
+languages = ["json", "jsonc"]
+command = "vscode-json-languageserver"
+package = "vscode-json-languageserver@1.3.4"
+args = ["--stdio"]
