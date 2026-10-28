@@ -9,6 +9,7 @@ use crate::error::{LspError, Result};
 use crate::protocol::{
     Message, Notification, Request, RequestId, RequestIdGenerator, Response, ResponseError,
 };
+use crate::trace::Trace;
 use crate::transport::{StdioReader, StdioWriter};
 use lsp_types::*;
 use serde_json::Value;
@@ -58,6 +59,7 @@ pub struct LspClient {
     closed: Arc<AtomicBool>,
     capabilities: Arc<StdMutex<Option<ServerCapabilities>>>,
     workspace_folders: Arc<StdMutex<Vec<WorkspaceFolder>>>,
+    trace: Option<Arc<Trace>>,
 }
 
 impl LspClient {
@@ -72,6 +74,19 @@ impl LspClient {
         args: &[String],
         cwd: Option<PathBuf>,
         env: &[(String, String)],
+    ) -> Result<Self> {
+        Self::spawn_traced(command, args, cwd, env, Trace::dir_from_env().as_deref()).await
+    }
+
+    /// Like `spawn_with_env`, writing a protocol trace into `trace_dir` when given
+    /// (see the `trace` module). `spawn_with_env` takes the directory from
+    /// `SPAN_LSP_TRACE_DIR`.
+    pub async fn spawn_traced(
+        command: &str,
+        args: &[String],
+        cwd: Option<PathBuf>,
+        env: &[(String, String)],
+        trace_dir: Option<&Path>,
     ) -> Result<Self> {
         let mut cmd = Command::new(command);
         cmd.args(args)
@@ -100,8 +115,9 @@ impl LspClient {
             .take()
             .ok_or_else(|| LspError::Protocol("Failed to capture stderr".to_string()))?;
 
-        let writer = Arc::new(StdioWriter::new(stdin));
-        let reader = StdioReader::new(stdout, stderr);
+        let trace = trace_dir.and_then(|dir| Trace::open(dir, command, child.id()));
+        let writer = Arc::new(StdioWriter::new(stdin, trace.clone()));
+        let reader = StdioReader::new(stdout, stderr, trace.clone());
 
         let process = Arc::new(Mutex::new(child));
         let pending_requests = Arc::new(RwLock::new(HashMap::new()));
@@ -133,6 +149,7 @@ impl LspClient {
             closed,
             capabilities: Arc::new(StdMutex::new(None)),
             workspace_folders: Arc::new(StdMutex::new(Vec::new())),
+            trace,
         })
     }
 
@@ -527,13 +544,25 @@ impl LspClient {
 
     /// Wait up to `grace` for the child to exit on its own, then kill and wait.
     async fn reap(&self, grace: Duration) {
+        let started = std::time::Instant::now();
         let mut child = self.process.lock().await;
-        match tokio::time::timeout(grace, child.wait()).await {
-            Ok(Ok(_)) => {}
+        let exited = match tokio::time::timeout(grace, child.wait()).await {
+            Ok(Ok(_)) => true,
             _ => {
                 let _ = child.kill().await;
                 let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                false
             }
+        };
+        if let Some(trace) = &self.trace {
+            trace.note(
+                "reap",
+                serde_json::json!({
+                    "exited_on_its_own": exited,
+                    "waited_ms": started.elapsed().as_millis() as u64,
+                    "grace_ms": grace.as_millis() as u64,
+                }),
+            );
         }
     }
 

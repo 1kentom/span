@@ -14,6 +14,7 @@ mod document;
 mod error;
 mod protocol;
 pub mod servers;
+mod trace;
 mod transport;
 
 pub use client::{
