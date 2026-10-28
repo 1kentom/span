@@ -517,7 +517,7 @@ impl FileIndex {
                             }
                         }
                     }
-                    if visited % PROGRESS_INTERVAL == 0 {
+                    if visited.is_multiple_of(PROGRESS_INTERVAL) {
                         self.set_progress(workspace.generation, scan_id, visited, scanned.len());
                     }
                 }
