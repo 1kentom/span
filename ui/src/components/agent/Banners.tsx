@@ -1,8 +1,8 @@
-import { For, Show } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import { Icon } from "../Icon";
 import type { ActionView, Level } from "./types";
 import { percent } from "./util";
-import { hintText } from "../../lib/agent-hint-text";
+import { warningParts } from "../../lib/agent-view";
 
 function Actions(props: { actions: ActionView[] }) {
   return (
@@ -106,6 +106,38 @@ export function Notice(props: { text: string }) {
   );
 }
 
+/** Backtick spans in a notice read as inline code. */
+function withCode(text: string) {
+  return text.split(/(`[^`]+`)/).map((part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <code>{part.slice(1, -1)}</code> : part));
+}
+
+/** A warning from the agent in the feed: one quiet line, with the rest behind a chevron instead of a wall of text. */
+export function WarningNote(props: { title: string; description?: string }) {
+  const [open, setOpen] = createSignal(false);
+  const parts = () => warningParts(props.title, props.description);
+  return (
+    <div class="sb-warning-note" role="status">
+      <Icon name="Warning2" size={12} class="sb-glyph warn" />
+      <div class="sb-warning-body">
+        <p class="sb-warning-line">{withCode(parts().summary)}</p>
+        <Show when={parts().detail}>
+          {(detail) => (
+            <>
+              <Show when={open()}>
+                <p class="sb-warning-detail">{withCode(detail())}</p>
+              </Show>
+              <button type="button" class="sb-warning-more" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                {open() ? "Less" : "Details"}
+                <Icon name={open() ? "arrow-up3" : "arrow-down4"} size={9} />
+              </button>
+            </>
+          )}
+        </Show>
+      </div>
+    </div>
+  );
+}
+
 type ContextBannerProps = {
   used: number;
   size: number;
@@ -147,18 +179,6 @@ export function ContextBanner(props: ContextBannerProps) {
  * Said once beside an agent's edits when it writes files itself and ignores Span's file system. There is no
  * approve or reject here on purpose: the files are already on disk, so a button would be a lie.
  */
-/** Quiet, persistent line by the composer while the session's mode lets the agent run tools without asking. */
-export function PermissionBypassNote(props: { agent: string; mode: string }) {
-  return (
-    <p class="sb-fine sb-bypass-note sb-permission-bypass" role="note">
-      <Icon name="Warning2" size={11} class="sb-glyph warn" />
-      <span>
-        {props.agent} is in {props.mode}: {hintText("permissionsBypassed")}
-      </span>
-    </p>
-  );
-}
-
 export function EditsBypassNote(props: { agent: string }) {
   return (
     <p class="sb-fine sb-bypass-note" role="note">

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FeedItem, PermissionEvent, ToolEvent } from "./agent-session";
-import { buildBlocks, buildPrompt, changedFiles, classifyFailure, coerceAnswer, configViews, diffLines, formFields, levelOf, permissionDetails, saveName, slashGroups, splitCommandLine, stopView, toStep, workSummary } from "./agent-view";
+import { buildBlocks, buildPrompt, changedFiles, classifyFailure, coerceAnswer, configViews, diffLines, formFields, levelOf, permissionDetails, saveName, slashGroups, splitCommandLine, stopView, toStep, warningParts, workSummary } from "./agent-view";
 import { createFileAttachment, createPastedText, createWorkspaceFile } from "./attachments";
 
 const tool = (id: string, patch: Partial<ToolEvent> = {}): ToolEvent => ({ kind: "tool", sessionId: "s", toolCallId: id, title: id, status: "completed", toolKind: "read", parentToolCallId: null, contentJson: "{}", ...patch });
@@ -277,5 +277,17 @@ describe("permission waits in the step view", () => {
     expect(stepOf(waiting).status).toBe("pending");
     const answered = reduceAgentEvent(waiting, { kind: "permissionResolved", sessionId: "s", requestId: "r1" });
     expect(stepOf(answered).status).toBe("in_progress");
+  });
+});
+
+describe("warningParts", () => {
+  it("splits at the first sentence and shortens home folders", () => {
+    const parts = warningParts("Codex is ignoring 2 unrecognized configuration settings. Check for typos.", "user (/Users/someone/.codex/config.toml): `a` is ignored.");
+    expect(parts.summary).toBe("Codex is ignoring 2 unrecognized configuration settings.");
+    expect(parts.detail).toContain("~/.codex/config.toml");
+    expect(parts.detail).not.toContain("/Users/");
+  });
+  it("keeps a single sentence whole", () => {
+    expect(warningParts("Only one sentence.")).toEqual({ summary: "Only one sentence." });
   });
 });

@@ -644,3 +644,13 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 /* The Enter key is the library return icon; the label stays available to screen readers. */
 .key-enter { display: inline-block; vertical-align: middle; background-color: currentColor; transform: scaleY(-1); /* arrow on the lower line, like the standard return symbol */ }
 .sb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.sb-warning-note { display: flex; align-items: flex-start; gap: 8px; margin: 2px 4px; padding: 7px 10px; border: 1px solid var(--sb-border); border-radius: 8px; background: var(--sb-raised); font-size: 12px; line-height: 17px; color: var(--sb-dim); }
+.sb-warning-note > .sb-glyph { flex: none; margin-top: 2.5px; }
+.sb-warning-body { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
+.sb-warning-line, .sb-warning-detail { margin: 0; overflow-wrap: anywhere; }
+.sb-warning-line { color: var(--sb-fg); }
+.sb-warning-detail { color: var(--sb-faint); }
+.sb-warning-note code { padding: 0 4px; border-radius: 3px; background: var(--sb-field); color: var(--sb-fg); font-size: 11px; }
+.sb-warning-more { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--sb-faint); font-size: 11px; cursor: pointer; }
+.sb-warning-more:hover { color: var(--sb-fg); }

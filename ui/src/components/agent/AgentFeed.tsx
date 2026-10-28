@@ -7,7 +7,7 @@ import type { FeedItem } from "../../lib/agent-session";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
 import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
 import { urlRecordText } from "../../lib/agent-url-request";
-import { EditsBypassNote, ErrorCard, Notice, StopCard } from "./Banners";
+import { EditsBypassNote, ErrorCard, Notice, StopCard, WarningNote } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
 import { DelegationCard } from "./DelegationCard";
 import { ChangesCard, WorkGroup } from "./WorkGroup";
@@ -69,12 +69,14 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           const notice = () => item() as Extract<FeedItem, { kind: "notice" }>;
           const view = () => noticeView(notice());
           return (
-            <Show
-              when={notice().severity === "warning" || notice().severity === "error"}
-              fallback={<Notice text={view().description ? `${view().title} · ${view().description}` : view().title} />}
-            >
-              <ErrorCard level={notice().severity === "error" ? "error" : "warn"} title={view().title} text={view().description} actions={[]} />
-            </Show>
+            <Switch fallback={<Notice text={view().description ? `${view().title} · ${view().description}` : view().title} />}>
+              <Match when={notice().severity === "warning"}>
+                <WarningNote title={view().title} description={view().description} />
+              </Match>
+              <Match when={notice().severity === "error"}>
+                <ErrorCard level="error" title={view().title} text={view().description} actions={[]} />
+              </Match>
+            </Switch>
           );
         })()}
       </Match>

@@ -47,6 +47,7 @@ const type = (input: HTMLInputElement, value: string) => {
 };
 
 beforeEach(() => {
+  window.localStorage.clear();
   mocks.listeners.splice(0);
   mocks.api.agentConnect.mockReset();
   mocks.api.agentSetConfig.mockClear();
@@ -359,16 +360,16 @@ describe("feed and composer with adapter data", () => {
     const notice = (description: string): AgentEvent => ({ kind: "notice", sessionId: "s1", severity: "warning", title: "", description, noticeId: "retry", hint: "retrying" }) as AgentEvent;
     mocks.emit(notice("attempt 1"));
     await tick();
-    expect(host.querySelectorAll(".sb-card.alert")).toHaveLength(1);
-    expect(text(host.querySelector(".sb-card.alert"))).toContain("Retrying");
-    expect(text(host.querySelector(".sb-card.alert"))).toContain("attempt 1");
+    expect(host.querySelectorAll(".sb-warning-note")).toHaveLength(1);
+    expect(text(host.querySelector(".sb-warning-note"))).toContain("Retrying");
+    expect(text(host.querySelector(".sb-warning-note"))).toContain("attempt 1");
     mocks.emit(notice("attempt 2"));
     await tick();
-    expect(host.querySelectorAll(".sb-card.alert")).toHaveLength(1);
-    expect(text(host.querySelector(".sb-card.alert"))).toContain("attempt 2");
+    expect(host.querySelectorAll(".sb-warning-note")).toHaveLength(1);
+    expect(text(host.querySelector(".sb-warning-note"))).toContain("attempt 2");
     mocks.emit({ kind: "noticeCleared", sessionId: "s1", noticeId: "retry" });
     await tick();
-    expect(host.querySelectorAll(".sb-card.alert")).toHaveLength(0);
+    expect(host.querySelectorAll(".sb-warning-note")).toHaveLength(0);
     expect(a.feed()).toEqual([]);
   });
   it("renders replayed user attachments as chips", async () => {
@@ -550,11 +551,11 @@ describe("live announcements", () => {
 });
 
 describe("live agent run findings in the panel", () => {
-  it("shows a quiet bypass banner by the composer until the agent leaves the mode", async () => {
+  it("shows no bypass banner by the composer: the mode chip already says it", async () => {
     const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "claude", name: "Claude" }} label="Claude" />);
     mocks.emit({ kind: "notice", sessionId: "s1", severity: "warning", title: "Bypass permissions", description: null, noticeId: "span/permission-bypass", hint: "permissionsBypassed" } as AgentEvent);
     await tick();
-    expect(text(host.querySelector(".sb-permission-bypass"))).toBe("Gemini is in Bypass permissions: it will not ask before running tools, and Span's approval prompts will not appear");
+    expect(host.querySelector(".sb-permission-bypass")).toBeNull();
     mocks.emit({ kind: "noticeCleared", sessionId: "s1", noticeId: "span/permission-bypass" });
     await tick();
     expect(host.querySelector(".sb-permission-bypass")).toBeNull();
