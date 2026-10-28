@@ -1,7 +1,7 @@
 import { For, Show } from 'solid-js';
 import Icon from '../Icon';
 import { formatAssetBytes } from '../../lib/asset-preview';
-import { extensionOf, planAttachment, type Attachment, type PromptCapabilities } from '../../lib/attachments';
+import { extensionOf, folderMeta, isInWorkspace, planAttachment, type Attachment, type PromptCapabilities } from '../../lib/attachments';
 import { AttachmentIcon, attachmentBlockReason, kindLabels } from './AttachmentChips';
 import '../../styles/attachments.css';
 
@@ -9,12 +9,27 @@ import '../../styles/attachments.css';
 export function linkReason(item: Attachment, capabilities?: PromptCapabilities): string | undefined {
   if (!capabilities || planAttachment(item, capabilities).mode !== 'link') return undefined;
   if (!item.bytes) return 'Only the file path is available, so the agent gets a link.';
+  if (capabilities.storeLinks && !isInWorkspace(item)) {
+    const lead = item.kind === 'audio' ? 'This agent does not accept audio' : item.kind === 'image' ? 'This agent does not accept images' : 'This agent cannot take this content inline';
+    const where = item.uploadId && item.path ? `: ${item.path}` : '';
+    return `${lead}, so Span saves it to Uploads and sends a link to that copy${where}. The agent must be able to read that file.`;
+  }
   if (item.kind === 'audio') return 'This agent does not accept audio, so it gets a link.';
   return 'This agent cannot take this content inline, so it gets a link.';
 }
 
+/** Size, PDF page count (only when it was read reliably) and folder file count for a ready tile. */
+export function tileMeta(item: Attachment): string {
+  const folder = folderMeta(item);
+  if (folder) return folder;
+  if (item.lines) return `Lines ${item.lines.start}\u2013${item.lines.end}`;
+  const size = item.size ? formatAssetBytes(item.size) : kindLabels[item.kind];
+  return item.pages ? `${item.pages} ${item.pages === 1 ? 'page' : 'pages'} \u00b7 ${size}` : size;
+}
+
 function badge(item: Attachment): string {
   if (item.kind === 'text-paste') return 'TXT';
+  if (item.kind === 'folder') return 'DIR';
   return (extensionOf(item.path ?? item.name.replace(/:[\d–-]+$/, '')) || item.kind).toUpperCase().slice(0, 5);
 }
 
@@ -52,8 +67,8 @@ export function AttachmentTray(props: AttachmentTrayProps) {
     const state: TileState = item.status === 'loading' ? 'uploading' : blocked ? 'blocked' : link ? 'link' : 'ready';
     const pct = Math.round(Math.max(0, Math.min(1, props.progress?.[item.id] ?? 0)) * 100);
     const known = props.progress?.[item.id] !== undefined;
-    const meta = state === 'uploading' ? (known ? `${pct}%` : 'Uploading') : state === 'link' ? 'Sent as link' : state === 'blocked' ? 'Not sent' : item.lines ? `Lines ${item.lines.start}–${item.lines.end}` : item.size ? formatAssetBytes(item.size) : kindLabels[item.kind];
-    const title = state === 'link' ? link : state === 'blocked' ? blocked : item.name;
+    const meta = state === 'uploading' ? (known ? `${pct}%` : 'Uploading') : state === 'link' ? 'Sent as link' : state === 'blocked' ? 'Not sent' : tileMeta(item);
+    const title = state === 'link' ? link : state === 'blocked' ? blocked : item.kind === 'folder' ? `${item.name}: folder outline and path, added by Span (not an ACP content type)` : item.name;
     return { state, pct, known, meta, title: title ?? item.name, label: `${item.name}, ${kindLabels[item.kind]}, ${meta}${state === 'link' || state === 'blocked' ? `. ${title}` : ''}. Open preview` };
   }
   return <Show when={props.items.length}>

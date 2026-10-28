@@ -31,6 +31,8 @@ export interface UploadsPanelProps {
   onRemoveCancel: () => void;
   onRemoveConfirm: (id: string) => void;
   onReveal?: (id: string) => void;
+  /** Host navigation back to the file explorer. Shows an Explorer tab beside the title, as in the design. */
+  onShowExplorer?: () => void;
 }
 
 /**
@@ -80,6 +82,7 @@ export function UploadsPanel(props: UploadsPanelProps) {
   return <aside class="up-rail" aria-labelledby={`${id}-title`}>
     <div class="up-rail-head">
       <h2 id={`${id}-title`} class="up-rail-title">Uploads</h2>
+      <Show when={props.onShowExplorer}><button type="button" class="up-rail-tab" onClick={() => props.onShowExplorer!()}>Explorer</button></Show>
       <span class="vw-spacer" />
       <Show when={props.onAdd && props.capabilities.add}><button type="button" class="up-icon-btn" aria-label="Upload files" title="Upload files" onClick={() => props.onAdd!()}><Icon name="ActionUpload" size={15} /></button></Show>
     </div>

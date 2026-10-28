@@ -92,6 +92,15 @@ describe("ChangesCard", () => {
     expect(live.querySelectorAll("[aria-label^='Accept']")).toHaveLength(1);
     expect(live.textContent).not.toContain("Reject all");
   });
+  it("opens the file when a row name is clicked, for pending and reviewed rows (#56)", () => {
+    const opened: string[] = [];
+    const host = mount(() => <ChangesCard headline="x" files={files} onOpen={(p) => opened.push(p)} />);
+    const names = [...host.querySelectorAll<HTMLButtonElement>("button.sb-change-name")];
+    expect(names.map((button) => button.textContent)).toEqual(["a.ts", "b.ts"]);
+    names[0].click();
+    names[1].click();
+    expect(opened).toEqual(["a.ts", "b.ts"]);
+  });
 });
 
 describe("groupSessions", () => {

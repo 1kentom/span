@@ -143,6 +143,12 @@ export const api = {
     const selected = await open({ directory: false, multiple: false, title: 'Open a file in span' });
     return typeof selected === 'string' ? selected : null;
   },
+  /** Folder picker for attaching a folder outline, starting in `defaultPath` (normally the workspace root). */
+  async pickFolder(defaultPath?: string): Promise<string | null> {
+    if (!isDesktop) nativeRequired('Picking folders');
+    const selected = await open({ directory: true, multiple: false, defaultPath, title: 'Attach a folder from this workspace' });
+    return typeof selected === 'string' ? selected : null;
+  },
   async openWorkspace(path?: string): Promise<Workspace | null> {
     if (!isDesktop) {
       if (path && path !== previewWorkspace.root) nativeRequired('Opening folders');

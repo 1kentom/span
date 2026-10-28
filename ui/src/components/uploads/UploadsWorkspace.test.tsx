@@ -191,3 +191,16 @@ describe('uploads workspace', () => {
     expect(root.querySelector('.up-toast-host [role="alert"]')?.textContent).toContain('Could not save export.csv');
   });
 });
+
+describe('uploads workspace mounted in the app', () => {
+  it('shows an Explorer tab beside the Uploads title only when the host can go back to the explorer', async () => {
+    const withoutHost = await mount(createMemoryUploadsApi(seed()));
+    expect(withoutHost.querySelector('.up-rail-tab')).toBeNull();
+    const onShowExplorer = vi.fn();
+    const root = await mount(createMemoryUploadsApi(seed()), { onShowExplorer });
+    const tab = root.querySelectorAll<HTMLButtonElement>('.up-rail-tab');
+    expect([...tab].map(t => t.textContent)).toEqual(['Explorer']);
+    tab[0].click();
+    expect(onShowExplorer).toHaveBeenCalledOnce();
+  });
+});

@@ -67,3 +67,20 @@ export function paperLabel(widthPt: number, heightPt: number): string | undefine
   if (near(w, 420) && near(h, 595)) return 'A5';
   return undefined;
 }
+
+/**
+ * Page count for an attachment tile, read with the same inert loader. Undefined when the PDF cannot be opened
+ * (locked, damaged), so the tile leaves the count out instead of guessing.
+ */
+export async function pdfPageCount(bytes: Uint8Array, loader: PdfLoader = loadPdf): Promise<number | undefined> {
+  let loaded: PdfLoaded | undefined;
+  try {
+    loaded = await loader(bytes);
+    const pages = loaded.doc.numPages;
+    return Number.isInteger(pages) && pages > 0 ? pages : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    await loaded?.destroy().catch(() => undefined);
+  }
+}

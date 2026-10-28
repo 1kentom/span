@@ -823,3 +823,9 @@ button.sb-step-row:hover { background: var(--sb-hover); }
   .sb-switch, .sb-switch-knob { transition: none; }
 }
 .sb-provider-tag { flex: none; padding: 0 5px; border-radius: 4px; background: var(--sb-field); color: var(--sb-faint); font-size: 10.5px; line-height: 16px; }
+.sb-refusal-host { top: 88px; width: calc(100% - 24px); max-width: 360px; }
+.sb-refusal { height: auto; min-height: 32px; padding: 6px 6px 6px 10px; white-space: normal; pointer-events: auto; align-items: center; }
+.sb-refusal-icon { color: var(--sb-warning); flex: none; }
+.sb-refusal-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.sb-refusal-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sb-dim); font-size: 11px; }
+.sb-refusal-copy { flex: none; display: inline-flex; align-items: center; gap: 4px; }
