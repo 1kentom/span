@@ -11,6 +11,10 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+mod tokens;
+
+pub use tokens::TOKEN_IDS;
+
 use tree_sitter::{
     InputEdit, Language, Node, ParseOptions, Parser, Point, Query, QueryCursor, QueryCursorOptions,
     StreamingIterator, Tree,
@@ -36,7 +40,8 @@ pub struct SyntaxRange {
 pub struct HighlightSpan {
     pub from: u32,
     pub to: u32,
-    /// Tree-sitter capture name, for example `keyword` or `function.method`.
+    /// Colour token id, for example `keyword` or `importPath`. Markdown keeps its
+    /// raw capture names such as `text.title`.
     pub kind: String,
 }
 
@@ -99,7 +104,7 @@ impl LanguageId {
             "ts" | "mts" | "cts" => Some(Self::TypeScript),
             "tsx" => Some(Self::Tsx),
             "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
-            "json" => Some(Self::Json),
+            "json" | "jsonc" => Some(Self::Json),
             "md" | "markdown" | "mdown" => Some(Self::Markdown),
             "rs" => Some(Self::Rust),
             "py" | "pyi" => Some(Self::Python),
@@ -136,27 +141,73 @@ impl LanguageId {
     fn query_source(self) -> String {
         match self {
             Self::TypeScript => format!(
-                "{}\n{}",
+                "{}\n{}\n{}\n{}",
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
-                tree_sitter_typescript::HIGHLIGHTS_QUERY
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+                include_str!("../queries/javascript.scm"),
+                include_str!("../queries/typescript.scm")
             ),
             Self::Tsx => format!(
-                "{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}\n{}",
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
                 tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
-                tree_sitter_typescript::HIGHLIGHTS_QUERY
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+                include_str!("../queries/javascript.scm"),
+                include_str!("../queries/typescript.scm"),
+                include_str!("../queries/jsx.scm")
             ),
             Self::JavaScript => format!(
-                "{}\n{}",
+                "{}\n{}\n{}\n{}\n{}",
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
-                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY
+                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+                include_str!("../queries/javascript.scm"),
+                include_str!("../queries/javascript_only.scm"),
+                include_str!("../queries/jsx.scm")
             ),
-            Self::Json => tree_sitter_json::HIGHLIGHTS_QUERY.to_owned(),
+            Self::Json => format!(
+                "{}\n{}",
+                tree_sitter_json::HIGHLIGHTS_QUERY,
+                include_str!("../queries/json.scm")
+            ),
             Self::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK.to_owned(),
-            Self::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY.to_owned(),
-            Self::Python => tree_sitter_python::HIGHLIGHTS_QUERY.to_owned(),
-            Self::Java => tree_sitter_java::HIGHLIGHTS_QUERY.to_owned(),
+            Self::Rust => format!(
+                "{}\n{}",
+                tree_sitter_rust::HIGHLIGHTS_QUERY,
+                include_str!("../queries/rust.scm")
+            ),
+            Self::Python => format!(
+                "{}\n{}",
+                tree_sitter_python::HIGHLIGHTS_QUERY,
+                include_str!("../queries/python.scm")
+            ),
+            Self::Java => include_str!("../queries/java.scm").to_owned(),
         }
+    }
+}
+
+/// A compiled highlight query with its capture names resolved to token ids once.
+struct Compiled {
+    query: Query,
+    /// Per capture index: the emitted kind and whether the capture repaints its node.
+    captures: Vec<Option<(String, bool)>>,
+}
+
+impl Compiled {
+    /// `raw` keeps capture names unchanged (Markdown); otherwise names go through
+    /// the token mapping table and unmapped captures are dropped.
+    fn new(query: Query, raw: bool) -> Self {
+        let captures = query
+            .capture_names()
+            .iter()
+            .map(|name| {
+                if raw {
+                    return Some(((*name).to_owned(), false));
+                }
+                let (base, cover) = tokens::split_cover(name);
+                tokens::capture_token(base).map(|token| (token.to_owned(), cover))
+            })
+            .collect();
+        Self { query, captures }
     }
 }
 
@@ -172,8 +223,8 @@ struct Document {
 #[derive(Default)]
 pub struct SyntaxEngine {
     documents: HashMap<String, Document>,
-    queries: HashMap<LanguageId, Query>,
-    markdown_inline_query: Option<Query>,
+    queries: HashMap<LanguageId, Compiled>,
+    markdown_inline_query: Option<Compiled>,
     clock: u64,
 }
 
@@ -231,7 +282,7 @@ impl SyntaxEngine {
                         message: error.to_string(),
                     }
                 })?;
-            entry.insert(query);
+            entry.insert(Compiled::new(query, language == LanguageId::Markdown));
         }
         self.clock = self.clock.wrapping_add(1);
         let mut document = match self.documents.remove(path) {
@@ -337,14 +388,15 @@ impl SyntaxEngine {
     ) -> Result<(), SyntaxError> {
         let language: Language = tree_sitter_md::INLINE_LANGUAGE.into();
         if self.markdown_inline_query.is_none() {
-            self.markdown_inline_query = Some(
+            self.markdown_inline_query = Some(Compiled::new(
                 Query::new(&language, tree_sitter_md::HIGHLIGHT_QUERY_INLINE).map_err(|error| {
                     SyntaxError::Query {
                         path: path.to_owned(),
                         message: error.to_string(),
                     }
                 })?,
-            );
+                true,
+            ));
         }
         // The inline grammar must see only inline nodes, excluding fenced code.
         let mut ranges = Vec::new();
@@ -438,8 +490,16 @@ impl SyntaxEngine {
     }
 }
 
+struct RawSpan {
+    from: usize,
+    to: usize,
+    pattern: usize,
+    capture: usize,
+    cover: bool,
+}
+
 fn collect_highlights(
-    query: &Query,
+    compiled: &Compiled,
     tree: &Tree,
     text: &str,
     offsets: &Offsets,
@@ -449,6 +509,7 @@ fn collect_highlights(
     if visible.is_empty() {
         return;
     }
+    let query = &compiled.query;
     let mut cursor = QueryCursor::new();
     cursor.set_match_limit(512);
     cursor.set_byte_range(visible.clone());
@@ -462,6 +523,7 @@ fn collect_highlights(
             ControlFlow::Continue(())
         }
     };
+    let mut raw: Vec<RawSpan> = Vec::new();
     {
         let mut captures = cursor.captures_with_options(
             query,
@@ -470,24 +532,72 @@ fn collect_highlights(
             QueryCursorOptions::new().progress_callback(&mut cancel),
         );
         while let Some((matched, index)) = captures.next() {
-            if snapshot.highlights.len() >= MAX_HIGHLIGHTS {
+            if snapshot.highlights.len() + raw.len() >= MAX_HIGHLIGHTS {
                 snapshot.truncated = true;
                 break;
             }
             let capture = matched.captures()[*index];
+            let Some(Some((_, cover))) = compiled.captures.get(capture.index as usize) else {
+                continue;
+            };
             let from = capture.node.start_byte().max(visible.start);
             let to = capture.node.end_byte().min(visible.end);
             if from < to {
-                let kind = query.capture_names()[capture.index as usize];
-                snapshot.highlights.push(HighlightSpan {
-                    from: offsets.utf16(from),
-                    to: offsets.utf16(to),
-                    kind: kind.to_owned(),
+                raw.push(RawSpan {
+                    from,
+                    to,
+                    pattern: matched.pattern_index,
+                    capture: capture.index as usize,
+                    cover: *cover,
                 });
             }
         }
     }
     snapshot.truncated |= timed_out || cursor.did_exceed_match_limit();
+    for span in resolve_spans(raw) {
+        if let Some(Some((kind, _))) = compiled.captures.get(span.capture) {
+            snapshot.highlights.push(HighlightSpan {
+                from: offsets.utf16(span.from),
+                to: offsets.utf16(span.to),
+                kind: kind.clone(),
+            });
+        }
+    }
+}
+
+/// Keeps one span per range (the latest pattern wins) and lets `.all` captures
+/// remove spans from earlier patterns that sit inside them.
+fn resolve_spans(mut raw: Vec<RawSpan>) -> Vec<RawSpan> {
+    raw.sort_by(|a, b| {
+        (a.from, std::cmp::Reverse(a.to), a.pattern).cmp(&(
+            b.from,
+            std::cmp::Reverse(b.to),
+            b.pattern,
+        ))
+    });
+    let mut unique: Vec<RawSpan> = Vec::with_capacity(raw.len());
+    for span in raw {
+        match unique.last_mut() {
+            Some(last) if last.from == span.from && last.to == span.to => *last = span,
+            _ => unique.push(span),
+        }
+    }
+    let mut resolved = Vec::with_capacity(unique.len());
+    let mut active: Option<(usize, usize)> = None;
+    for span in unique {
+        if let Some((end, pattern)) = active {
+            if span.from >= end {
+                active = None;
+            } else if span.pattern < pattern {
+                continue;
+            }
+        }
+        if span.cover && active.is_none() {
+            active = Some((span.to, span.pattern));
+        }
+        resolved.push(span);
+    }
+    resolved
 }
 
 fn collect_structure(
