@@ -1,5 +1,5 @@
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
+import type { AgentCommand, AgentEvent, ConfigOption, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
 import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionMetaList, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
@@ -29,6 +29,7 @@ import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveNa
 import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
 import { moveItem } from "./agent-queue";
 import { readLastSession, writeLastSession } from "./last-session";
+import { chooseRestores, readLastConfig, writeLastConfig } from "./last-config";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
@@ -267,6 +268,16 @@ export function createAgentController(props: AgentPanelProps) {
     const agent = agentId();
     const id = sessionId();
     if (workspace && agent && id && !restoringLast) writeLastSession(workspace, { agentId: agent, sessionId: id });
+  });
+  /** The brand new session whose agent should get the user's remembered options once they arrive. Never a resumed chat. */
+  const [freshSession, setFreshSession] = createSignal<string>();
+  const markFresh = (id: string | undefined) => setFreshSession(id);
+  createEffect(() => {
+    const id = sessionId();
+    const options = state().config;
+    if (!id || id !== freshSession() || !options.length) return;
+    setFreshSession(undefined);
+    void restoreConfig(id, options);
   });
   createEffect(on(sessionId, (id) => {
     setBannerDismissed(false);
@@ -575,8 +586,10 @@ export function createAgentController(props: AgentPanelProps) {
     const entry = last && installed().find((agent) => agent.id === last.agentId);
     if (!last || !entry) return;
     restoringLast = true;
+    let freshAtRestore: string | undefined;
     try {
       await connect(entry.launch, registryName(entry.id) || entry.id, entry.id);
+      freshAtRestore = sessionId();
       if (disposed || !sessionId() || sessionId() === last.sessionId || !state().canLoad) return;
       // Only a chat the agent still lists is resumed, and a failed resume is dropped quietly: the saved id is just stale.
       if (state().canList) {
@@ -587,6 +600,8 @@ export function createAgentController(props: AgentPanelProps) {
       if (sessionId() !== last.sessionId) patch({ failure: undefined });
     } finally {
       restoringLast = false;
+      // The chat that was open could not be reopened, so the session left is a new one and gets its options back.
+      if (freshAtRestore && sessionId() === freshAtRestore) markFresh(freshAtRestore);
       const id = sessionId();
       const agent = agentId();
       if (id && agent) writeLastSession(workspace, { agentId: agent, sessionId: id });
@@ -642,6 +657,7 @@ export function createAgentController(props: AgentPanelProps) {
       const id = await api.agentConnect(command, cwd);
       if (!current()) return;
       if (id) {
+        if (!restoringLast) markFresh(id);
         patch({ sessionId: id, status: "ready", statusMessage: "Connected and ready" });
         finishHandoff(id);
         setConnecting(undefined);
@@ -804,6 +820,7 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       const id = await api.agentAuthenticate(methodId);
       if (!current()) return;
+      markFresh(id);
       patch({ sessionId: id, auth: undefined, status: "ready", statusMessage: "Connected and ready" });
       finishHandoff(id);
       focusPrompt();
@@ -847,6 +864,7 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       const id = await agentAuthenticateWith(methodId, secret);
       if (!current()) return;
+      markFresh(id);
       patch({ sessionId: id, auth: undefined, status: "ready", statusMessage: "Connected and ready" });
       finishHandoff(id);
       focusPrompt();
@@ -1092,6 +1110,21 @@ export function createAgentController(props: AgentPanelProps) {
     }
   }
 
+  /** Applies the options this agent had last time to its new session. Silent: the UI shows what the agent reports. */
+  async function restoreConfig(id: string, options: ConfigOption[]) {
+    const agent = agentId();
+    if (!agent) return;
+    const current = guard(agentEpoch);
+    for (const [configId, value] of chooseRestores(options, readLastConfig(agent))) {
+      // Once the user has sent a prompt, their session has moved on and a late change would race it.
+      if (!current() || sessionId() !== id || running() || state().feed.some((item) => item.kind === "user")) return;
+      try {
+        await api.agentSetConfig(configId, value);
+      } catch {
+        /* the agent may refuse, and the picker shows what it reports */
+      }
+    }
+  }
   async function setConfig(configId: string, value: string) {
     const current = guard(agentEpoch);
     const option = state().config.find((candidate) => candidate.id === configId);
@@ -1099,6 +1132,8 @@ export function createAgentController(props: AgentPanelProps) {
     setPendingAction(`config:${configId}`);
     try {
       await api.agentSetConfig(configId, value);
+      const agent = agentId();
+      if (agent) writeLastConfig(agent, configId, value);
     } catch (cause) {
       if (current()) fail({ phase: "session", message: `Could not change ${option.name}: ${errorText(cause)}` });
     } finally {
@@ -1211,7 +1246,7 @@ export function createAgentController(props: AgentPanelProps) {
    * holds that is still working comes back exactly as it was; an idle one is replayed by the agent (session/load), so
    * only its draft and queue come from the store; a chat Span never held shows only what loads.
    */
-  async function switchChat(start: () => Promise<string>, failure: string, options: { keepView?: boolean; target?: string; discardOpen?: boolean } = {}) {
+  async function switchChat(start: () => Promise<string>, failure: string, options: { keepView?: boolean; target?: string; discardOpen?: boolean; fresh?: boolean } = {}) {
     const current = guard(++agentEpoch);
     setMenu(null);
     setWorking(true);
@@ -1230,6 +1265,7 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       const id = await start();
       if (!current()) return;
+      if (options.fresh) markFresh(id);
       const mine = runtimeOf(id);
       const busy = Boolean(mine && mine.state !== "idle");
       patch({ sessionId: id, status: busy ? "busy" : "ready", statusMessage: busy ? "Agent is working" : "Connected and ready", ...(busy ? { running: true } : {}) });
@@ -1253,7 +1289,7 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setWorking(false);
     }
   }
-  const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat");
+  const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat", { fresh: true });
   const resumeChat = (id: string) => (id === state().sessionId ? (setView("session"), Promise.resolve()) : switchChat(() => api.agentResumeSession(id), "Could not resume that chat", { target: id }));
   const canClose = createMemo(() => Boolean(state().agent?.features.canCloseSessions));
   const canDelete = createMemo(() => Boolean(state().agent?.features.canDeleteSessions));
@@ -1279,7 +1315,7 @@ export function createAgentController(props: AgentPanelProps) {
     const connection = connectionKey();
     if (connection && chats.delete(chatKey(connection, id))) bumpChats();
     if (active) {
-      await switchChat(() => api.agentNewSession(), "Could not start a new chat", { keepView: true, discardOpen: true });
+      await switchChat(() => api.agentNewSession(), "Could not start a new chat", { keepView: true, discardOpen: true, fresh: true });
       // The desktop already cleared the active session, so a failed restart must not keep pointing at it.
       if (state().sessionId === id) patch({ sessionId: undefined });
     }
