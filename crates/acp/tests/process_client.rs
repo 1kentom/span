@@ -977,3 +977,73 @@ async fn stop_cancels_pending_elicitation() {
     assert_eq!(answer["action"], "cancel");
     let _ = prompt.await;
 }
+
+#[tokio::test]
+async fn close_session_succeeds_and_forgets_the_session() {
+    let (_directory, service, _events) = start_with(&["--close"]).await;
+    let session = service.new_session().await.expect("session");
+    service.close_session(session.clone()).await.expect("close");
+    let error = service.close_session(session).await.unwrap_err();
+    assert!(error.contains("Unknown session"), "{error}");
+    service.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn close_session_treats_resource_not_found_as_success() {
+    let (_directory, service, _events) = start_with(&["--close-gone"]).await;
+    let session = service.new_session().await.expect("session");
+    service
+        .close_session(session)
+        .await
+        .expect("-32002 means already closed");
+    service.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn close_and_delete_are_rejected_when_not_advertised() {
+    let (_directory, service, _events) = start_with(&[]).await;
+    let session = service.new_session().await.expect("session");
+    let close = service.close_session(session.clone()).await.unwrap_err();
+    assert!(close.contains("cannot close"), "{close}");
+    let delete = service.delete_session(session).await.unwrap_err();
+    assert!(delete.contains("cannot delete"), "{delete}");
+    service.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn delete_session_succeeds_for_a_history_entry() {
+    let (_directory, service, _events) = start_with(&["--delete"]).await;
+    service.new_session().await.expect("session");
+    service
+        .delete_session("old-1".into())
+        .await
+        .expect("delete listed session");
+    service.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn delete_of_the_active_session_cancels_the_turn_first() {
+    let (_directory, service, mut events) = start_with(&["--delete"]).await;
+    let session = service.new_session().await.expect("session");
+    let prompt_service = service.clone();
+    let prompt_session = session.clone();
+    let prompt = tokio::spawn(async move {
+        prompt_service
+            .prompt(prompt_session, "wait".into(), vec![])
+            .await
+    });
+    // The fixture rejects session/delete while a prompt is unanswered, so
+    // success proves the cancel reached it first.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    service
+        .delete_session(session.clone())
+        .await
+        .expect("delete cancels first");
+    prompt.await.expect("prompt task").expect("cancelled turn");
+    next(
+        &mut events,
+        |e| matches!(e, AgentEvent::Complete { stop_reason, .. } if stop_reason == "cancelled"),
+    )
+    .await;
+    service.shutdown().expect("shutdown");
+}

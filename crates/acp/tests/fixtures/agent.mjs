@@ -11,7 +11,7 @@ const rich = process.argv.includes('--rich');
 const needsAuth = process.argv.includes('--auth');
 const callbacks = new Map();
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
-const result = (id, value) => send({ id, result: value });
+const result = (id, value) => { if (id === activePrompt) activePrompt = undefined; send({ id, result: value }); };
 const update = (sessionId, update) => send({ method: 'session/update', params: { sessionId, update } });
 const call = (method, params) => new Promise((resolve, reject) => {
   const id = sequence++;
@@ -75,6 +75,10 @@ input.on('line', line => {
     if (rich && !(client.session?.notices && client.session?.compaction && client.elicitation?.form && client.elicitation?.url)) process.exit(8);
     let agentCapabilities = process.argv.includes('--resume') ? { loadSession: true, sessionCapabilities: { list: {} } } : {};
     if (rich) agentCapabilities = { loadSession: true, promptCapabilities: { image: true, embeddedContext: true }, mcpCapabilities: { http: true }, sessionCapabilities: { list: {}, resume: {}, close: {} } };
+    const extra = {};
+    if (process.argv.includes('--close') || process.argv.includes('--close-gone')) extra.close = {};
+    if (process.argv.includes('--delete')) extra.delete = {};
+    if (Object.keys(extra).length) agentCapabilities = { ...agentCapabilities, sessionCapabilities: { list: {}, ...(agentCapabilities.sessionCapabilities ?? {}), ...extra } };
     const authMethods = needsAuth ? [{ id: 'token', name: 'Token', description: 'API token' }, { type: 'terminal', id: 'tui', name: 'Terminal login', args: ['login'] }] : [];
     result(message.id, { protocolVersion: 1, agentCapabilities, authMethods, agentInfo: { name: 'span-test-peer', title: 'Span Test Peer', version: '1.0.0' } });
   } else if (message.method === 'authenticate') {
@@ -104,6 +108,12 @@ input.on('line', line => {
     update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'earlier answer' } });
     update(sessionId, { sessionUpdate: 'tool_call', toolCallId: 'sub-1', title: 'Read file', kind: 'read', status: 'completed', _meta: { claudeCode: { parentToolUseId: 'task-1' } } });
     result(message.id, {});
+  } else if (message.method === 'session/close') {
+    if (process.argv.includes('--close-gone')) send({ id: message.id, error: { code: -32002, message: 'Session not found' } });
+    else result(message.id, {});
+  } else if (message.method === 'session/delete') {
+    if (activePrompt !== undefined) send({ id: message.id, error: { code: -32603, message: 'delete arrived while a prompt was active' } });
+    else result(message.id, {});
   } else if (message.method === 'session/prompt') {
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {

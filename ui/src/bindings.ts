@@ -43,6 +43,16 @@ export const commands = {
 	agentNewSession: () => __TAURI_INVOKE<string>("agent_new_session"),
 	agentListSessions: () => __TAURI_INVOKE<SessionSummary_Serialize[]>("agent_list_sessions"),
 	agentResumeSession: (sessionId: string) => __TAURI_INVOKE<string>("agent_resume_session", { sessionId }),
+	/**
+	 *  Close a session the agent holds. Closing the active session leaves the
+	 *  connection without one; the UI starts or resumes another.
+	 */
+	agentCloseSession: (sessionId: string) => __TAURI_INVOKE<null>("agent_close_session", { sessionId }),
+	/**
+	 *  Delete a session from the agent's history. Any running turn in it is
+	 *  cancelled first by the service.
+	 */
+	agentDeleteSession: (sessionId: string) => __TAURI_INVOKE<null>("agent_delete_session", { sessionId }),
 	agentPrompt: (text: string, attachments: PromptAttachment_Deserialize[] | null) => __TAURI_INVOKE<null>("agent_prompt", { text, attachments }),
 	/**
 	 *  Sign in with an advertised method, then create the session that was blocked.

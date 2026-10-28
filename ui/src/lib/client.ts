@@ -379,6 +379,14 @@ export const api = {
     if (!isDesktop) nativeRequired('Resuming a chat');
     return commands.agentResumeSession(sessionId);
   },
+  async agentCloseSession(sessionId: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Closing a chat');
+    await commands.agentCloseSession(sessionId);
+  },
+  async agentDeleteSession(sessionId: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Deleting a chat');
+    await commands.agentDeleteSession(sessionId);
+  },
   async agentCancel(): Promise<void> {
     if (!isDesktop) nativeRequired('Cancelling agents');
     await commands.agentCancel();

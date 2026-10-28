@@ -28,6 +28,8 @@ enum Command {
     SetConfig(String, String, String, Reply<()>),
     ListSessions(Reply<Vec<SessionSummary>>),
     LoadSession(String, Reply<()>),
+    CloseSession(String, Reply<()>),
+    DeleteSession(String, Reply<()>),
     Shutdown,
 }
 struct Permission {
@@ -67,6 +69,8 @@ struct Bridge {
     elicitations: HashMap<String, Elicitation>,
     prompt_image: bool,
     prompt_embedded: bool,
+    can_close: bool,
+    can_delete: bool,
     auth_methods: Vec<AuthMethodInfo>,
     auth_required: bool,
 }
@@ -265,6 +269,47 @@ impl AgentService {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::LoadSession(session_id, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Close a session the agent is holding (`session/close`). Requires the
+    /// `sessionCapabilities.close` capability. Pending permission and
+    /// elicitation requests for the session are cancelled.
+    pub async fn close_session(&self, session_id: String) -> Result<(), String> {
+        {
+            let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            if bridge.closed {
+                return Err("Agent disconnected".into());
+            }
+            if !bridge.can_close {
+                return Err("This agent cannot close sessions".into());
+            }
+            if !bridge.sessions.contains(&session_id) {
+                return Err("Unknown session".into());
+            }
+        }
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::CloseSession(session_id, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Permanently delete a session from the agent's history
+    /// (`session/delete`). Requires `sessionCapabilities.delete`. A prompt
+    /// still running in that session is cancelled first.
+    pub async fn delete_session(&self, session_id: String) -> Result<(), String> {
+        {
+            let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            if bridge.closed {
+                return Err("Agent disconnected".into());
+            }
+            if !bridge.can_delete {
+                return Err("This agent cannot delete sessions".into());
+            }
+        }
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::DeleteSession(session_id, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -585,6 +630,8 @@ async fn run(
             if let (Ok(mut bridge), AgentEvent::Ready { features, .. }) = (state.lock(), &ready_event) {
                 bridge.prompt_image = features.image;
                 bridge.prompt_embedded = features.embedded_context;
+                bridge.can_close = features.can_close_sessions;
+                bridge.can_delete = features.can_delete_sessions;
                 bridge.auth_methods = auth_methods.clone();
             }
             let _ = ready.send(Ok(()));
@@ -727,6 +774,49 @@ async fn run(
                             Ok(())
                         })?;
                     }
+                    Command::CloseSession(id, reply) => {
+                        if let Ok(mut bridge) = state.lock() { bridge.cancelled.insert(id.clone()); }
+                        cancel_pending(&state, &workspace, &emit, Some(&id));
+                        let close_cx = cx.clone(); let close_state = state.clone();
+                        cx.spawn(async move {
+                            let result = tokio::time::timeout(std::time::Duration::from_secs(20), close_cx.send_request(CloseSessionRequest::new(id.clone())).block_task()).await;
+                            let result = match result {
+                                Ok(Ok(_)) => Ok(()),
+                                // -32002: the agent no longer knows the session, so it is closed.
+                                Ok(Err(error)) if error.code == ErrorCode::ResourceNotFound => Ok(()),
+                                Ok(Err(error)) => Err(error.to_string()),
+                                Err(_) => Err("The agent did not close the session within 20 seconds".to_string()),
+                            };
+                            if result.is_ok() { forget_session(&close_state, &id); }
+                            let _ = reply.send(result);
+                            Ok(())
+                        })?;
+                    }
+                    Command::DeleteSession(id, reply) => {
+                        let running = state.lock().map(|mut bridge| {
+                            let running = bridge.running.contains(&id);
+                            if running { bridge.cancelled.insert(id.clone()); }
+                            running
+                        }).unwrap_or(false);
+                        if running {
+                            // Cancel the active turn first; the notification is written before the delete request.
+                            cx.send_notification(CancelNotification::new(id.clone()))?;
+                            cancel_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                        }
+                        cancel_pending(&state, &workspace, &emit, Some(&id));
+                        let delete_cx = cx.clone(); let delete_state = state.clone();
+                        cx.spawn(async move {
+                            let result = tokio::time::timeout(std::time::Duration::from_secs(20), delete_cx.send_request(DeleteSessionRequest::new(id.clone())).block_task()).await;
+                            let result = match result {
+                                Ok(Ok(_)) => Ok(()),
+                                Ok(Err(error)) => Err(error.to_string()),
+                                Err(_) => Err("The agent did not delete the session within 20 seconds".to_string()),
+                            };
+                            if result.is_ok() { forget_session(&delete_state, &id); }
+                            let _ = reply.send(result);
+                            Ok(())
+                        })?;
+                    }
                     Command::Cancel(id) => {
                         if let Ok(mut bridge) = state.lock() { bridge.cancelled.insert(id.clone()); }
                         cx.send_notification(CancelNotification::new(id.clone()))?;
@@ -738,6 +828,13 @@ async fn run(
             }
             Ok(())
         }).await
+}
+
+fn forget_session(state: &Arc<Mutex<Bridge>>, id: &str) {
+    if let Ok(mut bridge) = state.lock() {
+        bridge.sessions.remove(id);
+        bridge.remembered.retain(|(session, _), _| session != id);
+    }
 }
 
 fn cancel_pending(

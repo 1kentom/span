@@ -22,6 +22,17 @@ fn switch_session(state: &DesktopState, session: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn clear_if_active(state: &DesktopState, session: &str) -> Result<(), String> {
+    let mut guard = state
+        .agent
+        .lock()
+        .map_err(|_| "Agent state is unavailable".to_owned())?;
+    if let Some(agent) = guard.as_mut().filter(|agent| agent.session == session) {
+        agent.session.clear();
+    }
+    Ok(())
+}
+
 fn active(state: &DesktopState) -> Result<ActiveAgent, String> {
     state
         .agent
@@ -174,6 +185,32 @@ pub async fn agent_resume_session(
     agent.service.load_session(session_id.clone()).await?;
     switch_session(state.inner(), &session_id)?;
     Ok(session_id)
+}
+
+/// Close a session the agent holds. Closing the active session leaves the
+/// connection without one; the UI starts or resumes another.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_close_session(
+    state: State<'_, DesktopState>,
+    session_id: String,
+) -> Result<(), String> {
+    let agent = active(state.inner())?;
+    agent.service.close_session(session_id.clone()).await?;
+    clear_if_active(state.inner(), &session_id)
+}
+
+/// Delete a session from the agent's history. Any running turn in it is
+/// cancelled first by the service.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_delete_session(
+    state: State<'_, DesktopState>,
+    session_id: String,
+) -> Result<(), String> {
+    let agent = active(state.inner())?;
+    agent.service.delete_session(session_id.clone()).await?;
+    clear_if_active(state.inner(), &session_id)
 }
 
 #[tauri::command]
