@@ -7,6 +7,7 @@ import { replyIsCurrent, awaitSynchronized } from "../lib/lsp-codemirror";
 import {
   createNavigationSession, dedupeLocations, editsToOffsets, featureLabels, flattenSymbols, groupByFile, linePreview, planWorkspaceEdit,
   pluralize, symbolPathAt, toPosition, wordAt, comparePositions, fileLabel, type NavigationFeature, type SymbolCrumb,
+  classifyLocation,
 } from "../lib/lsp-navigation";
 import { closePeek, openPeek, setExternalLocationOpener } from "../lib/lsp-peek";
 import {
@@ -39,7 +40,7 @@ export interface HierarchyState {
   kind: "call" | "type"; direction: "incoming" | "outgoing" | "supertypes" | "subtypes"; status: "idle" | "loading" | "ready" | "error"; error: string;
   roots: HNode[]; title: string; origin?: { path: string; position: PositionDto };
 }
-export interface LibraryDoc { id: string; location: LocationDto; title: string; status: "loading" | "ready" | "error"; text: string; startLine: number; language: string; error: string }
+export interface LibraryDoc { id: string; location: LocationDto; /** Opened to the side: the viewer covers the right half. */ side: boolean; title: string; status: "loading" | "ready" | "error"; text: string; startLine: number; language: string; error: string }
 
 export const navigationState = {
   bottomTab: state.bottomTab, setBottomTab: state.setBottomTab, toast: state.toast, rename: state.rename,
@@ -55,7 +56,7 @@ export function configureNavigation(context: Omit<NavigationContext, "session"> 
   const session = context.session ?? createNavigationSession(context.port);
   const full: NavigationContext = { ...context, session };
   configureNavigationContext(full);
-  setExternalLocationOpener(location => { void openLibrary(location); });
+  setExternalLocationOpener(location => { void openLocation(location, { record: false }); });
   stopHandlers?.();
   const off = registerHandlers();
   stopHandlers = () => { off(); session.dispose(); configureNavigationContext(undefined); setExternalLocationOpener(undefined); resetNavigationState(); stopHandlers = undefined; };
@@ -131,13 +132,20 @@ const lineColumn = (location: LocationDto) => [location.range.start.line + 1, lo
 
 // ------------------------------------------------------------ opening places
 
-export async function openLocation(location: LocationDto, options: { record?: boolean } = {}): Promise<void> {
+/**
+ * The one place a language server location becomes a visible place. Library locations (`external`, a URI, or an
+ * absolute path outside the workspace) open in the read-only library viewer and never reach the workspace
+ * file commands. Everything else opens as a workspace buffer, in the other group with `side`.
+ */
+export async function openLocation(location: LocationDto, options: { record?: boolean; side?: boolean } = {}): Promise<void> {
   const ctx = navigationContext();
   if (!ctx) return;
-  if (location.external) { await openLibrary(location); return; }
+  const target = classifyLocation(location, ctx.workspaceRoot());
+  if (target.kind === "library") { await openLibrary(location, { side: options.side }); return; }
   if (options.record !== false) jumpHistory.record(currentPlace());
   const [line, column] = lineColumn(location);
-  await ctx.open(location.path, line, column);
+  if (options.side && ctx.openToSide) await ctx.openToSide(target.path, line, column);
+  else await ctx.open(target.path, line, column);
 }
 
 async function jumpToPlace(place: Place | undefined): Promise<void> {
@@ -412,14 +420,15 @@ export const dismissToast = (): void => { clearTimeout(toastTimer); state.setToa
 // ------------------------------------------------------------ library sources
 
 let libraryGeneration = 0;
-export async function openLibrary(location: LocationDto): Promise<void> {
+export async function openLibrary(location: LocationDto, options: { side?: boolean } = {}): Promise<void> {
   const ctx = navigationContext();
   if (!ctx) return;
   const id = `${location.path}`;
+  const side = !!options.side;
   jumpHistory.record(currentPlace());
   const existing = state.library.docs.find(doc => doc.id === id);
-  if (existing) { state.setLibrary({ active: id }); ctx.libraryChanged?.(true); return; }
-  const doc: LibraryDoc = { id, location, title: location.displayPath || location.path, status: "loading", text: "", startLine: 0, language: "text", error: "" };
+  if (existing) { state.setLibrary("docs", item => item.id === id, { location, side }); state.setLibrary({ active: id }); ctx.libraryChanged?.(true); return; }
+  const doc: LibraryDoc = { id, location, side, title: location.displayPath || location.path, status: "loading", text: "", startLine: 0, language: "text", error: "" };
   state.setLibrary({ docs: [...state.library.docs, doc], active: id });
   ctx.libraryChanged?.(true);
   const generation = libraryGeneration;
@@ -522,9 +531,8 @@ export function createSymbolSource(): SymbolSource | undefined {
       return { items: outcome.response.data.map((symbol, index): SymbolItem => ({ id: `${index}:${symbol.location.path}:${symbol.name}`, name: symbol.name, kind: symbol.kind, container: symbol.containerName ?? "", depth: 0, path: symbol.location.path, line: symbol.location.range.start.line + 1, column: symbol.location.range.start.character + 1, location: symbol.location })) };
     },
     open(item) {
-      if (item.location?.external) { void openLibrary(item.location); return; }
-      jumpHistory.record(currentPlace());
-      void navigationContext()?.open(item.path, item.line, item.column);
+      // Workspace symbols can be library classes. Every location goes through the same decision.
+      void openLocation(item.location ?? { path: item.path, external: false, displayPath: item.path, range: { start: { line: item.line - 1, character: item.column - 1 }, end: { line: item.line - 1, character: item.column - 1 } } });
     },
   };
 }

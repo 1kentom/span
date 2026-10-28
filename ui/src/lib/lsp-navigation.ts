@@ -5,6 +5,7 @@ import type {
   SymbolDto_Serialize, SymbolKindDto, TypeHierarchyItemDto_Deserialize, TypeHierarchyItemDto_Serialize, WorkspaceEditDto,
   WorkspaceSymbolDto_Serialize,
 } from "../bindings";
+import { relativePath } from "./navigation";
 import { describeLspError, isSilentLspError, normalizeLspError, positionToOffset, type LspOutcome } from "./lsp-client";
 
 type Reply<T> = Promise<LspResponse<T>>;
@@ -248,6 +249,38 @@ export function editsToOffsets(doc: Text, edits: readonly { range: RangeDto; new
   rows.sort((a, b) => a.from - b.from || a.to - b.to);
   for (let index = 1; index < rows.length; index += 1) if (rows[index].from < rows[index - 1].to) return undefined;
   return rows;
+}
+
+// ------------------------------------------------------------ where a location opens
+
+/** `jdt://...`, `jar:file:...`, `file:///...`. A drive letter (`C:\x`) is one character, so it is not a scheme. */
+export const isUriPath = (path: string): boolean => /^[a-z][a-z0-9+.-]+:/i.test(path);
+
+const isAbsolutePath = (path: string): boolean => /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(path);
+
+export type LocationTarget =
+  | { kind: "library" }
+  | { kind: "workspace"; path: string };
+
+/**
+ * Decides where a language server location opens. Library when the server said `external`, when the path is a
+ * URI, when it is absolute and outside the workspace root, or when it climbs out with `..`. Otherwise it is a
+ * workspace file, returned relative to the root.
+ */
+export function classifyLocation(location: Pick<LocationDto, "path" | "external">, workspaceRoot?: string): LocationTarget {
+  const path = location.path;
+  if (location.external || isUriPath(path) || path.includes("\0")) return { kind: "library" };
+  const relative = relativePath(path, workspaceRoot);
+  if (isAbsolutePath(relative) || relative.split(/[\\/]/).includes("..")) return { kind: "library" };
+  return { kind: "workspace", path: relative };
+}
+
+/** The jar (or module archive) a library URI points into, for secondary text: `x.jar` of `jdt://contents/x.jar/pkg/A.java?...`. */
+export function libraryOrigin(path: string): string | undefined {
+  if (!isUriPath(path)) return undefined;
+  const rest = path.replace(/^[a-z][a-z0-9+.-]*:\/\/(?:contents\/)?/i, "").split(/[?#]/)[0];
+  const first = rest.split("/")[0];
+  return /\.(?:jar|jmod|zip)$/i.test(first) && rest.includes("/") ? first : undefined;
 }
 
 export const pluralize = (count: number, singular: string, plural = `${singular}s`) => `${count} ${count === 1 ? singular : plural}`;

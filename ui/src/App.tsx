@@ -41,8 +41,9 @@ import { TrustBanner } from "./components/TrustBanner";
 import { serverForBuffer, serverLabels } from "./lib/lsp-client";
 import { ChangeSet } from "@codemirror/state";
 import { navigationPort } from "./lib/client";
+import { classifyLocation } from "./lib/lsp-navigation";
 import { LibraryViewer, NavigationLayer, NavigationPanels, NavigationTabs } from "./components/navigation/NavigationLayer";
-import { configureNavigation, createSymbolSource, navigationState, openSymbol, symbolCrumbs } from "./stores/navigation";
+import { configureNavigation, createSymbolSource, navigationState, openLocation as openNavigationLocation, openSymbol, symbolCrumbs } from "./stores/navigation";
 import type { CapabilitiesDto } from "./bindings";
 import { createPreviewBinding, noticeFor, withHoverExtras } from "./lib/lsp-hover-binding";
 import { previewHoverCapabilities, previewHoverServer } from "./lib/hover-preview";
@@ -154,8 +155,15 @@ export default function App() {
   const shortcut = (id: ActionId) => shortcutLabel(id, bindings(), platform);
   const hasUnsaved = () => w.hasDirty() || settingsDirty();
   const selectionContext = () => { const path = w.activePath(); const current = cursor(); return path && !isSettingsBuffer(path) && current.selectedText ? { path, text: current.selectedText, startLine: current.line, endLine: current.line + current.selectedText.split("\n").length - 1 } : undefined; };
-  const navigate = (path: string, line?: number, column?: number) => { const relative = relativePath(path, w.workspace()?.root); void w.openFile(relative).then(() => setReveal(line ? { path: relative, line, column } : undefined)); };
-  const navigateToSide = (path: string, line?: number, column?: number) => { const relative = relativePath(path, w.workspace()?.root); void w.openToSide(relative).then(() => setReveal(line ? { path: relative, line, column } : undefined)); };
+  /** Safety net: a URI or a path outside the workspace is library source and must never reach the workspace file commands. */
+  const asLibrary = (path: string, line?: number, column?: number, side = false) => {
+    if (classifyLocation({ path, external: false }, w.workspace()?.root).kind !== "library") return false;
+    const at = { line: Math.max(0, (line ?? 1) - 1), character: Math.max(0, (column ?? 1) - 1) };
+    void openNavigationLocation({ path, external: true, displayPath: path, range: { start: at, end: at } }, { side });
+    return true;
+  };
+  const navigate = (path: string, line?: number, column?: number) => { if (asLibrary(path, line, column)) return; const relative = relativePath(path, w.workspace()?.root); void w.openFile(relative).then(() => setReveal(line ? { path: relative, line, column } : undefined)); };
+  const navigateToSide = (path: string, line?: number, column?: number) => { if (asLibrary(path, line, column, true)) return; const relative = relativePath(path, w.workspace()?.root); void w.openToSide(relative).then(() => setReveal(line ? { path: relative, line, column } : undefined)); };
   /** The language server store's binding for desktop, the labelled fixture in browser preview, plus the workbench pieces the hover popup uses. */
   const lspBindingFor = (path: string, context: BindingContext) => {
     const base = isDesktop ? languageServers.binding(path, context) : createPreviewBinding(path, context, lspPort);
@@ -165,7 +173,7 @@ export default function App() {
       shortcut: id => shortcut(id),
       openExternal: url => api.openExternal(url),
       navigateFile: target => navigate(target.path, target.line, target.column),
-      openLocationToSide: location => navigateToSide(location.path, location.range.start.line + 1, location.range.start.character + 1),
+      openLocationToSide: location => void openNavigationLocation(location, { side: true }),
       readSource: (location, lines) => navigationPort.readSource(location, lines),
       hoverHint: (_pos, hadResult) => hadResult ? undefined : hub.hoverHint(path),
     });
@@ -330,6 +338,7 @@ export default function App() {
     },
     isReadOnly: path => isSettingsBuffer(path), isOpen: path => !!w.buffers[path], documentText: path => w.documents()[path]?.document,
     open: (path, line, column) => navigate(path, line, column),
+    openToSide: (path, line, column) => navigateToSide(path, line, column),
     openFile: async path => { await w.openFile(path); return !!w.buffers[path]; },
     applyEdits: (path, edits) => {
       const document = w.documents()[path]?.document; const buffer = w.buffers[path];
@@ -428,7 +437,7 @@ export default function App() {
       const timer = setTimeout(() => { if (!w.synchronized(path)) return; void api.syntax(path).then(result => { if (w.documents()[path]?.document === doc && w.buffers[path]?.revision === revision && result.revision === revision) setSyntax(result); }).catch(() => undefined); }, 100); onCleanup(() => clearTimeout(timer));
     });
     return <div class="document-view" onContextMenu={event => showContext(event, props.path, "editor", props.group)} onKeyDown={event => { if (isContextMenuKey(event)) showContext(event, props.path, "editor", props.group); }}><Show when={markdown() || svg()}><div class="markdown-view-toolbar" role="toolbar" aria-label="Markdown view"><SourcePreviewToggle value={view()} onChange={mode => w.setMarkdownView(props.path, mode)} /></div></Show><div class={`document-view-content ${(markdown() || svg()) && view() === "both" ? "markdown-both" : ""}`}>
-      <div class="source-view" onFocusOut={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) w.autoSaveEditorBlur(props.path); }} style={{ display: (markdown() || asset()) && view() === "preview" ? "none" : "flex" }}><Show when={w.buffers[props.path]}>{buffer => <Editor buffer={buffer()} document={w.documents()[props.path]?.document} change={w.documents()[props.path]?.change} onEdit={edit => w.edit(props.path, edit)} onUndo={() => w.applyHistory(props.path)} onRedo={() => w.applyHistory(props.path, true)} onSave={saveActive} clipboard={{ readText: api.readClipboard, writeText: api.writeClipboard }} onFormat={() => void w.format(props.path)} lsp={!isSettingsBuffer(props.path) ? lspBindingFor(props.path, { workspaceRoot: () => w.workspace()?.root, getRevision: () => w.buffers[props.path]?.revision ?? 0, isSynchronized: () => w.synchronized(props.path), isActive: editorActive, getWorkspaceGeneration: w.workspaceGeneration, openLocation: location => navigate(location.path, location.range.start.line + 1, location.range.start.character + 1), notify: w.setError }) : undefined} onCommands={commands => { const key = `${props.group}:${props.path}`; if (commands) editorCommands.set(key, commands); else editorCommands.delete(key); }} onCursor={value => { if (props.active) setCursor(value); }} syntax={syntax()} active={editorActive()} readOnly={w.busy()} theme={theme()} fontSize={w.settings().fontSize} fontFamily={w.settings().editorFontFamily} tabSize={w.settings().tabSize} wordWrap={w.settings().wordWrap} revealLine={reveal()?.path === props.path ? reveal()?.line : undefined} revealColumn={reveal()?.path === props.path ? reveal()?.column : undefined} proposal={proposals().find(p => p.path === props.path)} proposalBusy={proposalBusy()} proposalStale={!w.synchronized(props.path)} onApplyProposal={(id, ids) => { void reviewProposal?.(id, ids); }} onRejectProposal={id => { void reviewProposal?.(id, []); }} />}</Show></div>
+      <div class="source-view" onFocusOut={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) w.autoSaveEditorBlur(props.path); }} style={{ display: (markdown() || asset()) && view() === "preview" ? "none" : "flex" }}><Show when={w.buffers[props.path]}>{buffer => <Editor buffer={buffer()} document={w.documents()[props.path]?.document} change={w.documents()[props.path]?.change} onEdit={edit => w.edit(props.path, edit)} onUndo={() => w.applyHistory(props.path)} onRedo={() => w.applyHistory(props.path, true)} onSave={saveActive} clipboard={{ readText: api.readClipboard, writeText: api.writeClipboard }} onFormat={() => void w.format(props.path)} lsp={!isSettingsBuffer(props.path) ? lspBindingFor(props.path, { workspaceRoot: () => w.workspace()?.root, getRevision: () => w.buffers[props.path]?.revision ?? 0, isSynchronized: () => w.synchronized(props.path), isActive: editorActive, getWorkspaceGeneration: w.workspaceGeneration, openLocation: location => void openNavigationLocation(location), notify: w.setError }) : undefined} onCommands={commands => { const key = `${props.group}:${props.path}`; if (commands) editorCommands.set(key, commands); else editorCommands.delete(key); }} onCursor={value => { if (props.active) setCursor(value); }} syntax={syntax()} active={editorActive()} readOnly={w.busy()} theme={theme()} fontSize={w.settings().fontSize} fontFamily={w.settings().editorFontFamily} tabSize={w.settings().tabSize} wordWrap={w.settings().wordWrap} revealLine={reveal()?.path === props.path ? reveal()?.line : undefined} revealColumn={reveal()?.path === props.path ? reveal()?.column : undefined} proposal={proposals().find(p => p.path === props.path)} proposalBusy={proposalBusy()} proposalStale={!w.synchronized(props.path)} onApplyProposal={(id, ids) => { void reviewProposal?.(id, ids); }} onRejectProposal={id => { void reviewProposal?.(id, []); }} />}</Show></div>
       <Show when={markdown() || asset()}><div class="preview-view" style={{ display: view() === "source" ? "none" : "flex" }}><Show when={markdown()} fallback={<AssetPreview path={props.path} source={assetSource()} active={previewActive()} loadImage={path => api.readImage(path)} />}><MarkdownPreview text={w.documents()[props.path]?.document || ""} documentPath={`${w.workspace()?.root}/${props.path}`} workspaceRoot={w.workspace()?.root || ""} active={previewActive()} onOpenFile={path => navigate(path)} loadImage={path => api.readImage(path)} onOpenExternal={url => void api.openExternal(url).catch(error => w.setError(String(error)))} /></Show></div></Show>
     </div></div>;
   }

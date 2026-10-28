@@ -243,12 +243,13 @@ export function openPeekTarget(view: EditorView): boolean {
   view.dispatch({ effects: openPeekEffect.of(null) });
   const location = entry.location;
   jumpHistory.record(currentPlace());
-  if (location.external) openExternalHandler?.(location);
-  else void ctx.open(location.path, location.range.start.line + 1, location.range.start.character + 1);
+  // The navigation store decides: library locations open in the read-only viewer, the rest in the workspace.
+  if (openExternalHandler) openExternalHandler(location);
+  else if (!location.external) void ctx.open(location.path, location.range.start.line + 1, location.range.start.character + 1);
   return true;
 }
 
-/** The navigation store registers how a library location is opened, so the peek stays free of store imports. */
+/** The navigation store registers how a location is opened (see `openLocation`), so the peek stays free of store imports. */
 let openExternalHandler: ((location: LocationDto) => void) | undefined;
 export const setExternalLocationOpener = (open: ((location: LocationDto) => void) | undefined): void => { openExternalHandler = open; };
 

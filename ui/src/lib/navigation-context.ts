@@ -30,6 +30,8 @@ export interface NavigationContext {
   documentText(path: string): Text | undefined;
   /** Opens a workspace file at a 1-based line and column, exactly like every other jump in the app. */
   open(path: string, line?: number, column?: number): Promise<void> | void;
+  /** Same as `open`, in the other editor group. */
+  openToSide?(path: string, line?: number, column?: number): Promise<void> | void;
   /** Opens a workspace file as a buffer. False when it could not be opened. */
   openFile(path: string): Promise<boolean>;
   /** Applies edits through the normal buffer edit path, so they are undoable and leave the buffer dirty. */
