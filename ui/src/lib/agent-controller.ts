@@ -2,11 +2,13 @@ import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount }
 import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionSummary } from "../bindings";
 import { createAttachmentIntake } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop } from "./client";
-import { childPermissions, type ChildPermission } from "./agent-delegation";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop } from "./client";
+import { childPermissions, isFinished, type ChildPermission } from "./agent-delegation";
+
 import {
   addFeedItem,
   applyDelegationStatus,
+  dropRequest,
   initialAgentState,
   openPermission,
   reduceAgentEvent,
@@ -17,8 +19,11 @@ import {
   type AgentState,
   type Failure,
 } from "./agent-session";
+
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
 import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
+
+const DELEGATION_POLL_MS = 3000;
 
 export type AgentPanelProps = {
   workspacePath?: string;
@@ -132,7 +137,7 @@ export function createAgentController(props: AgentPanelProps) {
   });
   const permission = createMemo(() => openPermission(feed()));
   /** Open permission requests from delegated children, oldest first. */
-  const childPermissionList = createMemo(() => childPermissions(state().strayPermissions, state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : []))));
+  const childPermissionList = createMemo(() => childPermissions(state().strayPermissions, state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])), state().childRequests));
   const childPermission = createMemo<ChildPermission | undefined>(() => childPermissionList()[0]);
   const elicitation = createMemo(() => state().elicitations[0]);
   const fields = createMemo(() => (elicitation()?.mode === "form" ? formFields(elicitation()!.schemaJson) : []));
@@ -249,7 +254,7 @@ export function createAgentController(props: AgentPanelProps) {
     update((current) => reduceAgentEvent(current, event));
     // Follow mode reveals the lead session's own work only. Delegated children run in other sessions.
     if (event.kind === "tool" && following() && session && event.sessionId === session) followTool(event);
-    if (event.kind === "delegation" && event.event.kind === "taskFinished") void refreshDelegation();
+    if (event.kind === "delegation" && (event.event.kind === "taskFinished" || event.event.kind === "delegated")) void refreshDelegation();
     if (event.kind === "complete" && (!session || event.sessionId === session)) queueMicrotask(() => (flushSteer(), drainQueue()));
     if (event.kind === "error" || (event.kind === "status" && ["error", "disconnected"].includes(event.state))) {
       // The turn ended abnormally: nothing queued or steered may go out on its own.
@@ -268,6 +273,19 @@ export function createAgentController(props: AgentPanelProps) {
       // The card keeps what the events reported.
     }
   }
+
+  /** Stops one delegated task. Only the card's Cancel button calls this. A refusal reaches the caller, which shows it on the card. */
+  async function cancelTask(taskId: string) {
+    await agentCancelTask(taskId);
+    await refreshDelegation();
+  }
+  const hasLiveTask = createMemo(() => state().feed.some((item) => item.kind === "delegation" && !isFinished(item.task.status)));
+  // Progress text and results come from the polled status, so refresh it while a task is live.
+  createEffect(() => {
+    if (!isDesktop || !hasLiveTask()) return;
+    const timer = setInterval(() => void refreshDelegation(), DELEGATION_POLL_MS);
+    onCleanup(() => clearInterval(timer));
+  });
 
   onMount(() => {
     props.onReviewReady?.(reviewHunks);
@@ -760,7 +778,7 @@ export function createAgentController(props: AgentPanelProps) {
     setPendingAction(requestId);
     try {
       await agentChildPermission(request.child.connectionId, request.child.sessionId, requestId, optionId);
-      if (current()) update((previous) => ({ ...previous, strayPermissions: previous.strayPermissions.filter((item) => item.requestId !== requestId) }));
+      if (current()) update((previous) => dropRequest(previous, requestId));
     } catch (cause) {
       if (current()) fail({ phase: "prompt", message: `Permission response for ${request.agentName} failed: ${errorText(cause)}` });
     } finally {
@@ -1043,6 +1061,7 @@ export function createAgentController(props: AgentPanelProps) {
     resumeChat,
     stop,
     answerPermission,
+    cancelTask,
     childPermission,
     childPermissions: childPermissionList,
     answerChildPermission,

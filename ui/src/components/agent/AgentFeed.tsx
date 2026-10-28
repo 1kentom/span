@@ -4,7 +4,7 @@ import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
-import { decisionView, taskNote } from "../../lib/agent-delegation";
+import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
 import { EditsBypassNote, ErrorCard, Notice, StopCard } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
 import { DelegationCard } from "./DelegationCard";
@@ -89,7 +89,23 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       <Match when={item().kind === "delegation"}>
         {(() => {
           const task = () => (item() as Extract<FeedItem, { kind: "delegation" }>).task;
-          return <DelegationCard agent={task().agentName ?? "Delegated agent"} status={task().status} note={taskNote(task())} waiting={a.childPermissions().some((entry) => entry.child.sessionId === task().child.sessionId)} />;
+          return (
+            <DelegationCard
+              agent={task().agentName ?? "Delegated agent"}
+              status={task().status}
+              note={taskNote(task())}
+              waiting={a.childPermissions().some((entry) => permissionWaitsOn(entry, task()))}
+              taskId={task().taskId}
+              startedAtMs={task().startedAtMs}
+              finishedAtMs={task().finishedAtMs}
+              progressText={task().progressText}
+              resultSummary={task().resultSummary}
+              artifacts={task().artifacts}
+              budget={budgetText(task().budgetUsed)}
+              onCancel={a.cancelTask}
+              onOpenArtifact={(path) => a.openInEditor(path)}
+            />
+          );
         })()}
       </Match>
       <Match when={item().kind === "stop"}>

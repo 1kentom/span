@@ -1,5 +1,6 @@
 import type { ComposerHint, ComposerHintMode } from "../components/agent/ComposerHints";
 import type { PermissionChoice } from "../components/agent/types";
+import { DOCK_TAB_HINT } from "./agent-dock-focus";
 
 type HintInput = {
   /** Options of the open permission request, if any. */
@@ -8,6 +9,8 @@ type HintInput = {
   elicitation?: { mode: string };
   /** The form field currently asked, when the request is a form. */
   field?: { options: readonly unknown[] };
+  /** Focus is inside the open dock. Dock keys act only then, so only then are they listed. */
+  dockFocused?: boolean;
 };
 
 /**
@@ -19,7 +22,8 @@ type HintInput = {
  *   declines for a URL request (UrlDock).
  * - permission: Y picks the first allow option, A the standing allow (when a one-time allow also exists, otherwise Y
  *   already picks it) and N the first reject option (PermissionDock), only when those exist.
- * Dock keys act only while focus is inside the dock, never while typing in the composer (see `dockKey`).
+ * Dock keys act only while focus is inside the dock, never while typing in the composer (see `dockKey`), so the
+ * question and permission rows list them only while the dock has focus. Otherwise they say how to reach the dock.
  */
 export function composerHints(input: HintInput): Record<ComposerHintMode, ComposerHint[]> {
   const options = input.permission ?? [];
@@ -31,6 +35,7 @@ export function composerHints(input: HintInput): Record<ComposerHintMode, Compos
   if (input.elicitation?.mode === "url") question.push({ keys: ["↵"], label: "Open browser" });
   else if (input.field?.options.length) question.push({ keys: ["1-9"], label: "Pick an option" });
   if (input.elicitation) question.push({ keys: ["Esc"], label: "Decline" });
+  const reach: ComposerHint[] = [{ keys: [], label: DOCK_TAB_HINT }];
   return {
     idle: [
       { keys: ["↵"], label: "Send" },
@@ -44,7 +49,7 @@ export function composerHints(input: HintInput): Record<ComposerHintMode, Compos
       { keys: ["Tab"], label: "Queue" },
       { keys: ["Esc"], label: "Stop" },
     ],
-    question,
-    permission,
+    question: input.dockFocused ? question : reach,
+    permission: input.dockFocused ? permission : reach,
   };
 }

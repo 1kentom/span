@@ -254,8 +254,8 @@ describe("permission details", () => {
 describe("permission options", () => {
   const options = (...kinds: string[]): PermissionOption[] => kinds.map((kind) => ({ optionId: kind, name: kind, kind })) as PermissionOption[];
   it("does not count reject_always as a Reject key hint", () => {
-    expect(composerHints({ permission: options("allow_once", "reject_always") }).permission).toEqual([{ keys: ["Y"], label: "Allow" }]);
-    expect(composerHints({ permission: options("allow_once", "reject_once") }).permission).toHaveLength(2);
+    expect(composerHints({ dockFocused: true, permission: options("allow_once", "reject_always") }).permission).toEqual([{ keys: ["Y"], label: "Allow" }]);
+    expect(composerHints({ dockFocused: true, permission: options("allow_once", "reject_once") }).permission).toHaveLength(2);
   });
   it("finds the oldest open request", () => {
     const state = apply([permission(), permission({ requestId: "r2" })], live());

@@ -5,6 +5,7 @@ import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } 
 import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
+import { shouldFocusDock } from "../../lib/agent-dock-focus";
 import { formatElapsed } from "../../lib/agent-feed";
 import { delegationLine } from "../../lib/agent-delegation";
 import { canCompact, type PermissionEvent } from "../../lib/agent-session";
@@ -12,7 +13,7 @@ import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDeta
 import { isDesktop } from "../../lib/client";
 import { ContextBanner } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
-import { ActivityBar, PermissionDock, QuestionDock, UrlDock } from "./Docks";
+import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
 import { ModelPopover } from "./ModelPopover";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
@@ -30,7 +31,24 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   let plus: HTMLButtonElement | undefined;
   let uploadInput!: HTMLInputElement;
   let imageInput!: HTMLInputElement;
+  let footer: HTMLElement | undefined;
   const [slashClosedFor, setSlashClosedFor] = createSignal<string>();
+  /** Focus is inside the open dock. The hints row lists dock keys only then. */
+  const [dockFocused, setDockFocused] = createSignal(false);
+  /** Time of the last key or input in the prompt box, so a new dock never takes focus from someone typing. */
+  let lastTypedAt = 0;
+  const noteTyping = (event?: KeyboardEvent) => {
+    if (event && ["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key)) return;
+    lastTypedAt = Date.now();
+  };
+  /** Read once when a dock mounts. Never answers anything; at most it moves focus to the primary control. */
+  const dockFocusProps = {
+    get autoFocus() {
+      return shouldFocusDock({ now: Date.now(), lastTypedAt, composerFocused: Boolean(input) && document.activeElement === input, composerText: a.prompt() });
+    },
+    onFocusChange: setDockFocused,
+  };
+  const dockOpen = () => Boolean(a.permission() || a.childPermission() || a.elicitation());
   const config = createMemo(() => configViews(a.state().config));
   const model = () => config().find((option) => option.category === "model");
   const level = () => levelOf(config().find((option) => option.category === "thought_level"));
@@ -118,7 +136,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     void a.intake.addFiles(files, "picked");
   };
   const hintMode = () => (a.permission() || a.childPermission() ? "permission" : a.elicitation() ? "question" : a.running() ? "running" : "idle");
-  const hints = () => composerHints({ permission: (a.permission() ?? a.childPermission())?.event.options, elicitation: a.elicitation(), field: field() });
+  const hints = () => composerHints({ permission: (a.permission() ?? a.childPermission())?.event.options, elicitation: a.elicitation(), field: field(), dockFocused: dockFocused() });
   const hasPayload = () => Boolean(a.prompt().trim() || a.attachments().length);
   const loadingOnly = (reason: string) => reason === "Still loading.";
   const reportable = () => a.blocked().filter((entry) => !loadingOnly(entry.reason));
@@ -136,7 +154,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   });
 
   return (
-    <footer class="agent-footer">
+    <footer ref={footer} class="agent-footer">
       <p class="sb-visually-hidden" aria-live="assertive" aria-atomic="true">{announcement()}</p>
       <p class="sb-visually-hidden agent-run-status" role="status">{runStatus()}</p>
       <Show when={line()}>
@@ -183,6 +201,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             details={permissionView(request.event)}
             options={request.event.options}
             busy={Boolean(a.pendingAction())}
+            autoFocus={dockFocusProps.autoFocus}
+            onFocusChange={dockFocusProps.onFocusChange}
             onChoose={(optionId) => void a.answerPermission(request.event.requestId, optionId)}
           />
         )}
@@ -195,6 +215,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             details={permissionView(request.event)}
             options={request.event.options}
             busy={Boolean(a.pendingAction())}
+            autoFocus={dockFocusProps.autoFocus}
+            onFocusChange={dockFocusProps.onFocusChange}
             onChoose={(optionId) => void a.answerChildPermission(request, optionId)}
           />
         )}
@@ -221,6 +243,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
                       }
                       options={field() ? field()!.options : [{ id: "accept", label: "Continue" }]}
                       allowText={Boolean(field() && !field()!.options.length && field()!.type !== "unsupported")}
+                      autoFocus={dockFocusProps.autoFocus}
+                      onFocusChange={dockFocusProps.onFocusChange}
                       onAnswer={(answer) => void a.answerForm(answer)}
                       onCancel={() => void a.respondElicitation(request().requestId, "decline")}
                     />
@@ -240,6 +264,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               text={`${request().message} Span opens this address in your browser only after you choose Open browser.`}
               brand={props.brand}
               href={request().url ?? ""}
+              autoFocus={dockFocusProps.autoFocus}
+              onFocusChange={dockFocusProps.onFocusChange}
               onOpen={() => void a.openElicitationUrl(request().requestId, request().url ?? "")}
               onCancel={() => void a.respondElicitation(request().requestId, "decline")}
             />
@@ -352,10 +378,20 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           value={a.prompt()}
           placeholder={a.running() ? "Steer the agent, or press Tab to queue…" : a.connected() ? `Ask ${props.label}…` : "Connect an agent to start"}
           spellcheck={false}
-          onInput={(event) => a.setPrompt(event.currentTarget.value)}
+          onInput={(event) => {
+            noteTyping();
+            a.setPrompt(event.currentTarget.value);
+          }}
           onPaste={a.intake.onPaste}
           onKeyDown={(event) => {
             if (event.defaultPrevented) return;
+            noteTyping(event);
+            if (event.key === "Tab" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && !event.isComposing && dockOpen()) {
+              // An open dock is answered from the keyboard by moving into it. Tab does not queue while one is open.
+              event.preventDefault();
+              focusDock(footer?.querySelector<HTMLElement>(".sb-dock") ?? undefined);
+              return;
+            }
             a.recallPrompt(event);
             if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
               event.preventDefault();

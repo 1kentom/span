@@ -132,7 +132,7 @@ describe("dock keys answer only from inside the dock", () => {
 
 describe("permission key hints", () => {
   it("lists A only when it differs from Y", () => {
-    expect(composerHints({ permission: options }).permission.map((hint) => hint.keys[0])).toEqual(["Y", "A", "N"]);
-    expect(composerHints({ permission: [options[1], options[2]] }).permission.map((hint) => hint.keys[0])).toEqual(["Y", "N"]);
+    expect(composerHints({ dockFocused: true, permission: options }).permission.map((hint) => hint.keys[0])).toEqual(["Y", "A", "N"]);
+    expect(composerHints({ dockFocused: true, permission: [options[1], options[2]] }).permission.map((hint) => hint.keys[0])).toEqual(["Y", "N"]);
   });
 });

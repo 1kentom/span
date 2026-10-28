@@ -1,9 +1,10 @@
-import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { DiffView } from "./WorkGroup";
 import type { Brand, PermissionChoice, PermissionDetails, QuestionAnswer, QuestionOption } from "./types";
 import { dockKey } from "./util";
+import { DOCK_TAB_HINT } from "../../lib/agent-dock-focus";
 
 /**
  * Registers a key handler for one dock while `active` is true. It only sees keys pressed with focus inside the dock
@@ -21,7 +22,54 @@ function useDockKeys(dock: () => HTMLElement | undefined, active: () => boolean,
   });
 }
 
-type QuestionDockProps = {
+const PRIMARY = [".sb-btn.primary:not(:disabled)", ".sb-q-option:not(:disabled)", ".sb-input:not(:disabled)", ".sb-btn:not(:disabled)"];
+
+/** Moves focus to the dock's primary control: the primary button, else the first option, field or button. Never activates it. */
+export function focusDock(dock: HTMLElement | undefined) {
+  if (!dock) return;
+  const target = PRIMARY.map((selector) => dock.querySelector<HTMLElement>(selector)).find(Boolean);
+  (target ?? dock).focus();
+}
+
+/**
+ * Tracks whether focus is inside the dock and, when `autoFocus` is true at the moment the dock appears, moves focus to
+ * its primary control. The caller decides `autoFocus` (never while the user is typing); it never answers anything.
+ */
+function useDockFocus(dock: () => HTMLElement | undefined, props: { autoFocus?: boolean; onFocusChange?: (focused: boolean) => void }) {
+  const [focused, setFocused] = createSignal(false);
+  const set = (value: boolean) => {
+    if (value === focused()) return;
+    setFocused(value);
+    props.onFocusChange?.(value);
+  };
+  onMount(() => {
+    const element = dock();
+    if (!props.autoFocus || !element) return;
+    queueMicrotask(() => {
+      if (element.isConnected) focusDock(element);
+    });
+  });
+  onCleanup(() => props.onFocusChange?.(false));
+  return {
+    focused,
+    focusin: () => set(true),
+    focusout: (event: FocusEvent) => {
+      if (!(event.relatedTarget instanceof Node) || !dock()?.contains(event.relatedTarget)) set(false);
+    },
+  };
+}
+
+type DockFocusProps = {
+  /** Take focus when the dock appears. Read once, on mount. */
+  autoFocus?: boolean;
+  onFocusChange?: (focused: boolean) => void;
+};
+
+const TabHint = (props: { show: boolean }) => (
+  <Show when={props.show}><div class="sb-dock-tabhint">{DOCK_TAB_HINT}</div></Show>
+);
+
+type QuestionDockProps = DockFocusProps & {
   asker?: Brand & { label?: string };
   /** For example "2 of 3". */
   step?: string;
@@ -38,6 +86,7 @@ type QuestionDockProps = {
 export function QuestionDock(props: QuestionDockProps) {
   const [text, setText] = createSignal("");
   let dock: HTMLElement | undefined;
+  const focus = useDockFocus(() => dock, props);
   useDockKeys(
     () => dock,
     () => props.active !== false,
@@ -58,7 +107,7 @@ export function QuestionDock(props: QuestionDockProps) {
     if (value) props.onAnswer({ text: value });
   };
   return (
-    <section ref={dock} class="sb-dock" role="group" aria-label="Question from the agent" tabIndex={-1}>
+    <section ref={dock} class="sb-dock" role="group" aria-label="Question from the agent" tabIndex={-1} on:focusin={focus.focusin} on:focusout={focus.focusout}>
       <div class="sb-dock-meta">
         <BrandIcon id={props.asker?.id} name={props.asker?.name} size={13} />
         <span>{props.asker?.label ?? props.asker?.name ?? "Agent"} is asking</span>
@@ -66,6 +115,7 @@ export function QuestionDock(props: QuestionDockProps) {
         <Show when={props.step}><span class="sb-mono dim">{props.step}</span></Show>
       </div>
       <div class="sb-dock-prompt">{props.prompt}</div>
+      <TabHint show={!focus.focused()} />
       <For each={props.options}>
         {(option, index) => (
           <button class="sb-q-option" onClick={() => props.onAnswer({ optionId: option.id })}>
@@ -90,7 +140,7 @@ export function QuestionDock(props: QuestionDockProps) {
   );
 }
 
-type PermissionDockProps = {
+type PermissionDockProps = DockFocusProps & {
   title: string;
   /** Names the delegated agent the request comes from, when it is not the lead. */
   from?: string;
@@ -131,6 +181,7 @@ export function PermissionDock(props: PermissionDockProps) {
   const command = () => props.details?.command ?? props.command;
   const hasDetails = () => Boolean(command() || props.details?.locations.length || props.details?.diffs.length || props.details?.input || props.reason);
   let dock: HTMLElement | undefined;
+  const focus = useDockFocus(() => dock, props);
   useDockKeys(
     () => dock,
     () => props.active !== false && !props.busy,
@@ -144,7 +195,7 @@ export function PermissionDock(props: PermissionDockProps) {
     },
   );
   return (
-    <section ref={dock} tabIndex={-1} class="sb-dock" classList={{ internal: internal() }} role="group" aria-label={`${props.from ? `${props.from} asks permission` : "Permission requested"}: ${props.title}`}>
+    <section ref={dock} tabIndex={-1} on:focusin={focus.focusin} on:focusout={focus.focusout} class="sb-dock" classList={{ internal: internal() }} role="group" aria-label={`${props.from ? `${props.from} asks permission` : "Permission requested"}: ${props.title}`}>
       <div class="sb-dock-head">
         <span class="sb-dot warn" aria-hidden="true" />
         <span class="sb-dock-title" classList={{ muted: internal() }}>{props.title}</span>
@@ -196,6 +247,7 @@ export function PermissionDock(props: PermissionDockProps) {
           <span>May ask again for the write</span>
         </div>
       </Show>
+      <TabHint show={!focus.focused()} />
       <div class="sb-actions">
         <For each={sorted()}>
           {(option) => (
@@ -216,7 +268,7 @@ export function PermissionDock(props: PermissionDockProps) {
   );
 }
 
-type UrlDockProps = {
+type UrlDockProps = DockFocusProps & {
   title: string;
   text?: string;
   brand?: Brand;
@@ -232,6 +284,7 @@ type UrlDockProps = {
 /** Url-mode elicitation: send the user to the browser, never open it without a click or Enter. */
 export function UrlDock(props: UrlDockProps) {
   let dock: HTMLElement | undefined;
+  const focus = useDockFocus(() => dock, props);
   useDockKeys(
     () => dock,
     () => props.active !== false,
@@ -247,7 +300,7 @@ export function UrlDock(props: UrlDockProps) {
     },
   );
   return (
-    <section ref={dock} tabIndex={-1} class="sb-dock" role="group" aria-label={props.title}>
+    <section ref={dock} tabIndex={-1} class="sb-dock" role="group" aria-label={props.title} on:focusin={focus.focusin} on:focusout={focus.focusout}>
       <div class="sb-dock-head">
         <Icon name="Link2" size={13} class="sb-accent" />
         <span class="sb-dock-title">{props.title}</span>
@@ -267,6 +320,7 @@ export function UrlDock(props: UrlDockProps) {
           </Show>
         </Show>
       </div>
+      <TabHint show={!focus.focused()} />
       <div class="sb-actions">
         <button class="sb-btn primary" onClick={props.onOpen}>Open browser<kbd class="sb-hotkey" aria-hidden="true">↵</kbd></button>
         <button class="sb-btn" onClick={props.onCancel}>Cancel</button>

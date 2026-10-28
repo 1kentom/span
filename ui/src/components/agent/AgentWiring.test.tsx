@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, AgentFeatures } from "../../bindings";
 import { createAgentController, type AgentController, type AgentPanelProps } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
+import { DOCK_TAB_HINT } from "../../lib/agent-dock-focus";
 import { AgentComposer } from "./AgentComposer";
 import { AgentFeed } from "./AgentFeed";
 import { HistoryList } from "./HistoryList";
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => {
       agentConnect: vi.fn(),
       agentPrompt: vi.fn(() => new Promise(() => undefined)),
       agentCancel: vi.fn(async () => undefined),
+      agentPermission: vi.fn(async (..._args: unknown[]) => undefined),
       agentDisconnect: vi.fn(async () => undefined),
       agentListSessions: vi.fn(async () => []),
       agentSetConfig: vi.fn(async () => undefined),
@@ -28,10 +30,11 @@ const mocks = vi.hoisted(() => {
     agentPresets: vi.fn(async () => []),
     agentAuthenticateWith: vi.fn(async () => "s-auth"),
     agentChildPermission: vi.fn(async (..._args: unknown[]) => undefined),
+    agentCancelTask: vi.fn(async (..._args: unknown[]) => undefined),
     agentDelegationStatus: vi.fn(async () => ({ enabled: true, available: true, reason: null, lead: null, attached: true, tasks: [], decisions: [] })),
   };
 });
-vi.mock("../../lib/client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith, agentChildPermission: mocks.agentChildPermission, agentDelegationStatus: mocks.agentDelegationStatus }));
+vi.mock("../../lib/client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith, agentChildPermission: mocks.agentChildPermission, agentCancelTask: mocks.agentCancelTask, agentDelegationStatus: mocks.agentDelegationStatus }));
 
 const features = (patch: Partial<AgentFeatures> = {}): AgentFeatures => ({ loadSession: false, image: true, audio: false, embeddedContext: true, mcpHttp: false, mcpSse: false, canListSessions: false, canResumeSessions: false, canCloseSessions: false, canDeleteSessions: false, ...patch });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -59,6 +62,7 @@ beforeEach(() => {
   mocks.listeners.splice(0);
   mocks.api.agentConnect.mockReset();
   mocks.api.agentCancel.mockClear();
+  mocks.api.agentPermission.mockClear();
   mocks.api.agentPrompt.mockClear();
 });
 
@@ -127,18 +131,18 @@ describe("composer keys", () => {
   it("shows idle hints and no hint for permission when no option matches", async () => {
     const { host } = await composer();
     expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["↵ Send", "⇧↵ Newline", "↑ Earlier prompts", "/ Commands", "⌥↵ Attach"]);
-    expect(composerHints({ permission: [] }).permission).toEqual([]);
+    expect(composerHints({ dockFocused: true, permission: [] }).permission).toEqual([]);
   });
 });
 
 describe("composerHints", () => {
   it("lists only bound keys per mode", () => {
-    expect(composerHints({ permission: [{ optionId: "a", name: "Allow", kind: "allow_once" }] }).permission).toEqual([{ keys: ["Y"], label: "Allow" }]);
-    expect(composerHints({ permission: [{ optionId: "a", name: "Allow", kind: "allow_once" }, { optionId: "r", name: "No", kind: "reject_once" }] }).permission.map((hint) => hint.keys[0])).toEqual(["Y", "N"]);
-    expect(composerHints({ elicitation: { mode: "form" }, field: { options: [1] } }).question).toEqual([{ keys: ["1-9"], label: "Pick an option" }, { keys: ["Esc"], label: "Decline" }]);
-    expect(composerHints({ elicitation: { mode: "form" }, field: { options: [] } }).question).toEqual([{ keys: ["Esc"], label: "Decline" }]);
-    expect(composerHints({ elicitation: { mode: "url" } }).question).toEqual([{ keys: ["↵"], label: "Open browser" }, { keys: ["Esc"], label: "Decline" }]);
-    expect(composerHints({}).question).toEqual([]);
+    expect(composerHints({ dockFocused: true, permission: [{ optionId: "a", name: "Allow", kind: "allow_once" }] }).permission).toEqual([{ keys: ["Y"], label: "Allow" }]);
+    expect(composerHints({ dockFocused: true, permission: [{ optionId: "a", name: "Allow", kind: "allow_once" }, { optionId: "r", name: "No", kind: "reject_once" }] }).permission.map((hint) => hint.keys[0])).toEqual(["Y", "N"]);
+    expect(composerHints({ dockFocused: true, elicitation: { mode: "form" }, field: { options: [1] } }).question).toEqual([{ keys: ["1-9"], label: "Pick an option" }, { keys: ["Esc"], label: "Decline" }]);
+    expect(composerHints({ dockFocused: true, elicitation: { mode: "form" }, field: { options: [] } }).question).toEqual([{ keys: ["Esc"], label: "Decline" }]);
+    expect(composerHints({ dockFocused: true, elicitation: { mode: "url" } }).question).toEqual([{ keys: ["↵"], label: "Open browser" }, { keys: ["Esc"], label: "Decline" }]);
+    expect(composerHints({ dockFocused: true }).question).toEqual([]);
   });
 });
 
@@ -263,5 +267,159 @@ describe("queued messages after an error", () => {
     await tick();
     expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(2);
     expect(mocks.api.agentPrompt).toHaveBeenLastCalledWith("second", []);
+  });
+});
+
+describe("typed child events and cancel in the sidebar", () => {
+  const lead = { connectionId: "c1", sessionId: "s1" };
+  const child = { connectionId: "c1", sessionId: "k1" };
+  const options = [{ optionId: "ok", name: "Allow", kind: "allow_once" }, { optionId: "no", name: "Reject", kind: "reject_once" }];
+
+  it("docks a request the typed childPermission event names, with no card, and answers with the typed child key", async () => {
+    const { host } = await composer();
+    mocks.emit(
+      { kind: "permission", sessionId: "k1", requestId: "r1", toolCallId: "t", title: "Run pnpm test", options },
+      { kind: "delegation", event: { kind: "childPermission", lead, child, taskId: "t1", agentName: "Reviewer", connectionId: "c1", sessionId: "k1", requestId: "r1", requestKind: "permission" } },
+    );
+    const dock = host.querySelector(".sb-dock")!;
+    expect(dock.getAttribute("aria-label")).toBe("Reviewer asks permission: Run pnpm test");
+    [...dock.querySelectorAll<HTMLButtonElement>("button.sb-btn")].find((button) => button.textContent?.startsWith("Allow"))!.click();
+    await tick();
+    expect(mocks.agentChildPermission).toHaveBeenCalledWith("c1", "k1", "r1", "ok");
+  });
+
+  it("never docks a request from a session no typed event or card names", async () => {
+    const { host } = await composer();
+    mocks.emit(
+      { kind: "permission", sessionId: "k5", requestId: "r5", toolCallId: "t", title: "Run it", options },
+      { kind: "delegation", event: { kind: "childPermission", lead, child, taskId: "t1", agentName: "Reviewer", connectionId: "c1", sessionId: "k1", requestId: "other", requestKind: "permission" } },
+    );
+    expect(host.querySelector(".sb-dock")).toBeNull();
+  });
+
+  it("cancels a running task from the card's Cancel button only, and refreshes the status", async () => {
+    mocks.agentCancelTask.mockClear();
+    mocks.api.agentConnect.mockImplementationOnce(async () => {
+      mocks.emit({ kind: "ready", agentName: "a", agentTitle: "Agent", agentVersion: "1", features: features(), authMethods: [] }, { kind: "session", sessionId: "s1" });
+      return "s1";
+    });
+    let controller!: AgentController;
+    const host = mount(() => {
+      controller = createAgentController({ workspacePath: "/w", workspaceGeneration: 1 });
+      return <AgentFeed agent={controller} />;
+    });
+    await tick();
+    controller.connectCustom("agent");
+    await tick();
+    mocks.emit({ kind: "delegation", event: { kind: "delegated", lead, child, taskId: "t1", agentName: "Codex" } });
+    await tick();
+    expect(mocks.agentCancelTask).not.toHaveBeenCalled();
+    host.querySelector<HTMLButtonElement>(".sb-delegation-actions button")!.click();
+    await tick();
+    expect(mocks.agentCancelTask).toHaveBeenCalledExactlyOnceWith("t1");
+    mocks.emit({ kind: "delegation", event: { kind: "taskFinished", lead, child, taskId: "t1", status: "failed", reason: "cancelled" } });
+    expect(host.querySelector(".sb-delegation-actions")).toBeNull();
+    expect(text(host.querySelector(".sb-delegation-status"))).toBe("Cancelled");
+  });
+});
+
+describe("focus and hints for the permission, question and URL docks", () => {
+  const options = [{ optionId: "ok", name: "Allow", kind: "allow_once" }, { optionId: "no", name: "Reject", kind: "reject_once" }];
+  const ask = (requestId = "p1") => mocks.emit({ kind: "permission", sessionId: "s1", requestId, toolCallId: "t", title: "Run ls", options });
+  const hints = (host: HTMLElement) => [...host.querySelectorAll(".sb-hint")].map((hint) => text(hint));
+  const area = (host: HTMLElement) => host.querySelector<HTMLTextAreaElement>("#agent-prompt")!;
+  const typeInto = (host: HTMLElement, value: string) => {
+    area(host).focus();
+    area(host).value = value;
+    area(host).dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  afterEach(() => vi.useRealTimers());
+
+  it("moves focus to the primary control when the user is idle, with no Tab line and the key hints shown", async () => {
+    const { host } = await composer();
+    ask();
+    await tick();
+    const allow = host.querySelector<HTMLButtonElement>(".sb-dock .sb-btn.primary")!;
+    expect(document.activeElement).toBe(allow);
+    expect(host.querySelector(".sb-dock-tabhint")).toBeNull();
+    expect(hints(host)).toEqual(["Y Allow", "N Reject"]);
+    expect(mocks.api.agentPermission).not.toHaveBeenCalled();
+  });
+
+  it("does not steal focus within 1500 ms of typing, and shows the same Tab line in the dock and the hints row", async () => {
+    const { host } = await composer();
+    typeInto(host, "x");
+    area(host).value = "";
+    area(host).dispatchEvent(new Event("input", { bubbles: true }));
+    ask();
+    await tick();
+    expect(document.activeElement).toBe(area(host));
+    expect(text(host.querySelector(".sb-dock-tabhint"))).toBe(DOCK_TAB_HINT);
+    expect(hints(host)).toEqual([DOCK_TAB_HINT]);
+  });
+
+  it("does not steal focus while the focused composer holds unsent text, even when the typing was long ago", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+    const { host } = await composer();
+    typeInto(host, "half a sentence");
+    vi.setSystemTime(1_010_000);
+    ask();
+    await tick();
+    expect(document.activeElement).toBe(area(host));
+    expect(host.querySelector(".sb-dock-tabhint")).not.toBeNull();
+  });
+
+  it("takes focus once the typing pause has passed and the composer is empty", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+    const { host } = await composer();
+    typeInto(host, "a");
+    typeInto(host, "");
+    vi.setSystemTime(1_001_600);
+    ask();
+    await tick();
+    expect(document.activeElement).toBe(host.querySelector(".sb-dock .sb-btn.primary"));
+  });
+
+  it("answers y only with dock focus: not from the composer, then yes after Tab moves into the dock", async () => {
+    const { host } = await composer();
+    typeInto(host, "x");
+    ask();
+    await tick();
+    key("y", {}, area(host));
+    key("y");
+    expect(mocks.api.agentPermission).not.toHaveBeenCalled();
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    area(host).dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(host.querySelector(".sb-dock .sb-btn.primary"));
+    expect(hints(host)).toEqual(["Y Allow", "N Reject"]);
+    expect(host.querySelector(".sb-dock-tabhint")).toBeNull();
+    key("y", {}, document.activeElement!);
+    await tick();
+    expect(mocks.api.agentPermission).toHaveBeenCalledWith("p1", "ok");
+  });
+
+  it("goes back to the Tab hint when focus leaves the dock", async () => {
+    const { host } = await composer();
+    ask();
+    await tick();
+    expect(hints(host)).toEqual(["Y Allow", "N Reject"]);
+    area(host).focus();
+    expect(hints(host)).toEqual([DOCK_TAB_HINT]);
+    expect(text(host.querySelector(".sb-dock-tabhint"))).toBe(DOCK_TAB_HINT);
+  });
+
+  it("focuses the first option of a question dock and the Open browser button of a URL dock when idle", async () => {
+    const { host } = await composer();
+    mocks.emit({ kind: "elicitation", sessionId: "s1", requestId: "q1", mode: "form", message: "Which?", schemaJson: JSON.stringify({ type: "object", properties: { db: { type: "string", enum: ["pg", "sq"] } } }) });
+    await tick();
+    expect(document.activeElement).toBe(host.querySelector(".sb-dock .sb-q-option"));
+    mocks.emit({ kind: "elicitationResolved", requestId: "q1" });
+    mocks.emit({ kind: "elicitation", sessionId: "s1", requestId: "u1", mode: "url", message: "Sign in", url: "https://example.com/login" });
+    await tick();
+    expect(document.activeElement).toBe(host.querySelector(".sb-dock .sb-btn.primary"));
+    expect(host.querySelector(".sb-dock .sb-btn.primary")!.textContent).toContain("Open browser");
   });
 });

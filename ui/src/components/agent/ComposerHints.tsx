@@ -20,7 +20,7 @@ export function ComposerHints(props: ComposerHintsProps) {
       <ul class="sb-hints" data-mode={props.mode} aria-label="Keyboard shortcuts">
         <For each={rows()}>{(hint) => (
           <li class="sb-hint">
-            <span class="sb-hint-keys"><For each={hint.keys}>{(k) => <kbd class="sb-hint-key">{k}</kbd>}</For></span>{" "}
+            <Show when={hint.keys.length}><span class="sb-hint-keys"><For each={hint.keys}>{(k) => <kbd class="sb-hint-key">{k}</kbd>}</For></span>{" "}</Show>
             <span>{hint.label}</span>
           </li>
         )}</For>

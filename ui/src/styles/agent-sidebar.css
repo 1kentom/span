@@ -427,4 +427,9 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .agent-delegation-line .sb-dot { background: var(--sb-success); }
 .agent-delegation-line.warn .sb-dot { background: var(--sb-warning); }
 .sb-dock-from { font-size: 11px; color: var(--sb-dim); }
+.sb-dock-tabhint { font-size: 11.5px; color: var(--sb-dim); }
+.sb-delegation-result { overflow-wrap: anywhere; white-space: pre-wrap; }
+.sb-delegation-progress, .sb-delegation-files li { overflow-wrap: anywhere; }
+.sb-delegation-files { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
+.sb-delegation-actions { display: flex; gap: 6px; }
 .sb-delegation-hint { padding: 2px 4px 0; overflow-wrap: anywhere; }

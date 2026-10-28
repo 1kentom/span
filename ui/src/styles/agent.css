@@ -441,10 +441,6 @@
   background: var(--sb-control);
   color: var(--sb-fg);
 }
-.agent-tool-button.att-picker {
-  width: 26px;
-  padding: 0;
-}
 .agent-model-button,
 .agent-mode-button {
   min-width: 0;
