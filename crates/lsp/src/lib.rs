@@ -13,6 +13,7 @@ mod client;
 mod document;
 mod error;
 mod protocol;
+pub mod servers;
 mod transport;
 
 pub use client::{LspClient, ServerEvent};
