@@ -540,7 +540,13 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       await connect(entry.launch, registryName(entry.id) || entry.id, entry.id);
       if (disposed || !sessionId() || sessionId() === last.sessionId || !state().canLoad) return;
+      // Only a chat the agent still lists is resumed, and a failed resume is dropped quietly: the saved id is just stale.
+      if (state().canList) {
+        await loadSessions();
+        if (!sessions().some((entry) => entry.sessionId === last.sessionId)) return;
+      }
       await resumeChat(last.sessionId);
+      if (sessionId() !== last.sessionId) patch({ failure: undefined });
     } finally {
       restoringLast = false;
       const id = sessionId();
