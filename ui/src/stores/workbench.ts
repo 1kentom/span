@@ -60,6 +60,8 @@ export function createWorkbench() {
   const [closeBusy, setCloseBusy] = createSignal(false);
   let closeOperation = 0;
   let nextGroupId = 2;
+  /** Two editor groups are stacked instead of side by side. */
+  const [splitVertical, setSplitVertical] = createSignal(false);
   const [pendingWorkspace, setPendingWorkspace] = createSignal(false);
   const [pendingRecovery, setPendingRecovery] = createSignal<{ path: string; document: Text }>();
   const [failed, setFailed] = createSignal<Set<string>>(new Set());
@@ -142,7 +144,7 @@ export function createWorkbench() {
   let sessionWriting: Promise<void> = Promise.resolve();
   function sessionSnapshot(): SessionState | undefined {
     const current = workspace(); if (!current) return;
-    return { workspaceRoot: current.root, groups: groups().map(group => ({ paths: group.tabs.filter(path => path !== SETTINGS_TAB && !isSettingsBuffer(path)), activePath: group.active && group.active !== SETTINGS_TAB && !isSettingsBuffer(group.active) ? group.active : group.tabs.find(path => path !== SETTINGS_TAB && !isSettingsBuffer(path)) || null })), activeGroup: Math.max(0, groups().findIndex(group => group.id === activeGroup())), panels: panels(), markdownViews: markdownViews() };
+    return { workspaceRoot: current.root, groups: groups().map(group => ({ paths: group.tabs.filter(path => path !== SETTINGS_TAB && !isSettingsBuffer(path)), activePath: group.active && group.active !== SETTINGS_TAB && !isSettingsBuffer(group.active) ? group.active : group.tabs.find(path => path !== SETTINGS_TAB && !isSettingsBuffer(path)) || null })), activeGroup: Math.max(0, groups().findIndex(group => group.id === activeGroup())), panels: panels(), markdownViews: markdownViews(), splitVertical: splitVertical() && groups().length > 1 };
   }
   async function persistSession() {
     if (sessionTimer) clearTimeout(sessionTimer);
@@ -303,7 +305,7 @@ export function createWorkbench() {
       openingBuffers.clear();
       restoreProtectedTabs.clear();
       tabRecency.clear(); tabClock = 0;
-      batch(() => { setWorkspaceGeneration(workspaceVersion); setWorkspace(value); setGroups([{ id: 1, tabs: [] }]); setActiveGroup(1); setExpanded(new Set([""])); setError(""); setSearchResults([]); setIndexStatus(null); setIndexError(""); });
+      batch(() => { setWorkspaceGeneration(workspaceVersion); setWorkspace(value); setGroups([{ id: 1, tabs: [] }]); setSplitVertical(false); setActiveGroup(1); setExpanded(new Set([""])); setError(""); setSearchResults([]); setIndexStatus(null); setIndexError(""); });
       for (const key of Object.keys(buffers)) setBuffers(key, undefined!);
       for (const key of Object.keys(directories)) setDirectories(key, undefined!);
       clearTimeout(indexTimer); directoryLoads.clear(); setLoadingDirectories(new Set<string>());
@@ -320,6 +322,7 @@ export function createWorkbench() {
         setPanels(restore.panels);
         setGroups(restore.groups.slice(0, 2).map((_group, index) => ({ id: index + 1, tabs: [] })));
         if (!groups().length) setGroups([{ id: 1, tabs: [] }]);
+        setSplitVertical(!!restore.splitVertical && groups().length > 1);
         for (const group of restore.groups.slice(0, 2)) if (group.activePath) restoreProtectedTabs.add(group.activePath);
         for (const [index, group] of restore.groups.slice(0, 2).entries()) {
           for (const file of group.paths) await openFile(file, index + 1);
@@ -532,14 +535,20 @@ export function createWorkbench() {
     } catch (error) { if (version === workspaceVersion) report(error); }
     finally { if (operation === closeOperation) setCloseBusy(false); }
   }
-  function splitEditor(sourceGroup = activeGroup(), sourcePath?: string) {
+  /** Direction names follow VS Code: "right" and "left" give side by side groups, "down" and "up" stacked ones. */
+  type SplitDirection = "right" | "left" | "down" | "up";
+  function splitEditor(sourceGroup = activeGroup(), sourcePath?: string, direction: SplitDirection = "right") {
     if (groups().length >= 2) return;
     const source = groups().find(group => group.id === sourceGroup); if (!source) return;
     const path = sourcePath ?? (source.active !== SETTINGS_TAB ? source.active : undefined); const id = nextGroupId++;
-    setGroups(current => [...current, { id, tabs: path ? [path] : [], active: path }]);
-    setActiveGroup(id);
+    const created = { id, tabs: path ? [path] : [], active: path };
+    batch(() => {
+      setSplitVertical(direction === "down" || direction === "up");
+      setGroups(current => direction === "left" || direction === "up" ? [created, ...current] : [...current, created]);
+      setActiveGroup(id);
+    });
   }
-  async function openToSide(path: string, sourceGroup = activeGroup()) {
+  async function openToSide(path: string, sourceGroup = activeGroup(), direction: SplitDirection = "right") {
     if (!groups().some(group => group.id === sourceGroup)) return;
     const other = groups().find(group => group.id !== sourceGroup);
     if (other) { await openFile(path, other.id); return; }
@@ -548,7 +557,25 @@ export function createWorkbench() {
     const intent = latestOpenByGroup.get(sourceGroup);
     await opening;
     if (version !== workspaceVersion || latestOpenByGroup.get(sourceGroup) !== intent || groups().find(group => group.id === sourceGroup)?.active !== path) return;
-    splitEditor(sourceGroup, path);
+    splitEditor(sourceGroup, path, direction);
+  }
+  /** Drop zones: the centre opens in the group, an edge opens in a new group on that side (or in the other group when two exist). */
+  const zoneDirection = (zone: "left" | "right" | "top" | "bottom"): SplitDirection => zone === "top" ? "up" : zone === "bottom" ? "down" : zone;
+  async function openInZone(path: string, group: number, zone: "center" | "left" | "right" | "top" | "bottom") {
+    if (zone === "center") { await openFile(path, group); return; }
+    await openToSide(path, group, zoneDirection(zone));
+  }
+  function moveTabToZone(path: string, fromGroup: number, toGroup: number, zone: "center" | "left" | "right" | "top" | "bottom", copy = false) {
+    if (zone === "center") { moveTab(path, fromGroup, toGroup, copy); return; }
+    const other = groups().find(group => group.id !== toGroup);
+    if (other) { moveTab(path, fromGroup, other.id, copy); return; }
+    if (path === SETTINGS_TAB) copy = false;
+    const source = groups().find(group => group.id === fromGroup); if (!source) return;
+    // A lone tab cannot leave its only group empty-handed: splitting with it would leave an empty group behind.
+    if (!copy && source.tabs.length < 2 && fromGroup === toGroup) return;
+    splitEditor(toGroup, path, zoneDirection(zone));
+    if (!copy) removeTab(path, fromGroup, false);
+    rememberTab(path); enforceTabLimit();
   }
   function moveTab(path: string, fromGroup: number, toGroup: number, copy = false) {
     if (path === SETTINGS_TAB) copy = false;
@@ -642,7 +669,7 @@ export function createWorkbench() {
       await refreshFiles(); return entry;
     });
   }
-  async function duplicatePath(from: string, to: string) { return fileOperation(async assertCurrent => { const entry = await api.duplicatePath(from, to); assertCurrent(); await refreshFiles(); if (!entry.isDir) await openFile(entry.path); return entry; }); }
+  async function duplicatePath(from: string, to: string, open = true) { return fileOperation(async assertCurrent => { const entry = await api.duplicatePath(from, to); assertCurrent(); await refreshFiles(); if (open && !entry.isDir) await openFile(entry.path); return entry; }); }
   async function trashPath(path: string) {
     return fileOperation(async assertCurrent => {
       await api.trashPath(path); assertCurrent();
@@ -766,6 +793,6 @@ export function createWorkbench() {
   });
   createEffect(() => autosave.sync());
   onCleanup(() => { autosave.dispose(); cancelAllFormats(); });
-  return { indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
+  return { indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;
