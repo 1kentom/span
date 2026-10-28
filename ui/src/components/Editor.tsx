@@ -394,7 +394,7 @@ export default function Editor(props: EditorProps) {
   function extensions(): Extension[] {
     return [
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(),
-      props.onUndo ? [] : history(), rectangularSelection(), crosshairCursor(), indentOnInput(), bracketMatching(),
+      props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),
       closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
         const marker = document.createElement("span");
         marker.className = `cm-fold-chevron ${open ? "is-open" : ""}`;
