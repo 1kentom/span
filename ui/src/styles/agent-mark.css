@@ -22,8 +22,8 @@
 
 /* One line: mark, status, then shortcuts. The shortcuts drop from the end as the panel narrows, Send last. */
 .agent-footer .agent-statusbar { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 4px 2px; overflow: hidden; color: var(--sb-dim); font-size: 11px; white-space: nowrap; }
-.agent-statusbar-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.agent-statusbar-text { flex: 0 0 auto; max-width: 60%; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .agent-footer .agent-statusbar .sb-hints { flex: 0 1 auto; flex-wrap: nowrap; min-width: 0; margin-left: auto; padding: 0; gap: 12px; overflow: hidden; }
-@container (max-width: 560px) { .agent-statusbar .sb-hint:nth-child(n + 4) { display: none; } }
-@container (max-width: 460px) { .agent-statusbar .sb-hint:nth-child(n + 3) { display: none; } }
+@container (max-width: 700px) { .agent-statusbar .sb-hint:nth-child(n + 4) { display: none; } }
+@container (max-width: 520px) { .agent-statusbar .sb-hint:nth-child(n + 3) { display: none; } }
 @container (max-width: 340px) { .agent-statusbar .sb-hints { display: none; } }
