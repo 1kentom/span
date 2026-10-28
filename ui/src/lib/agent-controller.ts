@@ -23,6 +23,7 @@ import {
 
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
 import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
+import { moveItem } from "./agent-queue";
 
 const DELEGATION_POLL_MS = 3000;
 
@@ -116,6 +117,14 @@ export function createAgentController(props: AgentPanelProps) {
   let history: string[] = [];
   let historyIndex = -1;
   let priority: string | undefined;
+  /** The queued message picked with Send now, until it goes out (or is dropped). The panel shows a spinner on it. */
+  const [queueSending, setQueueSending] = createSignal<string>();
+  /** Feed ids of user messages that went out through Send now, so the feed can tag them. */
+  const [sentNowIds, setSentNowIds] = createSignal<ReadonlySet<number>>(new Set());
+  const pick = (id: string | undefined) => {
+    priority = id;
+    setQueueSending(id);
+  };
   let steering: Steering | undefined;
   /** Counts dispatched turns, so a steer can tell its own turn from a later one. */
   let turnCounter = 0;
@@ -207,13 +216,15 @@ export function createAgentController(props: AgentPanelProps) {
     setMenu(null);
     setPinned(true);
     setBannerDismissed(false);
-    priority = undefined;
+    pick(undefined);
     releaseSteer();
     holdQueue();
     followed.clear();
   }
   /** Stops the queue from draining on its own, when there is anything in it. */
   function holdQueue() {
+    // A Send now that never got its turn boundary must not leave the row spinning and the order locked.
+    pick(undefined);
     if (queue().length) setQueueHeld(true);
   }
   /**
@@ -588,11 +599,12 @@ export function createAgentController(props: AgentPanelProps) {
     if (selected) contexts.push(`Selected code from ${selected.path}${selected.startLine ? `, line ${selected.startLine}` : ""}:\n${selected.text}`);
     return contexts.length ? `${text}\n\nEditor context:\n${contexts.join("\n\n")}` : text;
   }
-  async function dispatch(entry: Queued, options: { steered?: boolean } = {}) {
+  async function dispatch(entry: Queued, options: { steered?: boolean; sentNow?: boolean } = {}) {
     const current = guard(agentEpoch);
     // A steer still waiting here belongs to an earlier turn; it must not fire after this one.
     if (steering && !options.steered) releaseSteer();
     const turn = ++turnCounter;
+    if (options.sentNow) setSentNowIds((previous) => new Set(previous).add(state().nextId + 1));
     update((previous) =>
       addFeedItem(
         { ...previous, running: true, stopRequested: false, status: "busy", statusMessage: "Agent is working", failure: undefined },
@@ -710,12 +722,12 @@ export function createAgentController(props: AgentPanelProps) {
     // A held queue goes out only on the user's word: Send queued, or Send now on one message (which sets `priority`).
     if (queueHeld() && !options.force && !priority) return;
     const chosen = priority ? waiting.find((entry) => entry.id === priority) : undefined;
-    priority = undefined;
+    pick(undefined);
     if (chosen) {
       const rest = waiting.filter((entry) => entry !== chosen);
       setQueue(rest);
       if (!rest.length) setQueueHeld(false);
-      void dispatch(chosen);
+      void dispatch(chosen, { sentNow: true });
       return;
     }
     setQueue([]);
@@ -730,11 +742,11 @@ export function createAgentController(props: AgentPanelProps) {
   }
   function sendQueuedNow(id: string) {
     if (running()) {
-      priority = id;
+      pick(id);
       void stop();
       return;
     }
-    priority = id;
+    pick(id);
     drainQueue({ force: true });
   }
   /** Send queued: the user's explicit go-ahead for a held queue. */
@@ -749,8 +761,14 @@ export function createAgentController(props: AgentPanelProps) {
         return { ...entry, text, message: `${text}${joiner}${rest}` };
       }),
     );
+  /** Moves a queued message to another position. Ignored while one is being sent, so the order cannot shift under it. */
+  const reorderQueue = (from: number, to: number) => {
+    if (queueSending()) return;
+    setQueue((previous) => moveItem(previous, from, to));
+  };
   const removeQueued = (id: string) =>
     setQueue((previous) => {
+      if (queueSending() === id) pick(undefined);
       const next = previous.filter((entry) => entry.id !== id);
       if (!next.length) setQueueHeld(false);
       return next;
@@ -1170,7 +1188,11 @@ export function createAgentController(props: AgentPanelProps) {
     sendQueuedNow,
     editQueued,
     removeQueued,
+    reorderQueue,
+    queueSending,
+    sentNowIds,
     clearQueue: () => {
+      pick(undefined);
       setQueue([]);
       setQueueHeld(false);
     },
