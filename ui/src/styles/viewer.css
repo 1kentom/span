@@ -1,10 +1,10 @@
 /* File and upload viewer. Colours come only from the theme custom properties set on .ide (Dark, Light, Purple).
    Documented exception: the two image backgrounds below must stay light and dark in every theme, so they are
-   local literal variables. The light one is also the canvas of the sandboxed HTML page, as in a browser.
+   local variables over the theme-independent --paper-image-* tokens in workbench.css. The light one is also the canvas of the sandboxed HTML page, as in a browser.
    Syntax colours are tokens: --vw-syn-* point at the editor's --syntax-* tokens where a theme defines them and
    fall back to theme tokens (tag and attribute: accent, string: diffAddText, comment: faint, heading and
    number: warning, keyword: success). The waveform canvas reads --vw-wave-played and --vw-wave-rest. */
-.vw{--vw-image-light:#f5f5f5;--vw-image-dark:#18191c;--vw-checker-base:var(--field);--vw-checker-tile:var(--hover);
+.vw{--vw-image-light:var(--paper-image-light);--vw-image-dark:var(--paper-image-dark);--vw-checker-base:var(--field);--vw-checker-tile:var(--hover);
   --vw-syn-tag:var(--syntax-type,var(--accent));--vw-syn-attr:var(--syntax-definition,var(--accent));--vw-syn-string:var(--syntax-string,var(--diffAddText));--vw-syn-comment:var(--syntax-comment,var(--faint));
   --vw-syn-heading:var(--syntax-function,var(--warning));--vw-syn-keyword:var(--syntax-keyword,var(--success));--vw-syn-number:var(--syntax-number,var(--warning));
   --vw-wave-played:var(--accent);--vw-wave-rest:var(--sel);display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;background:var(--island);color:var(--text);font-size:12px;line-height:18px}

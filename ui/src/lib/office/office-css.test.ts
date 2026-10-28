@@ -7,10 +7,12 @@ const css = readFileSync(resolve(src, 'styles/office.css'), 'utf8').replace(/\/\
 const walk = (dir: string): string[] => readdirSync(dir).flatMap(name => { const p = join(dir, name); return statSync(p).isDirectory() ? walk(p) : [p]; });
 
 describe('office stylesheet', () => {
-  it('uses theme tokens: hex literals appear only in the named paper variables', () => {
+  it('uses tokens only: no hex literal, and the paper comes from the workbench paper tokens', () => {
     const declarations = [...css.matchAll(/([\w-]+)\s*:\s*([^;{}]*#[0-9a-fA-F]{3,8}\b[^;{}]*)/g)].map(m => m[1]);
-    expect(declarations.length).toBeGreaterThan(0);
-    expect(declarations.filter(name => !name.startsWith('--ox-paper'))).toEqual([]);
+    expect(declarations).toEqual([]);
+    expect(css).toContain('--ox-paper:var(--paper)');
+    const tokens = readFileSync(resolve(src, 'styles/workbench.css'), 'utf8');
+    for (const name of ['--paper', '--paper-ink', '--paper-dim', '--paper-line', '--paper-head']) expect(tokens).toMatch(new RegExp(`${name}:#[0-9a-fA-F]{3,8}[;}]`));
   });
   it('honours reduced motion and keeps no ox- selector that nothing uses', () => {
     expect(css).toContain('prefers-reduced-motion:reduce');

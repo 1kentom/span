@@ -6,13 +6,14 @@ const root = process.cwd();
 const css = (name: string) => readFileSync(resolve(root, 'src/styles', name), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
 describe('viewer and uploads stylesheets use theme tokens only', () => {
-  it('viewer.css has no literal colour except the two documented image backgrounds', () => {
+  it('viewer.css has no literal colour: the image backgrounds come from the workbench paper tokens', () => {
     const source = css('viewer.css');
-    const allowed = source.match(/--vw-image-(?:light|dark):#[0-9a-fA-F]{3,8}\b/g) ?? [];
-    expect(allowed).toHaveLength(2);
-    const rest = source.replace(/--vw-image-(?:light|dark):#[0-9a-fA-F]{3,8}\b/g, '');
-    expect(rest.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
-    expect(rest).not.toMatch(/rgba?\(|hsla?\(/);
+    expect(source).toContain('--vw-image-light:var(--paper-image-light)');
+    expect(source).toContain('--vw-image-dark:var(--paper-image-dark)');
+    expect(source.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
+    expect(source).not.toMatch(/rgba?\(|hsla?\(/);
+    const tokens = css('workbench.css');
+    for (const name of ['--paper-image-light', '--paper-image-dark']) expect(tokens).toMatch(new RegExp(`${name}:#[0-9a-fA-F]{3,8}[;}]`));
   });
   it('uploads.css has no literal colour at all', () => {
     const source = css('uploads.css');
