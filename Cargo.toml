@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/syntax", "crates/acp", "apps/desktop"]
+members = ["crates/core", "crates/syntax", "crates/acp", "crates/terminal", "apps/desktop"]
 resolver = "2"
 
 [workspace.package]
@@ -19,6 +19,7 @@ tree-sitter = "0.27.1"
 span-core = { path = "crates/core" }
 span-syntax = { path = "crates/syntax" }
 span-acp = { path = "crates/acp" }
+span-terminal = { path = "crates/terminal" }
 
 # Keep local development and validation caches small enough for desktop builds.
 [profile.dev]
