@@ -749,7 +749,6 @@
   opacity: 0.45;
 }
 .agent-menu-item:focus-visible,
-.agent-row-overflow:focus-visible,
 .agent-row-management button:focus-visible {
   outline: 2px solid var(--sb-accent);
   outline-offset: 2px;
@@ -853,15 +852,6 @@
 .agent-catalog-row:hover:not(:disabled) .agent-action.secondary {
   background: var(--sb-hover);
 }
-.agent-catalog-row small.agent-installed {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.agent-catalog-row small.agent-installed > .icon {
-  flex: none;
-  color: var(--sb-success);
-}
 .agent-row-extra {
   display: flex;
   flex-direction: column;
@@ -873,9 +863,6 @@
 .agent-row-extra .sb-update-panel {
   align-self: stretch;
   margin: 2px 0 0;
-}
-.agent-row-extra.sb-command-chip {
-  align-self: flex-start;
 }
 .agent-install-action,
 .agent-install-progress {
@@ -908,27 +895,6 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.agent-catalog-entry:has(.agent-row-overflow) .agent-catalog-row {
-  padding-right: 34px;
-}
-.agent-row-overflow {
-  position: absolute;
-  right: 4px;
-  top: 14px;
-  width: 23px;
-  height: 23px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  font-size: 18px;
-  color: var(--sb-dim);
-  line-height: 16px;
-  cursor: pointer;
-}
-.agent-row-overflow:hover {
-  background: var(--sb-hover);
-}
 .agent-row-management {
   grid-column: 1/-1;
   display: flex;
@@ -950,8 +916,12 @@
   color: var(--sb-dim);
   cursor: pointer;
 }
-.agent-row-management button:hover {
+.agent-row-management button:hover:not(:disabled) {
   background: var(--sb-hover);
+}
+.agent-row-management button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 .agent-glm-mark {
   display: block;
@@ -959,32 +929,6 @@
   height: 20px;
   background: currentColor;
   mask: url("/brands/glm.svg") center/contain no-repeat;
-}
-.agent-other-installed {
-  border-top: 1px solid var(--sb-border);
-  margin: 5px;
-  font-size: 11px;
-}
-.agent-other-installed summary {
-  padding: 9px 2px;
-  color: var(--sb-dim);
-  cursor: pointer;
-}
-.agent-other-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px;
-  align-items: center;
-  gap: 6px;
-  padding: 5px;
-}
-.agent-other-row strong {
-  font-size: 11px;
-  font-weight: 500;
-}
-.agent-other-row small {
-  color: var(--sb-dim);
-  display: block;
-  font-size: 10px;
 }
 .agent-removal-confirmation {
   padding: 9px;
