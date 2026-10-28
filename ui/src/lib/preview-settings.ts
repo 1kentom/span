@@ -8,12 +8,29 @@ const aliases: Record<string, string> = {
   'editor.wordWrap': 'wordWrap', 'editor.fontSize': 'fontSize', 'editor.fontFamily': 'editorFontFamily',
   'editor.tabSize': 'tabSize', 'editor.formatOnSave': 'formatOnSave', 'window.zoomLevel': 'zoomLevel',
   'workbench.editor.limit.enabled': 'tabLimitEnabled', 'workbench.editor.limit.value': 'tabLimit',
-  'workbench.editor.limit.perEditorGroup': 'tabLimitPerGroup',
+  'workbench.editor.limit.perEditorGroup': 'tabLimitPerGroup', 'editor.syntaxColors': 'syntaxColors',
 };
 type Rule = { type?: string | string[]; enum?: unknown[]; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; items?: Rule; propertyNames?: Rule; pattern?: string; additionalProperties?: Rule | boolean };
 const rules = schema.properties as Record<string, Rule & { default?: unknown }>;
 const defaults = Object.fromEntries(Object.entries(rules).filter(([key, rule]) => !key.includes('.') && key !== '$schema' && 'default' in rule).map(([key, rule]) => [key, structuredClone(rule.default)])) as Settings;
 const canonical = (key: string) => aliases[key] || key;
+
+/** Splits a dotted key such as `editor.syntaxColors.dark.keyword` into the known setting and the path below it. */
+function resolveKey(key: string): { name: string; rest: string[] } | null {
+  const parts = key.split('.');
+  for (let length = 1; length <= parts.length; length += 1) {
+    const name = canonical(parts.slice(0, length).join('.'));
+    if (rules[name]) return { name, rest: parts.slice(length) };
+  }
+  return null;
+}
+
+/** Merges one level of per theme colour maps, later scopes winning per token. */
+function mergeColors(...layers: unknown[]): Record<string, Record<string, string>> {
+  const result: Record<string, Record<string, string>> = {};
+  for (const layer of layers) if (layer && typeof layer === 'object') for (const [theme, colors] of Object.entries(layer)) result[theme] = { ...result[theme], ...(colors as Record<string, string>) };
+  return result;
+}
 
 function validate(value: unknown, rule: Rule, path: string): void {
   const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
@@ -59,6 +76,7 @@ export function createPreviewSettings() {
     const workspace = scope === 'workspace' ? normalized(decode(texts.workspace)) : {};
     return structuredClone({ ...defaults, ...user, ...workspace,
       keybindings: { ...defaults.keybindings, ...(user.keybindings as Settings['keybindings']), ...(workspace.keybindings as Settings['keybindings']) },
+      syntaxColors: mergeColors(user.syntaxColors, workspace.syntaxColors),
       formatters: { ...defaults.formatters, ...(user.formatters as Settings['formatters']), ...(workspace.formatters as Settings['formatters']) },
     } as Settings);
   }
@@ -78,11 +96,25 @@ export function createPreviewSettings() {
     keys: (scope: SettingsScope) => [...new Set(Object.keys(decode(texts[scope])).filter(key => key !== '$schema' && !!rules[key]).map(canonical))],
     updateJsonc: commit,
     update(scope: SettingsScope, key: string, valueJson: string | null): Settings {
-      const name = canonical(key);
-      if (!rules[name]) throw new Error(`Unknown setting: ${key}`);
+      const resolved = resolveKey(key);
+      if (!resolved) throw new Error(`Unknown setting: ${key}`);
+      const { name, rest } = resolved;
       let next = texts[scope];
-      for (const existing of Object.keys(decode(next))) if (canonical(existing) === name) next = applyEdits(next, modify(next, [existing], undefined, {}));
-      if (valueJson !== null) next = applyEdits(next, modify(next, [name], JSON.parse(valueJson), { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+      const options = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+      if (rest.length === 0) {
+        for (const existing of Object.keys(decode(next))) if (canonical(existing) === name) next = applyEdits(next, modify(next, [existing], undefined, {}));
+        if (valueJson !== null) next = applyEdits(next, modify(next, [name], JSON.parse(valueJson), options));
+        return commit(scope, next);
+      }
+      const top = Object.keys(decode(next)).find(existing => canonical(existing) === name) ?? name;
+      next = applyEdits(next, modify(next, [top, ...rest], valueJson === null ? undefined : JSON.parse(valueJson), options));
+      // Drop parents that became empty so removing the last override leaves no stale object behind.
+      for (let depth = rest.length - 1; depth >= 0 && valueJson === null; depth -= 1) {
+        const path = [top, ...rest.slice(0, depth)];
+        const parent = parse(next) as Record<string, unknown>;
+        const value = path.reduce<unknown>((node, part) => (node && typeof node === 'object' ? (node as Record<string, unknown>)[part] : undefined), parent);
+        if (value && typeof value === 'object' && Object.keys(value).length === 0) next = applyEdits(next, modify(next, path, undefined, {}));
+      }
       return commit(scope, next);
     },
     open,
