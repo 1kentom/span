@@ -3986,6 +3986,7 @@ dependencies = [
  "serde_json",
  "span-acp",
  "span-core",
+ "span-lsp",
  "span-syntax",
  "specta",
  "specta-typescript",
@@ -3997,6 +3998,7 @@ dependencies = [
  "tauri-specta",
  "tempfile",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

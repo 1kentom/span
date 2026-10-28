@@ -8,6 +8,7 @@ use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
 mod cli;
+mod language_servers;
 mod menu;
 mod services;
 mod startup;
@@ -47,13 +48,19 @@ where
 
 #[tauri::command]
 #[specta::specta]
-async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<Workspace, String> {
+async fn open_workspace(
+    state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
+    path: String,
+) -> Result<Workspace, String> {
     let state = state.inner().clone();
+    let lsp = lsp.inner().clone();
     let _gate = state.connection_gate.lock().await;
     let worker_state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let workspace = CoreWorkspace::open(path).map_err(|error| error.to_string())?;
         let result = workspace.workspace();
+        let settings = workspace.get_settings().unwrap_or_default();
         agents::disconnect(&worker_state)?;
         let mut guard = worker_state
             .workspace
@@ -61,6 +68,8 @@ async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<
             .map_err(|_| "Workspace state is unavailable".to_owned())?;
         *guard = Some(Arc::new(Mutex::new(workspace)));
         drop(guard);
+        // Closes the previous workspace's documents and servers; never waits for them.
+        lsp.workspace_changed(std::path::PathBuf::from(&result.root), &settings);
         if let Err(error) = span_core::RecentProjectStore::for_current_user()
             .and_then(|store| store.record_open(std::path::Path::new(&result.root)))
         {
@@ -94,10 +103,14 @@ async fn list_files(state: State<'_, DesktopState>) -> Result<Vec<FileEntry>, St
 #[specta::specta]
 async fn open_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     path: String,
 ) -> Result<BufferSnapshot, String> {
+    let lsp = lsp.inner().clone();
     with_workspace(state.inner().clone(), move |workspace| {
-        workspace.open_buffer(&path)
+        let snapshot = workspace.open_buffer(&path)?;
+        lsp.on_snapshot(&snapshot);
+        Ok(snapshot)
     })
     .await
 }
@@ -106,12 +119,14 @@ async fn open_buffer(
 #[specta::specta]
 async fn edit_buffer_delta(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     path: String,
     expected_revision: u64,
     changes: Vec<TextEdit>,
 ) -> Result<BufferRevision, String> {
+    let lsp = lsp.inner().clone();
     with_workspace(state.inner().clone(), move |workspace| {
-        workspace.edit_buffer_delta(&path, expected_revision, changes)
+        lsp.edit_buffer_delta(workspace, &path, expected_revision, changes)
     })
     .await
 }
@@ -120,20 +135,34 @@ async fn edit_buffer_delta(
 #[specta::specta]
 async fn save_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     path: String,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
-    services::format_or_save(state.inner().clone(), path, expected_revision, true).await
+    // Saving never waits for a language server: the hook below only queues.
+    let snapshot =
+        services::format_or_save(state.inner().clone(), path, expected_revision, true).await?;
+    lsp.on_snapshot(&snapshot);
+    if snapshot.path.ends_with(".span/settings.jsonc") {
+        if let Ok(settings) = with_workspace(state.inner().clone(), |w| w.get_settings()).await {
+            lsp.inner().apply_settings(&settings);
+        }
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn discard_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     path: String,
 ) -> Result<BufferSnapshot, String> {
+    let lsp = lsp.inner().clone();
     with_workspace(state.inner().clone(), move |workspace| {
-        workspace.discard_buffer(&path)
+        let snapshot = workspace.discard_buffer(&path)?;
+        lsp.on_discard(&snapshot);
+        Ok(snapshot)
     })
     .await
 }
@@ -248,24 +277,30 @@ async fn get_settings(state: State<'_, DesktopState>) -> Result<Settings, String
 #[specta::specta]
 async fn update_settings(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     settings: Settings,
 ) -> Result<Settings, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
+    let saved = with_workspace(state.inner().clone(), move |workspace| {
         workspace.update_settings(settings)
     })
-    .await
+    .await?;
+    lsp.inner().apply_settings(&saved);
+    Ok(saved)
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn update_settings_jsonc(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     text: String,
 ) -> Result<Settings, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
+    let saved = with_workspace(state.inner().clone(), move |workspace| {
         workspace.update_settings_jsonc(&text)
     })
-    .await
+    .await?;
+    lsp.inner().apply_settings(&saved);
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -313,7 +348,11 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         .dangerously_cast_bigints_to_number()
         .events(collect_events![
             menu::NativeActionEvent,
-            startup::StartupRequestsChanged
+            startup::StartupRequestsChanged,
+            language_servers::LanguageServerStateChanged,
+            language_servers::LanguageServerInstallProgress,
+            language_servers::DiagnosticsPublished,
+            language_servers::LanguageServerError
         ])
         .commands(collect_commands![
             open_workspace,
@@ -358,7 +397,15 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_disconnect,
             agents::agent_permission,
             agents::agent_review,
-            agents::agent_review_hunks
+            agents::agent_review_hunks,
+            language_servers::lsp_completion,
+            language_servers::lsp_hover,
+            language_servers::lsp_definition,
+            language_servers::lsp_format,
+            language_servers::lsp_cancel,
+            language_servers::lsp_install,
+            language_servers::lsp_restart,
+            language_servers::lsp_status
         ])
 }
 
@@ -394,6 +441,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            let cache = app.path().app_cache_dir()?.join("language-servers");
+            app.manage(language_servers::production(
+                cache,
+                language_servers::tauri_sink(app.handle().clone()),
+            )?);
             menu::install(app.handle())?;
             Ok(())
         })
@@ -411,6 +463,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app.state::<DesktopState>();
             let _ = agents::disconnect(&state);
+            // Bounded: a server that ignores shutdown is killed, never waited on forever.
+            app.state::<language_servers::LspService>()
+                .shutdown_blocking(std::time::Duration::from_secs(8));
             if let Ok(searches) = state.searches.lock() {
                 for cancellation in searches.values() {
                     cancellation.cancel();

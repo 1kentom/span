@@ -87,10 +87,13 @@ pub async fn format_or_save(
 #[specta::specta]
 pub async fn format_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, crate::language_servers::LspService>,
     path: String,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
-    format_or_save(state.inner().clone(), path, expected_revision, false).await
+    let snapshot = format_or_save(state.inner().clone(), path, expected_revision, false).await?;
+    lsp.on_snapshot(&snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
