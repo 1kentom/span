@@ -1,0 +1,5 @@
+// Complete carries PromptResponse usage and _meta when present.
+// Protocol-conformant shapes from an unknown agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}, "authMethods": [], "agentInfo": {"name": "span-test-peer", "version": "1.0.0"}}}
+{"on": "session/new", "result": {"sessionId": "p-1"}}
+{"on": "session/prompt", "before": [], "result": {"stopReason": "end_turn", "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}, "_meta": {"trace": "t-1"}}}

@@ -10,11 +10,11 @@
 //! through [`SessionManager`], which is the user's handle. Agents get an
 //! [`AgentControl`], which has no way to answer them. See
 //! docs/decisions/0001-session-manager.md.
-use crate::{AgentCommand, AgentEvent, AgentService, EventSink, PromptAttachment};
+use crate::{AgentCommand, AgentEvent, AgentFeatures, AgentService, EventSink, PromptAttachment};
 use serde::{Deserialize, Serialize};
 use span_core::CoreWorkspace;
 use specta::Type;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::oneshot;
 
@@ -84,6 +84,26 @@ pub enum PendingKind {
     Elicitation,
 }
 
+/// One agent connection as seen by delegation: who it is and what it said
+/// it supports in `initialize`.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionInfo {
+    pub connection_id: String,
+    pub agent_name: String,
+    /// `None` until the agent finished `initialize`.
+    pub features: Option<AgentFeatures>,
+    /// False once the process exited.
+    pub open: bool,
+}
+
+/// Why [`AgentControl::delegate_limited`] refused to start a child.
+pub const DEPTH_EXCEEDED: &str = "Delegation depth limit reached";
+
+/// Runs once when a session leaves the manager (closed, deleted, its
+/// process exited or its connection was disconnected).
+pub type SessionEndHook = Box<dyn FnOnce() + Send>;
+
 /// A permission or elicitation request waiting for the user.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +119,7 @@ struct Connection {
     service: Option<AgentService>,
     reported_name: Option<String>,
     label: String,
+    features: Option<AgentFeatures>,
     /// False once the process exited. The entry stays until `disconnect`.
     open: bool,
 }
@@ -132,6 +153,15 @@ struct State {
     sessions: HashMap<SessionKey, Session>,
     /// Keyed by connection id and request id: request ids repeat across processes.
     pending: HashMap<(String, String), PendingRequest>,
+    /// Option kinds of pending permissions, to tell a rejection from an approval.
+    permission_kinds: HashMap<(String, String), HashMap<String, String>>,
+    /// Sessions whose user rejected a permission during the current turn.
+    rejected: HashSet<SessionKey>,
+    next_subscriber: u64,
+    subscribers: HashMap<u64, SessionEventSink>,
+    end_hooks: HashMap<SessionKey, Vec<SessionEndHook>>,
+    /// Hooks of sessions that were removed, run once the lock is released.
+    ended: Vec<SessionEndHook>,
 }
 
 impl State {
@@ -198,6 +228,10 @@ impl State {
             if let Some(session) = self.sessions.remove(key) {
                 turns.extend(session.queue);
             }
+            self.rejected.remove(key);
+            if let Some(hooks) = self.end_hooks.remove(key) {
+                self.ended.extend(hooks);
+            }
             if let Some(service) = self.service(&key.connection_id) {
                 stops.push((key.clone(), service));
             }
@@ -237,6 +271,7 @@ fn event_session(event: &AgentEvent) -> Option<String> {
         | SessionInfo { session_id, .. }
         | Usage { session_id, .. }
         | Notice { session_id, .. }
+        | NoticeCleared { session_id, .. }
         | Compaction { session_id, .. }
         | CompactionSummary { session_id, .. }
         | Plan { session_id, .. }
@@ -298,6 +333,7 @@ impl SessionManager {
                     service: None,
                     reported_name: None,
                     label,
+                    features: None,
                     open: true,
                 },
             );
@@ -341,12 +377,18 @@ impl SessionManager {
             let (agent_name, session_id) = manager.observe(&id, &event);
             let gone =
                 matches!(&event, AgentEvent::Status { state, .. } if state == "disconnected");
-            emit(SessionEvent {
+            let tagged = SessionEvent {
                 connection_id: id.clone(),
                 agent_name,
                 session_id,
                 event,
-            });
+            };
+            let subscribers: Vec<SessionEventSink> =
+                manager.state().subscribers.values().cloned().collect();
+            for subscriber in subscribers {
+                subscriber(tagged.clone());
+            }
+            emit(tagged);
             if gone {
                 manager.connection_exited(&id);
             }
@@ -356,10 +398,17 @@ impl SessionManager {
     /// Bookkeeping for one event: agent identity and pending user requests.
     fn observe(&self, connection_id: &str, event: &AgentEvent) -> (String, Option<String>) {
         let mut state = self.state();
-        if let (AgentEvent::Ready { agent_name, .. }, Some(connection)) =
-            (event, state.connections.get_mut(connection_id))
+        if let (
+            AgentEvent::Ready {
+                agent_name,
+                features,
+                ..
+            },
+            Some(connection),
+        ) = (event, state.connections.get_mut(connection_id))
         {
             connection.reported_name = agent_name.clone();
+            connection.features = Some(features.clone());
         }
         let agent_name = state
             .connections
@@ -367,6 +416,7 @@ impl SessionManager {
             .map(Connection::name)
             .unwrap_or_default();
         let mut session_id = event_session(event);
+        let mut kinds: Option<((String, String), HashMap<String, String>)> = None;
         let mut track = |request_id: &str, kind| {
             state.pending.insert(
                 (connection_id.to_owned(), request_id.to_owned()),
@@ -380,7 +430,20 @@ impl SessionManager {
             );
         };
         match event {
-            AgentEvent::Permission { request_id, .. } => track(request_id, PendingKind::Permission),
+            AgentEvent::Permission {
+                request_id,
+                options,
+                ..
+            } => {
+                track(request_id, PendingKind::Permission);
+                kinds = Some((
+                    (connection_id.to_owned(), request_id.clone()),
+                    options
+                        .iter()
+                        .map(|o| (o.option_id.clone(), o.kind.clone()))
+                        .collect(),
+                ));
+            }
             AgentEvent::Elicitation { request_id, .. } => {
                 track(request_id, PendingKind::Elicitation)
             }
@@ -389,11 +452,17 @@ impl SessionManager {
                 let removed = state
                     .pending
                     .remove(&(connection_id.to_owned(), request_id.clone()));
+                state
+                    .permission_kinds
+                    .remove(&(connection_id.to_owned(), request_id.clone()));
                 if session_id.is_none() {
                     session_id = removed.and_then(|r| r.session_id);
                 }
             }
             _ => {}
+        }
+        if let Some((key, kinds)) = kinds {
+            state.permission_kinds.insert(key, kinds);
         }
         (agent_name, session_id)
     }
@@ -407,6 +476,9 @@ impl SessionManager {
             };
             connection.open = false;
             state.pending.retain(|(id, _), _| id != connection_id);
+            state
+                .permission_kinds
+                .retain(|(id, _), _| id != connection_id);
             let roots: Vec<SessionKey> = state
                 .sessions
                 .keys()
@@ -416,6 +488,7 @@ impl SessionManager {
             let tree = state.tree(&roots);
             state.detach(&tree)
         };
+        self.run_end_hooks();
         refuse(turns, "The agent process exited before the turn started");
         for (key, service) in stops {
             if key.connection_id != connection_id {
@@ -439,8 +512,12 @@ impl SessionManager {
             let tree = state.tree(&roots);
             let (turns, stops) = state.detach(&tree);
             state.pending.retain(|(id, _), _| id != connection_id);
+            state
+                .permission_kinds
+                .retain(|(id, _), _| id != connection_id);
             (state.connections.remove(connection_id), turns, stops)
         };
+        self.run_end_hooks();
         let connection = connection.ok_or("Unknown connection")?;
         refuse(turns, "The agent was disconnected before the turn started");
         // Sessions on this connection end with the process; children elsewhere are stopped.
@@ -561,6 +638,60 @@ impl SessionManager {
         self.state().pending.values().cloned().collect()
     }
 
+    /// Every connection with its reported identity and features.
+    pub fn connections(&self) -> Vec<ConnectionInfo> {
+        let state = self.state();
+        let mut found: Vec<ConnectionInfo> = state
+            .connections
+            .iter()
+            .map(|(id, c)| ConnectionInfo {
+                connection_id: id.clone(),
+                agent_name: c.name(),
+                features: c.features.clone(),
+                open: c.open,
+            })
+            .collect();
+        found.sort_by(|a, b| a.connection_id.cmp(&b.connection_id));
+        found
+    }
+
+    pub fn connection(&self, connection_id: &str) -> Option<ConnectionInfo> {
+        self.connections()
+            .into_iter()
+            .find(|c| c.connection_id == connection_id)
+    }
+
+    /// Receive every [`SessionEvent`] in addition to the manager sink, until
+    /// the returned guard is dropped. Called on the agent's I/O thread.
+    pub fn subscribe(&self, sink: SessionEventSink) -> Subscription {
+        let mut state = self.state();
+        state.next_subscriber += 1;
+        let id = state.next_subscriber;
+        state.subscribers.insert(id, sink);
+        Subscription {
+            id,
+            state: Arc::downgrade(&self.state),
+        }
+    }
+
+    /// Run `hook` once when `key` leaves the manager. Fails if the session
+    /// is not tracked.
+    pub fn on_session_end(&self, key: &SessionKey, hook: SessionEndHook) -> Result<(), String> {
+        let mut state = self.state();
+        if !state.sessions.contains_key(key) {
+            return Err("Unknown session".into());
+        }
+        state.end_hooks.entry(key.clone()).or_default().push(hook);
+        Ok(())
+    }
+
+    fn run_end_hooks(&self) {
+        let hooks = std::mem::take(&mut self.state().ended);
+        for hook in hooks {
+            hook();
+        }
+    }
+
     /// Run a prompt. If the session is busy the prompt waits in a FIFO queue
     /// and starts when the turns before it finish. Resolves when this
     /// prompt's own turn finishes. Dropping the future does not withdraw it.
@@ -570,6 +701,20 @@ impl SessionManager {
         text: String,
         attachments: Vec<PromptAttachment>,
     ) -> Result<(), String> {
+        let done = self.enqueue(key, text, attachments)?;
+        done.await
+            .map_err(|_| "The session ended before the turn finished".to_string())?
+    }
+
+    /// The synchronous half of [`Self::prompt`]: the turn is started or
+    /// queued before this returns, so calls made in order queue in order.
+    /// The receiver resolves when the turn finishes.
+    pub fn enqueue(
+        &self,
+        key: &SessionKey,
+        text: String,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<oneshot::Receiver<Result<(), String>>, String> {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("Prompt cannot be empty".into());
         }
@@ -593,8 +738,7 @@ impl SessionManager {
         if let Some(turn) = start {
             self.drive(key.clone(), turn);
         }
-        done.await
-            .map_err(|_| "The session ended before the turn finished".to_string())?
+        Ok(done)
     }
 
     /// Run turns for one session until its queue is empty.
@@ -603,6 +747,7 @@ impl SessionManager {
         tokio::spawn(async move {
             let mut next = Some(first);
             while let Some(turn) = next.take() {
+                manager.state().rejected.remove(&key);
                 let result = match manager.service(&key.connection_id) {
                     Some(service) => {
                         service
@@ -698,6 +843,7 @@ impl SessionManager {
             stops.retain(|(child, _)| child != key);
             (turns, stops)
         };
+        self.run_end_hooks();
         refuse(turns, "The session was closed before the turn started");
         for (child, service) in stops {
             let _ = service.cancel(child.session_id.clone());
@@ -714,7 +860,7 @@ impl SessionManager {
         request_id: String,
         option_id: Option<String>,
     ) -> Result<(), String> {
-        let service = {
+        let (service, rejected) = {
             let state = self.state();
             let pending = state
                 .pending
@@ -723,11 +869,27 @@ impl SessionManager {
             if pending.session_id.as_deref() != Some(key.session_id.as_str()) {
                 return Err("Permission belongs to a different session".into());
             }
-            state
+            let kind = option_id.as_ref().and_then(|option| {
+                state
+                    .permission_kinds
+                    .get(&(key.connection_id.clone(), request_id.clone()))
+                    .and_then(|kinds| kinds.get(option).cloned())
+            });
+            let rejected = kind.is_none_or(|kind| kind.starts_with("reject"));
+            let service = state
                 .service(&key.connection_id)
-                .ok_or("Unknown or disconnected connection")?
+                .ok_or("Unknown or disconnected connection")?;
+            (service, rejected)
         };
-        service.respond_permission(key.session_id.clone(), request_id, option_id)
+        // Recorded before the agent can react, so its stop reason sees it.
+        if rejected {
+            self.state().rejected.insert(key.clone());
+        }
+        let result = service.respond_permission(key.session_id.clone(), request_id, option_id);
+        if result.is_err() && rejected {
+            self.state().rejected.remove(key);
+        }
+        result
     }
 
     /// The user's answer to an elicitation on one connection.
@@ -802,6 +964,80 @@ impl AgentControl {
         self.manager.cancel(target)
     }
 
+    /// Start a child only if it stays within `max_depth` (a root is depth 0,
+    /// so `max_depth` 1 lets a root delegate and stops its children).
+    pub async fn delegate_limited(
+        &self,
+        connection_id: &str,
+        max_depth: u32,
+    ) -> Result<SessionKey, String> {
+        let depth = self.depth().ok_or("Unknown session")?;
+        if depth + 1 > max_depth {
+            return Err(format!(
+                "{DEPTH_EXCEEDED}: this session is at depth {depth} and the limit is {max_depth}"
+            ));
+        }
+        self.delegate(connection_id).await
+    }
+
+    /// Send a prompt with attachments to a child. It queues if the child is
+    /// busy and resolves when its own turn finishes.
+    pub async fn prompt(
+        &self,
+        target: &SessionKey,
+        text: String,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<(), String> {
+        self.below(target)?;
+        self.manager.prompt(target, text, attachments).await
+    }
+
+    /// Start or queue a prompt for a child without waiting for it. Calls
+    /// made in order run in order. The receiver resolves when the turn
+    /// finishes, or errors if the session ends first.
+    pub fn enqueue(
+        &self,
+        target: &SessionKey,
+        text: String,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<oneshot::Receiver<Result<(), String>>, String> {
+        self.below(target)?;
+        self.manager.enqueue(target, text, attachments)
+    }
+
+    /// Run `hook` once when a session below the caller ends.
+    pub fn on_session_end(&self, target: &SessionKey, hook: SessionEndHook) -> Result<(), String> {
+        self.below(target)?;
+        self.manager.on_session_end(target, hook)
+    }
+
+    /// The caller's depth, `None` once it left the manager.
+    pub fn depth(&self) -> Option<u32> {
+        self.manager.session(&self.caller).map(|s| s.depth)
+    }
+
+    /// A session below the caller.
+    pub fn session(&self, target: &SessionKey) -> Option<SessionInfo> {
+        self.below(target).ok()?;
+        self.manager.session(target)
+    }
+
+    /// Connections a child could be started on, with reported features.
+    pub fn agents(&self) -> Vec<ConnectionInfo> {
+        self.manager.connections()
+    }
+
+    /// Whether the user rejected a permission of `target` during its current
+    /// or last turn. Read only: nothing here can answer a request.
+    pub fn permission_rejected(&self, target: &SessionKey) -> bool {
+        self.below(target).is_ok() && self.manager.state().rejected.contains(target)
+    }
+
+    /// Run `hook` once when the caller session ends.
+    pub fn on_caller_end(&self, hook: SessionEndHook) -> Result<(), String> {
+        self.manager.on_session_end(&self.caller, hook)
+    }
+
     /// Every session below the caller.
     pub fn children(&self) -> Vec<SessionInfo> {
         let state = self.manager.state();
@@ -811,5 +1047,23 @@ impl AgentControl {
             .skip(1)
             .filter_map(|key| state.sessions.get(key).map(|s| state.info(key, s)))
             .collect()
+    }
+}
+
+/// Stops a [`SessionManager::subscribe`] subscription when dropped.
+pub struct Subscription {
+    id: u64,
+    state: Weak<Mutex<State>>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.upgrade() {
+            state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .subscribers
+                .remove(&self.id);
+        }
     }
 }

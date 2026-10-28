@@ -1,7 +1,7 @@
 use crate::DesktopState;
 use span_acp::{
-    AgentCommand, AgentEvent, AgentService, InstalledAgent, PromptAttachment, RegistryAgent,
-    SessionKey, SessionOrigin,
+    AgentCommand, AgentEvent, AgentPreset, AgentService, AuthCredential, InstalledAgent,
+    PromptAttachment, RegistryAgent, SessionKey, SessionOrigin,
 };
 use span_core::BufferSnapshot;
 use tauri::{ipc::Channel, Manager, State};
@@ -271,6 +271,37 @@ pub async fn agent_authenticate(
     adopt(state.inner(), &agent, &session)?;
     switch_session(state.inner(), &session)?;
     Ok(session)
+}
+
+/// Sign in with a method that needs an API key or a gateway the user typed,
+/// then create the session that was blocked. The secret is passed to the agent
+/// only; it is not logged or stored.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_authenticate_with(
+    state: State<'_, DesktopState>,
+    method_id: String,
+    credential: AuthCredential,
+) -> Result<String, String> {
+    let agent = active(state.inner())?;
+    agent
+        .service
+        .authenticate_with(method_id, credential)
+        .await?;
+    if !agent.session.is_empty() {
+        return Ok(agent.session);
+    }
+    let session = agent.service.new_session().await?;
+    adopt(state.inner(), &agent, &session)?;
+    switch_session(state.inner(), &session)?;
+    Ok(session)
+}
+
+/// Agents launched by a known custom command rather than a registry install.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_presets() -> Vec<AgentPreset> {
+    span_acp::agent_presets()
 }
 
 /// Answer an agent input request. `action` is accept, decline or cancel.

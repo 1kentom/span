@@ -1,0 +1,48 @@
+{
+  "quirk": "session_info_update carries _meta[\"opencode/retry\"] ({attempt,nextRetryAt,error}, or null to clear) and _meta[\"opencode/compaction\"]: a warning notice with an id, cleared on null.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "go"
+    }
+  ],
+  "events": [
+    {
+      "kind": "notice",
+      "severity": "warning",
+      "title": "Retrying",
+      "description": "Attempt 2: Rate limited",
+      "noticeId": "opencode/retry",
+      "hint": "retrying"
+    },
+    {
+      "kind": "noticeCleared",
+      "noticeId": "opencode/retry"
+    },
+    {
+      "kind": "notice",
+      "severity": "info",
+      "noticeId": "opencode/compaction",
+      "hint": "compacting"
+    },
+    {
+      "kind": "noticeCleared",
+      "noticeId": "opencode/compaction"
+    },
+    {
+      "kind": "sessionInfo",
+      "title": "Fix tests"
+    }
+  ],
+  "counts": [
+    {
+      "match": {
+        "kind": "sessionInfo"
+      },
+      "count": 1
+    }
+  ]
+}

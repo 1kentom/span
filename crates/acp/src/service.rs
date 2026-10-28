@@ -1,10 +1,11 @@
+use crate::adapter::{map::config_options_value, Adapter, AgentKind, ConfigRoute, McpCaps};
 use crate::{
-    AgentCommand, AgentEvent, AgentFeatures, AuthMethodInfo, ConfigChoice, ConfigGroup,
-    ConfigOption, PermissionOption, PlanEntry, PromptAttachment, SessionSummary, SlashCommand,
+    AgentCommand, AgentEvent, AgentFeatures, AgentHint, AuthCredential, AuthInput, AuthMethodInfo,
+    PermissionOption, PromptAttachment, SessionSummary,
 };
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
-use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
-use serde_json::Value;
+use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo, UntypedMessage};
+use serde_json::{json, Value};
 use span_core::CoreWorkspace;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -23,7 +24,7 @@ pub struct AgentService {
 enum Command {
     NewSession(Reply<String>),
     Prompt(String, Vec<ContentBlock>, Reply<()>),
-    Authenticate(String, Reply<()>),
+    Authenticate(String, Option<Meta>, Reply<()>),
     Cancel(String),
     SetConfig(String, String, String, Reply<()>),
     ListSessions(Reply<Vec<SessionSummary>>),
@@ -73,6 +74,52 @@ struct Bridge {
     can_delete: bool,
     auth_methods: Vec<AuthMethodInfo>,
     auth_required: bool,
+    /// Normalises this agent's quirks; generic until `initialize` names the agent.
+    adapter: Arc<Adapter>,
+    /// MCP servers offered in `session/new` and `session/load`, before gating.
+    mcp_servers: Vec<Value>,
+    mcp_caps: McpCaps,
+    /// Sessions whose replay may still be streaming, with the last update time.
+    replaying: HashMap<String, tokio::time::Instant>,
+}
+
+/// Send a request whose response is needed as raw JSON: legacy `modes` and
+/// `models`, prompt `usage` and unstable methods are not in the pinned schema.
+async fn raw_request(
+    cx: &ConnectionTo<Agent>,
+    method: &str,
+    params: Value,
+) -> agent_client_protocol::Result<Value> {
+    cx.send_request(UntypedMessage::new(method, params)?)
+        .block_task()
+        .await
+}
+
+/// Debug lines go to the UI log. Secrets passed to `authenticate` never do.
+fn redact_log(line: &str) -> String {
+    if !line.contains("authenticate") {
+        return line.chars().take(16_384).collect();
+    }
+    match serde_json::from_str::<Value>(line) {
+        Ok(mut message)
+            if message.get("method").and_then(Value::as_str) == Some("authenticate") =>
+        {
+            if let Some(meta) = message.pointer_mut("/params/_meta") {
+                *meta = json!("[redacted]");
+            }
+            message.to_string()
+        }
+        Ok(_) => line.chars().take(16_384).collect(),
+        Err(_) => "[authenticate message redacted]".into(),
+    }
+}
+
+fn spoken_seconds(duration: std::time::Duration) -> String {
+    match duration.as_secs() {
+        5 => "five seconds".into(),
+        8 => "eight seconds".into(),
+        n => format!("{n} seconds"),
+    }
 }
 
 /// Largest base64 payload accepted for an image or blob attachment.
@@ -88,6 +135,7 @@ impl AgentService {
         if config.command.trim().is_empty() {
             return Err("Agent executable is required".into());
         }
+        let original = config.clone();
         let config = crate::launch::prepare_command(config)?;
         let cwd = std::fs::canonicalize(cwd).map_err(|e| format!("Agent workspace: {e}"))?;
         let workspace_root = workspace
@@ -113,6 +161,7 @@ impl AgentService {
                     Ok(runtime) => runtime.block_on(async move {
                         let result = run(
                             config,
+                            original,
                             cwd,
                             workspace.clone(),
                             shared.clone(),
@@ -180,21 +229,73 @@ impl AgentService {
     }
     /// Call `authenticate` with an advertised `agent` method. Create the session afterwards.
     pub async fn authenticate(&self, method_id: String) -> Result<(), String> {
-        {
-            let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
-            match bridge.auth_methods.iter().find(|m| m.id == method_id) {
-                None => return Err("Unknown authentication method".into()),
-                Some(method) if !method.supported => {
-                    return Err("Terminal sign-in is not supported by this client".into())
+        self.check_auth_method(&method_id, None)?;
+        self.send_authenticate(method_id, None).await
+    }
+    /// Call `authenticate` for a method that needs a value from the user (an
+    /// API key or a gateway). The secret goes to the agent in `_meta` only:
+    /// it is redacted from the protocol log and not kept after the call.
+    pub async fn authenticate_with(
+        &self,
+        method_id: String,
+        credential: AuthCredential,
+    ) -> Result<(), String> {
+        let meta = match credential {
+            AuthCredential::ApiKey { key } => {
+                self.check_auth_method(&method_id, Some(AuthInput::ApiKey))?;
+                if key.trim().is_empty() {
+                    return Err("API key is required".into());
                 }
-                Some(_) => {}
+                json!({ "api-key": key })
             }
+            AuthCredential::Gateway { base_url, headers } => {
+                self.check_auth_method(&method_id, Some(AuthInput::Gateway))?;
+                let lower = base_url.to_ascii_lowercase();
+                if !lower.starts_with("https://") && !lower.starts_with("http://") {
+                    return Err("Gateway URL must start with https:// or http://".into());
+                }
+                json!({ "gateway": { "baseUrl": base_url, "headers": headers } })
+            }
+        };
+        let meta = meta.as_object().cloned();
+        self.send_authenticate(method_id, meta).await
+    }
+    fn check_auth_method(&self, method_id: &str, input: Option<AuthInput>) -> Result<(), String> {
+        let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+        let method = bridge
+            .auth_methods
+            .iter()
+            .find(|m| m.id == method_id)
+            .ok_or("Unknown authentication method")?;
+        if method.hint == Some(AgentHint::RunOpencodeAuthLogin) {
+            return Err("Run `opencode auth login` in a terminal, then connect again".into());
         }
+        if !method.supported {
+            return Err("Terminal sign-in is not supported by this client".into());
+        }
+        match (method.input, input) {
+            (None, None) => Ok(()),
+            (Some(_), None) => Err("This sign-in method needs a key or gateway".into()),
+            (expected, given) if expected == given => Ok(()),
+            _ => Err("This sign-in method needs a different kind of credential".into()),
+        }
+    }
+    async fn send_authenticate(&self, method_id: String, meta: Option<Meta>) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::Authenticate(method_id, tx))
+            .send(Command::Authenticate(method_id, meta, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// MCP servers (ACP `McpServer` JSON) to offer in later `session/new`
+    /// and `session/load` requests. Each request only carries the servers
+    /// whose transport the agent advertised, after agent specific rules.
+    pub fn set_mcp_servers(&self, servers: Vec<Value>) -> Result<(), String> {
+        self.state
+            .lock()
+            .map_err(|_| "Agent state lock poisoned")?
+            .mcp_servers = servers;
+        Ok(())
     }
     /// True when the last session creation failed because the agent wants authentication.
     pub fn auth_required(&self) -> bool {
@@ -442,8 +543,10 @@ impl AgentService {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     config: AgentCommand,
+    original: AgentCommand,
     cwd: std::path::PathBuf,
     workspace: Arc<Mutex<CoreWorkspace>>,
     state: Arc<Mutex<Bridge>>,
@@ -460,10 +563,11 @@ async fn run(
     .with_debug(move |line, direction| {
         logger(AgentEvent::Log {
             direction: format!("{direction:?}"),
-            line: line.chars().take(16_384).collect(),
+            line: redact_log(line),
         })
     });
     let notifications = emit.clone();
+    let notification_state = state.clone();
     let permission_state = state.clone();
     let permission_emit = emit.clone();
     let complete_emit = emit.clone();
@@ -476,8 +580,13 @@ async fn run(
     let write_emit = emit.clone();
     agent_client_protocol::Client.builder()
         .on_receive_notification(async move |notification: SessionNotification, _cx| {
-            if let Ok(update) = serde_json::to_value(notification.update) {
-                session_update(&notifications, notification.session_id.to_string(), update);
+            let session = notification.session_id.to_string();
+            let adapter = notification_state.lock().map(|mut bridge| {
+                if let Some(seen) = bridge.replaying.get_mut(&session) { *seen = tokio::time::Instant::now(); }
+                bridge.adapter.clone()
+            });
+            if let (Ok(adapter), Ok(update)) = (adapter, serde_json::to_value(notification.update)) {
+                for event in adapter.normalise(&session, update) { notifications(event); }
             }
             Ok(())
         }, agent_client_protocol::on_receive_notification!())
@@ -503,14 +612,18 @@ async fn run(
                     Ok((id, None))
                 })();
                 let (id, automatic) = match pending { Ok(value) => value, Err(error) => return responder.respond_with_internal_error(error) };
+                let adapter = state.lock().map(|bridge| bridge.adapter.clone()).unwrap_or_default();
                 let selected = if id.is_empty() { automatic } else {
-                    emit(AgentEvent::Permission { session_id: session.clone(), request_id: id.clone(), tool_call_id: request.tool_call.tool_call_id.to_string(),
-                        title: request.tool_call.fields.title.unwrap_or_else(|| "Agent operation".into()), options: request.options.iter().map(|o| PermissionOption {
-                            option_id: o.option_id.to_string(), name: o.name.clone(), kind: enum_string(&o.kind) }).collect() });
+                    let options = request.options.iter().map(|o| PermissionOption { option_id: o.option_id.to_string(), name: o.name.clone(), kind: enum_string(&o.kind) }).collect();
+                    let raw = serde_json::to_value(&request).unwrap_or_default();
+                    emit(adapter.permission(&session, &id, &raw, options));
                     let decision = rx.await.ok().flatten();
                     emit(AgentEvent::PermissionResolved { session_id: session.clone(), request_id: id });
                     decision
                 };
+                let allowed = selected.as_ref().is_some_and(|choice| request.options.iter().any(|o| o.option_id.to_string() == *choice
+                    && matches!(o.kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways)));
+                for event in adapter.after_permission(&session, &request.tool_call.tool_call_id.to_string(), allowed) { emit(event); }
                 responder.respond(RequestPermissionResponse::new(match selected {
                     Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
                     None => RequestPermissionOutcome::Cancelled,
@@ -623,16 +736,24 @@ async fn run(
                 let _ = ready.send(Err("Agent negotiated an unsupported protocol version".into())); return Ok(());
             }
             let (can_load, can_list) = initialized.as_ref().ok().map(|response| (response.agent_capabilities.load_session, response.agent_capabilities.session_capabilities.list.is_some())).unwrap_or((false, false));
+            let agent_name = initialized.as_ref().ok().and_then(|response| response.agent_info.as_ref()).map(|info| info.name.clone());
+            let adapter = Arc::new(Adapter::new(AgentKind::detect(agent_name.as_deref(), &original), cwd.clone()));
+            let profile = adapter.profile();
             let (ready_event, auth_methods) = match initialized.as_ref().ok() {
-                Some(response) => ready_event(response),
+                Some(response) => ready_event(response, &adapter),
                 None => (AgentEvent::Ready { agent_name: None, agent_title: None, agent_version: None, features: AgentFeatures::default(), auth_methods: Vec::new() }, Vec::new()),
             };
+            let mcp_caps = initialized.as_ref().ok().and_then(|response| serde_json::to_value(&response.agent_capabilities.mcp_capabilities).ok())
+                .map(|caps| McpCaps { http: caps["http"].as_bool().unwrap_or(false), sse: caps["sse"].as_bool().unwrap_or(false), acp: caps["acp"].as_bool().unwrap_or(false) })
+                .unwrap_or_default();
             if let (Ok(mut bridge), AgentEvent::Ready { features, .. }) = (state.lock(), &ready_event) {
                 bridge.prompt_image = features.image;
                 bridge.prompt_embedded = features.embedded_context;
                 bridge.can_close = features.can_close_sessions;
                 bridge.can_delete = features.can_delete_sessions;
                 bridge.auth_methods = auth_methods.clone();
+                bridge.adapter = adapter.clone();
+                bridge.mcp_caps = mcp_caps;
             }
             let _ = ready.send(Ok(()));
             emit(ready_event);
@@ -647,7 +768,7 @@ async fn run(
                         cancel_deadline = None;
                         let unresponsive = state.lock().map(|bridge| bridge.running.iter().any(|id| bridge.cancelled.contains(id))).unwrap_or(true);
                         if unresponsive {
-                            emit(AgentEvent::Error { message: "Agent did not acknowledge Stop within five seconds. Its connection was terminated.".into() });
+                            emit(AgentEvent::Error { message: format!("Agent did not acknowledge Stop within {}. Its connection was terminated.", spoken_seconds(profile.stop_deadline)) });
                             break;
                         }
                         continue;
@@ -655,31 +776,34 @@ async fn run(
                 };
                 match command {
                     Command::NewSession(reply) => {
-                        let result = tokio::time::timeout(std::time::Duration::from_secs(30), cx.send_request(NewSessionRequest::new(cwd.clone())).block_task()).await;
+                        let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
+                        params["mcpServers"] = json!(mcp_servers(&state));
+                        let result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)).await;
                         let result = match result {
                             Ok(result) => result,
                             Err(_) => { let _ = reply.send(Err("Agent session creation timed out after 30 seconds".into())); break; }
                         };
-                        let options = result.as_ref().ok().and_then(|response| response.config_options.as_ref()).map(|options| config_options(options)).unwrap_or_default();
+                        let result = result.and_then(|response| match response.get("sessionId").and_then(Value::as_str) {
+                            Some(id) => Ok((id.to_owned(), response.clone())),
+                            None => Err(agent_client_protocol::Error::invalid_params().data("session/new response has no sessionId")),
+                        });
                         let needs_auth = result.as_ref().err().is_some_and(|e| e.code == ErrorCode::AuthRequired);
                         if let Ok(mut bridge) = state.lock() { bridge.auth_required = needs_auth; }
-                        if needs_auth {
-                            let message = result.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
-                            let methods = state.lock().map(|b| b.auth_methods.clone()).unwrap_or_default();
-                            emit(AgentEvent::AuthRequired { message: format!("Authentication required: {message}"), auth_methods: methods });
-                        }
-                        let result = result.map(|response| response.session_id.to_string()).map_err(|e| if needs_auth { format!("Authentication required: {e}") } else { e.to_string() });
-                        if let Ok(id) = &result {
+                        if let (true, Err(error)) = (needs_auth, &result) { auth_required(&state, &emit, error); }
+                        let result = result.map_err(|e| if needs_auth { format!("Authentication required: {e}") } else { e.to_string() });
+                        let result = result.map(|(id, response)| {
                             if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                             emit(AgentEvent::Session { session_id: id.clone() });
+                            let options = adapter.session_config(&id, &response);
                             if !options.is_empty() { emit(AgentEvent::Config { session_id: id.clone(), options }); }
-                        }
+                            id
+                        });
                         let _ = reply.send(result);
                     }
-                    Command::Authenticate(method_id, reply) => {
+                    Command::Authenticate(method_id, meta, reply) => {
                         let auth_cx = cx.clone(); let auth_state = state.clone();
                         cx.spawn(async move {
-                            let result = tokio::time::timeout(std::time::Duration::from_secs(120), auth_cx.send_request(AuthenticateRequest::new(method_id)).block_task()).await;
+                            let result = tokio::time::timeout(std::time::Duration::from_secs(120), auth_cx.send_request(AuthenticateRequest::new(method_id).meta(meta)).block_task()).await;
                             let result = match result {
                                 Ok(Ok(_)) => { if let Ok(mut bridge) = auth_state.lock() { bridge.auth_required = false; } Ok(()) }
                                 Ok(Err(error)) => Err(error.to_string()),
@@ -692,17 +816,26 @@ async fn run(
                     Command::Prompt(id, blocks, reply) => {
                         let valid = state.lock().map(|mut bridge| {
                             if bridge.closed || !bridge.sessions.contains(&id) { return Err("Unknown session".to_string()); }
+                            // Gemini silently aborts the running turn when a second prompt arrives, so none is ever sent.
+                            if bridge.replaying.contains_key(&id) { return Err("The session is still being restored".to_string()); }
                             if !bridge.running.insert(id.clone()) { return Err("A prompt is already running in this session".to_string()); }
                             bridge.cancelled.remove(&id); Ok(())
                         }).unwrap_or_else(|_| Err("Agent state lock poisoned".into()));
                         if let Err(error) = valid { let _ = reply.send(Err(error)); continue; }
-                        let prompt_cx = cx.clone(); let prompt_emit = emit.clone(); let prompt_state = state.clone();
+                        let slash = matches!(blocks.first(), Some(ContentBlock::Text(text)) if text.text.trim_start().starts_with('/'));
+                        adapter.begin_turn(&id, slash);
+                        let prompt_cx = cx.clone(); let prompt_emit = emit.clone(); let prompt_state = state.clone(); let prompt_adapter = adapter.clone();
                         cx.spawn(async move {
-                            let result = prompt_cx.send_request(PromptRequest::new(id.clone(), blocks)).block_task().await;
+                            let params = serde_json::to_value(PromptRequest::new(id.clone(), blocks)).unwrap_or_default();
+                            let result = raw_request(&prompt_cx, "session/prompt", params).await;
                             if let Ok(mut bridge) = prompt_state.lock() { bridge.running.remove(&id); }
                             match result {
-                                Ok(response) => { prompt_emit(AgentEvent::Complete { session_id: id, stop_reason: enum_string(&response.stop_reason) }); let _ = reply.send(Ok(())); }
-                                Err(error) => { let message = error.to_string(); prompt_emit(AgentEvent::Error { message: message.clone() }); let _ = reply.send(Err(message)); }
+                                Ok(response) => { prompt_emit(prompt_adapter.complete(&id, &response)); let _ = reply.send(Ok(())); }
+                                Err(error) => {
+                                    // OpenCode reports a missing sign-in only here; any agent may.
+                                    if error.code == ErrorCode::AuthRequired { auth_required(&prompt_state, &prompt_emit, &error); }
+                                    let message = error.to_string(); prompt_emit(AgentEvent::Error { message: message.clone() }); let _ = reply.send(Err(message));
+                                }
                             }
                             Ok(())
                         })?;
@@ -710,13 +843,23 @@ async fn run(
                     Command::SetConfig(id, config_id, value, reply) => {
                         let known = state.lock().map(|bridge| !bridge.closed && bridge.sessions.contains(&id)).unwrap_or(false);
                         if !known { let _ = reply.send(Err("Unknown session".into())); continue; }
-                        let set_cx = cx.clone(); let set_emit = emit.clone();
+                        let set_cx = cx.clone(); let set_emit = emit.clone(); let set_adapter = adapter.clone();
                         cx.spawn(async move {
-                            let request = SetSessionConfigOptionRequest::new(id.clone(), config_id, value.as_str());
-                            let result = tokio::time::timeout(std::time::Duration::from_secs(20), set_cx.send_request(request).block_task()).await;
+                            // Options synthesised from legacy modes and models go to set_mode and set_model.
+                            let route = set_adapter.route(&id, &config_id);
+                            let request = match route {
+                                ConfigRoute::Option => raw_request(&set_cx, "session/set_config_option", serde_json::to_value(SetSessionConfigOptionRequest::new(id.clone(), config_id.clone(), value.as_str())).unwrap_or_default()),
+                                ConfigRoute::Mode => raw_request(&set_cx, "session/set_mode", serde_json::to_value(SetSessionModeRequest::new(id.clone(), value.clone())).unwrap_or_default()),
+                                ConfigRoute::Model => raw_request(&set_cx, "session/set_model", json!({ "sessionId": id, "modelId": value })),
+                            };
+                            let result = tokio::time::timeout(std::time::Duration::from_secs(20), request).await;
                             match result {
                                 Ok(Ok(response)) => {
-                                    set_emit(AgentEvent::Config { session_id: id, options: config_options(&response.config_options) });
+                                    let options = match route {
+                                        ConfigRoute::Option => config_options_value(response.get("configOptions")),
+                                        _ => set_adapter.legacy_applied(&id, &config_id, &value),
+                                    };
+                                    set_emit(AgentEvent::Config { session_id: id, options });
                                     let _ = reply.send(Ok(()));
                                 }
                                 Ok(Err(error)) => { let _ = reply.send(Err(error.to_string())); }
@@ -752,19 +895,26 @@ async fn run(
                     Command::LoadSession(id, reply) => {
                         if !can_load { let _ = reply.send(Err("This agent cannot restore earlier sessions".into())); continue; }
                         if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
-                        let load_cx = cx.clone(); let load_emit = emit.clone(); let load_cwd = cwd.clone(); let load_state = state.clone();
+                        let load_cx = cx.clone(); let load_emit = emit.clone(); let load_cwd = cwd.clone(); let load_state = state.clone(); let load_adapter = adapter.clone();
+                        let mut params = serde_json::to_value(LoadSessionRequest::new(id.clone(), load_cwd)).unwrap_or_default();
+                        params["mcpServers"] = json!(mcp_servers(&state));
+                        if profile.replay_quiet.is_some() {
+                            if let Ok(mut bridge) = state.lock() { bridge.replaying.insert(id.clone(), tokio::time::Instant::now()); }
+                        }
                         cx.spawn(async move {
-                            let request = LoadSessionRequest::new(id.clone(), load_cwd);
-                            let result = tokio::time::timeout(std::time::Duration::from_secs(60), load_cx.send_request(request).block_task()).await;
+                            let result = tokio::time::timeout(std::time::Duration::from_secs(60), raw_request(&load_cx, "session/load", params)).await;
                             match result {
                                 Ok(Ok(response)) => {
-                                    if let Some(options) = response.config_options.as_ref().map(|options| config_options(options)).filter(|options| !options.is_empty()) {
-                                        load_emit(AgentEvent::Config { session_id: id, options });
-                                    }
+                                    let options = load_adapter.session_config(&id, &response);
+                                    if !options.is_empty() { load_emit(AgentEvent::Config { session_id: id.clone(), options }); }
+                                    if let Some(quiet) = profile.replay_quiet { replay_settled(&load_state, &id, quiet).await; }
                                     let _ = reply.send(Ok(()));
                                 }
                                 other => {
-                                    if let Ok(mut bridge) = load_state.lock() { bridge.sessions.remove(&id); }
+                                    if let Ok(mut bridge) = load_state.lock() { bridge.sessions.remove(&id); bridge.replaying.remove(&id); }
+                                    if let Ok(Err(error)) = other.as_ref() {
+                                        if error.code == ErrorCode::AuthRequired { auth_required(&load_state, &load_emit, error); }
+                                    }
                                     let _ = reply.send(Err(match other {
                                         Ok(Err(error)) => error.to_string(),
                                         _ => "The agent did not restore the session within 60 seconds".into(),
@@ -801,7 +951,7 @@ async fn run(
                         if running {
                             // Cancel the active turn first; the notification is written before the delete request.
                             cx.send_notification(CancelNotification::new(id.clone()))?;
-                            cancel_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                            cancel_deadline = Some(tokio::time::Instant::now() + profile.stop_deadline);
                         }
                         cancel_pending(&state, &workspace, &emit, Some(&id));
                         let delete_cx = cx.clone(); let delete_state = state.clone();
@@ -821,7 +971,7 @@ async fn run(
                         if let Ok(mut bridge) = state.lock() { bridge.cancelled.insert(id.clone()); }
                         cx.send_notification(CancelNotification::new(id.clone()))?;
                         cancel_pending(&state, &workspace, &emit, Some(&id));
-                        cancel_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                        cancel_deadline = Some(tokio::time::Instant::now() + profile.stop_deadline);
                     }
                     Command::Shutdown => { cancel_pending(&state, &workspace, &emit, None); break; }
                 }
@@ -834,6 +984,62 @@ fn forget_session(state: &Arc<Mutex<Bridge>>, id: &str) {
     if let Ok(mut bridge) = state.lock() {
         bridge.sessions.remove(id);
         bridge.remembered.retain(|(session, _), _| session != id);
+        bridge.replaying.remove(id);
+        bridge.adapter.forget(id);
+    }
+}
+
+/// The MCP servers this agent may receive.
+fn mcp_servers(state: &Arc<Mutex<Bridge>>) -> Vec<Value> {
+    state
+        .lock()
+        .map(|bridge| {
+            bridge
+                .adapter
+                .mcp_servers(bridge.mcp_caps, &bridge.mcp_servers)
+        })
+        .unwrap_or_default()
+}
+
+/// Emit `AuthRequired` for an `-32000` error from any request.
+fn auth_required(
+    state: &Arc<Mutex<Bridge>>,
+    emit: &EventSink,
+    error: &agent_client_protocol::Error,
+) {
+    let (methods, hint) = state
+        .lock()
+        .map(|mut bridge| {
+            bridge.auth_required = true;
+            (bridge.auth_methods.clone(), bridge.adapter.auth_hint())
+        })
+        .unwrap_or_default();
+    emit(AgentEvent::AuthRequired {
+        message: format!("Authentication required: {error}"),
+        auth_methods: methods,
+        hint,
+    });
+}
+
+/// Wait until a replaying session has been quiet for `quiet` (at most 15
+/// seconds in total), then allow prompts again.
+async fn replay_settled(state: &Arc<Mutex<Bridge>>, id: &str, quiet: std::time::Duration) {
+    let limit = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let last = state
+            .lock()
+            .ok()
+            .and_then(|bridge| bridge.replaying.get(id).copied());
+        let Some(last) = last else { return };
+        let due = last + quiet;
+        let now = tokio::time::Instant::now();
+        if now >= due || now >= limit {
+            break;
+        }
+        tokio::time::sleep_until(due.min(limit)).await;
+    }
+    if let Ok(mut bridge) = state.lock() {
+        bridge.replaying.remove(id);
     }
 }
 
@@ -890,14 +1096,6 @@ fn cancel_pending(
     let _ = emit;
 }
 
-fn blocks_text(blocks: &[Value]) -> String {
-    blocks
-        .iter()
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 fn scope_parts(scope: &ElicitationScope) -> (Option<String>, Option<String>) {
     match scope {
         ElicitationScope::Session(s) => (
@@ -909,33 +1107,53 @@ fn scope_parts(scope: &ElicitationScope) -> (Option<String>, Option<String>) {
 }
 
 /// Build the `Ready` event and the auth method list from the initialize response.
-fn ready_event(response: &InitializeResponse) -> (AgentEvent, Vec<AuthMethodInfo>) {
+fn ready_event(
+    response: &InitializeResponse,
+    adapter: &Adapter,
+) -> (AgentEvent, Vec<AuthMethodInfo>) {
     let caps = &response.agent_capabilities;
+    let info =
+        |id: String, name: String, description: Option<String>, kind: &str, supported: bool| {
+            AuthMethodInfo {
+                id,
+                name,
+                description,
+                kind: kind.into(),
+                supported,
+                input: None,
+                hint: None,
+            }
+        };
     let auth_methods: Vec<AuthMethodInfo> = response
         .auth_methods
         .iter()
         .map(|method| match method {
-            AuthMethod::Agent(m) => AuthMethodInfo {
-                id: m.id.to_string(),
-                name: m.name.clone(),
-                description: m.description.clone(),
-                kind: "agent".into(),
-                supported: true,
-            },
-            AuthMethod::Terminal(m) => AuthMethodInfo {
-                id: m.id.to_string(),
-                name: m.name.clone(),
-                description: m.description.clone(),
-                kind: "terminal".into(),
-                supported: false,
-            },
-            _ => AuthMethodInfo {
-                id: String::new(),
-                name: "Unknown method".into(),
-                description: None,
-                kind: "unknown".into(),
-                supported: false,
-            },
+            AuthMethod::Agent(m) => {
+                let mut method = info(
+                    m.id.to_string(),
+                    m.name.clone(),
+                    m.description.clone(),
+                    "agent",
+                    true,
+                );
+                let meta = m.meta.as_ref().map(|meta| Value::Object(meta.clone()));
+                adapter.auth_method(&mut method, meta.as_ref());
+                method
+            }
+            AuthMethod::Terminal(m) => info(
+                m.id.to_string(),
+                m.name.clone(),
+                m.description.clone(),
+                "terminal",
+                false,
+            ),
+            _ => info(
+                String::new(),
+                "Unknown method".into(),
+                None,
+                "unknown",
+                false,
+            ),
         })
         .filter(|method| !method.id.is_empty())
         .collect();
@@ -955,6 +1173,9 @@ fn ready_event(response: &InitializeResponse) -> (AgentEvent, Vec<AuthMethodInfo
             can_resume_sessions: session.resume.is_some(),
             can_close_sessions: session.close.is_some(),
             can_delete_sessions: session.delete.is_some(),
+            adapter: Some(adapter.kind().id().into()),
+            edits_bypass_review: Some(adapter.profile().edits_bypass_review),
+            double_approval: Some(adapter.profile().double_approval),
         },
         auth_methods: auth_methods.clone(),
     };
@@ -1076,276 +1297,4 @@ fn enum_string<T: serde::Serialize>(value: &T) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_default()
-}
-/// Reduce the agent's select options to the shape the panel renders.
-/// Other option kinds are dropped: the panel has no control for them.
-fn config_options(options: &[SessionConfigOption]) -> Vec<ConfigOption> {
-    let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
-    let choice = |value: &Value| {
-        Some(ConfigChoice {
-            value: text(value, "value")?,
-            name: text(value, "name").or_else(|| text(value, "value"))?,
-            description: text(value, "description"),
-        })
-    };
-    options
-        .iter()
-        .filter_map(|option| {
-            let value = serde_json::to_value(option).ok()?;
-            let current_value = text(&value, "currentValue")?;
-            let entries = value.get("options")?.as_array()?;
-            let mut groups: Vec<ConfigGroup> = Vec::new();
-            let mut loose: Vec<ConfigChoice> = Vec::new();
-            for entry in entries {
-                if let Some(members) = entry.get("options").and_then(Value::as_array) {
-                    groups.push(ConfigGroup {
-                        name: text(entry, "name").unwrap_or_default(),
-                        choices: members.iter().filter_map(choice).collect(),
-                    });
-                } else if let Some(found) = choice(entry) {
-                    loose.push(found);
-                }
-            }
-            if !loose.is_empty() {
-                groups.insert(
-                    0,
-                    ConfigGroup {
-                        name: String::new(),
-                        choices: loose,
-                    },
-                );
-            }
-            Some(ConfigOption {
-                id: text(&value, "id")?,
-                name: text(&value, "name")?,
-                description: text(&value, "description"),
-                category: text(&value, "category"),
-                current_value,
-                groups,
-            })
-        })
-        .collect()
-}
-fn session_update(emit: &EventSink, session_id: String, update: Value) {
-    let string = |key: &str| {
-        update
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned()
-    };
-    match string("sessionUpdate").as_str() {
-        "agent_message_chunk" | "agent_thought_chunk" => {
-            let text = update
-                .pointer("/content/text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if string("sessionUpdate") == "agent_message_chunk" {
-                emit(AgentEvent::Text { session_id, text });
-            } else {
-                emit(AgentEvent::Thought { session_id, text });
-            }
-        }
-        "user_message_chunk" => {
-            let text = update
-                .pointer("/content/text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if !text.is_empty() {
-                emit(AgentEvent::User { session_id, text });
-            }
-        }
-        "available_commands_update" => {
-            let commands = update
-                .get("availableCommands")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| {
-                            Some(SlashCommand {
-                                name: item.get("name")?.as_str()?.to_owned(),
-                                description: item
-                                    .get("description")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_owned(),
-                                input_hint: item
-                                    .pointer("/input/hint")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned),
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            emit(AgentEvent::AvailableCommands {
-                session_id,
-                commands,
-            });
-        }
-        "current_mode_update" => {
-            if let Some(mode_id) = update.get("currentModeId").and_then(Value::as_str) {
-                emit(AgentEvent::CurrentMode {
-                    session_id,
-                    mode_id: mode_id.to_owned(),
-                });
-            }
-        }
-        "session_info_update" => emit(AgentEvent::SessionInfo {
-            session_id,
-            title: update
-                .get("title")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            updated_at: update
-                .get("updatedAt")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        }),
-        "usage_update" => {
-            if let (Some(used), Some(size)) = (
-                update.get("used").and_then(Value::as_u64),
-                update.get("size").and_then(Value::as_u64),
-            ) {
-                emit(AgentEvent::Usage {
-                    session_id,
-                    used,
-                    size,
-                    cost_amount: update.pointer("/cost/amount").and_then(Value::as_f64),
-                    cost_currency: update
-                        .pointer("/cost/currency")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                });
-            }
-        }
-        "notice" => {
-            if let Some(title) = update.get("title").and_then(Value::as_str) {
-                emit(AgentEvent::Notice {
-                    session_id,
-                    severity: string("severity"),
-                    title: title.to_owned(),
-                    description: update
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                });
-            }
-        }
-        "compaction_update" => emit(AgentEvent::Compaction {
-            session_id,
-            compaction_id: string("compactionId"),
-            status: string("status"),
-            summary: update
-                .get("summary")
-                .and_then(Value::as_array)
-                .map(|blocks| blocks_text(blocks))
-                .filter(|text| !text.is_empty()),
-            error: update
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        }),
-        "compaction_summary_chunk" => {
-            let text = blocks_text(std::slice::from_ref(
-                update.get("content").unwrap_or(&Value::Null),
-            ));
-            if !text.is_empty() {
-                emit(AgentEvent::CompactionSummary {
-                    session_id,
-                    compaction_id: string("compactionId"),
-                    text,
-                });
-            }
-        }
-        "config_option_update" => {
-            let options = update
-                .get("configOptions")
-                .and_then(|value| {
-                    serde_json::from_value::<Vec<SessionConfigOption>>(value.clone()).ok()
-                })
-                .map(|options| config_options(&options))
-                .unwrap_or_default();
-            if !options.is_empty() {
-                emit(AgentEvent::Config {
-                    session_id,
-                    options,
-                });
-            }
-        }
-        "plan" => {
-            let entries = update
-                .get("entries")
-                .and_then(Value::as_array)
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .map(|entry| PlanEntry {
-                            content: entry["content"].as_str().unwrap_or_default().into(),
-                            priority: entry["priority"].as_str().unwrap_or_default().into(),
-                            status: entry["status"].as_str().unwrap_or_default().into(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            emit(AgentEvent::Plan {
-                session_id,
-                entries,
-            });
-        }
-        "tool_call" | "tool_call_update" => emit(AgentEvent::Tool {
-            session_id,
-            tool_call_id: string("toolCallId"),
-            title: update
-                .get("title")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            status: update
-                .get("status")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            tool_kind: update
-                .get("kind")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            parent_tool_call_id: update
-                .pointer("/_meta/claudeCode/parentToolUseId")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            content_json: update.to_string(),
-        }),
-        _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn options(json: Value) -> Vec<ConfigOption> {
-        config_options(&serde_json::from_value::<Vec<SessionConfigOption>>(json).unwrap())
-    }
-
-    #[test]
-    fn flat_and_grouped_select_options_are_reduced() {
-        let parsed = options(serde_json::json!([
-            {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "fast",
-             "options": [{"value": "fast", "name": "Fast"}, {"value": "deep", "name": "Deep", "description": "Slower"}]},
-            {"id": "mode", "name": "Mode", "type": "select", "currentValue": "b",
-             "options": [{"group": "g", "name": "Group", "options": [{"value": "b", "name": "B"}]}]}
-        ]));
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].category.as_deref(), Some("model"));
-        assert_eq!(parsed[0].current_value, "fast");
-        assert_eq!(parsed[0].groups[0].choices.len(), 2);
-        assert_eq!(
-            parsed[0].groups[0].choices[1].description.as_deref(),
-            Some("Slower")
-        );
-        assert_eq!(parsed[1].groups[0].name, "Group");
-        assert_eq!(parsed[1].groups[0].choices[0].value, "b");
-    }
 }

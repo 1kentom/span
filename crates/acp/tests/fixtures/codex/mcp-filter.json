@@ -1,0 +1,51 @@
+{
+  "quirk": "An SSE or ACP MCP server makes the whole Codex session/new fail even when advertised: neither is sent.",
+  "mcpServers": [
+    {
+      "name": "local",
+      "command": "node",
+      "args": [
+        "server.js"
+      ],
+      "env": []
+    },
+    {
+      "type": "http",
+      "name": "remote",
+      "url": "https://mcp.example",
+      "headers": []
+    },
+    {
+      "type": "sse",
+      "name": "events",
+      "url": "https://sse.example",
+      "headers": []
+    },
+    {
+      "type": "acp",
+      "name": "inline",
+      "id": "span"
+    }
+  ],
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/new",
+      "params": {
+        "mcpServers": [
+          {
+            "name": "local"
+          },
+          {
+            "type": "http",
+            "name": "remote"
+          }
+        ]
+      }
+    }
+  ]
+}

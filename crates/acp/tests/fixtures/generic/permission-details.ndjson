@@ -1,0 +1,5 @@
+// Permission events forward toolCall content (diff previews), locations, kind, rawInput and _meta, which were discarded before.
+// Protocol-conformant shapes from an unknown agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}, "authMethods": [], "agentInfo": {"name": "span-test-peer", "version": "1.0.0"}}}
+{"on": "session/new", "result": {"sessionId": "p-1"}}
+{"on": "session/prompt", "before": [{"request": {"method": "session/request_permission", "params": {"toolCall": {"toolCallId": "w1", "title": "Write a.txt", "kind": "edit", "status": "pending", "rawInput": {"path": "a.txt"}, "content": [{"type": "diff", "path": "$ROOT/a.txt", "oldText": null, "newText": "hi"}], "locations": [{"path": "$ROOT/a.txt", "line": 1}], "_meta": {"vendor": {"x": 1}}}, "options": [{"optionId": "once", "name": "Allow once", "kind": "allow_once"}, {"optionId": "always", "name": "Always", "kind": "allow_always"}, {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}}}], "result": {"stopReason": "end_turn"}}

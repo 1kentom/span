@@ -7,9 +7,10 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-specta.workspace = true
+specta = { workspace = true, features = ["serde_json"] }
 thiserror.workspace = true
-tokio.workspace = true
+# `net` is already compiled into the workspace through reqwest; declared for the span-agents server.
+tokio = { workspace = true, features = ["net"] }
 agent-client-protocol = { version = "=3.5.0", features = ["process"] }
 span-core.workspace = true
 

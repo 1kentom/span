@@ -118,7 +118,7 @@ async fn eventually(what: &str, condition: impl Fn() -> bool) {
 
 fn is_complete(event: &SessionEvent, key: &SessionKey, reason: &str) -> bool {
     event.connection_id == key.connection_id
-        && matches!(&event.event, AgentEvent::Complete { session_id, stop_reason }
+        && matches!(&event.event, AgentEvent::Complete { session_id, stop_reason, .. }
             if *session_id == key.session_id && stop_reason == reason)
 }
 
@@ -174,7 +174,9 @@ async fn two_agents_run_concurrent_turns_without_events_crossing() {
         );
         assert_eq!(event.agent_name, names[&event.connection_id]);
         match &event.event {
-            AgentEvent::Text { session_id, text } => {
+            AgentEvent::Text {
+                session_id, text, ..
+            } => {
                 assert_eq!(*session_id, key.session_id);
                 assert!(
                     text.starts_with(&format!("{}:{}:", event.agent_name, key.session_id)),

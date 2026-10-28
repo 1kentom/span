@@ -59,6 +59,14 @@ export const commands = {
 	 *  Returns the new session id, or the current one when a session already exists.
 	 */
 	agentAuthenticate: (methodId: string) => __TAURI_INVOKE<string>("agent_authenticate", { methodId }),
+	/**
+	 *  Sign in with a method that needs an API key or a gateway the user typed,
+	 *  then create the session that was blocked. The secret is passed to the agent
+	 *  only; it is not logged or stored.
+	 */
+	agentAuthenticateWith: (methodId: string, credential: AuthCredential_Deserialize) => __TAURI_INVOKE<string>("agent_authenticate_with", { methodId, credential }),
+	/**  Agents launched by a known custom command rather than a registry install. */
+	agentPresets: () => __TAURI_INVOKE<AgentPreset_Serialize[]>("agent_presets"),
 	/**  Answer an agent input request. `action` is accept, decline or cancel. */
 	agentElicitation: (requestId: string, action: string, contentJson: string | null) => __TAURI_INVOKE<null>("agent_elicitation", { requestId, action, contentJson }),
 	agentSetConfig: (configId: string, value: string) => __TAURI_INVOKE<null>("agent_set_config", { configId, value }),
@@ -92,15 +100,25 @@ export type AgentCommand_Serialize = {
 
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-export type AgentEvent_Deserialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | 
+export type AgentEvent_Deserialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string; messageId?: string | null; 
+/**  Start a new bubble instead of appending to the previous one. */
+newBlock?: boolean | null } | { kind: "thought"; sessionId: string; text: string; messageId?: string | null; 
+/**  Start a new thought block instead of appending to the previous one. */
+newBlock?: boolean | null } | 
 /**  A user turn replayed while an earlier session is restored. */
-{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | 
+{ kind: "user"; sessionId: string; text: string; attachments?: UserAttachment_Deserialize[] } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | 
 /**  Negotiated agent identity, features and sign-in methods, sent once after initialize. */
-{ kind: "ready"; agentName?: string | null; agentTitle?: string | null; agentVersion?: string | null; features: AgentFeatures; authMethods: AuthMethodInfo_Deserialize[] } | 
+{ kind: "ready"; agentName?: string | null; agentTitle?: string | null; agentVersion?: string | null; features: AgentFeatures_Deserialize; authMethods: AuthMethodInfo_Deserialize[] } | 
 /**  Session creation needs `agent_authenticate` first. */
-{ kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Deserialize[] } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Deserialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title?: string | null; updatedAt?: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount?: number | null; costCurrency?: string | null } | { kind: "notice"; sessionId: string; 
+{ kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Deserialize[]; 
+/**  Set when the user must sign in outside Span. */
+hint?: AgentHint | null } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Deserialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title?: string | null; updatedAt?: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount?: number | null; costCurrency?: string | null } | { kind: "notice"; sessionId: string; 
 /**  `info`, `warning`, `error`, or an agent specific value. */
-severity: string; title: string; description?: string | null } | { kind: "compaction"; sessionId: string; compactionId: string; 
+severity: string; title: string; description?: string | null; 
+/**  Set for a notice the agent later clears with `noticeCleared`. */
+noticeId?: string | null; hint?: AgentHint | null } | 
+/**  A notice with this id no longer applies. */
+{ kind: "noticeCleared"; sessionId: string; noticeId: string } | { kind: "compaction"; sessionId: string; compactionId: string; 
 /**  `in_progress`, `completed`, `failed`, `cancelled` or an agent specific value. */
 status: string; summary?: string | null; error?: string | null } | { kind: "compactionSummary"; sessionId: string; compactionId: string; text: string } | 
 /**  The agent asks the user for input. Answer with `agent_elicitation`. */
@@ -116,17 +134,39 @@ url?: string | null; elicitationId?: string | null } | { kind: "elicitationResol
 /**  ACP tool kind such as `read`, `edit` or `execute`. */
 toolKind?: string | null; 
 /**  Set when an agent reports the call as made by a subagent. */
-parentToolCallId?: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
+parentToolCallId?: string | null; contentJson: string; rawInput?: Value | null; rawOutput?: Value | null; locations?: ToolLocation_Deserialize[]; diffs?: ToolDiff_Deserialize[]; images?: ToolImage_Deserialize[]; 
+/**  A file the agent saved, such as a generated image. Reported only; Span does not open it. */
+savedPath?: string | null; 
+/**  Agent bookkeeping rather than work the user asked for; show it collapsed. */
+internal?: boolean | null; hint?: AgentHint | null } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[]; toolKind?: string | null; rawInput?: Value | null; 
+/**  The tool call content blocks as sent, for example diff previews. */
+content?: Value | null; locations?: ToolLocation_Deserialize[]; diffs?: ToolDiff_Deserialize[]; 
+/**  The tool call `_meta` as sent. */
+meta?: Value | null; internal?: boolean | null } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string; 
+/**  Token usage from the prompt response, when the agent sent it. */
+usage?: Value | null; 
+/**  The prompt response `_meta`, when the agent sent it. */
+meta?: Value | null; hint?: AgentHint | null } | { kind: "error"; message: string };
 
-export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | 
+export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string; messageId?: string; 
+/**  Start a new bubble instead of appending to the previous one. */
+newBlock?: boolean } | { kind: "thought"; sessionId: string; text: string; messageId?: string; 
+/**  Start a new thought block instead of appending to the previous one. */
+newBlock?: boolean } | 
 /**  A user turn replayed while an earlier session is restored. */
-{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | 
+{ kind: "user"; sessionId: string; text: string; attachments?: UserAttachment_Serialize[] } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | 
 /**  Negotiated agent identity, features and sign-in methods, sent once after initialize. */
-{ kind: "ready"; agentName: string | null; agentTitle: string | null; agentVersion: string | null; features: AgentFeatures; authMethods: AuthMethodInfo_Serialize[] } | 
+{ kind: "ready"; agentName: string | null; agentTitle: string | null; agentVersion: string | null; features: AgentFeatures_Serialize; authMethods: AuthMethodInfo_Serialize[] } | 
 /**  Session creation needs `agent_authenticate` first. */
-{ kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Serialize[] } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Serialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title: string | null; updatedAt: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount: number | null; costCurrency: string | null } | { kind: "notice"; sessionId: string; 
+{ kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Serialize[]; 
+/**  Set when the user must sign in outside Span. */
+hint?: AgentHint } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Serialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title: string | null; updatedAt: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount: number | null; costCurrency: string | null } | { kind: "notice"; sessionId: string; 
 /**  `info`, `warning`, `error`, or an agent specific value. */
-severity: string; title: string; description: string | null } | { kind: "compaction"; sessionId: string; compactionId: string; 
+severity: string; title: string; description: string | null; 
+/**  Set for a notice the agent later clears with `noticeCleared`. */
+noticeId?: string; hint?: AgentHint } | 
+/**  A notice with this id no longer applies. */
+{ kind: "noticeCleared"; sessionId: string; noticeId: string } | { kind: "compaction"; sessionId: string; compactionId: string; 
 /**  `in_progress`, `completed`, `failed`, `cancelled` or an agent specific value. */
 status: string; summary: string | null; error: string | null } | { kind: "compactionSummary"; sessionId: string; compactionId: string; text: string } | 
 /**  The agent asks the user for input. Answer with `agent_elicitation`. */
@@ -142,10 +182,25 @@ url: string | null; elicitationId: string | null } | { kind: "elicitationResolve
 /**  ACP tool kind such as `read`, `edit` or `execute`. */
 toolKind: string | null; 
 /**  Set when an agent reports the call as made by a subagent. */
-parentToolCallId: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
+parentToolCallId: string | null; contentJson: string; rawInput?: Value; rawOutput?: Value; locations?: ToolLocation_Serialize[]; diffs?: ToolDiff_Serialize[]; images?: ToolImage_Serialize[]; 
+/**  A file the agent saved, such as a generated image. Reported only; Span does not open it. */
+savedPath?: string; 
+/**  Agent bookkeeping rather than work the user asked for; show it collapsed. */
+internal?: boolean; hint?: AgentHint } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[]; toolKind?: string; rawInput?: Value; 
+/**  The tool call content blocks as sent, for example diff previews. */
+content?: Value; locations?: ToolLocation_Serialize[]; diffs?: ToolDiff_Serialize[]; 
+/**  The tool call `_meta` as sent. */
+meta?: Value; internal?: boolean } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string; 
+/**  Token usage from the prompt response, when the agent sent it. */
+usage?: Value; 
+/**  The prompt response `_meta`, when the agent sent it. */
+meta?: Value; hint?: AgentHint } | { kind: "error"; message: string };
 
 /**  What the agent said it supports during `initialize`. */
-export type AgentFeatures = {
+export type AgentFeatures = AgentFeatures_Serialize | AgentFeatures_Deserialize;
+
+/**  What the agent said it supports during `initialize`. */
+export type AgentFeatures_Deserialize = {
 	loadSession: boolean,
 	image: boolean,
 	audio: boolean,
@@ -156,7 +211,99 @@ export type AgentFeatures = {
 	canResumeSessions: boolean,
 	canCloseSessions: boolean,
 	canDeleteSessions: boolean,
+	/**  Which adapter normalises this agent: `claude`, `codex`, `gemini`, `opencode` or `generic`. */
+	adapter?: string | null,
+	/**  The agent writes files itself and ignores the client file system, so Span review cannot gate its edits. */
+	editsBypassReview?: boolean | null,
+	/**  The agent asks permission and then also sends a write for review, so the user approves an edit twice. */
+	doubleApproval?: boolean | null,
 };
+
+/**  What the agent said it supports during `initialize`. */
+export type AgentFeatures_Serialize = {
+	loadSession: boolean,
+	image: boolean,
+	audio: boolean,
+	embeddedContext: boolean,
+	mcpHttp: boolean,
+	mcpSse: boolean,
+	canListSessions: boolean,
+	canResumeSessions: boolean,
+	canCloseSessions: boolean,
+	canDeleteSessions: boolean,
+	/**  Which adapter normalises this agent: `claude`, `codex`, `gemini`, `opencode` or `generic`. */
+	adapter?: string,
+	/**  The agent writes files itself and ignores the client file system, so Span review cannot gate its edits. */
+	editsBypassReview?: boolean,
+	/**  The agent asks permission and then also sends a write for review, so the user approves an edit twice. */
+	doubleApproval?: boolean,
+};
+
+/**
+ *  A condition the UI words itself. The backend never sends display text for
+ *  these; the suggested English is in each variant's comment.
+ */
+export type AgentHint = 
+/**  "Turn limit or loop detected". Gemini returns `max_turn_requests` for both. */
+"turnLimitOrLoop" | 
+/**  "Command ran, no output streamed". A slash command ended the turn silently. */
+"noOutputStreamed" | 
+/**  "Output not available from agent". A finished command reported no content. */
+"outputUnavailable" | 
+/**  "Run `opencode auth login` in a terminal, then retry". */
+"runOpencodeAuthLogin" | 
+/**  "Retrying". The agent is retrying a failed model request. */
+"retrying" | 
+/**  "Compacting conversation". */
+"compacting" | 
+/**  "Preparing tool". The agent has not named the tool call yet. */
+"toolPending";
+
+/**  A launch command for an agent that is not installed from the registry. */
+export type AgentPreset = AgentPreset_Serialize | AgentPreset_Deserialize;
+
+/**  A launch command for an agent that is not installed from the registry. */
+export type AgentPreset_Deserialize = {
+	id: string,
+	name: string,
+	description: string,
+	/**  The executable must already be on the user's PATH. */
+	launch: AgentCommand_Deserialize,
+};
+
+/**  A launch command for an agent that is not installed from the registry. */
+export type AgentPreset_Serialize = {
+	id: string,
+	name: string,
+	description: string,
+	/**  The executable must already be on the user's PATH. */
+	launch: AgentCommand_Serialize,
+};
+
+/**
+ *  A secret the user typed for an `agent` sign-in method. It is passed to the
+ *  agent in `authenticate` `_meta` and never logged or stored by Span.
+ */
+export type AuthCredential = AuthCredential_Serialize | AuthCredential_Deserialize;
+
+/**
+ *  A secret the user typed for an `agent` sign-in method. It is passed to the
+ *  agent in `authenticate` `_meta` and never logged or stored by Span.
+ */
+export type AuthCredential_Deserialize = { kind: "apiKey"; key: string } | { kind: "gateway"; baseUrl: string; headers?: { [key in string]: string } };
+
+/**
+ *  A secret the user typed for an `agent` sign-in method. It is passed to the
+ *  agent in `authenticate` `_meta` and never logged or stored by Span.
+ */
+export type AuthCredential_Serialize = { kind: "apiKey"; key: string } | { kind: "gateway"; baseUrl: string; headers: { [key in string]: string } };
+
+/**  What an `agent` sign-in method asks the user for. */
+export type AuthInput = 
+/**  An API key. */
+"apiKey" | 
+/**  A gateway base URL and request headers. */
+"gateway";
 
 /**  An authentication method from `initialize`. */
 export type AuthMethodInfo = AuthMethodInfo_Serialize | AuthMethodInfo_Deserialize;
@@ -173,6 +320,13 @@ export type AuthMethodInfo_Deserialize = {
 	kind: string,
 	/**  Whether `agent_authenticate` accepts this method. */
 	supported: boolean,
+	/**
+	 *  Set when the method needs a value from the user: use
+	 *  `agent_authenticate_with` and an [`AuthCredential`] of the same kind.
+	 */
+	input?: AuthInput | null,
+	/**  Set when the method cannot run from Span and the user must act instead. */
+	hint?: AgentHint | null,
 };
 
 /**  An authentication method from `initialize`. */
@@ -187,6 +341,13 @@ export type AuthMethodInfo_Serialize = {
 	kind: string,
 	/**  Whether `agent_authenticate` accepts this method. */
 	supported: boolean,
+	/**
+	 *  Set when the method needs a value from the user: use
+	 *  `agent_authenticate_with` and an [`AuthCredential`] of the same kind.
+	 */
+	input?: AuthInput,
+	/**  Set when the method cannot run from Span and the user must act instead. */
+	hint?: AgentHint,
 };
 
 /**  A transaction acknowledgement without materializing the complete document. */
@@ -605,6 +766,56 @@ export type TextEdit = {
 
 export type Theme = "Dark" | "Light" | "Purple";
 
+/**  A diff from tool call content. */
+export type ToolDiff = ToolDiff_Serialize | ToolDiff_Deserialize;
+
+/**  A diff from tool call content. */
+export type ToolDiff_Deserialize = {
+	/**  Absolute when `resolved`; otherwise the path exactly as the agent sent it. */
+	path: string,
+	resolved: boolean,
+	/**
+	 *  `add` when the agent sent no old text, otherwise `modify`. The agent's
+	 *  own `_meta.kind` is ignored because it is unreliable.
+	 */
+	change: string,
+	oldText?: string | null,
+	newText: string,
+};
+
+/**  A diff from tool call content. */
+export type ToolDiff_Serialize = {
+	/**  Absolute when `resolved`; otherwise the path exactly as the agent sent it. */
+	path: string,
+	resolved: boolean,
+	/**
+	 *  `add` when the agent sent no old text, otherwise `modify`. The agent's
+	 *  own `_meta.kind` is ignored because it is unreliable.
+	 */
+	change: string,
+	oldText: string | null,
+	newText: string,
+};
+
+/**  An image a tool call produced. */
+export type ToolImage = ToolImage_Serialize | ToolImage_Deserialize;
+
+/**  An image a tool call produced. */
+export type ToolImage_Deserialize = {
+	mimeType?: string | null,
+	/**  Base64 data when the agent sent it. */
+	data?: string | null,
+	uri?: string | null,
+};
+
+/**  An image a tool call produced. */
+export type ToolImage_Serialize = {
+	mimeType: string | null,
+	/**  Base64 data when the agent sent it. */
+	data: string | null,
+	uri: string | null,
+};
+
 export type ToolInfo = ToolInfo_Serialize | ToolInfo_Deserialize;
 
 export type ToolInfo_Deserialize = {
@@ -626,6 +837,44 @@ export type ToolInfo_Serialize = {
 	available: boolean,
 	kind: string,
 };
+
+/**  A file a tool call touches. */
+export type ToolLocation = ToolLocation_Serialize | ToolLocation_Deserialize;
+
+/**  A file a tool call touches. */
+export type ToolLocation_Deserialize = {
+	path: string,
+	line?: number | null,
+};
+
+/**  A file a tool call touches. */
+export type ToolLocation_Serialize = {
+	path: string,
+	line: number | null,
+};
+
+/**  A non-text block in a replayed user turn, kept as a marker. */
+export type UserAttachment = UserAttachment_Serialize | UserAttachment_Deserialize;
+
+/**  A non-text block in a replayed user turn, kept as a marker. */
+export type UserAttachment_Deserialize = {
+	/**  `resourceLink`, `image` or `resource`. */
+	kind: string,
+	uri?: string | null,
+	name?: string | null,
+	mimeType?: string | null,
+};
+
+/**  A non-text block in a replayed user turn, kept as a marker. */
+export type UserAttachment_Serialize = {
+	/**  `resourceLink`, `image` or `resource`. */
+	kind: string,
+	uri: string | null,
+	name: string | null,
+	mimeType: string | null,
+};
+
+export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
 
 export type Workspace = {
 	root: string,

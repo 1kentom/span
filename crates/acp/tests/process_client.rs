@@ -550,11 +550,11 @@ async fn lists_and_restores_earlier_sessions_with_replayed_history() {
     assert_eq!(listed[0].title.as_deref(), Some("Earlier chat"));
     service.load_session("old-1".into()).await.unwrap();
     next(&mut events, |e| {
-        matches!(e, AgentEvent::User { session_id, text } if session_id == "old-1" && text == "earlier question")
+        matches!(e, AgentEvent::User { session_id, text, .. } if session_id == "old-1" && text == "earlier question")
     })
     .await;
     next(&mut events, |e| {
-        matches!(e, AgentEvent::Text { session_id, text } if session_id == "old-1" && text == "earlier answer")
+        matches!(e, AgentEvent::Text { session_id, text, .. } if session_id == "old-1" && text == "earlier answer")
     })
     .await;
     let tool = next(&mut events, |e| matches!(e, AgentEvent::Tool { .. })).await;

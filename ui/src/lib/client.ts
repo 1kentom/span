@@ -413,3 +413,14 @@ export const api = {
     return () => { agentListeners.delete(listener); };
   },
 };
+
+/** Sign in with a method whose `input` is `apiKey` or `gateway`. The secret goes to the agent only; Span does not log or store it. Returns the session id. */
+export async function agentAuthenticateWith(methodId: string, credential: import('../bindings').AuthCredential_Deserialize): Promise<string> {
+  if (!isDesktop) nativeRequired('Signing in to agents');
+  return commands.agentAuthenticateWith(methodId, credential);
+}
+
+/** Agents launched by a known custom command (OpenCode) rather than a registry install. */
+export async function agentPresets(): Promise<import('../bindings').AgentPreset_Serialize[]> {
+  return isDesktop ? commands.agentPresets() : [];
+}
