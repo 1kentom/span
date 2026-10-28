@@ -274,7 +274,8 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          # rustfmt is needed at runtime by a core test (available_rustfmt_receives_unsaved_buffer_text_on_stdin).
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: check
