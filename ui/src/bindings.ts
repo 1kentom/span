@@ -101,6 +101,11 @@ export const commands = {
 	/**  Start a fresh conversation on the connected agent process. */
 	agentNewSession: () => __TAURI_INVOKE<string>("agent_new_session"),
 	agentListSessions: () => __TAURI_INVOKE<SessionSummary_Serialize[]>("agent_list_sessions"),
+	/**
+	 *  Every session the connected agent lists, from any folder (the History
+	 *  "All folders" scope). Each summary carries the session's `cwd`.
+	 */
+	agentListAllSessions: () => __TAURI_INVOKE<SessionSummary_Serialize[]>("agent_list_all_sessions"),
 	agentResumeSession: (sessionId: string) => __TAURI_INVOKE<string>("agent_resume_session", { sessionId }),
 	/**
 	 *  Close a session the agent holds. Closing the active session leaves the
@@ -1440,6 +1445,8 @@ export type ModelUsePatch_Deserialize = {
 	name: string,
 	effort?: string | null,
 	turns?: number | null,
+	/**  Records a delegated child's model (merged apart from the lead's own). */
+	subagent?: boolean | null,
 };
 
 /**
@@ -1451,6 +1458,8 @@ export type ModelUsePatch_Serialize = {
 	name: string,
 	effort?: string | null,
 	turns?: number | null,
+	/**  Records a delegated child's model (merged apart from the lead's own). */
+	subagent?: boolean | null,
 };
 
 /**  One model a session used. */
@@ -1463,6 +1472,12 @@ export type ModelUse_Deserialize = {
 	usedMs: number,
 	/**  Prompt turns sent while this model was selected. */
 	turns: number,
+	/**
+	 *  True when a delegated child session ran this model for the session,
+	 *  shown as `model · subagent`. Kept apart from the lead's own use of the
+	 *  same model.
+	 */
+	subagent?: boolean,
 };
 
 /**  One model a session used. */
@@ -1475,6 +1490,12 @@ export type ModelUse_Serialize = {
 	usedMs: number,
 	/**  Prompt turns sent while this model was selected. */
 	turns: number,
+	/**
+	 *  True when a delegated child session ran this model for the session,
+	 *  shown as `model · subagent`. Kept apart from the lead's own use of the
+	 *  same model.
+	 */
+	subagent?: boolean,
 };
 
 export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
@@ -1698,6 +1719,38 @@ export type SessionKey = {
 };
 
 /**
+ *  The earlier segment of the same chat that a session continues: the
+ *  session the user switched agent from (ADR 0005, thread links). `title` is
+ *  the chat title shown when the switch happened, so the thread keeps its
+ *  name even when the earlier agent is not connected.
+ */
+export type SessionLink = SessionLink_Serialize | SessionLink_Deserialize;
+
+/**
+ *  The earlier segment of the same chat that a session continues: the
+ *  session the user switched agent from (ADR 0005, thread links). `title` is
+ *  the chat title shown when the switch happened, so the thread keeps its
+ *  name even when the earlier agent is not connected.
+ */
+export type SessionLink_Deserialize = {
+	agentId: string,
+	sessionId: string,
+	title?: string | null,
+};
+
+/**
+ *  The earlier segment of the same chat that a session continues: the
+ *  session the user switched agent from (ADR 0005, thread links). `title` is
+ *  the chat title shown when the switch happened, so the thread keeps its
+ *  name even when the earlier agent is not connected.
+ */
+export type SessionLink_Serialize = {
+	agentId: string,
+	sessionId: string,
+	title: string | null,
+};
+
+/**
  *  What Span knows about one agent session. Sessions are keyed by
  *  `(agentId, sessionId)` because two agents may reuse a session id.
  */
@@ -1728,6 +1781,12 @@ export type SessionMetaPatch_Deserialize = {
 	linesRemoved?: number | null,
 	stopReasonLast?: string | null,
 	parent?: SessionParent | null,
+	/**
+	 *  Set, not merged. A link to the session itself or with an invalid id is
+	 *  ignored.
+	 */
+	continues?: SessionLink_Deserialize | null,
+	changesTracked?: boolean | null,
 };
 
 /**
@@ -1747,6 +1806,12 @@ export type SessionMetaPatch_Serialize = {
 	linesRemoved?: number | null,
 	stopReasonLast?: string | null,
 	parent?: SessionParent | null,
+	/**
+	 *  Set, not merged. A link to the session itself or with an invalid id is
+	 *  ignored.
+	 */
+	continues?: SessionLink_Serialize | null,
+	changesTracked?: boolean | null,
 };
 
 /**
@@ -1775,6 +1840,16 @@ export type SessionMeta_Deserialize = {
 	linesRemoved: number,
 	stopReasonLast?: string | null,
 	parent?: SessionParent | null,
+	/**
+	 *  The earlier segment of the same chat, set when the user switched agent.
+	 *  Following these links from the newest segment gives the whole thread.
+	 */
+	continues?: SessionLink_Deserialize | null,
+	/**
+	 *  True when Span saw every file change of the session go through review,
+	 *  so zero counters mean "no changes" rather than "unknown".
+	 */
+	changesTracked?: boolean,
 };
 
 /**
@@ -1803,6 +1878,16 @@ export type SessionMeta_Serialize = {
 	linesRemoved: number,
 	stopReasonLast: string | null,
 	parent: SessionParent | null,
+	/**
+	 *  The earlier segment of the same chat, set when the user switched agent.
+	 *  Following these links from the newest segment gives the whole thread.
+	 */
+	continues?: SessionLink_Serialize,
+	/**
+	 *  True when Span saw every file change of the session go through review,
+	 *  so zero counters mean "no changes" rather than "unknown".
+	 */
+	changesTracked?: boolean,
 };
 
 /**  Who started a session. */
@@ -1934,6 +2019,11 @@ export type SessionSummary_Deserialize = {
 	sessionId: string,
 	title?: string | null,
 	updatedAt?: string | null,
+	/**
+	 *  The folder the session belongs to, as the agent reported it. Lets the
+	 *  History scope chips tell this workspace from other folders.
+	 */
+	cwd?: string | null,
 };
 
 /**  A past conversation the agent can restore. */
@@ -1941,6 +2031,11 @@ export type SessionSummary_Serialize = {
 	sessionId: string,
 	title: string | null,
 	updatedAt: string | null,
+	/**
+	 *  The folder the session belongs to, as the agent reported it. Lets the
+	 *  History scope chips tell this workspace from other folders.
+	 */
+	cwd: string | null,
 };
 
 export type Settings = Settings_Serialize | Settings_Deserialize;

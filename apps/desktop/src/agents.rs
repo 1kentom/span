@@ -481,6 +481,16 @@ pub async fn agent_list_sessions(
     active(state.inner())?.service.list_sessions().await
 }
 
+/// Every session the connected agent lists, from any folder (the History
+/// "All folders" scope). Each summary carries the session's `cwd`.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_list_all_sessions(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<span_acp::SessionSummary>, String> {
+    active(state.inner())?.service.list_sessions_in(true).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_resume_session(

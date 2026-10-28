@@ -28,7 +28,7 @@ enum Command {
     Authenticate(String, Option<Meta>, Reply<()>),
     Cancel(String),
     SetConfig(String, String, String, Reply<()>),
-    ListSessions(Reply<Vec<SessionSummary>>),
+    ListSessions(bool, Reply<Vec<SessionSummary>>),
     LoadSession(String, Vec<Value>, Reply<()>),
     CloseSession(String, Reply<()>),
     DeleteSession(String, Reply<()>),
@@ -473,10 +473,16 @@ impl AgentService {
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
+    /// Sessions of the connection's workspace folder.
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+        self.list_sessions_in(false).await
+    }
+    /// Sessions of the workspace folder, or with `all_folders` every session
+    /// the agent lists (no `cwd` filter); each summary carries its `cwd`.
+    pub async fn list_sessions_in(&self, all_folders: bool) -> Result<Vec<SessionSummary>, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::ListSessions(tx))
+            .send(Command::ListSessions(all_folders, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -1079,11 +1085,11 @@ async fn run(
                             Ok(())
                         })?;
                     }
-                    Command::ListSessions(reply) => {
+                    Command::ListSessions(all_folders, reply) => {
                         if !can_list { let _ = reply.send(Err("This agent cannot list earlier sessions".into())); continue; }
                         let list_cx = cx.clone(); let list_cwd = cwd.clone(); let list_state = state.clone(); let list_emit = emit.clone();
                         cx.spawn(async move {
-                            let result = list_all_sessions(&list_cx, list_cwd).await.map(|found| {
+                            let result = list_all_sessions(&list_cx, (!all_folders).then_some(list_cwd)).await.map(|found| {
                                 let mut kept = hide_deleted(&list_state, &list_emit, found);
                                 kept.truncate(LIST_MAX_SESSIONS);
                                 kept
@@ -1292,7 +1298,7 @@ const LIST_MAX_SESSIONS: usize = 100;
 
 async fn list_all_sessions(
     cx: &ConnectionTo<Agent>,
-    cwd: std::path::PathBuf,
+    cwd: Option<std::path::PathBuf>,
 ) -> Result<Vec<SessionSummary>, String> {
     let deadline = tokio::time::Instant::now() + LIST_BUDGET;
     let mut found: Vec<SessionSummary> = Vec::new();
@@ -1313,6 +1319,7 @@ async fn list_all_sessions(
                     session_id: info.session_id.to_string(),
                     title: info.title,
                     updated_at: info.updated_at,
+                    cwd: Some(info.cwd.to_string_lossy().into_owned()),
                 }));
                 cursor = page.next_cursor;
             }

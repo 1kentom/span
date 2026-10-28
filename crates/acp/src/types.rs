@@ -64,6 +64,10 @@ pub struct SessionSummary {
     pub session_id: String,
     pub title: Option<String>,
     pub updated_at: Option<String>,
+    /// The folder the session belongs to, as the agent reported it. Lets the
+    /// History scope chips tell this workspace from other folders.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 /// A slash command the agent advertises. Run it by sending `/name args` as prompt text.
