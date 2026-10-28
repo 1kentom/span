@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         reviewed = true;
                         println!("Verified ACP proposal, editor acceptance, unsaved buffer and explicit save");
                     }
-                    AgentEvent::Error { message } => eprintln!("Provider error: {message}"),
+                    AgentEvent::Error { message, .. } => eprintln!("Provider error: {message}"),
                     _ => {},
                 }
             }

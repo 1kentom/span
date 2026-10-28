@@ -1152,3 +1152,341 @@ async fn record_decision_stores_a_record_and_emits_an_event_only() {
         .await;
     assert_eq!(missing.response["error"]["code"], -32602);
 }
+
+#[tokio::test]
+async fn delegated_is_emitted_before_any_child_event() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker_connection = h.connect(&["--name=worker"]).await;
+    // One log for both streams, so the order between them is observable.
+    let log: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = log.clone();
+    let mut config = h.config(scaled());
+    config.events = Some(Arc::new(move |event| {
+        if let DelegationEvent::Delegated { task_id, .. } = event {
+            sink.lock().unwrap().push(format!("delegated:{task_id}"));
+        }
+    }));
+    let server = ToolServer::start(&h.manager, &lead_connection, config)
+        .await
+        .expect("start span-agents");
+    let lead = h
+        .manager
+        .open_session_with(
+            &lead_connection,
+            None,
+            SessionOrigin::User,
+            vec![server.mcp_server_json()],
+        )
+        .await
+        .expect("lead session");
+    server.bind(&h.manager, lead).expect("bind lead");
+    let child_log = log.clone();
+    let child_connection = worker_connection.clone();
+    let _subscription = h.manager.subscribe(Arc::new(move |event: SessionEvent| {
+        // Events of the prompt itself; session setup events precede any task.
+        let turn = matches!(
+            event.event,
+            AgentEvent::Thought { .. }
+                | AgentEvent::Text { .. }
+                | AgentEvent::Usage { .. }
+                | AgentEvent::Complete { .. }
+        );
+        if turn && event.connection_id == child_connection && event.session_id.is_some() {
+            child_log.lock().unwrap().push("child".into());
+        }
+    }));
+    let mut client = Client::new(&server);
+
+    // A child that streams the moment its prompt arrives.
+    let delegated = client
+        .tool("delegate", json!({"agent": "worker", "task": "work:3:0"}))
+        .await;
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    client.until_finished(&task).await;
+    let log = log.lock().unwrap().clone();
+    assert_eq!(log.first(), Some(&format!("delegated:{task}")), "{log:?}");
+    assert!(log.iter().any(|entry| entry == "child"), "{log:?}");
+}
+
+#[tokio::test]
+async fn a_child_permission_emits_one_typed_event_that_no_tool_can_answer() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker_connection = h.connect(&["--name=worker"]).await;
+    let (lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+
+    let tools = client.rpc("tools/list", json!({})).await.response;
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for name in &names {
+        for word in ["permission", "answer", "respond", "approve", "cancel_task"] {
+            assert!(!name.contains(word), "tool {name} could answer or cancel");
+        }
+    }
+
+    let delegated = client
+        .tool("delegate", json!({"agent": "worker", "task": "permission"}))
+        .await;
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let session = structured(&delegated)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let plain = h
+        .next(|e| matches!(e.event, AgentEvent::Permission { .. }))
+        .await;
+    let AgentEvent::Permission { request_id, .. } = plain.event else {
+        unreachable!()
+    };
+    let typed = h
+        .tool_events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e, DelegationEvent::ChildPermission { .. }))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        typed,
+        vec![DelegationEvent::ChildPermission {
+            lead,
+            child: SessionKey::new(worker_connection.clone(), session.clone()),
+            task_id: Some(task.clone()),
+            agent_name: "worker".into(),
+            connection_id: worker_connection.clone(),
+            session_id: session.clone(),
+            request_id: request_id.clone(),
+            request_kind: "permission".into(),
+        }]
+    );
+
+    // Tool calls with the ids in hand change nothing.
+    for name in ["list_agents", "get_result", "message", "record_decision"] {
+        let _ = client
+            .tool(
+                name,
+                json!({"taskId": task, "sessionId": session, "text": "yes", "chosen": request_id, "why": "yes"}),
+            )
+            .await;
+    }
+    let pending = h.manager.pending_requests();
+    assert_eq!(pending.len(), 1, "still waiting for the user");
+    assert_eq!(pending[0].request_id, request_id);
+    h.manager
+        .respond_permission(
+            &SessionKey::new(worker_connection, session),
+            request_id,
+            Some("no".into()),
+        )
+        .unwrap();
+    client.until_finished(&task).await;
+}
+
+#[tokio::test]
+async fn tasks_report_timing_progress_summary_artifacts_and_usage() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker_connection = h.connect(&["--name=worker"]).await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+
+    let delegated = client
+        .tool(
+            "delegate",
+            json!({"agent": "worker", "task": "write:out/result.txt:hello", "saveTo": "out/result.txt"}),
+        )
+        .await;
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let proposal = h
+        .next(|e| matches!(e.event, AgentEvent::Proposal { .. }))
+        .await;
+    let AgentEvent::Proposal { proposal, .. } = proposal.event else {
+        unreachable!()
+    };
+    let running = server.tasks();
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0].status, "running");
+    assert!(running[0].started_at_ms > 0);
+    assert_eq!(running[0].finished_at_ms, None);
+    assert_eq!(running[0].result_summary, None);
+    assert!(running[0].artifacts.is_empty());
+    assert!(
+        running[0].progress_text.is_some(),
+        "the child reported a tool call"
+    );
+    assert_eq!(running[0].budget_used.turns, 1);
+
+    h.manager
+        .service(&worker_connection)
+        .unwrap()
+        .review_proposal(proposal.id, true, proposal.base_revision)
+        .expect("the user accepts");
+    client.until_finished(&task).await;
+    let done = &server.tasks()[0];
+    assert_eq!(done.status, "completed");
+    let finished = done.finished_at_ms.expect("finish time");
+    assert!(finished >= done.started_at_ms);
+    assert!(done
+        .result_summary
+        .as_deref()
+        .is_some_and(|s| s.contains("wrote out/result.txt")));
+    assert!(done.progress_text.is_some());
+    assert_eq!(done.artifacts.len(), 1);
+    assert_eq!(done.artifacts[0].path, "out/result.txt");
+    assert_eq!(done.artifacts[0].sha256.len(), 64);
+    assert!(done.artifacts[0].bytes > 0);
+    assert_eq!(done.budget_used.turns, 1);
+    // The agent reported no usage, so none is made up.
+    assert_eq!(done.budget_used.tokens, None);
+}
+
+#[tokio::test]
+async fn the_user_can_cancel_one_task_and_the_child_tree_stops() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker_connection = h.connect(&["--name=worker"]).await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+
+    let delegated = client
+        .tool(
+            "delegate",
+            json!({"agent": "worker", "task": "work:180:10"}),
+        )
+        .await;
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let session = structured(&delegated)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(server.has_task(&task));
+    assert!(server.cancel_task("task-99").is_err(), "unknown task");
+    server.cancel_task(&task).expect("user cancel");
+    let result = client.until_finished(&task).await;
+    assert_eq!(structured(&result)["status"], "failed");
+    assert_eq!(structured(&result)["reason"], "cancelled");
+    let listed = &server.tasks()[0];
+    assert_eq!(
+        listed.reason,
+        Some(span_acp::tools::FailureReason::Cancelled)
+    );
+    assert_eq!(listed.detail.as_deref(), Some("cancelled by the user"));
+    assert!(listed.finished_at_ms.is_some());
+    assert!(
+        server.cancel_task(&task).is_err(),
+        "a finished task cannot be cancelled again"
+    );
+    // The session stays open for follow-ups, as with the lead's cancel.
+    assert!(h
+        .manager
+        .session(&SessionKey::new(worker_connection, session))
+        .is_some());
+}
+
+#[tokio::test]
+async fn a_child_that_ignores_stop_fails_alone_and_the_lead_keeps_running() {
+    let mut h = harness();
+    // One process hosts the lead and the child.
+    let connection = h.connect(&["--name=agent", "--mcp-http"]).await;
+    let (lead, server) = h.lead(&connection, scaled()).await;
+    let mut client = Client::new(&server);
+    let delegated = client
+        .tool("delegate", json!({"agent": connection, "task": "stubborn"}))
+        .await;
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let session = structured(&delegated)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(session, lead.session_id);
+
+    // The lead is mid turn (about 12 s) when its tool stops the child. The
+    // child never acknowledges, so the 5 s Stop deadline passes.
+    let manager = h.manager.clone();
+    let lead_key = lead.clone();
+    let lead_turn = tokio::spawn(async move {
+        manager
+            .prompt(&lead_key, "work:1200:10".into(), Vec::new())
+            .await
+    });
+    let cancelled = client.tool("cancel", json!({"taskId": task})).await;
+    assert_eq!(cancelled["isError"], false, "{cancelled}");
+    let result = client.until_finished(&task).await;
+    assert_eq!(structured(&result)["status"], "failed");
+    assert_eq!(structured(&result)["reason"], "cancelled");
+
+    // The failure event names the child, never the lead.
+    let failure = h
+        .next(|e| matches!(e.event, AgentEvent::Error { .. }))
+        .await;
+    assert_eq!(failure.session_id.as_deref(), Some(session.as_str()));
+    let AgentEvent::Error {
+        session_id,
+        message,
+    } = failure.event
+    else {
+        unreachable!()
+    };
+    assert_eq!(session_id.as_deref(), Some(session.as_str()));
+    assert!(message.contains("Stop"), "{message}");
+
+    // The connection and the lead's turn survived.
+    assert!(h.manager.connection(&connection).unwrap().open);
+    let finished = tokio::time::timeout(Duration::from_secs(30), lead_turn)
+        .await
+        .expect("lead turn ends")
+        .expect("join");
+    assert_eq!(finished, Ok(()), "the lead's turn was not cut off");
+    assert!(h.manager.connection(&connection).unwrap().open);
+}
+
+#[tokio::test]
+async fn a_root_session_that_ignores_stop_still_ends_the_connection() {
+    let mut h = harness();
+    let connection = h.connect(&["--name=agent"]).await;
+    let root = h
+        .manager
+        .open_session(&connection, None, SessionOrigin::User)
+        .await
+        .expect("session");
+    let manager = h.manager.clone();
+    let key = root.clone();
+    tokio::spawn(async move { manager.prompt(&key, "stubborn".into(), Vec::new()).await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    h.manager.cancel(&root).unwrap();
+    let error = h
+        .next(|e| matches!(e.event, AgentEvent::Error { .. }))
+        .await;
+    let AgentEvent::Error {
+        session_id,
+        message,
+    } = error.event
+    else {
+        unreachable!()
+    };
+    assert_eq!(session_id, None, "a connection level error");
+    assert!(message.contains("connection was terminated"), "{message}");
+    h.next(|e| matches!(&e.event, AgentEvent::Status { state, .. } if state == "disconnected"))
+        .await;
+}

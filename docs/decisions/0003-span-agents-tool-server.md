@@ -255,6 +255,47 @@ the order the manager runs them), rejection tracking in
   as `AgentEvent::Delegation`, so `DelegationEvent` is now in the
   generated bindings.
 
+### 7. UI facing additions (issue #54 follow-up)
+
+Four gaps the delegation UI reported, closed in the backend:
+
+- Ordering: `DelegationEvent::Delegated` is emitted from inside
+  `Shared::run_task`, after the task id exists and before the child's
+  prompt is queued (`registered` callback, under the same lock that orders
+  tasks). No turn event of that task can precede it. Session setup events
+  (commands, config) of the child can still arrive earlier, since the
+  session exists before the task does. If queueing fails after the event,
+  a `TaskFinished` (failed) follows. Test:
+  `delegated_is_emitted_before_any_child_event`.
+- `DelegationEvent::ChildPermission { lead, child, taskId, agentName,
+  connectionId, sessionId, requestId, requestKind }` is emitted when a
+  delegated child raises a permission request or an elicitation
+  (`requestKind` is `permission` or `elicitation`; `taskId` is the task at
+  the front of the child's queue, null if none). The plain `Permission` or
+  `Elicitation` agent event is still sent. Answering is unchanged and user
+  only: `agent_child_permission` (or `agent_elicitation`). No tool takes a
+  request id. Test: `a_child_permission_emits_one_typed_event_that_no_tool_can_answer`.
+- `DelegationTask` gained `startedAtMs`, `finishedAtMs`, `progressText`,
+  `resultSummary` (first 600 characters of the child's text, finished
+  tasks only), `artifacts` (the existing `Artifact` type, finished tasks
+  only, read from the workspace at listing time) and `budgetUsed` (the
+  existing `UsageReport`). Everything comes from the task tracker;
+  `progressText` is the child's last reported activity and is null when it
+  reported none, `tokens` is null unless the agent reports usage.
+  `budgetUsed` is per delegation (all prompts of that child), not per
+  task, and its elapsed seconds keep counting after a task ends. Test:
+  `tasks_report_timing_progress_summary_artifacts_and_usage`.
+- `agent_cancel_task(taskId)` is a Tauri command, not a tool. It resolves
+  the task in the active chat's lead (task ids repeat across leads), marks
+  the stop as `cancelled by the user` and cancels the child and every
+  session below it through the manager. The task ends as `failed` with
+  reason `cancelled` (the UI shows that as cancelled). Finished tasks are
+  refused. The span-agents `cancel` tool is unchanged and separate. Test:
+  `the_user_can_cancel_one_task_and_the_child_tree_stops`; the cascade to
+  descendants is the manager's existing `cancel`, covered by
+  `cancel_cascades_and_the_server_ends_with_its_lead`. UI wrapper:
+  `agentCancelTask(taskId)` in `ui/src/lib/client.ts`.
+
 ## Resolved blockers
 
 1. Per-session MCP entry: `AgentService::new_session_with` and

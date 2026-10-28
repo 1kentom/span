@@ -519,6 +519,10 @@ pub enum AgentEvent {
         hint: Option<AgentHint>,
     },
     Error {
+        /// The session whose turn failed. Absent for connection level errors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        session_id: Option<String>,
         message: String,
     },
     /// span-agents delegation activity (tool server attached or not, tasks

@@ -183,6 +183,23 @@ impl LeadServers {
             .collect()
     }
 
+    /// The user stops one task (see [`ToolServer::cancel_task`]). Task ids
+    /// repeat across leads, so pass the `lead` the UI shows; without one the
+    /// id must be unique among running servers.
+    pub fn cancel_task(&self, lead: Option<&SessionKey>, task_id: &str) -> Result<(), String> {
+        let servers = self.servers();
+        let mut found = servers
+            .iter()
+            .filter(|(key, _)| lead.is_none_or(|l| l == *key))
+            .map(|(_, server)| server)
+            .filter(|server| server.has_task(task_id));
+        let server = found.next().ok_or("Unknown task")?;
+        if found.next().is_some() {
+            return Err("Several sessions have this task id".into());
+        }
+        server.cancel_task(task_id)
+    }
+
     /// Decisions one lead recorded.
     pub fn decisions(&self, lead: &SessionKey) -> Vec<DecisionRecord> {
         self.servers()

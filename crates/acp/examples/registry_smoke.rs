@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace,
         Arc::new(|event| match event {
             AgentEvent::Status { state, message } => println!("{state}: {message}"),
-            AgentEvent::Error { message } => eprintln!("ACP error: {message}"),
+            AgentEvent::Error { message, .. } => eprintln!("ACP error: {message}"),
             _ => {}
         }),
     )

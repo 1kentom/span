@@ -283,7 +283,7 @@ fn event_session(event: &AgentEvent) -> Option<String> {
         | Proposal { session_id, .. }
         | ProposalResolved { session_id, .. }
         | Complete { session_id, .. } => Some(session_id.clone()),
-        Elicitation { session_id, .. } => session_id.clone(),
+        Elicitation { session_id, .. } | Error { session_id, .. } => session_id.clone(),
         Status { .. }
         | Capabilities { .. }
         | Ready { .. }
@@ -291,7 +291,6 @@ fn event_session(event: &AgentEvent) -> Option<String> {
         | ElicitationResolved { .. }
         | ElicitationComplete { .. }
         | Log { .. }
-        | Error { .. }
         | Delegation { .. } => None,
     }
 }
@@ -585,6 +584,7 @@ impl SessionManager {
         };
         let session_id = service.new_session_with(mcp_servers).await?;
         let key = SessionKey::new(connection_id, session_id);
+        let is_child = parent.is_some();
         let registered = {
             let mut state = self.state();
             let alive = state.connections.get(connection_id).is_some_and(|c| c.open)
@@ -605,6 +605,9 @@ impl SessionManager {
             }
             alive
         };
+        if registered && is_child {
+            service.mark_delegated(&key.session_id);
+        }
         if !registered {
             // The parent ended while the agent created the child.
             let _ = service.cancel(key.session_id.clone());

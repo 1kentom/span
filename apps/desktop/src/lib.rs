@@ -392,7 +392,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_review,
             agents::agent_review_hunks,
             agents::agent_delegation_status,
-            agents::agent_child_permission
+            agents::agent_child_permission,
+            agents::agent_cancel_task
         ])
 }
 

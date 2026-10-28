@@ -492,6 +492,25 @@ pub async fn agent_delegation_status(
         .status(&state.sessions, &agent.connection, lead.as_ref(), enabled))
 }
 
+/// The user stops one delegated task: its child session and everything
+/// below it are cancelled and the task ends as cancelled. User only: the
+/// span-agents `cancel` tool is the lead's separate way to do the same, and
+/// no tool can reach this command. Task ids repeat across leads, so the
+/// active chat's lead is searched first.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_cancel_task(
+    state: State<'_, DesktopState>,
+    task_id: String,
+) -> Result<(), String> {
+    let state = state.inner();
+    let lead = active(state)
+        .ok()
+        .filter(|agent| !agent.session.is_empty())
+        .map(|agent| agent.key(&agent.session));
+    state.leads.cancel_task(lead.as_ref(), &task_id)
+}
+
 /// The user's answer to a permission request from a delegated child
 /// session, keyed by its connection and session. Only the UI calls this:
 /// the span-agents tools hold an `AgentControl`, which has no permission

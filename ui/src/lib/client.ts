@@ -436,3 +436,9 @@ export async function agentChildPermission(connectionId: string, sessionId: stri
   if (!isDesktop) nativeRequired('Responding to agent permissions');
   await commands.agentChildPermission(connectionId, sessionId, requestId, optionId);
 }
+
+/** Stop one delegated task: its child session and everything below it are cancelled and the task ends as cancelled. The user's own action; no agent tool can call it. */
+export async function agentCancelTask(taskId: string): Promise<void> {
+  if (!isDesktop) nativeRequired('Cancelling an agent task');
+  await commands.agentCancelTask(taskId);
+}

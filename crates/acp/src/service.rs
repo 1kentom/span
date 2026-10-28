@@ -63,6 +63,12 @@ struct Bridge {
     sessions: HashSet<String>,
     running: HashSet<String>,
     cancelled: HashSet<String>,
+    /// Sessions Span started for a lead. A Stop that one of these ignores
+    /// ends only its turn; an ignored Stop on any other session ends the
+    /// connection.
+    delegated: HashSet<String>,
+    /// Ends the turn of a running session whose Stop was ignored.
+    abandon: HashMap<String, oneshot::Sender<()>>,
     permissions: HashMap<String, Permission>,
     proposals: HashMap<String, Proposal>,
     remembered: HashMap<(String, String), PermissionOptionKind>,
@@ -229,6 +235,7 @@ impl AgentService {
                         cancel_pending(&shared, &workspace, &emit, None);
                         if let Err(error) = result {
                             emit(AgentEvent::Error {
+                                session_id: None,
                                 message: error.to_string(),
                             });
                         }
@@ -479,6 +486,13 @@ impl AgentService {
             .send(Command::DeleteSession(session_id, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Mark a session as delegated (a child of another session). See
+    /// `Bridge::delegated`.
+    pub fn mark_delegated(&self, session_id: &str) {
+        if let Ok(mut bridge) = self.state.lock() {
+            bridge.delegated.insert(session_id.to_owned());
+        }
     }
     pub fn cancel(&self, session_id: String) -> Result<(), String> {
         {
@@ -832,9 +846,18 @@ async fn run(
                     _ = cx.incoming_closed() => break,
                     _ = tokio::time::sleep_until(cancel_deadline.unwrap_or_else(|| tokio::time::Instant::now() + std::time::Duration::from_secs(86400))), if cancel_deadline.is_some() => {
                         cancel_deadline = None;
-                        let unresponsive = state.lock().map(|bridge| bridge.running.iter().any(|id| bridge.cancelled.contains(id))).unwrap_or(true);
+                        // A delegated child that ignores Stop only loses its own
+                        // turn; anything else that ignores it ends the connection.
+                        let unresponsive = state.lock().map(|mut bridge| {
+                            let stuck: Vec<String> = bridge.running.iter().filter(|id| bridge.cancelled.contains(*id)).cloned().collect();
+                            let (children, roots): (Vec<String>, Vec<String>) = stuck.into_iter().partition(|id| bridge.delegated.contains(id));
+                            if roots.is_empty() {
+                                for id in &children { if let Some(abandon) = bridge.abandon.remove(id) { let _ = abandon.send(()); } }
+                            }
+                            !roots.is_empty()
+                        }).unwrap_or(true);
                         if unresponsive {
-                            emit(AgentEvent::Error { message: format!("Agent did not acknowledge Stop within {}. Its connection was terminated.", spoken_seconds(profile.stop_deadline)) });
+                            emit(AgentEvent::Error { session_id: None, message: format!("Agent did not acknowledge Stop within {}. Its connection was terminated.", spoken_seconds(profile.stop_deadline)) });
                             break;
                         }
                         continue;
@@ -891,16 +914,28 @@ async fn run(
                         let slash = matches!(blocks.first(), Some(ContentBlock::Text(text)) if text.text.trim_start().starts_with('/'));
                         adapter.begin_turn(&id, slash);
                         let prompt_cx = cx.clone(); let prompt_emit = emit.clone(); let prompt_state = state.clone(); let prompt_adapter = adapter.clone();
+                        let (abandon_tx, abandon_rx) = oneshot::channel::<()>();
+                        if let Ok(mut bridge) = state.lock() { bridge.abandon.insert(id.clone(), abandon_tx); }
+                        let stop_wait = spoken_seconds(profile.stop_deadline);
                         cx.spawn(async move {
                             let params = serde_json::to_value(PromptRequest::new(id.clone(), blocks)).unwrap_or_default();
-                            let result = raw_request(&prompt_cx, "session/prompt", params).await;
-                            if let Ok(mut bridge) = prompt_state.lock() { bridge.running.remove(&id); }
+                            let result = tokio::select! {
+                                result = raw_request(&prompt_cx, "session/prompt", params) => result,
+                                Ok(()) = abandon_rx => {
+                                    if let Ok(mut bridge) = prompt_state.lock() { bridge.running.remove(&id); }
+                                    let message = format!("The agent did not acknowledge Stop within {stop_wait}. The turn was abandoned and the connection kept.");
+                                    prompt_emit(AgentEvent::Error { session_id: Some(id.clone()), message: message.clone() });
+                                    let _ = reply.send(Err(message));
+                                    return Ok(());
+                                }
+                            };
+                            if let Ok(mut bridge) = prompt_state.lock() { bridge.running.remove(&id); bridge.abandon.remove(&id); }
                             match result {
                                 Ok(response) => { prompt_emit(prompt_adapter.complete(&id, &response)); let _ = reply.send(Ok(())); }
                                 Err(error) => {
                                     // OpenCode reports a missing sign-in only here; any agent may.
                                     if error.code == ErrorCode::AuthRequired { auth_required(&prompt_state, &prompt_emit, &error); }
-                                    let message = error.to_string(); prompt_emit(AgentEvent::Error { message: message.clone() }); let _ = reply.send(Err(message));
+                                    let message = error.to_string(); prompt_emit(AgentEvent::Error { session_id: Some(id.clone()), message: message.clone() }); let _ = reply.send(Err(message));
                                 }
                             }
                             Ok(())
@@ -1051,6 +1086,8 @@ fn forget_session(state: &Arc<Mutex<Bridge>>, id: &str) {
         bridge.sessions.remove(id);
         bridge.remembered.retain(|(session, _), _| session != id);
         bridge.replaying.remove(id);
+        bridge.delegated.remove(id);
+        bridge.abandon.remove(id);
         bridge.adapter.forget(id);
     }
 }

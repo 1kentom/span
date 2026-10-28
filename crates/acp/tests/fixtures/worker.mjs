@@ -7,6 +7,7 @@
 //   reply:<text>        answer <text>
 //   refuse | limit      stop with refusal | max_tokens
 //   wait                wait for Stop
+//   stubborn            never finish and ignore session/cancel for this session
 //   servers             answer with the JSON mcpServers this session received in session/new
 //   mcp <url> <token> <json>  act as a lead: POST <json> to the MCP server, answer with the body
 // Flags: --name=<n>, --mcp-http, --mcp-sse, --image, --reject-session (session/new fails).
@@ -19,6 +20,7 @@ let sessions = 0;
 let sequence = 500;
 const active = new Map();
 const servers = new Map();
+const stubborn = new Set();
 const callbacks = new Map();
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const update = (sessionId, update) => send({ method: 'session/update', params: { sessionId, update } });
@@ -54,6 +56,7 @@ async function prompt(message) {
   active.set(sessionId, id);
   if (first.startsWith('mcp ')) return lead(sessionId, id, first);
   if (first === 'wait') return;
+  if (first === 'stubborn') { stubborn.add(sessionId); return; }
   if (first === 'servers') { say(sessionId, JSON.stringify(servers.get(sessionId) ?? null)); return finish(sessionId, id, 'end_turn'); }
   if (first === 'refuse') return finish(sessionId, id, 'refusal');
   if (first === 'limit') return finish(sessionId, id, 'max_tokens');
@@ -122,6 +125,7 @@ input.on('line', line => {
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {
     const sessionId = message.params.sessionId;
+    if (stubborn.has(sessionId)) return;
     if (active.has(sessionId)) finish(sessionId, active.get(sessionId), 'cancelled');
   } else if (message.id !== undefined) {
     send({ id: message.id, error: { code: -32601, message: 'Method not found' } });

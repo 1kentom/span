@@ -90,6 +90,23 @@ pub enum DelegationEvent {
         status: String,
         reason: Option<FailureReason>,
     },
+    /// A delegated child session asked the user for a permission or an
+    /// elicitation. Carries everything the UI needs to show and answer it
+    /// (through `agent_child_permission` or `agent_elicitation`, user only)
+    /// without matching by session. The plain `Permission` or `Elicitation`
+    /// agent event is still sent as well.
+    ChildPermission {
+        lead: SessionKey,
+        child: SessionKey,
+        /// The task running in the child when the request arrived.
+        task_id: Option<String>,
+        agent_name: String,
+        connection_id: String,
+        session_id: String,
+        request_id: String,
+        /// `permission` or `elicitation`.
+        request_kind: String,
+    },
     /// The delegation tools were offered to this lead session.
     Attached {
         lead: SessionKey,
@@ -137,6 +154,20 @@ pub struct DelegationTask {
     pub stop_reason: Option<String>,
     pub reason: Option<FailureReason>,
     pub detail: Option<String>,
+    /// Milliseconds since the Unix epoch when the task was registered.
+    pub started_at_ms: u64,
+    /// Set once the task finished.
+    pub finished_at_ms: Option<u64>,
+    /// The child's last reported activity (what its latest event was), only
+    /// when the child reported any.
+    pub progress_text: Option<String>,
+    /// The start of the text the child wrote, bounded; finished tasks only.
+    pub result_summary: Option<String>,
+    /// Files the task changed or was asked to save; finished tasks only.
+    pub artifacts: Vec<Artifact>,
+    /// Usage of the whole delegation (all its prompts) so far. `tokens` is
+    /// only set when the agent reports it.
+    pub budget_used: UsageReport,
 }
 
 pub type DelegationEventSink = Arc<dyn Fn(DelegationEvent) + Send + Sync>;

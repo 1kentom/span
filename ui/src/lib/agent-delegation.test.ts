@@ -74,7 +74,7 @@ describe("delegation reducer", () => {
 
   it("merges polled status detail into an existing card only", () => {
     const state = apply([delegation({ kind: "delegated", lead, child, taskId: "t1", agentName: "Codex" })]);
-    const task = (taskId: string) => ({ taskId, lead, child, agentName: "Codex", status: "failed", stopReason: null, reason: "refused" as FailureReason, detail: "It said no" });
+    const task = (taskId: string) => ({ taskId, lead, child, agentName: "Codex", status: "failed", stopReason: null, reason: "refused" as FailureReason, detail: "It said no", startedAtMs: 1, finishedAtMs: 2, progressText: null, resultSummary: null, artifacts: [], budgetUsed: { turns: 1, tokens: null, contextSize: null, cost: null, currency: null, elapsedSeconds: 0 } });
     const next = applyDelegationStatus(state, { enabled: true, available: true, reason: null, lead, attached: true, decisions: [], tasks: [task("t1"), task("missing")] });
     expect(cards(next)).toHaveLength(1);
     expect(taskNote(cards(next)[0])).toBe("The agent declined the task. It said no");

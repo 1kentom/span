@@ -13,6 +13,51 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 const MAX_TEXT_BYTES: usize = 256 * 1024;
+/// Longest `resultSummary`, in characters.
+pub const SUMMARY_CHARS: usize = 600;
+
+/// Milliseconds since the Unix epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// A child's permission or elicitation request, for the typed UI event.
+#[derive(Debug, Clone)]
+pub struct ChildRequest {
+    pub key: SessionKey,
+    pub agent: String,
+    pub task_id: Option<String>,
+    pub request_id: String,
+    pub request_kind: &'static str,
+}
+
+impl Task {
+    /// The start of the child's text, bounded.
+    pub fn summary(&self) -> Option<String> {
+        let text = self.text.trim();
+        if text.is_empty() || !self.status.finished() {
+            return None;
+        }
+        let mut shown: String = text.chars().take(SUMMARY_CHARS).collect();
+        if shown.len() < text.len() {
+            shown.push_str(" [truncated]");
+        }
+        Some(shown)
+    }
+
+    /// The last activity the child reported, if any.
+    pub fn progress_text(&self) -> Option<String> {
+        if self.status.finished() {
+            self.last_progress.clone()
+        } else if self.events > 0 {
+            Some(self.activity.clone())
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -64,6 +109,10 @@ pub struct Task {
     pub save_to: Option<String>,
     /// Workspace paths of edits the user accepted during this task.
     pub changed: Vec<String>,
+    /// Milliseconds since the Unix epoch.
+    pub started_at_ms: u64,
+    pub finished_at_ms: Option<u64>,
+    last_progress: Option<String>,
     permission_rejected: bool,
 }
 
@@ -192,12 +241,35 @@ impl Registry {
                 },
                 save_to,
                 changed: Vec::new(),
+                started_at_ms: now_ms(),
+                finished_at_ms: None,
+                last_progress: None,
                 permission_rejected: false,
             },
         );
         drop(inner);
         self.bump();
         Ok(id)
+    }
+
+    /// The typed UI record for a permission or elicitation event from a
+    /// delegated child, or `None` for any other event or session.
+    pub fn child_request(&self, event: &SessionEvent) -> Option<ChildRequest> {
+        let (request_id, request_kind) = match &event.event {
+            AgentEvent::Permission { request_id, .. } => (request_id, "permission"),
+            AgentEvent::Elicitation { request_id, .. } => (request_id, "elicitation"),
+            _ => return None,
+        };
+        let key = SessionKey::new(event.connection_id.clone(), event.session_id.clone()?);
+        let inner = self.inner();
+        let delegation = inner.delegations.get(&key)?;
+        Some(ChildRequest {
+            task_id: delegation.queue.front().cloned(),
+            agent: delegation.agent.clone(),
+            key,
+            request_id: request_id.clone(),
+            request_kind,
+        })
     }
 
     /// Fold one child event into its running task. Returns a budget breach
@@ -414,7 +486,11 @@ impl Registry {
                 task.detail = Some(detail);
             }
         }
+        if task.events > 0 {
+            task.last_progress = Some(task.activity.clone());
+        }
         task.activity = task.status.as_str().into();
+        task.finished_at_ms = Some(now_ms());
         let key = task.key.clone();
         if let Some(next) = delegations.get(&key).and_then(|d| d.queue.front().cloned()) {
             if let Some(next) = tasks.get_mut(&next) {

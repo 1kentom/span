@@ -90,6 +90,14 @@ export const commands = {
 	 *  `agent_permission`.
 	 */
 	agentChildPermission: (connectionId: string, sessionId: string, requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_child_permission", { connectionId, sessionId, requestId, optionId }),
+	/**
+	 *  The user stops one delegated task: its child session and everything
+	 *  below it are cancelled and the task ends as cancelled. User only: the
+	 *  span-agents `cancel` tool is the lead's separate way to do the same, and
+	 *  no tool can reach this command. Task ids repeat across leads, so the
+	 *  active chat's lead is searched first.
+	 */
+	agentCancelTask: (taskId: string) => __TAURI_INVOKE<null>("agent_cancel_task", { taskId }),
 };
 
 /** Events */
@@ -161,7 +169,9 @@ meta?: Value | null; internal?: boolean | null } | { kind: "permissionResolved";
 /**  Token usage from the prompt response, when the agent sent it. */
 usage?: Value | null; 
 /**  The prompt response `_meta`, when the agent sent it. */
-meta?: Value | null; hint?: AgentHint | null } | { kind: "error"; message: string } | 
+meta?: Value | null; hint?: AgentHint | null } | { kind: "error"; 
+/**  The session whose turn failed. Absent for connection level errors. */
+sessionId?: string | null; message: string } | 
 /**
  *  span-agents delegation activity (tool server attached or not, tasks
  *  started and finished, decisions). Session identity is inside `event`.
@@ -214,7 +224,9 @@ meta?: Value; internal?: boolean } | { kind: "permissionResolved"; sessionId: st
 /**  Token usage from the prompt response, when the agent sent it. */
 usage?: Value; 
 /**  The prompt response `_meta`, when the agent sent it. */
-meta?: Value; hint?: AgentHint } | { kind: "error"; message: string } | 
+meta?: Value; hint?: AgentHint } | { kind: "error"; 
+/**  The session whose turn failed. Absent for connection level errors. */
+sessionId?: string; message: string } | 
 /**
  *  span-agents delegation activity (tool server attached or not, tasks
  *  started and finished, decisions). Session identity is inside `event`.
@@ -316,6 +328,22 @@ export type AgentSettings_Deserialize = {
 /**  `agents.*` settings. */
 export type AgentSettings_Serialize = {
 	delegation: DelegationSettings_Serialize,
+};
+
+/**  A file the child produced or changed, inside the workspace. */
+export type Artifact = {
+	/**  Workspace relative, forward slashes. */
+	path: string,
+	mimeType: string,
+	bytes: number,
+	sha256: string,
+	/**  `file://` URI of the absolute path. */
+	uri: string,
+	/**
+	 *  `buffer` when the content is an accepted but unsaved editor edit,
+	 *  `disk` otherwise.
+	 */
+	source: string,
 };
 
 /**
@@ -485,6 +513,18 @@ export type DelegationEvent_Deserialize =
 { kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string } | 
 /**  A task finished, successfully or not. */
 { kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason?: FailureReason | null } | 
+/**
+ *  A delegated child session asked the user for a permission or an
+ *  elicitation. Carries everything the UI needs to show and answer it
+ *  (through `agent_child_permission` or `agent_elicitation`, user only)
+ *  without matching by session. The plain `Permission` or `Elicitation`
+ *  agent event is still sent as well.
+ */
+{ kind: "childPermission"; lead: SessionKey; child: SessionKey; 
+/**  The task running in the child when the request arrived. */
+taskId?: string | null; agentName: string; connectionId: string; sessionId: string; requestId: string; 
+/**  `permission` or `elicitation`. */
+requestKind: string } | 
 /**  The delegation tools were offered to this lead session. */
 { kind: "attached"; lead: SessionKey; agentName: string } | 
 /**
@@ -510,6 +550,18 @@ export type DelegationEvent_Serialize =
 { kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string } | 
 /**  A task finished, successfully or not. */
 { kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason: FailureReason | null } | 
+/**
+ *  A delegated child session asked the user for a permission or an
+ *  elicitation. Carries everything the UI needs to show and answer it
+ *  (through `agent_child_permission` or `agent_elicitation`, user only)
+ *  without matching by session. The plain `Permission` or `Elicitation`
+ *  agent event is still sent as well.
+ */
+{ kind: "childPermission"; lead: SessionKey; child: SessionKey; 
+/**  The task running in the child when the request arrived. */
+taskId: string | null; agentName: string; connectionId: string; sessionId: string; requestId: string; 
+/**  `permission` or `elicitation`. */
+requestKind: string } | 
 /**  The delegation tools were offered to this lead session. */
 { kind: "attached"; lead: SessionKey; agentName: string } | 
 /**
@@ -591,6 +643,24 @@ export type DelegationTask_Deserialize = {
 	stopReason?: string | null,
 	reason?: FailureReason | null,
 	detail?: string | null,
+	/**  Milliseconds since the Unix epoch when the task was registered. */
+	startedAtMs: number,
+	/**  Set once the task finished. */
+	finishedAtMs?: number | null,
+	/**
+	 *  The child's last reported activity (what its latest event was), only
+	 *  when the child reported any.
+	 */
+	progressText?: string | null,
+	/**  The start of the text the child wrote, bounded; finished tasks only. */
+	resultSummary?: string | null,
+	/**  Files the task changed or was asked to save; finished tasks only. */
+	artifacts: Artifact[],
+	/**
+	 *  Usage of the whole delegation (all its prompts) so far. `tokens` is
+	 *  only set when the agent reports it.
+	 */
+	budgetUsed: UsageReport_Deserialize,
 };
 
 /**  One delegated task, for listing. */
@@ -604,6 +674,24 @@ export type DelegationTask_Serialize = {
 	stopReason: string | null,
 	reason: FailureReason | null,
 	detail: string | null,
+	/**  Milliseconds since the Unix epoch when the task was registered. */
+	startedAtMs: number,
+	/**  Set once the task finished. */
+	finishedAtMs: number | null,
+	/**
+	 *  The child's last reported activity (what its latest event was), only
+	 *  when the child reported any.
+	 */
+	progressText: string | null,
+	/**  The start of the text the child wrote, bounded; finished tasks only. */
+	resultSummary: string | null,
+	/**  Files the task changed or was asked to save; finished tasks only. */
+	artifacts: Artifact[],
+	/**
+	 *  Usage of the whole delegation (all its prompts) so far. `tokens` is
+	 *  only set when the agent reports it.
+	 */
+	budgetUsed: UsageReport_Serialize,
 };
 
 export type EditProposal = {
@@ -1061,6 +1149,29 @@ export type ToolLocation_Deserialize = {
 export type ToolLocation_Serialize = {
 	path: string,
 	line: number | null,
+};
+
+/**  Usage reported for a delegation. Every field is only set when reported. */
+export type UsageReport = UsageReport_Serialize | UsageReport_Deserialize;
+
+/**  Usage reported for a delegation. Every field is only set when reported. */
+export type UsageReport_Deserialize = {
+	turns: number,
+	tokens?: number | null,
+	contextSize?: number | null,
+	cost?: number | null,
+	currency?: string | null,
+	elapsedSeconds: number,
+};
+
+/**  Usage reported for a delegation. Every field is only set when reported. */
+export type UsageReport_Serialize = {
+	turns: number,
+	tokens: number | null,
+	contextSize: number | null,
+	cost: number | null,
+	currency: string | null,
+	elapsedSeconds: number,
 };
 
 /**  A non-text block in a replayed user turn, kept as a marker. */

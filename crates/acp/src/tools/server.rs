@@ -224,6 +224,17 @@ impl ToolServer {
             .into_iter()
             .filter_map(|id| self.shared.registry.view(&id, second).map(|v| (v, id)))
             .map(|(view, task_id)| DelegationTask {
+                artifacts: self
+                    .shared
+                    .artifacts(&view.task)
+                    .into_iter()
+                    .map(|(artifact, _)| artifact)
+                    .collect(),
+                result_summary: view.task.summary(),
+                progress_text: view.task.progress_text(),
+                started_at_ms: view.task.started_at_ms,
+                finished_at_ms: view.task.finished_at_ms,
+                budget_used: view.usage,
                 task_id,
                 lead: lead.clone(),
                 child: view.task.key,
@@ -234,6 +245,34 @@ impl ToolServer {
                 detail: view.task.detail,
             })
             .collect()
+    }
+
+    /// Whether this server started `task_id`.
+    pub fn has_task(&self, task_id: &str) -> bool {
+        self.shared.registry.task_key(task_id).is_some()
+    }
+
+    /// The user stops one task: its child and everything below it are
+    /// cancelled and the task ends as `failed` with reason `cancelled`.
+    /// Only the desktop's user command calls this; it is not a tool. Refused
+    /// when the task already finished.
+    pub fn cancel_task(&self, task_id: &str) -> Result<(), String> {
+        let control = self.shared.control().map_err(|e| e.message)?;
+        let view = self
+            .shared
+            .registry
+            .view(task_id, self.shared.second())
+            .ok_or_else(|| format!("Unknown taskId: {task_id}"))?;
+        if view.task.status.finished() {
+            return Err("The task already finished".into());
+        }
+        let key = view.task.key;
+        self.shared.registry.stopping(
+            &key,
+            FailureReason::Cancelled,
+            "cancelled by the user".into(),
+        );
+        control.cancel(&key)
     }
 
     /// False once the server stopped (explicitly, or because the lead ended).
@@ -271,6 +310,23 @@ impl Shared {
         }
     }
 
+    /// Files a finished task changed or was asked to save, read now.
+    fn artifacts(&self, task: &super::tasks::Task) -> Vec<(result::Artifact, Vec<u8>)> {
+        if !task.status.finished() {
+            return Vec::new();
+        }
+        let mut paths = task.changed.clone();
+        if let Some(path) = &task.save_to {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
+        }
+        paths
+            .iter()
+            .filter_map(|p| result::read_artifact(&self.config.workspace, &self.root, p))
+            .collect()
+    }
+
     fn stop(&self) {
         if *self.shutdown.borrow() {
             return;
@@ -292,6 +348,20 @@ impl Shared {
 
     fn on_event(&self, event: &SessionEvent) {
         let control = lock(&self.control).clone();
+        if let (Some(request), Some(control)) =
+            (self.registry.child_request(event), control.as_ref())
+        {
+            self.emit(DelegationEvent::ChildPermission {
+                lead: control.caller().clone(),
+                connection_id: request.key.connection_id.clone(),
+                session_id: request.key.session_id.clone(),
+                child: request.key,
+                task_id: request.task_id,
+                agent_name: request.agent,
+                request_id: request.request_id,
+                request_kind: request.request_kind.into(),
+            });
+        }
         let breach = self.registry.observe(event, self.second(), |key| {
             control.as_ref().is_some_and(|c| c.permission_rejected(key))
         });
@@ -312,8 +382,10 @@ impl Shared {
         }
     }
 
-    /// Register a task and hand its prompt to the manager, in that order,
-    /// then wait for it in the background.
+    /// Register a task, call `registered` with its id, then hand its prompt
+    /// to the manager, in that order, then wait for it in the background.
+    /// `registered` runs before the prompt is queued, so an event it emits
+    /// precedes every event the child can produce for this task.
     fn run_task(
         self: &Arc<Self>,
         control: &AgentControl,
@@ -321,14 +393,25 @@ impl Shared {
         save_to: Option<String>,
         text: String,
         attachments: Vec<PromptAttachment>,
+        registered: impl FnOnce(&str),
     ) -> Result<String, String> {
         let (task_id, done) = {
             let _order = lock(&self.order);
             let task_id = self.registry.start_task(child, save_to, self.second())?;
+            registered(&task_id);
             match control.enqueue(child, text, attachments) {
                 Ok(done) => (task_id, done),
                 Err(error) => {
                     self.registry.finish(&task_id, Err(error.clone()));
+                    if let Some(view) = self.registry.view(&task_id, self.second()) {
+                        self.emit(DelegationEvent::TaskFinished {
+                            lead: control.caller().clone(),
+                            child: child.clone(),
+                            task_id,
+                            status: view.task.status.as_str().into(),
+                            reason: view.task.reason,
+                        });
+                    }
                     return Err(error);
                 }
             }
@@ -1091,7 +1174,17 @@ async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, Rpc
         }),
     );
     let text = compose_prompt(&shared.lead_name, &args, save_to.as_deref());
-    let task_id = match shared.run_task(&control, &child, save_to, text, attachments) {
+    // The UI learns which child belongs to which task before the child's
+    // prompt is queued, so no child event can arrive first.
+    let announce = |task_id: &str| {
+        shared.emit(DelegationEvent::Delegated {
+            lead: control.caller().clone(),
+            child: child.clone(),
+            task_id: task_id.to_owned(),
+            agent_name: target.agent_name.clone(),
+        });
+    };
+    let task_id = match shared.run_task(&control, &child, save_to, text, attachments, announce) {
         Ok(id) => id,
         Err(error) => {
             return Ok(result::failure(
@@ -1101,12 +1194,6 @@ async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, Rpc
             ))
         }
     };
-    shared.emit(DelegationEvent::Delegated {
-        lead: control.caller().clone(),
-        child: child.clone(),
-        task_id: task_id.clone(),
-        agent_name: target.agent_name.clone(),
-    });
     Ok(result::ok(
         format!(
             "Delegated to {} as {task_id}. Poll get_result with this taskId.",
@@ -1129,20 +1216,7 @@ fn task_result(shared: &Shared, task_id: &str) -> Result<Value, RpcError> {
         .view(task_id, shared.second())
         .ok_or_else(|| invalid(format!("Unknown taskId: {task_id}")))?;
     let task = &view.task;
-    let artifacts = if task.status.finished() {
-        let mut paths = task.changed.clone();
-        if let Some(path) = &task.save_to {
-            if !paths.contains(path) {
-                paths.push(path.clone());
-            }
-        }
-        paths
-            .iter()
-            .filter_map(|p| result::read_artifact(&shared.config.workspace, &shared.root, p))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let artifacts = shared.artifacts(task);
     let progress = (!task.status.finished()).then(|| {
         json!({
             "activity": task.activity,
@@ -1236,7 +1310,7 @@ fn message(shared: &Arc<Shared>, args: MessageArgs) -> Result<Value, RpcError> {
         .session(&key)
         .map(|s| s.agent_name)
         .unwrap_or_default();
-    let task_id = match shared.run_task(&control, &key, None, args.text, Vec::new()) {
+    let task_id = match shared.run_task(&control, &key, None, args.text, Vec::new(), |_| {}) {
         Ok(id) => id,
         Err(error) if error.contains("turns") || error.starts_with("budget spent") => {
             return Ok(result::failure(

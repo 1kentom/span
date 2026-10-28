@@ -31,7 +31,9 @@ fn reject(message: impl Into<String>) -> CoreError {
 
 /// Directories the workspace scan already hides, so attachments must not land in them.
 fn is_protected(name: &str) -> bool {
-    name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case("node_modules")
+    [".git", ".span", "node_modules"]
+        .iter()
+        .any(|protected| name.eq_ignore_ascii_case(protected))
 }
 
 fn is_windows_reserved(name: &str) -> bool {
@@ -174,14 +176,34 @@ impl CoreWorkspace {
                     if target.symlink_metadata().is_ok() {
                         continue;
                     }
-                    fs::rename(temp, &target)
-                        .map_err(|e| io_error("Save attachment", &target, e))?;
-                    return Ok((target, n > 0));
+                    match publish_new(temp, &target) {
+                        Ok(()) => return Ok((target, n > 0)),
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                        Err(e) => return Err(io_error("Save attachment", &target, e)),
+                    }
                 }
             }
         }
         Err(reject("too many files with the same name"))
     }
+}
+
+/// Fallback for filesystems without hard links: copy `temp` to `target`, which must
+/// not exist (`create_new`). Unlike `rename`, this never replaces a file, even one
+/// created after the caller looked. A failed copy leaves no partial target.
+fn publish_new(temp: &Path, target: &Path) -> std::io::Result<()> {
+    let bytes = fs::read(temp)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written {
+        let _ = fs::remove_file(target);
+        return Err(e);
+    }
+    fs::remove_file(temp)
 }
 
 fn write_temp(directory: &Path, bytes: &[u8]) -> Result<PathBuf> {
@@ -254,6 +276,26 @@ mod tests {
     }
 
     #[test]
+    fn the_copy_fallback_never_replaces_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let temp = dir.path().join("temp");
+        let target = dir.path().join("target.txt");
+        fs::write(&temp, b"new").unwrap();
+        fs::write(&target, b"keep").unwrap();
+        let error = publish_new(&temp, &target).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        assert!(
+            temp.exists(),
+            "the temp file is left for the caller to clean up"
+        );
+        fs::remove_file(&target).unwrap();
+        publish_new(&temp, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(!temp.exists());
+    }
+
+    #[test]
     fn rejects_bad_directories() {
         let (root, mut ws) = open();
         let absolute = root.path().display().to_string();
@@ -264,6 +306,8 @@ mod tests {
             "../x",
             ".git",
             "a/.GIT/b",
+            ".span",
+            "a/.Span/b",
             "node_modules",
             "bad\0dir",
             "a\\b",
@@ -304,6 +348,7 @@ mod tests {
             "a:b",
             "a?b",
             ".git",
+            ".SPAN",
             long.as_str(),
         ] {
             assert!(
