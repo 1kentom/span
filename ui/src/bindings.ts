@@ -114,6 +114,35 @@ export const commands = {
 	 *  buffer is not changed; apply the edits in the editor, then it syncs as usual.
 	 */
 	lspFormat: (path: string, range: RangeDto | null, requestId: string | null) => __TAURI_INVOKE<LspResponse<TextEditDto[]>>("lsp_format", { path, range, requestId }),
+	lspReferences: (path: string, position: PositionDto, includeDeclaration: boolean, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_references", { path, position, includeDeclaration, requestId }),
+	lspImplementation: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_implementation", { path, position, requestId }),
+	lspTypeDefinition: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_type_definition", { path, position, requestId }),
+	lspDeclaration: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_declaration", { path, position, requestId }),
+	lspDocumentSymbols: (path: string, requestId: string | null) => __TAURI_INVOKE<LspResponse<SymbolDto_Serialize[]>>("lsp_document_symbols", { path, requestId }),
+	/**
+	 *  Capped at 200 results. With `path_hint` the server of that file answers; without it
+	 *  every ready server is asked.
+	 */
+	lspWorkspaceSymbols: (query: string, pathHint: string | null, requestId: string | null) => __TAURI_INVOKE<LspResponse<WorkspaceSymbolDto_Serialize[]>>("lsp_workspace_symbols", { query, pathHint, requestId }),
+	lspCallHierarchyPrepare: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<CallHierarchyItemDto_Serialize[]>>("lsp_call_hierarchy_prepare", { path, position, requestId }),
+	lspCallHierarchyIncoming: (item: CallHierarchyItemDto_Deserialize, requestId: string | null) => __TAURI_INVOKE<LspResponse<IncomingCallDto_Serialize[]>>("lsp_call_hierarchy_incoming", { item, requestId }),
+	lspCallHierarchyOutgoing: (item: CallHierarchyItemDto_Deserialize, requestId: string | null) => __TAURI_INVOKE<LspResponse<OutgoingCallDto_Serialize[]>>("lsp_call_hierarchy_outgoing", { item, requestId }),
+	lspTypeHierarchyPrepare: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<TypeHierarchyItemDto_Serialize[]>>("lsp_type_hierarchy_prepare", { path, position, requestId }),
+	lspTypeHierarchySupertypes: (item: TypeHierarchyItemDto_Deserialize, requestId: string | null) => __TAURI_INVOKE<LspResponse<TypeHierarchyItemDto_Serialize[]>>("lsp_type_hierarchy_supertypes", { item, requestId }),
+	lspTypeHierarchySubtypes: (item: TypeHierarchyItemDto_Deserialize, requestId: string | null) => __TAURI_INVOKE<LspResponse<TypeHierarchyItemDto_Serialize[]>>("lsp_type_hierarchy_subtypes", { item, requestId }),
+	lspDocumentHighlights: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<DocumentHighlightDto[]>>("lsp_document_highlights", { path, position, requestId }),
+	lspSignatureHelp: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<SignatureHelpDto_Serialize | null>>("lsp_signature_help", { path, position, requestId }),
+	lspPrepareRename: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<PrepareRenameDto_Serialize | null>>("lsp_prepare_rename", { path, position, requestId }),
+	/**
+	 *  Returns the edit as data (UTF-16 per file). The buffers are not changed: the UI
+	 *  applies it through the buffer edit path.
+	 */
+	lspRename: (path: string, position: PositionDto, newName: string, requestId: string | null) => __TAURI_INVOKE<LspResponse<WorkspaceEditDto>>("lsp_rename", { path, position, newName, requestId }),
+	/**
+	 *  A read-only excerpt for peeks, hover previews and library source. At most 1 MiB, and
+	 *  at most 400 lines of context on each side.
+	 */
+	lspReadSource: (location: LocationDto, contextLines: number) => __TAURI_INVOKE<SourceSnippetDto>("lsp_read_source", { location, contextLines }),
 	lspCancel: (requestId: string) => __TAURI_INVOKE<null>("lsp_cancel", { requestId }),
 	lspInstall: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_install", { server }),
 	lspRestart: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_restart", { server }),
@@ -485,8 +514,43 @@ export type BufferSnapshot = {
 };
 
 /**
- *  What a ready server advertised. `rename` and `references` are reported for
- *  completeness; this backend exposes no commands for them yet.
+ *  A call hierarchy item. `token` is opaque: it carries the server item (including its
+ *  private `data`) and which server and root produced it, and goes back unchanged into
+ *  `lsp_call_hierarchy_incoming` and `lsp_call_hierarchy_outgoing`.
+ */
+export type CallHierarchyItemDto = CallHierarchyItemDto_Serialize | CallHierarchyItemDto_Deserialize;
+
+/**
+ *  A call hierarchy item. `token` is opaque: it carries the server item (including its
+ *  private `data`) and which server and root produced it, and goes back unchanged into
+ *  `lsp_call_hierarchy_incoming` and `lsp_call_hierarchy_outgoing`.
+ */
+export type CallHierarchyItemDto_Deserialize = {
+	name: string,
+	kind: SymbolKindDto,
+	detail?: string | null,
+	location: LocationDto,
+	selectionRange: RangeDto,
+	token: string,
+};
+
+/**
+ *  A call hierarchy item. `token` is opaque: it carries the server item (including its
+ *  private `data`) and which server and root produced it, and goes back unchanged into
+ *  `lsp_call_hierarchy_incoming` and `lsp_call_hierarchy_outgoing`.
+ */
+export type CallHierarchyItemDto_Serialize = {
+	name: string,
+	kind: SymbolKindDto,
+	detail: string | null,
+	location: LocationDto,
+	selectionRange: RangeDto,
+	token: string,
+};
+
+/**
+ *  What a ready server advertised, as reported by `lsp_status`. A request the server did
+ *  not advertise answers `Unsupported` without reaching it.
  */
 export type CapabilitiesDto = {
 	completion: boolean,
@@ -495,7 +559,22 @@ export type CapabilitiesDto = {
 	formatting: boolean,
 	rangeFormatting: boolean,
 	rename: boolean,
+	/**  `renameProvider.prepareProvider`. */
+	prepareRename: boolean,
 	references: boolean,
+	implementation: boolean,
+	typeDefinition: boolean,
+	declaration: boolean,
+	documentSymbol: boolean,
+	workspaceSymbol: boolean,
+	callHierarchy: boolean,
+	/**
+	 *  Not part of `lsp_types::ServerCapabilities`: filled from the raw `initialize`
+	 *  result by the service (always false from `From<&ServerCapabilities>`).
+	 */
+	typeHierarchy: boolean,
+	documentHighlight: boolean,
+	signatureHelp: boolean,
 };
 
 export type CompletionItemDto = CompletionItemDto_Serialize | CompletionItemDto_Deserialize;
@@ -847,6 +926,13 @@ export type DiagnosticsPublished_Serialize = {
 	diagnostics: DiagnosticDto_Serialize[],
 };
 
+export type DocumentHighlightDto = {
+	range: RangeDto,
+	kind: DocumentHighlightKindDto,
+};
+
+export type DocumentHighlightKindDto = "text" | "read" | "write";
+
 export type EditProposal = {
 	id: string,
 	path: string,
@@ -856,6 +942,15 @@ export type EditProposal = {
 
 /**  Why a delegation failed. Closed set: the lead can branch on it. */
 export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout";
+
+/**  Edits of one file, in UTF-16 positions of the file as the server saw it. */
+export type FileEditsDto = {
+	/**  Workspace relative, or absolute / server URI when `external`. */
+	path: string,
+	/**  The file is outside the workspace or a library file: the UI must not apply it. */
+	external: boolean,
+	edits: TextEditDto[],
+};
 
 export type FileEntry = {
 	path: string,
@@ -916,7 +1011,10 @@ export type FormatWarning = {
 export type HighlightSpan = {
 	from: number,
 	to: number,
-	/**  Tree-sitter capture name, for example `keyword` or `function.method`. */
+	/**
+	 *  Colour token id, for example `keyword` or `importPath`. Markdown keeps its
+	 *  raw capture names such as `text.title`.
+	 */
 	kind: string,
 };
 
@@ -935,6 +1033,18 @@ export type HoverDto_Serialize = {
 export type ImageSource = {
 	mime: string,
 	dataUrl: string,
+};
+
+export type IncomingCallDto = IncomingCallDto_Serialize | IncomingCallDto_Deserialize;
+
+export type IncomingCallDto_Deserialize = {
+	from: CallHierarchyItemDto_Deserialize,
+	fromRanges: RangeDto[],
+};
+
+export type IncomingCallDto_Serialize = {
+	from: CallHierarchyItemDto_Serialize,
+	fromRanges: RangeDto[],
 };
 
 export type IndentGuide = {
@@ -1096,11 +1206,15 @@ export type LanguageServerStateDto_Serialize = { kind: "notStarted" } | { kind: 
 
 /**
  *  `path` is workspace relative with forward slashes when inside the workspace,
- *  otherwise the absolute path.
+ *  otherwise the absolute path (or the server URI, for `jdt:` class files). `external`
+ *  marks everything outside the workspace and library files inside it (`node_modules`):
+ *  those are read only and never become buffers. `display_path` is what to show.
  */
 export type LocationDto = {
 	path: string,
 	range: RangeDto,
+	external: boolean,
+	displayPath: string,
 };
 
 /**  Typed errors of every `lsp_*` command. */
@@ -1133,7 +1247,7 @@ export type LspResponse<T> = {
 
 export type MarkdownView = "source" | "preview" | "both";
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
@@ -1143,6 +1257,36 @@ export type NativeWindowState = {
 	fullscreen: boolean,
 	maximized: boolean,
 	hasNativeTrafficLights: boolean,
+};
+
+export type OutgoingCallDto = OutgoingCallDto_Serialize | OutgoingCallDto_Deserialize;
+
+export type OutgoingCallDto_Deserialize = {
+	to: CallHierarchyItemDto_Deserialize,
+	fromRanges: RangeDto[],
+};
+
+export type OutgoingCallDto_Serialize = {
+	to: CallHierarchyItemDto_Serialize,
+	fromRanges: RangeDto[],
+};
+
+export type ParameterInformationDto = ParameterInformationDto_Serialize | ParameterInformationDto_Deserialize;
+
+export type ParameterInformationDto_Deserialize = {
+	label: string,
+	/**  UTF-16 offsets of the parameter inside the signature label, when known. */
+	labelStart?: number | null,
+	labelEnd?: number | null,
+	documentation?: string | null,
+};
+
+export type ParameterInformationDto_Serialize = {
+	label: string,
+	/**  UTF-16 offsets of the parameter inside the signature label, when known. */
+	labelStart: number | null,
+	labelEnd: number | null,
+	documentation: string | null,
 };
 
 export type PermissionOption = {
@@ -1161,6 +1305,32 @@ export type PlanEntry = {
 export type PositionDto = {
 	line: number,
 	character: number,
+};
+
+/**
+ *  Result of `lsp_prepare_rename`. `range` is `None` when the server uses its default
+ *  identifier behaviour (the UI then selects the word under the cursor).
+ */
+export type PrepareRenameDto = PrepareRenameDto_Serialize | PrepareRenameDto_Deserialize;
+
+/**
+ *  Result of `lsp_prepare_rename`. `range` is `None` when the server uses its default
+ *  identifier behaviour (the UI then selects the word under the cursor).
+ */
+export type PrepareRenameDto_Deserialize = {
+	range?: RangeDto | null,
+	placeholder?: string | null,
+	defaultBehavior: boolean,
+};
+
+/**
+ *  Result of `lsp_prepare_rename`. `range` is `None` when the server uses its default
+ *  identifier behaviour (the UI then selects the word under the cursor).
+ */
+export type PrepareRenameDto_Serialize = {
+	range: RangeDto | null,
+	placeholder: string | null,
+	defaultBehavior: boolean,
 };
 
 /**  Extra prompt content. Plain text always travels in the prompt text itself. */
@@ -1399,6 +1569,13 @@ export type Settings_Deserialize = {
 	formatters?: { [key in string]: string[] },
 	languageServers?: LanguageServerSettings_Deserialize,
 	/**
+	 *  `editor.syntaxColors`: per theme (`dark`, `light`, `purple`) overrides of the built in
+	 *  syntax palette, keyed by token id (see `SYNTAX_TOKEN_IDS`) with `#rgb`, `#rrggbb` or
+	 *  `#rrggbbaa` values. Empty means the UI default palettes. Optional in TypeScript so
+	 *  existing literals stay valid.
+	 */
+	syntaxColors?: { [key in string]: { [key in string]: string } },
+	/**
 	 *  Agent features. Optional in TypeScript so existing literals stay valid;
 	 *  a missing value means the defaults.
 	 */
@@ -1426,10 +1603,47 @@ export type Settings_Serialize = {
 	formatters: { [key in string]: string[] },
 	languageServers: LanguageServerSettings_Serialize,
 	/**
+	 *  `editor.syntaxColors`: per theme (`dark`, `light`, `purple`) overrides of the built in
+	 *  syntax palette, keyed by token id (see `SYNTAX_TOKEN_IDS`) with `#rgb`, `#rrggbb` or
+	 *  `#rrggbbaa` values. Empty means the UI default palettes. Optional in TypeScript so
+	 *  existing literals stay valid.
+	 */
+	syntaxColors?: { [key in string]: { [key in string]: string } },
+	/**
 	 *  Agent features. Optional in TypeScript so existing literals stay valid;
 	 *  a missing value means the defaults.
 	 */
 	agents?: AgentSettings_Serialize,
+};
+
+export type SignatureHelpDto = SignatureHelpDto_Serialize | SignatureHelpDto_Deserialize;
+
+export type SignatureHelpDto_Deserialize = {
+	signatures: SignatureInformationDto_Deserialize[],
+	activeSignature?: number | null,
+	activeParameter?: number | null,
+};
+
+export type SignatureHelpDto_Serialize = {
+	signatures: SignatureInformationDto_Serialize[],
+	activeSignature: number | null,
+	activeParameter: number | null,
+};
+
+export type SignatureInformationDto = SignatureInformationDto_Serialize | SignatureInformationDto_Deserialize;
+
+export type SignatureInformationDto_Deserialize = {
+	label: string,
+	documentation?: string | null,
+	parameters: ParameterInformationDto_Deserialize[],
+	activeParameter?: number | null,
+};
+
+export type SignatureInformationDto_Serialize = {
+	label: string,
+	documentation: string | null,
+	parameters: ParameterInformationDto_Serialize[],
+	activeParameter: number | null,
 };
 
 /**  A slash command the agent advertises. Run it by sending `/name args` as prompt text. */
@@ -1447,6 +1661,20 @@ export type SlashCommand_Serialize = {
 	name: string,
 	description: string,
 	inputHint: string | null,
+};
+
+/**  A read-only excerpt of a source file, for peek and hover previews. */
+export type SourceSnippetDto = {
+	path: string,
+	displayPath: string,
+	language: string,
+	/**  Zero based line number of the first line of `text`. */
+	startLine: number,
+	text: string,
+	/**  The requested range, in line numbers of the whole file (subtract `start_line`). */
+	highlightRange: RangeDto,
+	external: boolean,
+	readOnly: boolean,
 };
 
 export type StartupFile = StartupFile_Serialize | StartupFile_Deserialize;
@@ -1484,6 +1712,29 @@ export type StartupRequest_Serialize = {
 export type StartupRequestsChanged = {
 	pending: boolean,
 };
+
+export type SymbolDto = SymbolDto_Serialize | SymbolDto_Deserialize;
+
+export type SymbolDto_Deserialize = {
+	name: string,
+	kind: SymbolKindDto,
+	detail?: string | null,
+	range: RangeDto,
+	selectionRange: RangeDto,
+	children: SymbolDto_Deserialize[],
+};
+
+export type SymbolDto_Serialize = {
+	name: string,
+	kind: SymbolKindDto,
+	detail: string | null,
+	range: RangeDto,
+	selectionRange: RangeDto,
+	children: SymbolDto_Serialize[],
+};
+
+/**  Mirrors LSP `SymbolKind` (File = 1 ... TypeParameter = 26). */
+export type SymbolKindDto = "file" | "module" | "namespace" | "package" | "class" | "method" | "property" | "field" | "constructor" | "enum" | "interface" | "function" | "variable" | "constant" | "string" | "number" | "boolean" | "array" | "object" | "key" | "null" | "enumMember" | "struct" | "event" | "operator" | "typeParameter";
 
 export type SyntaxSnapshot = {
 	revision: number,
@@ -1597,6 +1848,29 @@ export type ToolLocation_Serialize = {
 	line: number | null,
 };
 
+/**  Same shape as [`CallHierarchyItemDto`], for `lsp_type_hierarchy_*`. */
+export type TypeHierarchyItemDto = TypeHierarchyItemDto_Serialize | TypeHierarchyItemDto_Deserialize;
+
+/**  Same shape as [`CallHierarchyItemDto`], for `lsp_type_hierarchy_*`. */
+export type TypeHierarchyItemDto_Deserialize = {
+	name: string,
+	kind: SymbolKindDto,
+	detail?: string | null,
+	location: LocationDto,
+	selectionRange: RangeDto,
+	token: string,
+};
+
+/**  Same shape as [`CallHierarchyItemDto`], for `lsp_type_hierarchy_*`. */
+export type TypeHierarchyItemDto_Serialize = {
+	name: string,
+	kind: SymbolKindDto,
+	detail: string | null,
+	location: LocationDto,
+	selectionRange: RangeDto,
+	token: string,
+};
+
 /**  Usage reported for a delegation. Every field is only set when reported. */
 export type UsageReport = UsageReport_Serialize | UsageReport_Deserialize;
 
@@ -1646,6 +1920,35 @@ export type Value = null | boolean | number | string | Value[] | { [key in strin
 export type Workspace = {
 	root: string,
 	name: string,
+};
+
+/**
+ *  A rename result. Nothing is applied here: the UI applies it through the buffer edit
+ *  path.
+ */
+export type WorkspaceEditDto = {
+	files: FileEditsDto[],
+	/**
+	 *  File create, rename and delete operations the server sent anyway. Span declares
+	 *  no resource operation support and never performs them.
+	 */
+	skippedOperations: number,
+};
+
+export type WorkspaceSymbolDto = WorkspaceSymbolDto_Serialize | WorkspaceSymbolDto_Deserialize;
+
+export type WorkspaceSymbolDto_Deserialize = {
+	name: string,
+	kind: SymbolKindDto,
+	containerName?: string | null,
+	location: LocationDto,
+};
+
+export type WorkspaceSymbolDto_Serialize = {
+	name: string,
+	kind: SymbolKindDto,
+	containerName: string | null,
+	location: LocationDto,
 };
 
 /* Tauri Specta runtime */
