@@ -673,6 +673,22 @@ fn spawn(
                 let result = recover_lock(&status_session.child).try_wait();
                 match result {
                     Ok(Some(status)) => {
+                        #[cfg(windows)]
+                        {
+                            {
+                                let mut info = recover_lock(&status_session.info);
+                                info.exited = true;
+                                info.exit_code = Some(status.exit_code());
+                            }
+                            // ConPTY owns its output pipe until the master closes.
+                            // Close it on this thread while the reader drains the
+                            // final output. Waiting for EOF first is a circular wait.
+                            let resources = {
+                                let mut resources = recover_lock(&status_session.resources);
+                                resources.take()
+                            };
+                            drop(resources);
+                        }
                         // EOF from the PTY reader is the ordering barrier: it means all
                         // final output chunks have already entered the bounded queue.
                         while !output_done.load(Ordering::Acquire) {
