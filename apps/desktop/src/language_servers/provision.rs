@@ -25,6 +25,8 @@ pub struct RuntimeIssue {
     pub runtime: String,
     pub required: u32,
     pub found: Vec<String>,
+    /// Where each entry of `found` lives, when known (same order, may be shorter).
+    pub found_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +48,12 @@ pub trait Provisioner: Send + Sync + 'static {
     /// Rough download size in bytes, for the prompt shown before installing.
     fn size_hint(&self, id: ServerId) -> Option<u64>;
     fn configure(&self, settings: &LspSettings);
+    /// Remove what an interrupted install left behind (staging tree, `.part` files).
+    fn discard_partial(&self, _id: ServerId) {}
+    /// The directory of the installed version, if it is installed.
+    fn installed_dir(&self, _id: ServerId) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// Approximate compressed download sizes in bytes. These are rough estimates for the
@@ -180,12 +188,18 @@ impl Provisioner for CatalogProvisioner {
                             RuntimeError::TooOld { found, .. } => vec![found],
                             _ => Vec::new(),
                         },
+                        found_paths: Vec::new(),
                     }),
                 Runtime::Java => locate_java(&SystemProbe, &java, req.min_major)
                     .map(|_| ())
                     .map_err(|e| RuntimeIssue {
                         runtime: runtime_label(&Runtime::Java),
                         required: req.min_major,
+                        found_paths: e
+                            .found
+                            .iter()
+                            .map(|j| j.java.to_string_lossy().into_owned())
+                            .collect(),
                         found: e.found.into_iter().map(|j| j.version).collect(),
                     }),
             })
@@ -195,6 +209,7 @@ impl Provisioner for CatalogProvisioner {
                     runtime: format!("probe failed: {e}"),
                     required: req.min_major,
                     found: Vec::new(),
+                    found_paths: Vec::new(),
                 })
             })
         })
@@ -227,6 +242,18 @@ impl Provisioner for CatalogProvisioner {
 
     fn size_hint(&self, id: ServerId) -> Option<u64> {
         Some(approximate_download_size(id))
+    }
+
+    fn discard_partial(&self, id: ServerId) {
+        if let Some(plan) = self.plan(id) {
+            let _ = std::fs::remove_dir_all(self.cache.staging_dir(id, &plan.version));
+        }
+    }
+
+    fn installed_dir(&self, id: ServerId) -> Option<PathBuf> {
+        let plan = self.plan(id)?;
+        let dir = self.cache.version_dir(id, &plan.version);
+        dir.is_dir().then_some(dir)
     }
 
     fn configure(&self, settings: &LspSettings) {

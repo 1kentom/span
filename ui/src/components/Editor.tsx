@@ -1,17 +1,19 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { Annotation, Compartment, EditorState, Prec, StateEffect, StateField, Text, Transaction, type ChangeSet, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection, crosshairCursor, type DecorationSet, type ViewUpdate } from "@codemirror/view";
-import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, foldService, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, foldService, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from "@codemirror/commands";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from "@codemirror/search";
-import { tags } from "@lezer/highlight";
 import type { BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEdit } from "../bindings";
 import { loadLanguage, resolveLanguageId } from "../editor/languages";
 import { completionTabSupport } from "../editor/completion-tab";
 import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/search-panel";
 import { formatWithLanguageServer, lspExtension, type LspBinding } from "../lib/lsp-codemirror";
+import { navigationExtension } from "../lib/lsp-peek";
+import { syntaxHighlightStyle } from "../editor/syntax-highlight";
 import "../styles/editor.css";
+import "../styles/syntax.css";
 
 export interface EditorEdit {
   baseRevision: number;
@@ -248,29 +250,7 @@ export function transactionEdits(changes: ChangeSet): TextEdit[] {
   return edits;
 }
 
-export const codeHighlighting = HighlightStyle.define([
-  { tag: [tags.keyword, tags.operatorKeyword, tags.modifier], color: "var(--syntax-keyword, #78c8c7)" },
-  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--syntax-string, #cc8dcb)" },
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: "var(--syntax-function, #d9ba7e)" },
-  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "var(--syntax-number, #d9ba7e)" },
-  { tag: [tags.typeName, tags.className, tags.namespace], color: "var(--syntax-type, #80b7ec)" },
-  { tag: [tags.comment, tags.meta], color: "var(--syntax-comment, #72777c)", fontStyle: "italic" },
-  { tag: [tags.definition(tags.variableName)], color: "var(--syntax-definition, #af9bf2)" },
-  { tag: [tags.propertyName, tags.special(tags.variableName)], color: "var(--syntax-type, #80b7ec)" },
-  { tag: tags.tagName, color: "var(--syntax-keyword, #78c8c7)" },
-  { tag: tags.attributeName, color: "var(--syntax-function, #d9ba7e)" },
-  { tag: tags.attributeValue, color: "var(--syntax-string, #cc8dcb)" },
-  { tag: tags.standard(tags.variableName), color: "var(--syntax-definition, #af9bf2)" },
-  { tag: [tags.heading], color: "var(--syntax-function, #d9ba7e)", fontWeight: "600" },
-  { tag: [tags.link, tags.url], color: "var(--syntax-type, #80b7ec)", textDecoration: "underline" },
-  { tag: tags.strong, fontWeight: "700" },
-  { tag: tags.emphasis, fontStyle: "italic" },
-  { tag: tags.monospace, color: "var(--syntax-string, #cc8dcb)" },
-  { tag: tags.strikethrough, textDecoration: "line-through" },
-  { tag: [tags.quote, tags.contentSeparator], color: "var(--syntax-comment, #72777c)" },
-  { tag: [tags.list, tags.processingInstruction], color: "var(--syntax-keyword, #78c8c7)" },
-  { tag: [tags.invalid], color: "var(--syntax-invalid, #e58a8a)" },
-]);
+export const codeHighlighting = syntaxHighlightStyle;
 
 function indentation(view: EditorView): DecorationSet {
   const decorations = [];
@@ -414,7 +394,7 @@ export default function Editor(props: EditorProps) {
   function extensions(): Extension[] {
     return [
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(),
-      props.onUndo ? [] : history(), rectangularSelection(), crosshairCursor(), indentOnInput(), bracketMatching(),
+      props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),
       closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
         const marker = document.createElement("span");
         marker.className = `cm-fold-chevron ${open ? "is-open" : ""}`;
@@ -429,6 +409,7 @@ export default function Editor(props: EditorProps) {
       appearance.of(EditorView.theme({}, { dark: props.theme !== "light" })),
       syntaxHighlighting(codeHighlighting), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       props.lsp ? lspExtension(props.buffer.path, props.lsp) : [],
+      navigationExtension(props.buffer.path),
       keymap.of([
         { key: "Mod-z", run: (editor) => { if (props.onUndo) { props.onUndo(); return true; } return undo(editor); }, preventDefault: true },
         { key: "Mod-Shift-z", run: (editor) => { if (props.onRedo) { props.onRedo(); return true; } return redo(editor); }, preventDefault: true },

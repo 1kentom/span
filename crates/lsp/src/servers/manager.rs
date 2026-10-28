@@ -18,11 +18,18 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use lsp_types::{
+    CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
+    CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentRangeFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-    HoverParams, PublishDiagnosticsParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentSyncKind, TextEdit, VersionedTextDocumentIdentifier,
+    DocumentHighlight, DocumentHighlightParams, DocumentRangeFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverParams, Location, PrepareRenameResponse, PublishDiagnosticsParams, ReferenceParams,
+    RenameParams, SignatureHelp, SignatureHelpParams, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, TextDocumentSyncKind,
+    TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
+    TypeHierarchySupertypesParams, VersionedTextDocumentIdentifier, WorkspaceEdit,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard};
 use tokio::task::JoinHandle;
@@ -122,9 +129,66 @@ pub enum ServerState {
     Stopped,
 }
 
+/// The three stages of a `$/progress` work done report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkProgressKind {
+    Begin,
+    Report,
+    End,
+}
+
+/// One decoded work done report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkProgress {
+    pub token: String,
+    pub kind: WorkProgressKind,
+    pub title: Option<String>,
+    pub message: Option<String>,
+    pub percentage: Option<u32>,
+}
+
+/// Parse the params of a `$/progress` notification that carries work done progress.
+/// Other progress payloads (partial results) are ignored.
+pub fn parse_work_progress(params: &serde_json::Value) -> Option<WorkProgress> {
+    let token = match params.get("token")? {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    let value = params.get("value")?;
+    let kind = match value.get("kind")?.as_str()? {
+        "begin" => WorkProgressKind::Begin,
+        "report" => WorkProgressKind::Report,
+        "end" => WorkProgressKind::End,
+        _ => return None,
+    };
+    let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+    let percentage = value
+        .get("percentage")
+        .and_then(|v| v.as_u64())
+        .map(|p| p.min(100) as u32);
+    Some(WorkProgress {
+        token,
+        kind,
+        title: text("title"),
+        message: text("message"),
+        percentage,
+    })
+}
+
 /// Broadcast to subscribers; slow receivers may lag and miss events.
 #[derive(Debug, Clone)]
 pub enum ManagerEvent {
+    /// Work done progress (`$/progress`) from a server: indexing, importing, building.
+    Progress {
+        server: ServerId,
+        root: PathBuf,
+        token: String,
+        kind: WorkProgressKind,
+        title: Option<String>,
+        message: Option<String>,
+        percentage: Option<u32>,
+    },
     StateChanged {
         server: ServerId,
         root: PathBuf,
@@ -211,7 +275,9 @@ impl Instance {
 
 /// Chooses the `initialize` options for a server at start time, given whether the
 /// project may run its own code (build scripts, proc macros, Gradle and Maven import).
-pub type OptionsProvider = Arc<dyn Fn(ServerId, bool) -> serde_json::Value + Send + Sync>;
+/// `(server, server root, global run project code flag)`; the root lets the provider decide
+/// per workspace trust.
+pub type OptionsProvider = Arc<dyn Fn(ServerId, &Path, bool) -> serde_json::Value + Send + Sync>;
 
 struct ManagerShared {
     run_project_code: AtomicBool,
@@ -229,13 +295,33 @@ pub struct Manager {
     shared: Arc<ManagerShared>,
 }
 
+/// Defines a manager wrapper for one navigation request on a ready server. Capability
+/// gating, cancellation and `ContentModified` retries live in the client's shared path.
+macro_rules! manager_nav {
+    ($name:ident, $client_fn:ident, $params:ty, $out:ty) => {
+        pub async fn $name(
+            &self,
+            id: ServerId,
+            root: &Path,
+            params: $params,
+            cancel: Option<CancellationToken>,
+        ) -> Result<Option<$out>, ManagerError> {
+            let client = self.ready_client(id, root).await?;
+            client
+                .$client_fn(params, cancel.unwrap_or_default())
+                .await
+                .map_err(|e| map_err(&client, e))
+        }
+    };
+}
+
 impl Manager {
     pub fn new<R: LaunchResolver>(
         specs: Vec<ServerSpec>,
         resolver: Arc<R>,
         config: ManagerConfig,
     ) -> Self {
-        let (events, _) = broadcast::channel(256);
+        let (events, _) = broadcast::channel(1024);
         Self {
             shared: Arc::new(ManagerShared {
                 run_project_code: AtomicBool::new(false),
@@ -337,7 +423,11 @@ impl Manager {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let options = match provider {
-            Some(provider) => provider(id, self.shared.run_project_code.load(Ordering::SeqCst)),
+            Some(provider) => provider(
+                id,
+                root,
+                self.shared.run_project_code.load(Ordering::SeqCst),
+            ),
             None => spec.initialization_options.clone(),
         };
         let handle = tokio::spawn(run_instance(
@@ -582,6 +672,121 @@ impl Manager {
             .await
             .map_err(|e| map_err(&client, e))
     }
+
+    /// Whether the ready server advertised `typeHierarchyProvider`.
+    pub async fn supports_type_hierarchy(&self, id: ServerId, root: &Path) -> bool {
+        match self.ready_client(id, root).await {
+            Ok(client) => client.supports_type_hierarchy(),
+            Err(_) => false,
+        }
+    }
+
+    /// JDT LS `java/classFileContents` for a `jdt://` URI.
+    pub async fn class_file_contents(
+        &self,
+        id: ServerId,
+        root: &Path,
+        uri: &str,
+        cancel: Option<CancellationToken>,
+    ) -> Result<Option<String>, ManagerError> {
+        let client = self.ready_client(id, root).await?;
+        client
+            .class_file_contents(uri, cancel.unwrap_or_default())
+            .await
+            .map_err(|e| map_err(&client, e))
+    }
+
+    manager_nav!(
+        references,
+        references_with_cancel,
+        ReferenceParams,
+        Vec<Location>
+    );
+    manager_nav!(
+        implementation,
+        implementation_with_cancel,
+        GotoDefinitionParams,
+        GotoDefinitionResponse
+    );
+    manager_nav!(
+        type_definition,
+        type_definition_with_cancel,
+        GotoDefinitionParams,
+        GotoDefinitionResponse
+    );
+    manager_nav!(
+        declaration,
+        declaration_with_cancel,
+        GotoDefinitionParams,
+        GotoDefinitionResponse
+    );
+    manager_nav!(
+        document_symbols,
+        document_symbols_with_cancel,
+        DocumentSymbolParams,
+        DocumentSymbolResponse
+    );
+    manager_nav!(
+        workspace_symbols,
+        workspace_symbols_with_cancel,
+        WorkspaceSymbolParams,
+        WorkspaceSymbolResponse
+    );
+    manager_nav!(
+        prepare_call_hierarchy,
+        prepare_call_hierarchy_with_cancel,
+        CallHierarchyPrepareParams,
+        Vec<CallHierarchyItem>
+    );
+    manager_nav!(
+        incoming_calls,
+        incoming_calls_with_cancel,
+        CallHierarchyIncomingCallsParams,
+        Vec<CallHierarchyIncomingCall>
+    );
+    manager_nav!(
+        outgoing_calls,
+        outgoing_calls_with_cancel,
+        CallHierarchyOutgoingCallsParams,
+        Vec<CallHierarchyOutgoingCall>
+    );
+    manager_nav!(
+        prepare_type_hierarchy,
+        prepare_type_hierarchy_with_cancel,
+        TypeHierarchyPrepareParams,
+        Vec<TypeHierarchyItem>
+    );
+    manager_nav!(
+        type_supertypes,
+        type_supertypes_with_cancel,
+        TypeHierarchySupertypesParams,
+        Vec<TypeHierarchyItem>
+    );
+    manager_nav!(
+        type_subtypes,
+        type_subtypes_with_cancel,
+        TypeHierarchySubtypesParams,
+        Vec<TypeHierarchyItem>
+    );
+    manager_nav!(
+        document_highlights,
+        document_highlights_with_cancel,
+        DocumentHighlightParams,
+        Vec<DocumentHighlight>
+    );
+    manager_nav!(
+        signature_help,
+        signature_help_with_cancel,
+        SignatureHelpParams,
+        SignatureHelp
+    );
+    manager_nav!(
+        prepare_rename,
+        prepare_rename_with_cancel,
+        TextDocumentPositionParams,
+        PrepareRenameResponse
+    );
+    manager_nav!(rename, rename_with_cancel, RenameParams, WorkspaceEdit);
 
     /// Stop one server (graceful, then kill) and forget it, including its buffers.
     pub async fn shutdown(&self, id: ServerId, root: &Path) {
@@ -907,7 +1112,13 @@ async fn run_instance(
     }
 }
 
+/// Reports of one work token closer together than this are dropped here, so a server that
+/// reports hundreds of times a second cannot flood the event channel and push diagnostics
+/// out of a slow receiver's window. `begin` and `end` always pass.
+const PROGRESS_MIN_GAP: Duration = Duration::from_millis(100);
+
 async fn pump_events(inst: Arc<Instance>, client: Arc<LspClient>) {
+    let mut last_report: HashMap<String, std::time::Instant> = HashMap::new();
     while let Some(event) = client.next_event().await {
         match event {
             ServerEvent::Request { id, method, params } => {
@@ -922,7 +1133,44 @@ async fn pump_events(inst: Arc<Instance>, client: Arc<LspClient>) {
                     params,
                 });
             }
-            ServerEvent::Notification { .. } => {}
+            ServerEvent::Notification { method, params } => {
+                if method == "$/progress" {
+                    if let Some(WorkProgress {
+                        token,
+                        kind,
+                        title,
+                        message,
+                        percentage,
+                    }) = params.as_ref().and_then(parse_work_progress)
+                    {
+                        match kind {
+                            WorkProgressKind::Report => {
+                                let now = std::time::Instant::now();
+                                if last_report
+                                    .get(&token)
+                                    .is_some_and(|t| now.duration_since(*t) < PROGRESS_MIN_GAP)
+                                {
+                                    continue;
+                                }
+                                last_report.insert(token.clone(), now);
+                            }
+                            WorkProgressKind::End => {
+                                last_report.remove(&token);
+                            }
+                            WorkProgressKind::Begin => {}
+                        }
+                        let _ = inst.events.send(ManagerEvent::Progress {
+                            server: inst.id,
+                            root: inst.root.clone(),
+                            token,
+                            kind,
+                            title,
+                            message,
+                            percentage,
+                        });
+                    }
+                }
+            }
         }
     }
     if inst.stop.is_cancelled() {
