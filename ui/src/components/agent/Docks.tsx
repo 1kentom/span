@@ -84,6 +84,8 @@ export function QuestionDock(props: QuestionDockProps) {
 
 type PermissionDockProps = {
   title: string;
+  /** Names the delegated agent the request comes from, when it is not the lead. */
+  from?: string;
   brand?: Brand;
   /** The command or target the tool call will touch. `details.command` wins when both are given. */
   command?: string;
@@ -131,7 +133,7 @@ export function PermissionDock(props: PermissionDockProps) {
     },
   );
   return (
-    <section class="sb-dock" classList={{ internal: internal() }} role="group" aria-label={`Permission requested: ${props.title}`}>
+    <section class="sb-dock" classList={{ internal: internal() }} role="group" aria-label={`${props.from ? `${props.from} asks permission` : "Permission requested"}: ${props.title}`}>
       <div class="sb-dock-head">
         <span class="sb-dot warn" aria-hidden="true" />
         <span class="sb-dock-title" classList={{ muted: internal() }}>{props.title}</span>
@@ -144,6 +146,7 @@ export function PermissionDock(props: PermissionDockProps) {
         </Show>
         <Show when={props.brand}><BrandIcon id={props.brand?.id} name={props.brand?.name} size={13} /></Show>
       </div>
+      <Show when={props.from}><div class="sb-dock-from">{props.from} (delegated agent) asks to run this</div></Show>
       <Show when={internal()}><div class="sb-sub">Agent housekeeping, not a change to your files</div></Show>
       <Show when={open()}>
         <div class="sb-dock-details">

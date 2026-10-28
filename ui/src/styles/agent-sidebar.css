@@ -404,3 +404,26 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-auth-hint code, .sb-fine code { padding: 0 4px; border-radius: 3px; background: var(--sb-field); color: var(--sb-fg); font-size: 11px; }
 .sb-preset-command { margin-left: 28px; padding: 4px 8px; border: 1px solid var(--sb-border); border-radius: 5px; background: var(--sb-field); font-size: 11px; color: var(--sb-fg); overflow-wrap: anywhere; }
 .agent-turn-tokens { align-self: center; }
+
+/* Decision and delegated-agent cards */
+.sb-decision, .sb-delegation { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--sb-border); border-radius: 8px; background: var(--sb-raised); color: var(--sb-fg); font: 13px/1.45 Inter, system-ui, sans-serif; box-sizing: border-box; min-width: 0; }
+.sb-decision *, .sb-delegation * { box-sizing: border-box; }
+.sb-decision-eyebrow { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
+.sb-decision-chosen { font-size: 13px; font-weight: 500; line-height: 19px; color: var(--sb-strong); overflow-wrap: anywhere; }
+.sb-decision .sb-body { overflow-wrap: anywhere; }
+.sb-decision-toggle { display: flex; align-items: center; gap: 6px; height: 22px; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--sb-faint); font: inherit; font-size: 11.5px; cursor: pointer; text-align: left; }
+.sb-decision-toggle:hover { color: var(--sb-fg); }
+.sb-decision-toggle:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 2px; }
+.sb-decision-alts { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 2px 0 2px 16px; list-style: none; font-size: 12px; line-height: 17px; color: var(--sb-dim); overflow-wrap: anywhere; }
+.sb-delegation-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sb-delegation-name { font-size: 12.5px; font-weight: 500; color: var(--sb-strong); }
+.sb-delegation-status { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.sb-delegation.failed { background: var(--sb-error-surface); border-color: var(--sb-error-border); }
+.sb-delegation-note { overflow-wrap: anywhere; }
+.sb-delegation-wait { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--sb-warning); }
+.agent-delegation-line { margin: 0 6px 4px; padding: 0 2px; display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 16px; color: var(--sb-faint); overflow-wrap: anywhere; }
+.agent-delegation-line.warn { color: var(--sb-warning); }
+.agent-delegation-line .sb-dot { background: var(--sb-success); }
+.agent-delegation-line.warn .sb-dot { background: var(--sb-warning); }
+.sb-dock-from { font-size: 11px; color: var(--sb-dim); }
+.sb-delegation-hint { padding: 2px 4px 0; overflow-wrap: anywhere; }

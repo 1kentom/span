@@ -34,9 +34,11 @@ const mocks = vi.hoisted(() => {
     },
     agentPresets: vi.fn(async (): Promise<unknown[]> => []),
     agentAuthenticateWith: vi.fn(async (_method: string, _credential: unknown): Promise<string> => "s-auth"),
+    agentChildPermission: vi.fn(async (_connectionId: string, _sessionId: string, _requestId: string, _optionId: string | null): Promise<void> => undefined),
+    agentDelegationStatus: vi.fn(async (): Promise<unknown> => ({ enabled: true, available: true, reason: null, lead: null, attached: true, tasks: [], decisions: [] })),
   };
 });
-vi.mock("./client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith }));
+vi.mock("./client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith, agentChildPermission: mocks.agentChildPermission, agentDelegationStatus: mocks.agentDelegationStatus }));
 
 const features = (patch: Partial<AgentFeatures> = {}): AgentFeatures => ({ loadSession: false, image: false, audio: false, embeddedContext: false, mcpHttp: false, mcpSse: false, canListSessions: false, canResumeSessions: false, canCloseSessions: false, canDeleteSessions: false, ...patch });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -402,5 +404,46 @@ describe("loading attachments", () => {
     await run;
     seen.push(a.attachments().map((item) => item.status));
     expect(seen).toEqual([["loading"], ["ready"]]);
+  });
+});
+
+describe("delegated child permissions", () => {
+  const child = { connectionId: "c1", sessionId: "child-1" };
+  const ask = (sessionId: string, requestId: string): AgentEvent => ({ kind: "permission", sessionId, requestId, toolCallId: "t", title: "Run tests", options: [{ optionId: "ok", name: "Allow", kind: "allow_once" }] });
+
+  it("offers a child request only after a delegated card names that session, labelled with the agent", async () => {
+    const a = await connected();
+    mocks.emit(ask("child-1", "r1"), ask("stranger", "r2"));
+    expect(a.childPermission()).toBeUndefined();
+    mocks.emit({ kind: "delegation", event: { kind: "delegated", lead: { connectionId: "c1", sessionId: "s1" }, child, taskId: "k1", agentName: "Codex" } });
+    expect(a.childPermission()?.agentName).toBe("Codex");
+    expect(a.childPermissions().map((entry) => entry.event.requestId)).toEqual(["r1"]);
+    expect(a.permission()).toBeUndefined();
+  });
+
+  it("answers through agentChildPermission with the connection and session ids, then clears the request", async () => {
+    const a = await connected();
+    mocks.emit({ kind: "delegation", event: { kind: "delegated", lead: { connectionId: "c1", sessionId: "s1" }, child, taskId: "k1", agentName: "Codex" } }, ask("child-1", "r1"));
+    await a.answerChildPermission(a.childPermission()!, "ok");
+    expect(mocks.agentChildPermission).toHaveBeenCalledWith("c1", "child-1", "r1", "ok");
+    expect(a.childPermission()).toBeUndefined();
+  });
+
+  it("keeps the request open and reports the failure when the answer is refused", async () => {
+    const a = await connected();
+    mocks.emit({ kind: "delegation", event: { kind: "delegated", lead: { connectionId: "c1", sessionId: "s1" }, child, taskId: "k1", agentName: "Codex" } }, ask("child-1", "r1"));
+    mocks.agentChildPermission.mockRejectedValueOnce(new Error("Not a delegated session"));
+    await a.answerChildPermission(a.childPermission()!, "ok");
+    expect(a.childPermission()).toBeDefined();
+    expect(a.state().failure?.message).toContain("Codex");
+  });
+
+  it("adds failure detail from the status command when a task finishes", async () => {
+    const a = await connected();
+    mocks.agentDelegationStatus.mockResolvedValueOnce({ enabled: true, available: true, reason: null, lead: { connectionId: "c1", sessionId: "s1" }, attached: true, decisions: [], tasks: [{ taskId: "k1", lead: { connectionId: "c1", sessionId: "s1" }, child, agentName: "Codex", status: "failed", stopReason: null, reason: "timeout", detail: "No reply in 30 minutes" }] });
+    mocks.emit({ kind: "delegation", event: { kind: "delegated", lead: { connectionId: "c1", sessionId: "s1" }, child, taskId: "k1", agentName: "Codex" } }, { kind: "delegation", event: { kind: "taskFinished", lead: { connectionId: "c1", sessionId: "s1" }, child, taskId: "k1", status: "failed", reason: "timeout" } });
+    await tick();
+    const card = a.feed().find((item) => item.kind === "delegation");
+    expect(card?.kind === "delegation" && card.task.detail).toBe("No reply in 30 minutes");
   });
 });

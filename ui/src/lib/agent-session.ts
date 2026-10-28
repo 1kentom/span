@@ -4,12 +4,17 @@ import type {
   AgentHint,
   AuthMethodInfo,
   ConfigOption_Deserialize as ConfigOption,
+  DecisionRecord,
+  DelegationEvent,
+  DelegationStatus,
   EditProposal,
   PlanEntry,
+  SessionKey,
   SlashCommand,
 } from "../bindings";
 import type { Attachment } from "./attachments";
 import { hintText } from "./agent-hint-text";
+import { isFinished, knownDelegation, mergeTask, type DelegationNote, type DelegationTaskState } from "./agent-delegation";
 
 /** Agent session state built from ACP events. Pure data: the panel derives every view from it. */
 export type ToolEvent = Extract<AgentEvent, { kind: "tool" }>;
@@ -25,7 +30,9 @@ export type FeedItem =
   | { id: number; kind: "tool"; event: ToolEvent }
   | { id: number; kind: "permission"; event: PermissionEvent; resolved: boolean }
   | { id: number; kind: "proposal"; proposal: EditProposal; resolution?: "accepted" | "rejected" }
-  | { id: number; kind: "stop"; reason: string; hint?: AgentHint };
+  | { id: number; kind: "stop"; reason: string; hint?: AgentHint }
+  | { id: number; kind: "decision"; decision: DecisionRecord }
+  | { id: number; kind: "delegation"; task: DelegationTaskState };
 
 export type AgentInfo = { name?: string; title?: string; version?: string; features: AgentFeatures };
 export type Usage = { used: number; size: number; cost?: { amount: number; currency: string } };
@@ -49,6 +56,9 @@ export type AgentState = {
   sessionTitle?: string;
   plan: PlanEntry[];
   elicitations: ElicitationEvent[];
+  /** Permission requests from sessions other than the open chat. Only those from a known delegated child are ever shown. */
+  strayPermissions: PermissionEvent[];
+  delegation: DelegationNote;
   feed: FeedItem[];
   logs: string[];
   logCount: number;
@@ -64,6 +74,7 @@ export type AgentState = {
 export const LOG_LIMIT = 240;
 export const FEED_LIMIT = 400;
 const STDERR_LIMIT = 12;
+const STRAY_LIMIT = 24;
 /** Stop reasons that get a card with a Continue action. */
 export const CARD_STOP_REASONS = ["max_tokens", "max_turn_requests", "refusal"];
 
@@ -77,6 +88,8 @@ export function initialAgentState(desktop: boolean): AgentState {
     config: [],
     plan: [],
     elicitations: [],
+    strayPermissions: [],
+    delegation: {},
     feed: [],
     logs: [],
     logCount: 0,
@@ -89,7 +102,7 @@ export function initialAgentState(desktop: boolean): AgentState {
 
 /** Clears everything tied to one conversation, keeping the agent identity and logs. */
 export function resetConversation(state: AgentState): AgentState {
-  return { ...state, feed: [], plan: [], elicitations: [], usage: undefined, turnUsage: undefined, sessionTitle: undefined, commands: [], running: false, stopRequested: false };
+  return { ...state, feed: [], plan: [], elicitations: [], strayPermissions: [], usage: undefined, turnUsage: undefined, sessionTitle: undefined, commands: [], running: false, stopRequested: false };
 }
 
 export function addFeedItem(state: AgentState, item: DistributiveOmit<FeedItem, "id">): AgentState {
@@ -200,6 +213,11 @@ function eventSession(event: AgentEvent): string | undefined {
 /** Applies one ACP event. Events for another session are ignored. */
 export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentState {
   const session = eventSession(event);
+  if (session && state.sessionId && session !== state.sessionId) {
+    // Another session on this connection. Delegated children ask permission here; the view decides which are theirs.
+    if (event.kind === "permission") return { ...state, strayPermissions: [...state.strayPermissions.filter((item) => item.requestId !== event.requestId), event].slice(-STRAY_LIMIT) };
+    if (event.kind === "permissionResolved") return { ...state, strayPermissions: state.strayPermissions.filter((item) => item.requestId !== event.requestId) };
+  }
   if (event.kind !== "session" && session && state.sessionId && session !== state.sessionId) return state;
   switch (event.kind) {
     case "log": {
@@ -218,6 +236,8 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         sessionId: undefined,
         auth: undefined,
         elicitations: [],
+        strayPermissions: [],
+        delegation: {},
         feed: next.feed.map((item) => (item.kind === "permission" && !item.resolved ? { ...item, resolved: true } : item)),
         failure: exited ? { phase: "exit", message: state.lastError || event.message, log: state.stderr } : state.failure,
       };
@@ -303,7 +323,9 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
     case "permission":
       return addFeedItem(state, { kind: "permission", event, resolved: false });
     case "permissionResolved":
-      return resolvePermission(state, event.requestId);
+      return resolvePermission({ ...state, strayPermissions: state.strayPermissions.filter((item) => item.requestId !== event.requestId) }, event.requestId);
+    case "delegation":
+      return reduceDelegation(state, event.event);
     case "proposal":
       return addFeedItem(state, { kind: "proposal", proposal: event.proposal });
     case "proposalResolved":
@@ -334,6 +356,52 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
       };
   }
   return state;
+}
+
+/** The session a delegation event belongs to is the lead's. Events for another lead are ignored; unknown kinds change nothing. */
+function reduceDelegation(state: AgentState, event: DelegationEvent): AgentState {
+  if (!knownDelegation(event)) return state;
+  const otherLead = (lead: SessionKey) => Boolean(state.sessionId && lead.sessionId !== state.sessionId);
+  switch (event.kind) {
+    case "attached":
+      return { ...state, delegation: { attached: { sessionId: event.lead.sessionId, agentName: event.agentName } } };
+    case "detached": {
+      if (state.delegation.attached?.sessionId !== event.lead.sessionId) return state;
+      const stopped = (item: FeedItem): FeedItem =>
+        item.kind === "delegation" && !isFinished(item.task.status)
+          ? { ...item, task: { ...item.task, status: "cancelled", reason: "cancelled", detail: "The lead session ended" } }
+          : item;
+      return { ...state, delegation: { ...state.delegation, attached: undefined }, feed: state.feed.map(stopped) };
+    }
+    case "unavailable":
+      return { ...state, delegation: { unavailable: { agentName: event.agentName, reason: event.reason } } };
+    case "decision": {
+      if (otherLead(event.lead) || state.feed.some((item) => item.kind === "decision" && item.decision.id === event.decision.id)) return state;
+      return addFeedItem(state, { kind: "decision", decision: event.decision });
+    }
+    case "delegated":
+    case "taskFinished": {
+      if (otherLead(event.lead)) return state;
+      const patch = event.kind === "delegated" ? { taskId: event.taskId, child: event.child, agentName: event.agentName } : { taskId: event.taskId, child: event.child, status: event.status, reason: event.reason };
+      return upsertTask(state, patch);
+    }
+  }
+  return state;
+}
+
+function upsertTask(state: AgentState, patch: Parameters<typeof mergeTask>[1]): AgentState {
+  const found = state.feed.some((item) => item.kind === "delegation" && item.task.taskId === patch.taskId);
+  if (!found) return addFeedItem(state, { kind: "delegation", task: mergeTask(undefined, patch) });
+  return mapFeed(state, (item) => (item.kind === "delegation" && item.task.taskId === patch.taskId ? { ...item, task: mergeTask(item.task, patch) } : item));
+}
+
+/** Folds a polled `agent_delegation_status` into the cards already in the feed, which adds the failure detail the events do not carry. */
+export function applyDelegationStatus(state: AgentState, status: DelegationStatus): AgentState {
+  if (status.lead && state.sessionId && status.lead.sessionId !== state.sessionId) return state;
+  return status.tasks.reduce((current, task) => {
+    if (!current.feed.some((item) => item.kind === "delegation" && item.task.taskId === task.taskId)) return current;
+    return upsertTask(current, { taskId: task.taskId, child: task.child, agentName: task.agentName, status: task.status, reason: task.reason, stopReason: task.stopReason, detail: task.detail });
+  }, state);
 }
 
 export function resolvePermission(state: AgentState, requestId: string): AgentState {

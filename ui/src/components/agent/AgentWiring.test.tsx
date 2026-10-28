@@ -4,6 +4,7 @@ import type { AgentEvent, AgentFeatures } from "../../bindings";
 import { createAgentController, type AgentController, type AgentPanelProps } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
 import { AgentComposer } from "./AgentComposer";
+import { AgentFeed } from "./AgentFeed";
 import { HistoryList } from "./HistoryList";
 import { AttachmentTray } from "../attachments";
 import { key, mount, text } from "./test-utils";
@@ -26,9 +27,11 @@ const mocks = vi.hoisted(() => {
     },
     agentPresets: vi.fn(async () => []),
     agentAuthenticateWith: vi.fn(async () => "s-auth"),
+    agentChildPermission: vi.fn(async (..._args: unknown[]) => undefined),
+    agentDelegationStatus: vi.fn(async () => ({ enabled: true, available: true, reason: null, lead: null, attached: true, tasks: [], decisions: [] })),
   };
 });
-vi.mock("../../lib/client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith }));
+vi.mock("../../lib/client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith, agentChildPermission: mocks.agentChildPermission, agentDelegationStatus: mocks.agentDelegationStatus }));
 
 const features = (patch: Partial<AgentFeatures> = {}): AgentFeatures => ({ loadSession: false, image: true, audio: false, embeddedContext: true, mcpHttp: false, mcpSse: false, canListSessions: false, canResumeSessions: false, canCloseSessions: false, canDeleteSessions: false, ...patch });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -176,5 +179,70 @@ describe("attachment tray", () => {
     const tiles = [...host.querySelectorAll<HTMLElement>(".att-tile")];
     expect(tiles.map((tile) => tile.dataset.state)).toEqual(["uploading", "link"]);
     expect(host.querySelector("[role=progressbar]")).not.toBeNull();
+  });
+});
+
+describe("delegation in the sidebar", () => {
+  const lead = { connectionId: "c1", sessionId: "s1" };
+  const child = { connectionId: "c1", sessionId: "k1" };
+  const options = [{ optionId: "ok", name: "Allow", kind: "allow_once" }, { optionId: "no", name: "Reject", kind: "reject_once" }];
+
+  it("shows nothing about delegation while it is off", async () => {
+    const { host } = await composer();
+    expect(host.querySelector(".agent-delegation-line")).toBeNull();
+  });
+
+  it("shows the status line when attached and the reason when the agent cannot get the tools", async () => {
+    const { host } = await composer();
+    mocks.emit({ kind: "delegation", event: { kind: "attached", lead, agentName: "Agent" } });
+    expect(text(host.querySelector(".agent-delegation-line"))).toBe("Delegation on");
+    mocks.emit({ kind: "delegation", event: { kind: "detached", lead } }, { kind: "delegation", event: { kind: "unavailable", connectionId: "c1", agentName: "Agent", reason: "This agent does not offer MCP over HTTP" } });
+    expect(text(host.querySelector(".agent-delegation-line"))).toBe("Delegation unavailable: This agent does not offer MCP over HTTP");
+    expect(host.querySelector(".agent-delegation-line.warn")).not.toBeNull();
+  });
+
+  it("docks a delegated child's request with the agent name and answers it through the child command", async () => {
+    const { host } = await composer();
+    mocks.emit({ kind: "delegation", event: { kind: "delegated", lead, child, taskId: "t1", agentName: "Codex" } }, { kind: "permission", sessionId: "k1", requestId: "r1", toolCallId: "t", title: "Run pnpm test", options });
+    const dock = host.querySelector(".sb-dock")!;
+    expect(dock.getAttribute("aria-label")).toBe("Codex asks permission: Run pnpm test");
+    expect(text(dock.querySelector(".sb-dock-from"))).toContain("Codex");
+    expect(mocks.agentChildPermission).not.toHaveBeenCalled();
+    [...dock.querySelectorAll<HTMLButtonElement>("button.sb-btn")].find((button) => button.textContent?.startsWith("Allow"))!.click();
+    await tick();
+    expect(mocks.agentChildPermission).toHaveBeenCalledWith("c1", "k1", "r1", "ok");
+    expect(host.querySelector(".sb-dock")).toBeNull();
+  });
+
+  it("does not dock a request from a session no delegation card names", async () => {
+    const { host } = await composer();
+    mocks.emit({ kind: "permission", sessionId: "unknown", requestId: "r9", toolCallId: "t", title: "Run it", options });
+    expect(host.querySelector(".sb-dock")).toBeNull();
+  });
+
+  it("renders decision and delegation cards in the feed where they arrived", async () => {
+    mocks.api.agentConnect.mockImplementationOnce(async () => {
+      mocks.emit({ kind: "ready", agentName: "a", agentTitle: "Agent", agentVersion: "1", features: features(), authMethods: [] }, { kind: "session", sessionId: "s1" });
+      return "s1";
+    });
+    let controller!: AgentController;
+    const host = mount(() => {
+      controller = createAgentController({ workspacePath: "/w", workspaceGeneration: 1 });
+      return <AgentFeed agent={controller} />;
+    });
+    await tick();
+    controller.connectCustom("agent");
+    await tick();
+    mocks.emit(
+      { kind: "text", sessionId: "s1", text: "Plan" },
+      { kind: "delegation", event: { kind: "decision", lead, decision: { id: "d1", chosen: "Use Codex", why: "It has tests", alternatives: ["Do it myself"], recordedAt: 1 } } },
+      { kind: "delegation", event: { kind: "delegated", lead, child, taskId: "t1", agentName: "Codex" } },
+      { kind: "delegation", event: { kind: "taskFinished", lead, child, taskId: "t1", status: "failed", reason: "timeout" } },
+    );
+    const order = [...host.querySelectorAll(".agent-feed > *")].map((el) => el.className.split(" ")[0]);
+    expect(order).toEqual(["agent-message", "sb-decision", "sb-delegation"]);
+    expect(text(host.querySelector(".sb-decision"))).toContain("Decision · Agent");
+    expect(text(host.querySelector(".sb-delegation"))).toContain("The task timed out");
+    expect(text(host.querySelector(".sb-delegation-status"))).toBe("Failed");
   });
 });

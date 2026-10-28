@@ -6,6 +6,7 @@ import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
 import { formatElapsed } from "../../lib/agent-feed";
+import { delegationLine } from "../../lib/agent-delegation";
 import { canCompact, type PermissionEvent } from "../../lib/agent-session";
 import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { isDesktop } from "../../lib/client";
@@ -76,6 +77,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     const edits = EDIT_KINDS.includes(event.toolKind ?? "") || details.diffs.length > 0;
     return { ...details, doubleApproval: Boolean(a.state().agent?.features.doubleApproval) && edits };
   };
+  const line = () => delegationLine(a.state().delegation, a.state().sessionId);
   const field = () => a.fields()[a.form()?.index ?? 0];
   const unavailable = isDesktop ? undefined : ATTACH_UNAVAILABLE;
   /** Only items with a real handler are offered. Folder, Earlier session and Paste screenshot have none (no folder picker, no session attach, no image clipboard command), so they are omitted rather than stubbed. */
@@ -97,8 +99,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     event.currentTarget.value = "";
     void a.intake.addFiles(files, "picked");
   };
-  const hintMode = () => (a.permission() ? "permission" : a.elicitation() ? "question" : a.running() ? "running" : "idle");
-  const hints = () => composerHints({ permission: a.permission()?.event.options, elicitation: a.elicitation(), field: field() });
+  const hintMode = () => (a.permission() || a.childPermission() ? "permission" : a.elicitation() ? "question" : a.running() ? "running" : "idle");
+  const hints = () => composerHints({ permission: (a.permission() ?? a.childPermission())?.event.options, elicitation: a.elicitation(), field: field() });
   const hasPayload = () => Boolean(a.prompt().trim() || a.attachments().length);
   const loadingOnly = (reason: string) => reason === "Still loading.";
   const reportable = () => a.blocked().filter((entry) => !loadingOnly(entry.reason));
@@ -117,6 +119,14 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
 
   return (
     <footer class="agent-footer">
+      <Show when={line()}>
+        {(entry) => (
+          <div class="agent-delegation-line" classList={{ warn: entry().tone === "warn" }} role="status">
+            <span class="sb-dot" aria-hidden="true" />
+            <span>{entry().text}</span>
+          </div>
+        )}
+      </Show>
       <Show when={showBanner()}>
         <ContextBanner
           used={usage()!.used}
@@ -154,7 +164,19 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           />
         )}
       </Show>
-      <Show when={!a.permission() && a.elicitation()}>
+      <Show when={!a.permission() && a.childPermission()}>
+        {(request) => (
+          <PermissionDock
+            title={request().event.title}
+            from={request().agentName}
+            details={permissionView(request().event)}
+            options={request().event.options}
+            busy={Boolean(a.pendingAction())}
+            onChoose={(optionId) => void a.answerChildPermission(request(), optionId)}
+          />
+        )}
+      </Show>
+      <Show when={!a.permission() && !a.childPermission() && a.elicitation()}>
         {(request) => (
           <Show
             when={request().mode === "url"}

@@ -2,9 +2,11 @@ import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount }
 import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionSummary } from "../bindings";
 import { createAttachmentIntake } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentPresets, api, isDesktop } from "./client";
+import { agentAuthenticateWith, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop } from "./client";
+import { childPermissions, type ChildPermission } from "./agent-delegation";
 import {
   addFeedItem,
+  applyDelegationStatus,
   initialAgentState,
   openPermission,
   reduceAgentEvent,
@@ -121,6 +123,9 @@ export function createAgentController(props: AgentPanelProps) {
     equals: (previous, next) => previous.length === next.length && previous.every((proposal, index) => proposal === next[index]),
   });
   const permission = createMemo(() => openPermission(feed()));
+  /** Open permission requests from delegated children, oldest first. */
+  const childPermissionList = createMemo(() => childPermissions(state().strayPermissions, state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : []))));
+  const childPermission = createMemo<ChildPermission | undefined>(() => childPermissionList()[0]);
   const elicitation = createMemo(() => state().elicitations[0]);
   const fields = createMemo(() => (elicitation()?.mode === "form" ? formFields(elicitation()!.schemaJson) : []));
   const phases = createMemo<Phase[]>(() => {
@@ -206,8 +211,19 @@ export function createAgentController(props: AgentPanelProps) {
   function receive(event: AgentEvent) {
     update((current) => reduceAgentEvent(current, event));
     if (event.kind === "tool" && following()) followTool(event);
+    if (event.kind === "delegation" && event.event.kind === "taskFinished") void refreshDelegation();
     if (event.kind === "complete") queueMicrotask(() => (flushSteer(), drainQueue()));
     if (event.kind === "status" && event.state === "disconnected") setConnecting((current) => (current ? { ...current, failed: true } : current));
+  }
+
+  /** The finished event carries the reason; the status command adds the detail text. A failure here leaves the card as the events made it. */
+  async function refreshDelegation() {
+    try {
+      const status = await agentDelegationStatus();
+      if (!disposed) update((current) => applyDelegationStatus(current, status));
+    } catch {
+      // The card keeps what the events reported.
+    }
   }
 
   onMount(() => {
@@ -656,6 +672,20 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setPendingAction("");
     }
   }
+  /** Answers a delegated child's request. Only a click or key on the dock calls this; nothing the agents send can. */
+  async function answerChildPermission(request: ChildPermission, optionId: string | null) {
+    const current = guard(agentEpoch);
+    const requestId = request.event.requestId;
+    setPendingAction(requestId);
+    try {
+      await agentChildPermission(request.child.connectionId, request.child.sessionId, requestId, optionId);
+      if (current()) update((previous) => ({ ...previous, strayPermissions: previous.strayPermissions.filter((item) => item.requestId !== requestId) }));
+    } catch (cause) {
+      if (current()) fail({ phase: "prompt", message: `Permission response for ${request.agentName} failed: ${errorText(cause)}` });
+    } finally {
+      if (current()) setPendingAction("");
+    }
+  }
   async function review(proposal: EditProposal, accept: boolean) {
     const current = guard(agentEpoch);
     setPendingAction(proposal.id);
@@ -927,6 +957,9 @@ export function createAgentController(props: AgentPanelProps) {
     resumeChat,
     stop,
     answerPermission,
+    childPermission,
+    childPermissions: childPermissionList,
+    answerChildPermission,
     review,
     reviewMany,
     answerForm,

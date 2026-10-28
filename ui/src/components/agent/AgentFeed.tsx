@@ -4,7 +4,10 @@ import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
+import { decisionView, taskNote } from "../../lib/agent-delegation";
 import { EditsBypassNote, ErrorCard, Notice, StopCard } from "./Banners";
+import { DecisionCard } from "./DecisionCard";
+import { DelegationCard } from "./DelegationCard";
 import { ChangesCard, WorkGroup } from "./WorkGroup";
 
 const sameKeys = (previous: string[], next: string[]) => previous.length === next.length && previous.every((key, index) => key === next[index]);
@@ -75,6 +78,18 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
               </Match>
             </Switch>
           );
+        })()}
+      </Match>
+      <Match when={item().kind === "decision"}>
+        {(() => {
+          const view = () => decisionView((item() as Extract<FeedItem, { kind: "decision" }>).decision, a.agentLabel());
+          return <DecisionCard by={view().by} chosen={view().chosen} why={view().why} alternatives={view().alternatives} />;
+        })()}
+      </Match>
+      <Match when={item().kind === "delegation"}>
+        {(() => {
+          const task = () => (item() as Extract<FeedItem, { kind: "delegation" }>).task;
+          return <DelegationCard agent={task().agentName ?? "Delegated agent"} status={task().status} note={taskNote(task())} waiting={a.childPermissions().some((entry) => entry.child.sessionId === task().child.sessionId)} />;
         })()}
       </Match>
       <Match when={item().kind === "stop"}>

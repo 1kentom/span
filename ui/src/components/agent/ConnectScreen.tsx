@@ -132,6 +132,9 @@ export function ConnectScreen(props: ConnectScreenProps) {
           </form>
         </Show>
       </div>
+      <p class="sb-fine sb-delegation-hint">
+        Agents can hand work to each other once <code>agents.delegation.enabled</code> is set to true in your user settings file. It is off by default and applies to chats started afterwards.
+      </p>
     </section>
   );
 }
