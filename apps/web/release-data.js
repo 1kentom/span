@@ -3,7 +3,7 @@ export const channelLabels = { nightly: 'Nightly', preview: 'Preview', stable: '
 export function officialUrl(value, asset = false) {
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' && url.hostname === 'github.com' &&
+    return url.protocol === 'https:' && url.hostname === 'github.com' && !url.username && !url.password && !url.port && !url.search && !url.hash &&
       url.pathname.startsWith('/1kentom/span/releases/') &&
       (!asset || url.pathname.startsWith('/1kentom/span/releases/download/'));
   } catch { return false; }
@@ -28,7 +28,10 @@ export function installerInfo(name) {
 }
 export function normalizeReleases(data) {
   if (!Array.isArray(data)) return [];
-  return data.filter(release => release && !release.draft && typeof release.tag_name === 'string' && officialUrl(release.html_url)).map(release => ({
+  return data.filter(release => {
+    if (!release || release.draft || typeof release.prerelease !== 'boolean' || typeof release.tag_name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(release.tag_name) || !officialUrl(release.html_url)) return false;
+    return new URL(release.html_url).pathname === `/1kentom/span/releases/tag/${release.tag_name}`;
+  }).map(release => ({
     ...release,
     name: typeof release.name === 'string' ? release.name : release.tag_name,
     body: typeof release.body === 'string' ? release.body : '',
@@ -45,11 +48,34 @@ export function normalizeReleases(data) {
       size: Number.isSafeInteger(asset.size) && asset.size >= 0 ? asset.size : null,
       digest: /^sha256:[a-f0-9]{64}$/i.test(asset.digest || '') ? asset.digest.toLowerCase() : null,
       installer: installerInfo(asset.name),
-    })),
+    })).filter(asset => !asset.installer || (asset.digest && asset.size > 0)),
   })).sort((a, b) => (Date.parse(b.published_at) || 0) - (Date.parse(a.published_at) || 0));
 }
 export function installersFor(release, platform) {
   return (release?.assets || []).filter(asset => asset.installer && (!platform || asset.installer.platform === platform));
+}
+export function downloadRelease(releases, channel) {
+  return releases.find(release => (!channel || release.channel === channel) && installersFor(release).length) || null;
+}
+/** A partial API response can add history without removing verified files or channels. */
+export function mergeReleaseFeeds(baseline, incoming) {
+  const releases = new Map(baseline.map(release => [release.tag_name, release]));
+  for (const release of incoming) {
+    const previous = releases.get(release.tag_name);
+    const assets = new Map((previous?.assets || []).map(asset => [asset.name, asset]));
+    for (const asset of release.assets) assets.set(asset.name, asset);
+    releases.set(release.tag_name, {
+      ...previous, ...release,
+      body: release.body || previous?.body || '',
+      published_at: release.published_at || previous?.published_at || null,
+      assets: [...assets.values()],
+    });
+  }
+  return [...releases.values()].sort((a, b) => (Date.parse(b.published_at) || 0) - (Date.parse(a.published_at) || 0));
+}
+export function platformDescription(release, platform) {
+  const builds = installersFor(release, platform);
+  return [...new Set(builds.map(asset => platform === 'linux' ? asset.installer.formatLabel : asset.installer.architecture))].join(' and ');
 }
 export function formatSize(size) {
   if (!Number.isSafeInteger(size)) return 'Size not published';
@@ -78,8 +104,8 @@ export async function loadReleaseData(onUpdate) {
     onUpdate(current, 'manifest');
   } catch { onUpdate([], 'unavailable'); }
   try {
-    const remote = await readFeed('https://api.github.com/repos/1kentom/span/releases?per_page=3', 6000);
-    if (remote.length && (!current.length || (Date.parse(remote[0].published_at) || 0) >= (Date.parse(current[0].published_at) || 0))) onUpdate(remote, 'github');
+    const remote = await readFeed('https://api.github.com/repos/1kentom/span/releases?per_page=10', 6000);
+    if (remote.length) onUpdate(mergeReleaseFeeds(current, remote), 'github');
   } catch {
     // The local release manifest and permanent GitHub links remain available.
   }

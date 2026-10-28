@@ -1022,6 +1022,42 @@ fn unrelated_workspace_writes_pass_beside_user_only_keys_that_stay_ignored() {
 }
 
 #[test]
+fn settings_files_with_keys_from_a_newer_build_load_and_keep_them_on_typed_saves() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    fs::write(
+        &user,
+        "{ \"languageServers\": { \"autoInstall\": true, \"trustedWorkspaces\": [\"/a\"], \"newerKnob\": 7 } }",
+    )
+    .unwrap();
+    let loaded = workspace.get_settings().unwrap();
+    assert!(loaded.language_servers.auto_install);
+    let file = directory.path().join(".span/settings.jsonc");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(
+        &file,
+        "{ \"languageServers\": { \"enabled\": { \"css\": false }, \"newerKnob\": { \"x\": 1 } }, \"fontSize\": 15 }",
+    )
+    .unwrap();
+    let mut typed = workspace.get_settings().unwrap();
+    typed.language_servers.enabled.insert("json".into(), false);
+    workspace.update_settings(typed).unwrap();
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        written["languageServers"]["newerKnob"],
+        serde_json::json!({ "x": 1 })
+    );
+    assert_eq!(written["languageServers"]["enabled"]["json"], false);
+    // The user's file was not rewritten by a workspace save.
+    assert!(fs::read_to_string(&user).unwrap().contains("newerKnob"));
+}
+
+#[test]
 fn agent_run_tools_are_off_by_default_and_honoured_only_from_user_settings() {
     let directory = tempdir().unwrap();
     let home = tempdir().unwrap();

@@ -25,13 +25,14 @@ describe("native menu action ids", () => {
     expect(sent.filter(id => !owned.has(id))).toEqual([]);
   });
 
-  it("keeps the language server format shortcut in webview keyboard and palette dispatch", () => {
+  it("sends the language server format shortcut now that the native menu has an item for it", () => {
     expect(actionDefinitions.some(action => action.id === "formatWithLanguageServer")).toBe(true);
-    expect(Object.keys(nativeMenuBindings(resolveKeybindings({}, "mac")))).not.toContain("formatWithLanguageServer");
+    expect(nativeMenuIds()).toContain("formatWithLanguageServer");
+    expect(Object.keys(nativeMenuBindings(resolveKeybindings({}, "mac")))).toContain("formatWithLanguageServer");
   });
 
   it("still sends every other action that has a native menu item", () => {
     const sent = new Set(Object.keys(nativeMenuBindings(resolveKeybindings({}, "mac"))));
-    expect(nativeMenuIds().filter(id => id !== "formatWithLanguageServer" && actionDefinitions.some(action => action.id === id) && !sent.has(id))).toEqual([]);
+    expect(nativeMenuIds().filter(id => actionDefinitions.some(action => action.id === id) && !sent.has(id))).toEqual([]);
   });
 });

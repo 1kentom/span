@@ -7,6 +7,11 @@ import type { TerminalEvent_Deserialize as TerminalEvent, TerminalInfo } from '.
 import type { LspPort } from './lsp-client';
 import type { BootTheme, StartupTimings } from './startup';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
+import type { NavigationPort } from './lsp-navigation';
+import { createPreviewNavigationPort, previewNavigationFiles } from './navigation-preview';
+import { previewHover, previewHoverFiles } from './hover-preview';
+import { createHubPreview } from './hub-preview';
+import type { HubPort } from './hub-port';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
 import type { AgentHealth_Serialize as AgentHealth, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
@@ -22,6 +27,8 @@ function nativeRequired(action: string): never {
 // This fixture exists only in browser preview. Native commands always use Rust workspace state.
 const fixture: Record<string, string> = {
   ...previewAssetFiles,
+  ...previewNavigationFiles,
+  ...previewHoverFiles,
   '.env.local': 'SPAN_ENV=preview\nPORT=1420\nSPAN_SAMPLE_ONLY=true\n',
   'community/platform/node-rpc-client/src/rpc-node.ts': `import { JsonRpc } from './rpc';
 import { SocketTransport } from './socket-transport';
@@ -615,20 +622,35 @@ export const api = {
 
 const lspUnavailable = (): never => { throw { kind: 'unsupported', message: 'Language servers need the span desktop app.' }; };
 const noListener = async (): Promise<() => void> => () => undefined;
+const hubPreview = isDesktop ? undefined : createHubPreview(previewWorkspace.root);
+
+/** Hub commands and events. The generated ones in the native app, the labelled fixture (see hub-preview.ts) in browser preview. */
+export const hubPort: HubPort = {
+  cancelInstall: server => isDesktop ? commands.lspCancelInstall(server) : hubPreview!.hub.cancelInstall(server),
+  trustWorkspace: trusted => isDesktop ? commands.lspTrustWorkspace(trusted) : hubPreview!.hub.trustWorkspace(trusted),
+  onWorkProgress: listener => isDesktop
+    ? events.languageServerWorkProgress.listen(event => listener(event.payload))
+    : hubPreview!.hub.onWorkProgress(listener),
+  pickPath: async (kind, title) => {
+    if (!isDesktop) return hubPreview!.hub.pickPath(kind, title);
+    const selected = await open({ directory: kind === 'folder', multiple: false, title });
+    return typeof selected === 'string' ? selected : null;
+  },
+};
 
 /** Language server commands and events. Browser preview has none, so requests are unsupported and listeners are inert. */
 export const lspPort: LspPort = {
   completion: (path, position, trigger, requestId) => isDesktop ? commands.lspCompletion(path, position, trigger, requestId) : lspUnavailable(),
-  hover: (path, position, requestId) => isDesktop ? commands.lspHover(path, position, requestId) : lspUnavailable(),
-  definition: (path, position, requestId) => isDesktop ? commands.lspDefinition(path, position, requestId) : lspUnavailable(),
+  hover: (path, position, requestId) => isDesktop ? commands.lspHover(path, position, requestId) : Promise.resolve(previewHover(path, position)),
+  definition: (path, position, requestId) => isDesktop ? commands.lspDefinition(path, position, requestId) : previewNavigation.definition(path, position, requestId).then(reply => ({ ...reply, revision: 0, epoch: 0 })),
   format: (path, range, requestId) => isDesktop ? commands.lspFormat(path, range, requestId) : lspUnavailable(),
   cancel: requestId => isDesktop ? commands.lspCancel(requestId) : Promise.resolve(null),
-  install: server => isDesktop ? commands.lspInstall(server) : lspUnavailable(),
-  restart: server => isDesktop ? commands.lspRestart(server) : lspUnavailable(),
-  status: () => isDesktop ? commands.lspStatus() : Promise.resolve([]),
+  install: server => isDesktop ? commands.lspInstall(server) : hubPreview!.active() ? hubPreview!.install(server) : lspUnavailable(),
+  restart: server => isDesktop ? commands.lspRestart(server) : hubPreview!.active() ? hubPreview!.restart(server) : lspUnavailable(),
+  status: () => isDesktop ? commands.lspStatus() : Promise.resolve(hubPreview!.rows()),
   onDiagnostics: listener => isDesktop ? events.diagnosticsPublished.listen(event => listener(event.payload)) : noListener(),
-  onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : noListener(),
-  onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : noListener(),
+  onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : hubPreview!.onState(listener),
+  onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : hubPreview!.onInstallProgress(listener),
   onError: listener => isDesktop ? events.languageServerError.listen(event => listener(event.payload)) : noListener(),
 };
 
@@ -660,6 +682,31 @@ export async function agentCancelTask(taskId: string): Promise<void> {
   if (!isDesktop) nativeRequired('Cancelling an agent task');
   await commands.agentCancelTask(taskId);
 }
+
+/** Preview only: the browser answers navigation requests from a labelled text-scanning fixture, see navigation-preview.ts. */
+const previewNavigation = createPreviewNavigationPort(() => Object.fromEntries(Object.keys(fixture).map(path => { const buffer = buffers.get(path); return [path, { text: buffer?.text ?? fixture[path], revision: buffer?.revision ?? 0 }]; })));
+
+/** Code navigation commands. Browser preview answers from the labelled fixture. */
+export const navigationPort: NavigationPort = isDesktop ? {
+  definition: (path, position, id) => commands.lspDefinition(path, position, id),
+  typeDefinition: (path, position, id) => commands.lspTypeDefinition(path, position, id),
+  implementation: (path, position, id) => commands.lspImplementation(path, position, id),
+  declaration: (path, position, id) => commands.lspDeclaration(path, position, id),
+  references: (path, position, include, id) => commands.lspReferences(path, position, include, id),
+  documentSymbols: (path, id) => commands.lspDocumentSymbols(path, id),
+  workspaceSymbols: (query, hint, id) => commands.lspWorkspaceSymbols(query, hint, id),
+  callPrepare: (path, position, id) => commands.lspCallHierarchyPrepare(path, position, id),
+  callIncoming: (item, id) => commands.lspCallHierarchyIncoming(item, id),
+  callOutgoing: (item, id) => commands.lspCallHierarchyOutgoing(item, id),
+  typePrepare: (path, position, id) => commands.lspTypeHierarchyPrepare(path, position, id),
+  typeSupertypes: (item, id) => commands.lspTypeHierarchySupertypes(item, id),
+  typeSubtypes: (item, id) => commands.lspTypeHierarchySubtypes(item, id),
+  highlights: (path, position, id) => commands.lspDocumentHighlights(path, position, id),
+  prepareRename: (path, position, id) => commands.lspPrepareRename(path, position, id),
+  rename: (path, position, name, id) => commands.lspRename(path, position, name, id),
+  readSource: (location, context) => commands.lspReadSource(location, context),
+  cancel: id => commands.lspCancel(id),
+} : previewNavigation;
 
 /** Check-only agent update status: Span-installed registry agents against the registry's current version, and local programs through the version probe. Unknown means unknown; nothing is installed or run to update. */
 export async function agentUpdateStatus(): Promise<import('../bindings').AgentUpdate_Serialize[]> {

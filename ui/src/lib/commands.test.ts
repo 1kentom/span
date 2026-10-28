@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { actionContext, canDispatchAction, dispatchKeyboard, formatShortcut, nativeMenuBindings, normalizeShortcut, resolveKeybindings, shortcutFromEvent, validateKeybindings } from "./commands";
+import { actionContext, actionDefinitions, canDispatchAction, dispatchKeyboard, formatShortcut, nativeMenuBindings, normalizeShortcut, resolveKeybindings, shortcutFromEvent, validateKeybindings } from "./commands";
 function key(key: string, options: KeyboardEventInit = {}, target?: Element) {
   const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...options });
   if (target) Object.defineProperty(event, "target", { value: target });
@@ -147,5 +147,79 @@ describe("central keyboard commands", () => {
     expect(shortcutFromEvent(key("P", { ctrlKey: true, shiftKey: true }))).toBe("Ctrl+Shift+P");
     expect(shortcutFromEvent(key("Ï", { altKey: true, shiftKey: true, code: "KeyF" }))).toBe("Alt+Shift+F");
     expect(shortcutFromEvent(key("|", { ctrlKey: true, shiftKey: true, code: "Backslash" }))).toBe("Ctrl+Shift+\\");
+  });
+});
+
+describe("code navigation shortcuts", () => {
+  const expected: Record<string, [string[], string[]]> = {
+    goToDefinition: [["F12"], ["F12"]],
+    goToTypeDefinition: [["Meta+Shift+F12"], ["Ctrl+Shift+F12"]],
+    goToImplementation: [["Meta+F12"], ["Ctrl+F12"]],
+    peekDefinition: [["Alt+F12"], ["Alt+F12"]],
+    peekTypeDefinition: [[], []],
+    peekImplementation: [[], []],
+    findReferences: [["Shift+F12"], ["Shift+F12"]],
+    peekReferences: [["Alt+Shift+F12"], ["Alt+Shift+F12"]],
+    goToSymbolInFile: [["Meta+Shift+O"], ["Ctrl+Shift+O"]],
+    goToSymbolInWorkspace: [["Meta+T"], ["Ctrl+T"]],
+    quickInfo: [["Meta+Shift+I"], ["Ctrl+Shift+I"]],
+    showCallHierarchy: [["Alt+Shift+H"], ["Alt+Shift+H"]],
+    showTypeHierarchy: [["Meta+Alt+H"], ["Ctrl+Alt+H"]],
+    renameSymbol: [["F2"], ["F2"]],
+    goBack: [["Meta+Alt+ArrowLeft"], ["Ctrl+Alt+ArrowLeft"]],
+    goForward: [["Meta+Alt+ArrowRight"], ["Ctrl+Alt+ArrowRight"]],
+  };
+
+  it("resolves every default per platform with no collisions", () => {
+    const mac = resolveKeybindings({}, "mac"), linux = resolveKeybindings({}, "linux");
+    for (const [id, [onMac, onLinux]] of Object.entries(expected)) {
+      expect(mac[id as keyof typeof mac], id).toEqual(onMac);
+      expect(linux[id as keyof typeof linux], id).toEqual(onLinux);
+    }
+    for (const platform of ["mac", "windows", "linux"] as const) expect(validateKeybindings({}, platform)).toEqual([]);
+    const seen = new Map<string, string>();
+    for (const [id, keys] of Object.entries(mac)) for (const key of keys) { expect(seen.get(key), `${key} used by ${seen.get(key)} and ${id}`).toBeUndefined(); seen.set(key, id); }
+  });
+
+  it("lists the actions under Navigation and allows bare function keys only for F1 to F24", () => {
+    for (const id of Object.keys(expected)) expect(actionDefinitions.find(action => action.id === id)?.category).toBe("Navigation");
+    expect(normalizeShortcut("F12")).toBe("F12");
+    expect(normalizeShortcut("shift+f12")).toBe("Shift+F12");
+    expect(normalizeShortcut("F25")).toBeUndefined();
+    expect(normalizeShortcut("Shift+P")).toBeUndefined();
+    expect(normalizeShortcut("Enter")).toBeUndefined();
+  });
+
+  it("dispatches F12 and Shift+F12 to the matching handlers, but not inside plain text fields", () => {
+    const def = vi.fn(), refs = vi.fn();
+    const options = { bindings: resolveKeybindings({}, "linux"), handlers: { goToDefinition: def, findReferences: refs }, platform: "linux" as const };
+    expect(dispatchKeyboard(key("F12"), options)).toBe(true);
+    expect(dispatchKeyboard(key("F12", { shiftKey: true }), options)).toBe(true);
+    expect(def).toHaveBeenCalledOnce(); expect(refs).toHaveBeenCalledOnce();
+    const input = document.createElement("input"); document.body.append(input);
+    expect(dispatchKeyboard(key("F12", {}, input), options)).toBe(false);
+    expect(def).toHaveBeenCalledOnce();
+    input.remove();
+  });
+
+  it("lets an existing explicit binding keep a key that a new default would have claimed", () => {
+    const overrides = { save: ["F2"], closeTab: ["Mod+T"] };
+    expect(validateKeybindings(overrides, "linux")).toEqual([]);
+    const resolved = resolveKeybindings(overrides, "linux");
+    expect(resolved.renameSymbol).toEqual([]);
+    expect(resolved.goToSymbolInWorkspace).toEqual([]);
+    expect(resolved.save).toEqual(["F2"]);
+    expect(validateKeybindings({ renameSymbol: ["F3"], goToDefinition: ["F2"] }, "linux")).toEqual([]);
+    expect(validateKeybindings({ save: ["F2"], renameSymbol: ["F2"] }, "linux")[0].message).toContain("already assigned");
+  });
+
+  it("keeps Alt based defaults out of the native menu and sends the rest", () => {
+    const bindings = resolveKeybindings({}, "mac");
+    const native = nativeMenuBindings(bindings);
+    expect(native.goToDefinition).toEqual(["F12"]);
+    expect(native.goToSymbolInWorkspace).toEqual(["Meta+T"]);
+    expect(native.peekDefinition).toEqual([]);
+    expect(native.showCallHierarchy).toEqual([]);
+    expect(native.peekTypeDefinition).toEqual([]);
   });
 });

@@ -1,0 +1,49 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Symbol kind icons for code navigation, copied unmodified.",
+  "rights": "Copied from the user-provided local icon library at the user direction. No separate redistribution license has been inferred.",
+  "assets": [
+    {
+      "asset": "symbol-class.svg",
+      "source": "ai/iconsax-ai-cube-77d9ad44f137-.svg",
+      "sourceSha256": "dec85afb8787a78fbe556b2f52c443a5bfab9522e12d4040ea43689f382bfd89",
+      "assetSha256": "dec85afb8787a78fbe556b2f52c443a5bfab9522e12d4040ea43689f382bfd89"
+    },
+    {
+      "asset": "symbol-function.svg",
+      "source": "arrow2/iconsax-code-brackets-67879cdfa0f9-.svg",
+      "sourceSha256": "6624bb19fb3da0b6efed32df562c3bef434fff3e4ee8b0a29ec355b8ab554bc0",
+      "assetSha256": "6624bb19fb3da0b6efed32df562c3bef434fff3e4ee8b0a29ec355b8ab554bc0"
+    },
+    {
+      "asset": "symbol-variable.svg",
+      "source": "alphabet-numbers/iconsax-hashtag-9997f21d317c-.svg",
+      "sourceSha256": "23246dfeabd4be1e2416884df949d2aa3339d7ac01d9e9c95ce2e3d51a1228d8",
+      "assetSha256": "23246dfeabd4be1e2416884df949d2aa3339d7ac01d9e9c95ce2e3d51a1228d8"
+    },
+    {
+      "asset": "symbol-property.svg",
+      "source": "real-state/iconsax-key-f27983721dbd-.svg",
+      "sourceSha256": "96ffb36d64f664b617ce777632c4be8f4f81b710d91d467067602a2cdb3f8336",
+      "assetSha256": "96ffb36d64f664b617ce777632c4be8f4f81b710d91d467067602a2cdb3f8336"
+    },
+    {
+      "asset": "symbol-interface.svg",
+      "source": "blockchain/iconsax-connect-links-cc8a3b4922c9-.svg",
+      "sourceSha256": "655f3c553821d30e8cc3ece1e57dd4b9b94c5ecbe60bdd8967a7ce18c2b6e81f",
+      "assetSha256": "655f3c553821d30e8cc3ece1e57dd4b9b94c5ecbe60bdd8967a7ce18c2b6e81f"
+    },
+    {
+      "asset": "symbol-enum.svg",
+      "source": "ai/iconsax-ai-library-43dd8ebfdf58-.svg",
+      "sourceSha256": "e345fb999be2f3065c0108127e5326471cb854568e0b95e6011af9ce7ed05177",
+      "assetSha256": "e345fb999be2f3065c0108127e5326471cb854568e0b95e6011af9ce7ed05177"
+    },
+    {
+      "asset": "symbol-constant.svg",
+      "source": "shop/iconsax-tag-2e406dc64aac-.svg",
+      "sourceSha256": "7f950abc8718fa83ae08260c969048733d0e1fbe1c7d1d60f478e346bdc5c9aa",
+      "assetSha256": "7f950abc8718fa83ae08260c969048733d0e1fbe1c7d1d60f478e346bdc5c9aa"
+    }
+  ]
+}

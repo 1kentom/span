@@ -747,3 +747,525 @@ async fn reopened_documents_continue_their_version_numbers() {
     assert!(v2 > v1, "{v1} then {v2}");
     f.manager.shutdown_all().await;
 }
+
+// ---------------------------------------------------------------------------
+// Navigation requests
+// ---------------------------------------------------------------------------
+
+fn at(f: &Fixture, name: &str) -> TextDocumentPositionParams {
+    f.hover_params(name).text_document_position_params
+}
+
+fn goto(f: &Fixture, name: &str) -> GotoDefinitionParams {
+    GotoDefinitionParams {
+        text_document_position_params: at(f, name),
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    }
+}
+
+async fn nav_ready(mode: &'static str) -> Fixture {
+    let f = fixture(mode);
+    f.ready().await;
+    f.manager
+        .open_document(ID, &f.root, &f.file("a.json"), "json", "{}".into())
+        .await
+        .unwrap();
+    f
+}
+
+#[tokio::test]
+async fn navigation_requests_return_typed_results() {
+    let f = nav_ready("nav").await;
+    let (m, r) = (&f.manager, &f.root);
+
+    let refs = m
+        .references(
+            ID,
+            r,
+            ReferenceParams {
+                text_document_position: at(&f, "a.json"),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(refs.len(), 2);
+    let sent = f.methods("textDocument/references");
+    assert_eq!(sent[0]["params"]["context"]["includeDeclaration"], true);
+
+    let imp = m
+        .implementation(ID, r, goto(&f, "a.json"), None)
+        .await
+        .unwrap();
+    assert!(matches!(imp, Some(GotoDefinitionResponse::Link(l)) if l.len() == 1));
+    let td = m
+        .type_definition(ID, r, goto(&f, "a.json"), None)
+        .await
+        .unwrap();
+    assert!(matches!(td, Some(GotoDefinitionResponse::Scalar(_))));
+    let decl = m
+        .declaration(ID, r, goto(&f, "a.json"), None)
+        .await
+        .unwrap();
+    assert!(matches!(decl, Some(GotoDefinitionResponse::Array(l)) if l.len() == 1));
+
+    let uri = path_to_uri(&f.file("a.json")).unwrap();
+    let symbols = m
+        .document_symbols(
+            ID,
+            r,
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    match symbols {
+        Some(DocumentSymbolResponse::Nested(v)) => {
+            assert_eq!(v[0].name, "Outer");
+            assert_eq!(v[0].children.as_ref().unwrap()[0].name, "inner");
+        }
+        other => panic!("expected hierarchical symbols, got {other:?}"),
+    }
+
+    let ws = m
+        .workspace_symbols(
+            ID,
+            r,
+            WorkspaceSymbolParams {
+                query: "foo".into(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    match ws {
+        Some(WorkspaceSymbolResponse::Nested(v)) => {
+            assert_eq!(v[0].name, "fooSym");
+            assert!(matches!(v[1].location, OneOf::Right(_)), "lazy location");
+        }
+        other => panic!("expected nested workspace symbols, got {other:?}"),
+    }
+
+    let prepared = m
+        .prepare_call_hierarchy(
+            ID,
+            r,
+            CallHierarchyPrepareParams {
+                text_document_position_params: at(&f, "a.json"),
+                work_done_progress_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let item = prepared[0].clone();
+    assert_eq!(item.data.as_ref().unwrap()["opaque"][2]["k"], "v");
+    let incoming = m
+        .incoming_calls(
+            ID,
+            r,
+            CallHierarchyIncomingCallsParams {
+                item: item.clone(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(incoming[0].from.name, "caller");
+    let outgoing = m
+        .outgoing_calls(
+            ID,
+            r,
+            CallHierarchyOutgoingCallsParams {
+                item,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(outgoing[0].to.name, "callee");
+    let sent = f.methods("callHierarchy/incomingCalls");
+    assert_eq!(
+        sent[0]["params"]["item"]["data"]["opaque"][1], 2,
+        "item data round-trips to the server"
+    );
+
+    assert!(m.supports_type_hierarchy(ID, r).await);
+    let types = m
+        .prepare_type_hierarchy(
+            ID,
+            r,
+            TypeHierarchyPrepareParams {
+                text_document_position_params: at(&f, "a.json"),
+                work_done_progress_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let sup = m
+        .type_supertypes(
+            ID,
+            r,
+            TypeHierarchySupertypesParams {
+                item: types[0].clone(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sup[0].name, "supertypes");
+    let sub = m
+        .type_subtypes(
+            ID,
+            r,
+            TypeHierarchySubtypesParams {
+                item: types[0].clone(),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sub[0].name, "subtypes");
+
+    let hl = m
+        .document_highlights(
+            ID,
+            r,
+            DocumentHighlightParams {
+                text_document_position_params: at(&f, "a.json"),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hl.len(), 2);
+    assert_eq!(hl[0].kind, Some(DocumentHighlightKind::READ));
+
+    let sig = m
+        .signature_help(
+            ID,
+            r,
+            SignatureHelpParams {
+                context: None,
+                text_document_position_params: at(&f, "a.json"),
+                work_done_progress_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sig.active_parameter, Some(1));
+
+    let prep = m
+        .prepare_rename(ID, r, at(&f, "a.json"), None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        prep,
+        Some(PrepareRenameResponse::RangeWithPlaceholder { .. })
+    ));
+    let edit = m
+        .rename(
+            ID,
+            r,
+            RenameParams {
+                text_document_position: at(&f, "a.json"),
+                new_name: "renamed".into(),
+                work_done_progress_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let (changed, edits) = edit.changes.unwrap().into_iter().next().unwrap();
+    assert_eq!(changed, uri);
+    assert_eq!(edits[0].new_text, "renamed");
+
+    let src = m
+        .class_file_contents(ID, r, "jdt://contents/Foo.class", None)
+        .await
+        .unwrap();
+    assert_eq!(src.as_deref(), Some("public class Foo {}\n"));
+    f.manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn flat_symbol_information_is_accepted() {
+    let f = nav_ready("nav-flat").await;
+    let uri = path_to_uri(&f.file("a.json")).unwrap();
+    let symbols = f
+        .manager
+        .document_symbols(
+            ID,
+            &f.root,
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    match symbols {
+        Some(DocumentSymbolResponse::Flat(v)) => assert_eq!(v[0].name, "Flat"),
+        other => panic!("expected flat symbols, got {other:?}"),
+    }
+    f.manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn navigation_requests_are_unsupported_unless_advertised() {
+    let f = nav_ready("normal").await;
+    let (m, r) = (&f.manager, &f.root);
+    let uri = path_to_uri(&f.file("a.json")).unwrap();
+    let unsupported = |e: ManagerError| matches!(e, ManagerError::Unsupported(_));
+    assert!(!m.supports_type_hierarchy(ID, r).await);
+    assert!(unsupported(
+        m.implementation(ID, r, goto(&f, "a.json"), None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        m.type_definition(ID, r, goto(&f, "a.json"), None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        m.declaration(ID, r, goto(&f, "a.json"), None)
+            .await
+            .unwrap_err()
+    ));
+    assert!(unsupported(
+        m.document_symbols(
+            ID,
+            r,
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            None
+        )
+        .await
+        .unwrap_err()
+    ));
+    assert!(unsupported(
+        m.prepare_type_hierarchy(
+            ID,
+            r,
+            TypeHierarchyPrepareParams {
+                text_document_position_params: at(&f, "a.json"),
+                work_done_progress_params: Default::default(),
+            },
+            None
+        )
+        .await
+        .unwrap_err()
+    ));
+    assert!(unsupported(
+        m.prepare_rename(ID, r, at(&f, "a.json"), None)
+            .await
+            .unwrap_err()
+    ));
+    for method in [
+        "textDocument/implementation",
+        "textDocument/typeDefinition",
+        "textDocument/declaration",
+        "textDocument/documentSymbol",
+        "textDocument/prepareTypeHierarchy",
+        "textDocument/prepareRename",
+    ] {
+        assert!(
+            f.methods(method).is_empty(),
+            "{method} must not be sent when unadvertised"
+        );
+    }
+    f.manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn navigation_retries_content_modified() {
+    let f = nav_ready("nav-modified").await;
+    let refs = f
+        .manager
+        .references(
+            ID,
+            &f.root,
+            ReferenceParams {
+                text_document_position: at(&f, "a.json"),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: ReferenceContext {
+                    include_declaration: false,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(refs.len(), 2);
+    assert_eq!(f.methods("textDocument/references").len(), 2, "one retry");
+    f.manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn navigation_requests_cancel() {
+    let f = nav_ready("nav-hang").await;
+    let token = CancellationToken::new();
+    let t = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        t.cancel();
+    });
+    let err = f
+        .manager
+        .references(
+            ID,
+            &f.root,
+            ReferenceParams {
+                text_document_position: at(&f, "a.json"),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+            Some(token),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ManagerError::Cancelled), "{err:?}");
+    f.wait_log("$/cancelRequest", 1).await;
+    f.manager.shutdown_all().await;
+}
+
+#[test]
+fn declared_client_capabilities_cover_navigation() {
+    let caps = serde_json::to_value(span_lsp::client_capabilities()).unwrap();
+    let td = &caps["textDocument"];
+    assert_eq!(
+        td["documentSymbol"]["hierarchicalDocumentSymbolSupport"],
+        true
+    );
+    for key in [
+        "definition",
+        "implementation",
+        "typeDefinition",
+        "declaration",
+    ] {
+        assert_eq!(td[key]["linkSupport"], true, "{key}");
+    }
+    assert_eq!(td["rename"]["prepareSupport"], true);
+    assert!(td["callHierarchy"].is_object());
+    assert!(td["typeHierarchy"].is_object());
+    assert!(td["references"].is_object());
+    assert!(td["documentHighlight"].is_object());
+    assert_eq!(
+        td["documentSymbol"]["symbolKind"]["valueSet"]
+            .as_array()
+            .unwrap()
+            .len(),
+        26
+    );
+    assert_eq!(
+        caps["workspace"]["symbol"]["symbolKind"]["valueSet"]
+            .as_array()
+            .unwrap()
+            .len(),
+        26
+    );
+}
+
+#[tokio::test]
+async fn work_done_progress_is_forwarded_and_the_create_request_answered() {
+    use span_lsp::servers::manager::WorkProgressKind;
+    let f = fixture("progress");
+    let mut events = f.manager.subscribe();
+    f.ready().await;
+    let mut kinds = Vec::new();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while kinds.last() != Some(&WorkProgressKind::End) {
+        let event = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .expect("progress arrives")
+            .unwrap();
+        if let ManagerEvent::Progress {
+            token,
+            kind,
+            title,
+            percentage,
+            ..
+        } = event
+        {
+            assert_eq!(token, "tok-1");
+            if kind == WorkProgressKind::Begin {
+                assert_eq!(title.as_deref(), Some("Indexing project"));
+                assert_eq!(percentage, Some(0));
+            }
+            kinds.push(kind);
+        }
+    }
+    assert_eq!(kinds[0], WorkProgressKind::Begin);
+    // The server's burst of 20 reports is thinned out before it reaches subscribers.
+    let reports = kinds
+        .iter()
+        .filter(|k| **k == WorkProgressKind::Report)
+        .count();
+    assert!(reports < 20, "{reports} reports got through");
+    f.wait_log("response", 2).await;
+    let answered = f.methods("response").iter().any(|e| e["id"] == "wd-1");
+    assert!(answered, "window/workDoneProgress/create must be answered");
+    f.manager.shutdown_all().await;
+}
+
+#[test]
+fn work_progress_params_parse() {
+    use span_lsp::servers::manager::{parse_work_progress, WorkProgressKind};
+    let begin = serde_json::json!({"token": 7, "value": {"kind": "begin", "title": "T", "percentage": 250}});
+    let p = parse_work_progress(&begin).unwrap();
+    assert_eq!(
+        (p.token.as_str(), p.kind, p.title.as_deref(), p.percentage),
+        ("7", WorkProgressKind::Begin, Some("T"), Some(100))
+    );
+    assert!(
+        parse_work_progress(&serde_json::json!({"token": "x", "value": {"items": []}})).is_none()
+    );
+    assert!(
+        parse_work_progress(&serde_json::json!({"token": [1], "value": {"kind": "end"}})).is_none()
+    );
+}

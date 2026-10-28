@@ -53,6 +53,22 @@ describe("keyboard shortcut preferences", () => {
     expect(root.textContent).toContain("Custom When expressions are not supported");
     expect(root.querySelectorAll("kbd").length).toBeGreaterThan(10);
   });
+  it("lists the code navigation commands with their default keys and an empty row for unbound peeks", () => {
+    const { root } = mount({});
+    const table = root.querySelector('table[aria-label="Keyboard shortcut commands"]')!;
+    const keys = (id: string) => [...table.querySelectorAll(`[data-command="${id}"] kbd`)].map(key => key.textContent);
+    expect(keys("goToDefinition")).toEqual(["F12"]);
+    expect(keys("findReferences")).toEqual(["Shift", "F12"]);
+    expect(keys("goToSymbolInWorkspace")).toEqual(["Ctrl", "T"]);
+    expect(keys("renameSymbol")).toEqual(["F2"]);
+    expect(keys("peekTypeDefinition")).toEqual([]);
+    for (const id of ["goToDefinition", "peekImplementation", "showCallHierarchy", "goBack"]) {
+      const row = table.querySelector(`[data-command="${id}"]`)!;
+      expect(row.textContent, id).toContain(id);
+    }
+    expect(table.querySelector('[data-command="goToSymbolInWorkspace"] .kb-context')?.textContent).toBe("Workbench");
+    expect(table.querySelector('[data-command="renameSymbol"] .kb-context')?.textContent).toBe("Editor or non-text focus");
+  });
   it("reports provided scope sources and only resets overrides in the selected scope", () => {
     const { root, button } = mount({ save: ["Ctrl+Alt+S"], toggleProject: ["Ctrl+Alt+P"] }, undefined, { scope: "workspace", bindingSources: { save: "User", toggleProject: "Workspace" } });
     expect(root.querySelector('[data-command="save"] .kb-source>span')?.textContent).toBe("User");

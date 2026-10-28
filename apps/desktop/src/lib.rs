@@ -182,6 +182,11 @@ async fn open_workspace(
             Some(PathBuf::from(&result.root));
         // Closes the previous workspace's documents and servers; never waits for them.
         lsp.workspace_changed(std::path::PathBuf::from(&result.root), &settings);
+        // Trust kept in the settings by preview builds was imported into the trust store by
+        // `workspace_changed`; take the key out so older builds can read the file again.
+        if !settings.language_servers.trusted_workspaces.is_empty() && lsp.has_trust_store() {
+            drop_legacy_trust_setting(&worker_state);
+        }
         if let Err(error) = span_core::RecentProjectStore::for_current_user()
             .and_then(|store| store.record_open(std::path::Path::new(&result.root)))
         {
@@ -191,6 +196,27 @@ async fn open_workspace(
     })
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))?
+}
+
+/// Removes the deprecated `languageServers.trustedWorkspaces` key from the user settings.
+/// Best effort: a settings file that cannot be rewritten just keeps the key, which is
+/// tolerated on read and imported only once.
+fn drop_legacy_trust_setting(state: &DesktopState) {
+    let Ok(mut context) = state.user_settings.lock() else {
+        return;
+    };
+    if context.is_none() {
+        *context = CoreWorkspace::for_user_settings().ok();
+    }
+    if let Some(context) = context.as_mut() {
+        if let Err(error) = context.update_setting(
+            SettingsScope::User,
+            "languageServers.trustedWorkspaces",
+            None,
+        ) {
+            eprintln!("Could not clean up the old trust setting: {error}");
+        }
+    }
 }
 
 #[tauri::command]
@@ -857,8 +883,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             startup::StartupRequestsChanged,
             language_servers::LanguageServerStateChanged,
             language_servers::LanguageServerInstallProgress,
+            language_servers::LanguageServerWorkProgress,
             language_servers::DiagnosticsPublished,
             language_servers::LanguageServerError,
+            language_servers::WorkspaceTrustChanged,
             startup::StartupRequestError,
             agents::AgentSessionStatesChanged,
             agents::AgentHealthChanged
@@ -973,7 +1001,28 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::lsp_hover,
             language_servers::lsp_definition,
             language_servers::lsp_format,
+            language_servers::lsp_references,
+            language_servers::lsp_implementation,
+            language_servers::lsp_type_definition,
+            language_servers::lsp_declaration,
+            language_servers::lsp_document_symbols,
+            language_servers::lsp_workspace_symbols,
+            language_servers::lsp_call_hierarchy_prepare,
+            language_servers::lsp_call_hierarchy_incoming,
+            language_servers::lsp_call_hierarchy_outgoing,
+            language_servers::lsp_type_hierarchy_prepare,
+            language_servers::lsp_type_hierarchy_supertypes,
+            language_servers::lsp_type_hierarchy_subtypes,
+            language_servers::lsp_document_highlights,
+            language_servers::lsp_signature_help,
+            language_servers::lsp_prepare_rename,
+            language_servers::lsp_rename,
+            language_servers::lsp_read_source,
             language_servers::lsp_cancel,
+            language_servers::lsp_cancel_install,
+            language_servers::lsp_trust_workspace,
+            language_servers::workspace_trust_state,
+            language_servers::workspace_trust_decide,
             language_servers::lsp_install,
             language_servers::lsp_restart,
             language_servers::lsp_status,
@@ -1043,10 +1092,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             builder.mount_events(app);
             events::mark_mounted(app);
             let cache = app.path().app_cache_dir()?.join("language-servers");
-            app.manage(language_servers::production(
+            let lsp = language_servers::production(
                 cache,
                 language_servers::tauri_sink(app.handle().clone()),
-            ));
+            );
+            if let Some(store) = language_servers::TrustStore::for_current_user() {
+                lsp.use_trust_store(Arc::new(store));
+            }
+            app.manage(lsp);
             agents::watch_session_states(app.handle());
             menu::install(app.handle())?;
             // The window starts hidden; the frontend shows it once the session has rendered (its
@@ -1165,6 +1218,33 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn library_uris_never_reach_the_workspace_filesystem() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = super::DesktopState::default();
+        let workspace = span_core::CoreWorkspace::open(directory.path()).unwrap();
+        *state.workspace.lock().unwrap() =
+            Some(std::sync::Arc::new(std::sync::Mutex::new(workspace)));
+        let uri = "jdt://contents/javafx-fxml-21.0.2-mac-aarch64.jar/javafx.fxml/FXMLLoader.java?=todo/%5C/Users%5C/user%5C/.m2%5C/repository/x.jar=/maven.pomderived=/true";
+        // The commands open_buffer, peek_buffer and save_buffer reach the workspace through these calls.
+        let opened = super::with_workspace(state.clone(), move |w| w.open_buffer(uri)).await;
+        let peeked = super::with_workspace(state.clone(), move |w| w.peek_buffer(uri)).await;
+        let saved = super::with_workspace(state.clone(), move |w| w.save_buffer(uri, 0)).await;
+        for result in [opened.map(|_| ()), peeked.map(|_| ()), saved.map(|_| ())] {
+            let message = result.unwrap_err();
+            assert!(
+                message.contains("library source, not a file in your project"),
+                "{message}"
+            );
+            assert!(!message.contains("No such file"), "{message}");
+            assert!(!message.contains("Resolve parent"), "{message}");
+        }
+        assert!(std::fs::read_dir(directory.path())
+            .unwrap()
+            .next()
+            .is_none());
     }
 
     #[test]

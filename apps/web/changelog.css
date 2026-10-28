@@ -1,0 +1,56 @@
+.changelog-intro{padding-top:95px;padding-bottom:76px;display:flex;align-items:flex-end;justify-content:space-between;gap:40px}
+.changelog-intro h1{font-size:64px;line-height:1.1;font-weight:600;letter-spacing:-.045em}
+.changelog-intro p{font-size:21px;line-height:1.65;color:var(--secondary);margin-top:24px}
+.changelog-intro>.text-link{flex-shrink:0;margin-bottom:6px}
+.changelog-layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:80px;padding-bottom:120px}
+.release-sidebar,.release-history{min-width:0}
+.release-sidebar-inner{position:sticky;top:35px;max-height:calc(100vh - 70px);overflow:auto;padding:0 5px 10px 0}
+.release-sidebar .channel-field{width:100%;margin-bottom:30px}
+.release-sidebar .custom-select{position:relative}
+.release-sidebar .select-options{z-index:20}
+.release-sidebar p{font-size:12px;line-height:1.9;color:var(--muted);margin-top:28px}
+.release-sidebar .text-link{font-size:12px;margin-top:18px}
+.release-index-link{display:flex;flex-direction:column;gap:3px;padding:13px 15px;border-left:1px solid var(--line);color:var(--secondary);line-height:1.6;overflow-wrap:anywhere}
+.release-index-link span{font-size:13px}
+.release-index-link small{font-size:11px;color:var(--muted)}
+.release-index-link:hover{color:#fff;background:#ffffff03}
+.release-index-link[aria-current]{border-color:#ff914d;color:#fff;background:#ffffff04}
+.release-entry{padding:0 0 48px;margin-bottom:48px;border-bottom:1px solid var(--line);scroll-margin-top:30px;min-width:0}
+.release-entry:focus-visible{outline:2px solid #b5b0ff;outline-offset:9px}
+.release-entry-meta{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;font-size:12px;color:var(--muted);line-height:1.7}
+.release-channel{color:#d6c9bc;display:inline-flex;align-items:center;gap:7px}
+.release-channel:before{content:"";width:5px;height:5px;background:#ff914d;border-radius:50%}
+.release-latest{font-size:11px}
+.release-entry-title{font-size:29px;line-height:1.3;font-weight:600;letter-spacing:-.025em;margin-top:19px;overflow-wrap:anywhere}
+.release-entry-summary{font-size:16px;line-height:1.85;color:var(--secondary);margin-top:20px;max-width:72ch;overflow-wrap:anywhere}
+.release-entry-actions .text-link{font-size:12px;margin-top:18px}
+.release-full-notes{margin-top:30px}
+.release-full-notes>summary{display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer;font-size:13px;font-weight:500;padding:16px 0;border-top:1px solid var(--line);list-style:none}
+.release-full-notes>summary::-webkit-details-marker{display:none}
+.release-full-notes[open]>summary img{transform:rotate(180deg)}
+.release-note-content{padding-top:18px;color:var(--secondary);font-size:14px;line-height:1.9;overflow-wrap:anywhere;max-width:76ch}
+.release-note-content>:first-child{margin-top:0}
+.release-note-content h3,.release-note-content h4,.release-note-content h5,.release-note-content h6{color:var(--text);font-size:18px;font-weight:600;line-height:1.5;margin:30px 0 12px;letter-spacing:-.015em}
+.release-note-content h4,.release-note-content h5,.release-note-content h6{font-size:15px;margin-top:24px}
+.release-note-content p{margin:12px 0}
+.release-note-content ul,.release-note-content ol{padding-left:22px;margin:12px 0 20px}
+.release-note-content li{padding-left:4px;margin:7px 0}
+.release-note-content li::marker{color:var(--muted)}
+.release-note-content a,.history-footer a{color:#dedbff;text-decoration:underline;text-underline-offset:3px}
+.release-note-content strong{font-weight:600;color:#e9e9ed}
+.release-note-content code{font:12px/1.7 "JetBrains Mono",monospace;background:#ffffff07;padding:2px 5px;border-radius:3px;color:#e5e2ed;overflow-wrap:anywhere}
+.release-note-content pre{overflow:auto;max-width:100%;padding:17px 19px;background:#121214;border:1px solid #2e2e35;border-radius:6px;margin:18px 0;white-space:pre}
+.release-note-content pre code{padding:0;background:none;overflow-wrap:normal}
+.release-note-content blockquote{margin:20px 0;padding:1px 0 1px 20px;border-left:2px solid #726d80;color:var(--muted)}
+.release-note-content hr{border:0;border-top:1px solid var(--line);margin:28px 0}
+.history-empty{padding:25px 0 65px}
+.history-empty h2{font-size:25px}
+.history-empty p,.history-footer{font-size:13px;line-height:1.9;color:var(--muted);margin-top:18px}
+.history-footer{max-width:65ch}
+.release-preview{display:grid;grid-template-columns:175px minmax(0,1fr);gap:35px;padding:32px 0;border-top:1px solid var(--line)}
+.release-preview time{font-size:12px;line-height:1.8;color:var(--muted);padding-top:5px}
+.release-preview h3{font-size:21px;line-height:1.4;letter-spacing:-.02em;margin:12px 0;overflow-wrap:anywhere}
+.release-preview p{font-size:14px;line-height:1.85;color:var(--secondary);max-width:70ch;overflow-wrap:anywhere}
+.release-preview .text-link{font-size:12px;margin-top:15px}
+@media(max-width:1000px){.changelog-layout{gap:40px;grid-template-columns:210px minmax(0,1fr)}.changelog-intro h1{font-size:55px}.changelog-intro>.text-link{font-size:13px}}
+@media(max-width:760px){.changelog-intro{padding-top:62px;padding-bottom:44px;align-items:start;flex-direction:column;gap:18px}.changelog-intro h1{font-size:45px}.changelog-intro p{font-size:17px;line-height:1.75;margin-top:20px}.changelog-intro>.text-link{margin-top:7px}.changelog-layout{grid-template-columns:1fr;gap:35px;padding-bottom:75px}.release-sidebar-inner{position:static;max-height:none;padding:0;overflow:visible}.release-sidebar .channel-field{max-width:260px;margin-bottom:20px}.release-sidebar p{display:none}#release-index{display:flex;gap:5px;overflow:auto;padding:4px 0 8px;scrollbar-width:thin}.release-index-link{border-left:0;border-bottom:1px solid var(--line);padding:8px 11px;flex-shrink:0;max-width:240px}.release-index-link span{font-size:11px}.release-index-link small{font-size:10px}.release-sidebar .text-link{margin-top:8px;font-size:11px}.release-entry{margin-bottom:35px;padding-bottom:35px}.release-entry-title{font-size:24px}.release-entry-meta{font-size:11px;gap:8px 14px}.release-entry-summary{font-size:14px}.release-note-content{font-size:13px;line-height:1.95}.release-note-content h3{font-size:17px}.release-note-content h4{font-size:14px}.release-note-content pre{padding:14px}.release-note-content code{font-size:11px}.release-preview{grid-template-columns:1fr;gap:14px;padding:26px 0}.release-preview h3{font-size:19px}.release-preview time{font-size:11px}.release-preview p{font-size:13px}.release-full-notes{margin-top:24px}}

@@ -2,11 +2,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { applyCompletion, convertSnippet, decideDiagnostics, definitionOrAddCursor, editsToChanges, formatWithLanguageServer, lspExtension, lspMarks, mapDiagnostics, renderHoverMarkdown, replyIsCurrent, type LspBinding } from "./lsp-codemirror";
+import { applyCompletion, convertSnippet, decideDiagnostics, editsToChanges, formatWithLanguageServer, lspExtension, lspMarks, mapDiagnostics, replyIsCurrent, resolveDefinition, type LspBinding } from "./lsp-codemirror";
+import type { CapabilitiesDto } from "../bindings";
 import type { LspSession } from "./lsp-client";
 
 // Fixture tests: a fake session stands in for the Tauri commands. No real language server is involved.
-const caps = { completion: true, hover: true, definition: true, formatting: true, rangeFormatting: false, rename: false, references: false };
+const caps: CapabilitiesDto = {
+  completion: true, hover: true, definition: true, formatting: true, rangeFormatting: false, rename: false, prepareRename: false, references: false,
+  implementation: false, typeDefinition: false, declaration: false, documentSymbol: false, workspaceSymbol: false, callHierarchy: false,
+  typeHierarchy: false, documentHighlight: false, signatureHelp: false,
+};
 function make(doc: string, over: Partial<LspBinding> = {}, session: Partial<LspSession> = {}) {
   const notify = vi.fn();
   const binding: LspBinding = {
@@ -97,16 +102,6 @@ describe("fixture: snippets", () => {
   });
 });
 
-describe("fixture: hover rendering", () => {
-  it("renders code and prose as text, never HTML", () => {
-    const dom = renderHoverMarkdown("```ts\nconst a: <b>x</b>\n```\n\nUse `a` <img src=x onerror=1> [link](http://x)");
-    expect(dom.querySelector("pre code")!.textContent).toBe("const a: <b>x</b>");
-    expect(dom.querySelector("img")).toBeNull();
-    expect(dom.querySelector("a")).toBeNull();
-    expect(dom.querySelector("p code")!.textContent).toBe("a");
-  });
-});
-
 describe("fixture: format", () => {
   it("applies all edits as one transaction", async () => {
     const dispatch = vi.fn();
@@ -165,32 +160,36 @@ describe("fixture: diagnostics replay on a new view", () => {
   });
 });
 
-describe("fixture: Cmd/Ctrl-click definition versus add cursor", () => {
+describe("fixture: resolving a definition", () => {
   const where = { path: "b.ts", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
   it("opens the definition and adds no cursor when the token has one", async () => {
     const openLocation = vi.fn();
     const { view } = make("foo bar", { openLocation }, { definition: vi.fn(async () => ({ kind: "ok", response: { revision: 1, epoch: 0, data: [where] } })) as any });
-    expect(await definitionOrAddCursor(view, 5)).toBe("opened");
+    expect(await resolveDefinition(view, 5, false)).toBe("opened");
     expect(openLocation).toHaveBeenCalledWith(where);
     expect(view.state.selection.ranges).toHaveLength(1);
     view.destroy();
   });
-  it("falls back to adding a cursor when there is no definition, without a toast", async () => {
+  it("adds no cursor and stays silent when there is no definition and none is announced", async () => {
     const { view, notify } = make("foo bar", {}, { definition: vi.fn(async () => ({ kind: "ok", response: { revision: 1, epoch: 0, data: [] } })) as any });
-    expect(await definitionOrAddCursor(view, 5)).toBe("none");
-    expect(view.state.selection.ranges.map(r => r.head)).toEqual([0, 5]);
+    expect(await resolveDefinition(view, 5, false)).toBe("none");
+    expect(view.state.selection.ranges).toHaveLength(1);
     expect(notify).not.toHaveBeenCalled();
     view.destroy();
   });
-  it("also falls back to adding a cursor when the request fails", async () => {
-    const { view } = make("foo bar", {}, { definition: vi.fn(async () => ({ kind: "error", error: { kind: "other", message: "x" }, message: "x" })) as any });
-    expect(await definitionOrAddCursor(view, 4)).toBe("failed");
-    expect(view.state.selection.ranges).toHaveLength(2);
-    view.destroy();
+  it("announces a missing definition when asked to, and reports a failed request", async () => {
+    const none = make("foo bar", {}, { definition: vi.fn(async () => ({ kind: "ok", response: { revision: 1, epoch: 0, data: [] } })) as any });
+    expect(await resolveDefinition(none.view, 5)).toBe("none");
+    expect(none.notify).toHaveBeenCalledWith("No definition found.");
+    none.view.destroy();
+    const failed = make("foo bar", {}, { definition: vi.fn(async () => ({ kind: "error", error: { kind: "other", message: "x" }, message: "x" })) as any });
+    expect(await resolveDefinition(failed.view, 4)).toBe("failed");
+    expect(failed.notify).toHaveBeenCalledWith("x");
+    failed.view.destroy();
   });
-  it("leaves the click to CodeMirror when no server can answer", async () => {
+  it("is unavailable when no server can answer", async () => {
     const { view } = make("foo bar", { getCapabilities: () => undefined });
-    expect(await definitionOrAddCursor(view, 5)).toBe("unavailable");
+    expect(await resolveDefinition(view, 5)).toBe("unavailable");
     expect(view.state.selection.ranges).toHaveLength(1);
     view.destroy();
   });

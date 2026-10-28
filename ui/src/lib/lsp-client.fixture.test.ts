@@ -69,6 +69,6 @@ describe("fixture: session", () => {
   });
   it("normalizes thrown values", () => {
     expect(normalizeLspError(new Error("x"))).toEqual({ kind: "other", message: "x" });
-    expect(describeLspError({ kind: "runtimeMissing", server: "jdtls", runtime: "Java", requiredVersion: 25, found: ["17"] })).toBe("JDT LS needs JDK 25 or newer, found: 17");
+    expect(describeLspError({ kind: "runtimeMissing", server: "jdtls", runtime: "Java", requiredVersion: 25, found: ["17"] })).toBe("Java (Eclipse JDT LS) needs JDK 25 or newer, found: 17");
   });
 });

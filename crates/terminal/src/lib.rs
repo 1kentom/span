@@ -1097,11 +1097,20 @@ mod tests {
         let manager = TerminalManager::new(root.path()).unwrap();
         let (info, mut rx) = manager.create(".", 80, 24).await.unwrap();
         manager
+            .write(&info.id, b"printf 'SHELL_%s\\n' 'READY'\r".to_vec())
+            .await
+            .unwrap();
+        output_until(&mut rx, "SHELL_READY").await;
+        wait_shell_foreground(&manager, &info.id).await;
+        manager
             .write(&info.id, b"sleep 30\r".to_vec())
             .await
             .unwrap();
         wait_foreground(&manager, &info.id).await;
         manager.interrupt(&info.id).await.unwrap();
+        // Queuing ETX does not mean the shell has completed signal handling.
+        // Wait for foreground ownership before writing input that ISIG may flush.
+        wait_shell_foreground(&manager, &info.id).await;
         manager
             .write(&info.id, b"printf 'AFTER_%s\\n' 'INTERRUPT'\r".to_vec())
             .await
@@ -1109,6 +1118,27 @@ mod tests {
         output_until(&mut rx, "AFTER_INTERRUPT").await;
         assert!(!manager.list()[0].exited);
         manager.close_all().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    async fn wait_shell_foreground(manager: &TerminalManager, id: &str) {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let session = manager.session(id).unwrap();
+                let shell_pid = session.info.lock().unwrap().process_id.unwrap();
+                let foreground = {
+                    let resources = session.resources.lock().unwrap();
+                    let master = &resources.as_ref().unwrap().master;
+                    unsafe { libc::tcgetpgrp(master.as_raw_fd().unwrap()) }
+                };
+                if foreground > 0 && foreground as u32 == shell_pid {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Shell failed to regain terminal foreground ownership");
     }
 
     #[cfg(unix)]
