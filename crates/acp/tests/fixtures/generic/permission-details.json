@@ -1,0 +1,67 @@
+{
+  "quirk": "Permission events forward toolCall content (diff previews), locations, kind, rawInput and _meta, which were discarded before.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "write"
+    }
+  ],
+  "events": [
+    {
+      "kind": "permission",
+      "toolCallId": "w1",
+      "title": "Write a.txt",
+      "toolKind": "edit",
+      "rawInput": {
+        "path": "a.txt"
+      },
+      "content": [
+        {
+          "type": "diff",
+          "path": "$ROOT/a.txt",
+          "newText": "hi"
+        }
+      ],
+      "locations": [
+        {
+          "path": "$ROOT/a.txt",
+          "line": 1
+        }
+      ],
+      "diffs": [
+        {
+          "path": "$ROOT/a.txt",
+          "resolved": true,
+          "change": "add"
+        }
+      ],
+      "meta": {
+        "vendor": {
+          "x": 1
+        }
+      },
+      "internal": null,
+      "options": [
+        {
+          "kind": "allow_once"
+        },
+        {
+          "kind": "allow_always"
+        },
+        {
+          "kind": "reject_once"
+        }
+      ]
+    }
+  ],
+  "absent": [
+    {
+      "kind": "tool",
+      "toolCallId": "w1",
+      "status": "in_progress"
+    }
+  ]
+}

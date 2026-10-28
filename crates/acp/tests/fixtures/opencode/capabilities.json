@@ -1,0 +1,18 @@
+{
+  "quirk": "OpenCode ignores the client fs capability and edits on disk itself: Ready marks editsBypassReview so the UI can say review does not apply.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "ready",
+      "features": {
+        "adapter": "opencode",
+        "editsBypassReview": true,
+        "doubleApproval": false
+      }
+    }
+  ]
+}

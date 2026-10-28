@@ -4,7 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import { createPreviewSettings } from './preview-settings';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -318,6 +318,11 @@ export const api = {
     if (!isDesktop) { const image = previewAssetImage(path); if (image) return image; nativeRequired('Loading workspace images'); }
     return commands.readImage(path);
   },
+  /** Writes an attachment into the workspace without overwriting. Returns the workspace-relative path. */
+  async saveAttachment(dir: string, fileName: string, dataBase64: string): Promise<SavedAttachment> {
+    if (!isDesktop) nativeRequired('Saving attachments to the workspace');
+    return commands.saveAttachment(dir, fileName, dataBase64);
+  },
   async listTools(): Promise<ToolInfo[]> {
     if (!isDesktop) nativeRequired('Detecting installed tools');
     return commands.listTools();
@@ -425,9 +430,19 @@ export const api = {
     if (generation !== agentGeneration) throw new Error('Agent connection was superseded by another connection or disconnect.');
     return session;
   },
-  async agentPrompt(text: string): Promise<void> {
+  async agentPrompt(text: string, attachments: PromptAttachment[] = []): Promise<void> {
     if (!isDesktop) nativeRequired('Sending agent prompts');
-    await commands.agentPrompt(text);
+    await commands.agentPrompt(text, attachments.length ? attachments : null);
+  },
+  /** Sign in with an advertised method, then the blocked session is created. Returns the session id. */
+  async agentAuthenticate(methodId: string): Promise<string> {
+    if (!isDesktop) nativeRequired('Signing in to agents');
+    return commands.agentAuthenticate(methodId);
+  },
+  /** action is accept, decline or cancel. contentJson is a JSON object string and applies to accept. */
+  async agentElicitation(requestId: string, action: 'accept' | 'decline' | 'cancel', contentJson: string | null = null): Promise<void> {
+    if (!isDesktop) nativeRequired('Answering agent requests');
+    await commands.agentElicitation(requestId, action, contentJson);
   },
   async agentSetConfig(configId: string, value: string): Promise<void> {
     if (!isDesktop) nativeRequired('Changing agent options');
@@ -444,6 +459,14 @@ export const api = {
   async agentResumeSession(sessionId: string): Promise<string> {
     if (!isDesktop) nativeRequired('Resuming a chat');
     return commands.agentResumeSession(sessionId);
+  },
+  async agentCloseSession(sessionId: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Closing a chat');
+    await commands.agentCloseSession(sessionId);
+  },
+  async agentDeleteSession(sessionId: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Deleting a chat');
+    await commands.agentDeleteSession(sessionId);
   },
   async agentCancel(): Promise<void> {
     if (!isDesktop) nativeRequired('Cancelling agents');
@@ -471,3 +494,32 @@ export const api = {
     return () => { agentListeners.delete(listener); };
   },
 };
+
+/** Sign in with a method whose `input` is `apiKey` or `gateway`. The secret goes to the agent only; Span does not log or store it. Returns the session id. */
+export async function agentAuthenticateWith(methodId: string, credential: import('../bindings').AuthCredential_Deserialize): Promise<string> {
+  if (!isDesktop) nativeRequired('Signing in to agents');
+  return commands.agentAuthenticateWith(methodId, credential);
+}
+
+/** Agents launched by a known custom command (OpenCode) rather than a registry install. */
+export async function agentPresets(): Promise<import('../bindings').AgentPreset_Serialize[]> {
+  return isDesktop ? commands.agentPresets() : [];
+}
+
+/** Delegation state of the connected agent and its current chat: whether `agents.delegation.enabled` is on (honoured from user settings only), whether the agent can use span-agents and why not, and the lead's tasks and decisions. */
+export async function agentDelegationStatus(): Promise<import('../bindings').DelegationStatus_Serialize> {
+  if (!isDesktop) nativeRequired('Agent delegation');
+  return commands.agentDelegationStatus();
+}
+
+/** Answer a permission request from a delegated child session. Only for the user's own choice in the UI; user sessions use `api.agentPermission`. */
+export async function agentChildPermission(connectionId: string, sessionId: string, requestId: string, optionId: string | null): Promise<void> {
+  if (!isDesktop) nativeRequired('Responding to agent permissions');
+  await commands.agentChildPermission(connectionId, sessionId, requestId, optionId);
+}
+
+/** Stop one delegated task: its child session and everything below it are cancelled and the task ends as cancelled. The user's own action; no agent tool can call it. */
+export async function agentCancelTask(taskId: string): Promise<void> {
+  if (!isDesktop) nativeRequired('Cancelling an agent task');
+  await commands.agentCancelTask(taskId);
+}

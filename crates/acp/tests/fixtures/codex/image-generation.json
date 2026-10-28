@@ -1,0 +1,33 @@
+{
+  "quirk": "Image generation sends an image content block (base64 plus uri to the saved file); without data only rawOutput.savedPath. Both are exposed as typed fields.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "draw"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "ig_1",
+      "status": "completed",
+      "images": [
+        {
+          "mimeType": "image/png",
+          "data": "iVBORw0KGgo=",
+          "uri": "file:///home/u/.codex/images/ig_1.png"
+        }
+      ],
+      "savedPath": "/home/u/.codex/images/ig_1.png"
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "ig_2",
+      "images": null,
+      "savedPath": "/home/u/.codex/images/ig_2.png"
+    }
+  ]
+}

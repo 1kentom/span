@@ -1,0 +1,19 @@
+{
+  "quirk": "max_turn_requests is also returned by loop detection: Complete carries the turnLimitOrLoop hint.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "go"
+    }
+  ],
+  "events": [
+    {
+      "kind": "complete",
+      "stopReason": "max_turn_requests",
+      "hint": "turnLimitOrLoop"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "quirk": "authenticate is a no-op for opencode-login and a missing sign-in appears only on session/prompt as -32000: AuthRequired is emitted from the prompt path with the runOpencodeAuthLogin hint, and authenticate is never sent.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "hi",
+      "expectError": "Unauthorized"
+    },
+    {
+      "do": "authenticate",
+      "method": "opencode-login",
+      "expectError": "opencode auth login"
+    }
+  ],
+  "events": [
+    {
+      "kind": "ready",
+      "authMethods": [
+        {
+          "id": "opencode-login",
+          "supported": false,
+          "hint": "runOpencodeAuthLogin"
+        }
+      ]
+    },
+    {
+      "kind": "authRequired",
+      "hint": "runOpencodeAuthLogin"
+    },
+    {
+      "kind": "error"
+    }
+  ],
+  "notSent": [
+    {
+      "method": "authenticate"
+    }
+  ]
+}

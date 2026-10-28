@@ -1,0 +1,37 @@
+{
+  "quirk": "Slash-command prompts return end_turn at once with no streamed output: Complete carries the noOutputStreamed hint.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "/compact"
+    },
+    {
+      "do": "prompt",
+      "text": "hello"
+    }
+  ],
+  "events": [
+    {
+      "kind": "complete",
+      "stopReason": "end_turn",
+      "hint": "noOutputStreamed"
+    },
+    {
+      "kind": "_step",
+      "do": "prompt",
+      "ok": true
+    },
+    {
+      "kind": "text",
+      "text": "Hi there"
+    },
+    {
+      "kind": "complete",
+      "stopReason": "end_turn",
+      "hint": null
+    }
+  ]
+}

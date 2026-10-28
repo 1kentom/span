@@ -1,0 +1,19 @@
+{
+  "quirk": "Subagent tool calls carry _meta.claudeCode.parentToolUseId: mapped to parentToolCallId.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "delegate"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "toolu_child",
+      "parentToolCallId": "toolu_task"
+    }
+  ]
+}

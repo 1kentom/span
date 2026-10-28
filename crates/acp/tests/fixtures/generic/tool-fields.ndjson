@@ -1,0 +1,5 @@
+// Tool events carry typed rawInput, rawOutput and locations as well as contentJson.
+// Protocol-conformant shapes from an unknown agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}, "authMethods": [], "agentInfo": {"name": "span-test-peer", "version": "1.0.0"}}}
+{"on": "session/new", "result": {"sessionId": "p-1"}}
+{"on": "session/prompt", "before": [{"update": {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read present.txt", "kind": "read", "status": "in_progress", "rawInput": {"path": "present.txt"}, "locations": [{"path": "$ROOT/present.txt", "line": 3}]}}, {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed", "rawOutput": {"bytes": 0}}}], "result": {"stopReason": "end_turn"}}
