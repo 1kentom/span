@@ -20,6 +20,7 @@ import { ToolsSettings } from "./components/ToolsSettings";
 import { UpdatesSettings } from "./components/UpdatesSettings";
 import { agentUpdateError, agentUpdates, agentUpdatesBusy, appUpdate, appUpdateBusy, checkAllUpdates } from "./lib/updates";
 import { absolutePath, relativePath, fileName, parentPath, contextMenuPosition, isContextMenuKey } from "./lib/navigation";
+import { commonFolder, planStartup } from "./lib/startup-plan";
 import { SettingsPage } from "./components/SettingsPage";
 import { createWorkbench, settleIntent, SETTINGS_TAB, isSettingsBuffer, tabName, type EditorGroup } from "./stores/workbench";
 import { canDispatchAction, currentPlatform, dispatchKeyboard, nativeMenuBindings, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
@@ -32,7 +33,7 @@ import { LanguageServerSettings } from "./components/LanguageServerSettings";
 import { languageDisplayName } from "./editor/language-names";
 import { useLanguageServers } from "./stores/language-servers";
 import { serverForBuffer } from "./lib/lsp-client";
-import type { EditProposal, SyntaxSnapshot, ToolInfo, StartupRequest_Serialize as StartupRequest, RecentProject_Serialize as RecentProject } from "./bindings";
+import type { EditProposal, SyntaxSnapshot, ToolInfo, StartupRequest_Serialize as StartupRequest, StartupFile_Serialize as StartupFile, RecentProject_Serialize as RecentProject } from "./bindings";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -72,6 +73,7 @@ export default function App() {
   const [nativeTrafficLights, setNativeTrafficLights] = createSignal(false);
   const [recentProjects, setRecentProjects] = createSignal<RecentProject[]>([]);
   const [pendingExternal, setPendingExternal] = createSignal<{ request: StartupRequest; resolve: (open: boolean) => void }>();
+  const [outsideFiles, setOutsideFiles] = createSignal<{ files: StartupFile[]; folder: string; resolve: (open: boolean) => void }>();
   const [tools, setTools] = createSignal<ToolInfo[]>([]);
   const [toolsBusy, setToolsBusy] = createSignal(false);
   const [toolsLoaded, setToolsLoaded] = createSignal(false);
@@ -172,7 +174,18 @@ export default function App() {
   const copyText = async (value: string) => { try { if (isDesktop || typeof navigator.clipboard !== "undefined") await api.writeClipboard(value); else { const previous = document.activeElement as HTMLElement | null; const input = document.createElement("textarea"); input.value = value; input.style.cssText = "position:fixed;opacity:0;pointer-events:none"; document.body.append(input); input.select(); const copied = document.execCommand("copy"); input.remove(); previous?.focus(); if (!copied) throw new Error("Clipboard access is unavailable"); } } catch (error) { w.setError(`Could not copy: ${String(error)}`); } };
   async function refreshRecentProjects() { try { setRecentProjects(await api.recentProjects()); } catch (error) { w.setError(String(error)); } }
   async function performStartup(request: StartupRequest) { const root = request.workspaceRoot; if (root && (!w.workspace() || relativePath(root, w.workspace()?.root) !== "")) await w.openWorkspace(root); for (const file of request.files) { const path = relativePath(file.path, w.workspace()?.root); await w.openFile(path); if (file.line) setReveal({ path, line: file.line, column: file.column || undefined }); } await refreshRecentProjects(); }
-  async function applyStartup(request: StartupRequest) { const changing = request.workspaceRoot && (!w.workspace() || relativePath(request.workspaceRoot, w.workspace()?.root) !== ""); if (changing && hasUnsaved()) { const open = await new Promise<boolean>(resolve => setPendingExternal({ request, resolve })); if (!open) return; } await performStartup(request); }
+  async function applyStartup(request: StartupRequest) {
+    const plan = planStartup(request, w.workspace()?.root);
+    if (plan.outside.length) {
+      if (plan.open.length) await performStartup({ workspaceRoot: null, files: plan.open });
+      const folder = commonFolder(plan.outside);
+      if (folder && await new Promise<boolean>(resolve => setOutsideFiles({ files: plan.outside, folder, resolve }))) await applyStartup({ workspaceRoot: folder, files: plan.outside });
+      return;
+    }
+    const resolved = { workspaceRoot: plan.switchTo ?? null, files: plan.open };
+    if (plan.switchTo && hasUnsaved()) { const open = await new Promise<boolean>(resolve => setPendingExternal({ request: { workspaceRoot: plan.switchTo!, files: plan.open }, resolve })); if (!open) return; }
+    await performStartup(resolved);
+  }
   function openRecentProject(root: string) { void applyStartup({ workspaceRoot: root, files: [] }); }
   function showProjectHistory(event: MouseEvent) { event.preventDefault(); const bounds = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : { left: event.clientX, bottom: event.clientY }; void refreshRecentProjects().then(() => setContext({ x: bounds.left, y: bounds.bottom, label: "Projects", items: [{ id: "open", label: "Open folder…", onSelect: requestWorkspace }, ...recentProjects().map(project => ({ id: project.root, label: `${project.name}${project.missing ? " (missing)" : ""}`, disabled: project.missing, onSelect: () => openRecentProject(project.root) })), { id: "clear", label: "Clear recent projects", separator: true, disabled: !recentProjects().length, onSelect: () => { void api.clearRecentProjects().then(refreshRecentProjects); } }] })); }
   const copyPath = (path: string, absolute = false) => { void copyText(absolute ? absolutePath(path, w.workspace()?.root) : relativePath(path, w.workspace()?.root)); };
@@ -375,6 +388,7 @@ export default function App() {
     <Show when={paletteOpen()}><CommandPalette bindings={bindings()} handlers={handlers} onClose={() => setPaletteOpen(false)} platform={platform} /></Show>
     <Show when={pendingSettingsClose()}>{action => <Modal label="Unsaved settings" class="confirm-modal" initialFocus="[data-modal-default]" onSubmit={saveSettingsClose} onClose={() => setPendingSettingsClose(undefined)}><h2>Save changes to workspace settings?</h2><p>Your JSONC draft has unsaved changes.</p><div class="dialog-actions"><button class="button" onClick={() => { const next = action(); revertSettingsDraft?.(); setPendingSettingsClose(undefined); next(); }}><MenuIcon name="discard" size={15} />Discard changes</button><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Cancel</button><button class="button primary" data-modal-default ><MenuIcon name="save" size={15} />Save</button></div></Modal>}</Show>
     <Show when={pendingExternal()}>{pending => <Modal label="Open requested project" class="confirm-modal" initialFocus="[data-modal-default]" onSubmit={saveExternalClose} onClose={() => { pending().resolve(false); setPendingExternal(undefined); }}><h2>Open another project?</h2><p>A file or command-line request wants to open {pending().request.workspaceRoot}. This workspace has unsaved changes.</p><div class="dialog-actions"><button class="button" onClick={() => { revertSettingsDraft?.(); pending().resolve(true); setPendingExternal(undefined); }}><MenuIcon name="discard" size={15} />Discard changes</button><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Cancel</button><button class="button primary" data-modal-default ><MenuIcon name="save" size={15} />Save all</button></div></Modal>}</Show>
+    <Show when={outsideFiles()}>{pending => <Modal label="File outside the open folder" class="confirm-modal" initialFocus="[data-modal-default]" onSubmit={() => { pending().resolve(true); setOutsideFiles(undefined); }} onClose={() => { pending().resolve(false); setOutsideFiles(undefined); }}><h2>Open {fileName(pending().files[0].path)}{pending().files.length > 1 ? ` and ${pending().files.length - 1} more` : ""}?</h2><p>Span edits files inside the open folder, and {pending().files.length > 1 ? "these files are" : "this file is"} outside it. Your current project stays open unless you switch to {pending().folder}.</p><div class="dialog-actions"><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Keep current project</button><button class="button primary" data-modal-default>Open that folder</button></div></Modal>}</Show>
     <Show when={w.pendingClose()}>{pending => <Modal label="Unsaved changes" class="confirm-modal" onClose={() => void w.confirmClose("cancel")} onSubmit={() => w.confirmClose("save")} busy={w.closeBusy()} initialFocus="[data-modal-default]"><Icon name="DocumentText" size={28} /><h2>Save changes to {tabName(pending().path)}?</h2><p>Your changes will be lost if you close this file without saving.</p><div class="dialog-actions"><button class="button" onClick={() => void w.confirmClose("discard")}><MenuIcon name="discard" size={15} />Discard changes</button><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Cancel</button><button class="button primary" data-modal-default><MenuIcon name="save" size={15} />Save</button></div></Modal>}</Show>
     <Show when={pendingAppClose()}><Modal label="Close span" class="confirm-modal" initialFocus="[data-modal-default]" onSubmit={saveWindowClose} onClose={cancelClose}><h2>Save changes before closing?</h2><p>This workspace has unsaved changes.</p><div class="dialog-actions"><button class="button" onClick={() => { void closeWindow(true); }}><MenuIcon name="discard" size={15} />Discard changes</button><span /><button class="button" data-modal-cancel><MenuIcon name="cancel" size={15} />Cancel</button><button class="button primary" data-modal-default ><MenuIcon name="save" size={15} />Save all</button></div></Modal></Show>
     <Show when={w.pendingRecovery()}>{recovery => <Modal label="Retained local draft" class="confirm-modal" onClose={() => w.resolveRecovery(false)}><h2>Your newer local draft was retained</h2><p>The current accepted document is open in {recovery().path.split("/").pop()}. You can keep it or restore your local draft for review.</p><div class="dialog-actions"><button class="button" onClick={() => w.resolveRecovery(false)}>Keep current document</button><span /><button class="button primary" data-modal-default onClick={() => w.resolveRecovery(true)}>Restore my draft</button></div></Modal>}</Show>
