@@ -19,7 +19,7 @@ const svgText = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
 describe('source bar and actions', () => {
   it('shows the source and only the actions whose handler is given', () => {
     const root = show({ name: 'a.txt', content: ready('hi'), source: { agent: { name: 'Claude' }, session: 'Match the toggle spec', time: 'you, 14:02' } });
-    expect(root.querySelector('.vw-source')?.textContent).toContain('Attachment from');
+    expect(root.querySelector('.vw-source')?.textContent).toContain('Attached in');
     expect(root.querySelector('.vw-source')?.textContent).toContain('Match the toggle spec');
     expect(root.querySelector('.vw-source')?.textContent).toContain('you, 14:02');
     expect(button(root, 'Save to workspace')).toBeUndefined();
@@ -168,13 +168,13 @@ describe('edge states', () => {
     expect(root.querySelector('.vw-binary button')?.textContent).toBe('Open with system app');
   });
   it('is honest about formats whose viewers are separate work', () => {
-    for (const name of ['a.pdf', 'a.docx', 'a.xlsx', 'a.csv', 'a.zip', 'a.mdx', 'a.html']) {
+    for (const name of ['a.pdf', 'a.docx', 'a.xlsx', 'a.zip']) {
       const root = show({ name, content: ready(bytes('x')) });
-      expect(root.querySelector('[data-state="unsupported"]')?.textContent).toContain('Preview not available yet');
+      expect(root.querySelector('[data-state="unsupported"]')?.textContent).toContain('files cannot be previewed here');
       expect(root.querySelector('.vw-code, .vw-json, img, video, audio')).toBeNull();
     }
-    const psd = show({ name: 'm.psd', content: ready(bytes('x')) });
-    expect(psd.querySelector('[data-state="unsupported"]')?.textContent).toContain('This format is not supported');
+    const heic = show({ name: 'm.heic', content: ready(bytes('x')) });
+    expect(heic.querySelector('[data-state="unsupported"]')?.textContent).toContain('This format is not supported');
   });
 });
 
