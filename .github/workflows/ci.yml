@@ -131,8 +131,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    name: test (${{ matrix.shard }}/2)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -155,9 +160,10 @@ jobs:
       - name: Placeholder frontend bundle for the Tauri build script
         run: mkdir -p ui/dist && touch ui/dist/index.html
       # The real-server tests are behind the real-servers feature and run in their own job.
-      # Several tests wait out 10 to 30 second timeouts, so run more of them than cores at once.
+      # Several tests wait out 10 to 30 second timeouts. Raising --test-threads to 16 made span-acp tests
+      # fail, so the suite is split over two runners instead.
       # The workspace has no doc tests, so there is no `cargo test --doc` step.
-      - run: cargo nextest run --workspace --no-fail-fast --test-threads 16
+      - run: cargo nextest run --workspace --no-fail-fast --partition count:${{ matrix.shard }}/2
 
   # Cheap script tests, no Rust toolchain and no dependency install.
   meta:
