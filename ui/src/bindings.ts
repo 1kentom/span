@@ -198,6 +198,15 @@ export const commands = {
 	 *  agents it queued.
 	 */
 	agentWarmStart: (recent: string[]) => __TAURI_INVOKE<number>("agent_warm_start", { recent }),
+	/**
+	 *  The latest health check result per agent (ADR 0010); empty while
+	 *  `agents.healthCheck` (user settings only) is off. The first call starts
+	 *  the periodic checks, so the UI calls it once the window is shown; changes
+	 *  arrive as `AgentHealthChanged`. Each check is one tiny prompt to a running
+	 *  agent that has not chatted for five minutes, over a hidden session that
+	 *  never shows in History.
+	 */
+	agentHealth: () => __TAURI_INVOKE<AgentHealth_Serialize[]>("agent_health"),
 	uploadsList: () => __TAURI_INVOKE<Upload_Serialize[]>("uploads_list"),
 	uploadsUsage: () => __TAURI_INVOKE<UploadUsage>("uploads_usage"),
 	uploadsAdd: (name: string, dataBase64: string, source: UploadSource_Deserialize) => __TAURI_INVOKE<Upload_Serialize>("uploads_add", { name, dataBase64, source }),
@@ -225,6 +234,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	agentHealthChanged: makeEvent<AgentHealthChanged_Serialize, AgentHealthChanged_Deserialize>("agent-health-changed"),
 	agentSessionStatesChanged: makeEvent<AgentSessionStatesChanged_Serialize, AgentSessionStatesChanged_Deserialize>("agent-session-states-changed"),
 	diagnosticsPublished: makeEvent<DiagnosticsPublished_Serialize, DiagnosticsPublished_Deserialize>("diagnostics-published"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
@@ -418,6 +428,63 @@ export type AgentFeatures_Serialize = {
 	doubleApproval?: boolean,
 };
 
+/**  The latest health check result of one agent. */
+export type AgentHealth = AgentHealth_Serialize | AgentHealth_Deserialize;
+
+/**
+ *  The latest health check result of every checked agent (ADR 0010), sent
+ *  whole whenever one changes.
+ */
+export type AgentHealthChanged = AgentHealthChanged_Serialize | AgentHealthChanged_Deserialize;
+
+/**
+ *  The latest health check result of every checked agent (ADR 0010), sent
+ *  whole whenever one changes.
+ */
+export type AgentHealthChanged_Deserialize = {
+	agents: AgentHealth_Deserialize[],
+};
+
+/**
+ *  The latest health check result of every checked agent (ADR 0010), sent
+ *  whole whenever one changes.
+ */
+export type AgentHealthChanged_Serialize = {
+	agents: AgentHealth_Serialize[],
+};
+
+/**  The latest health check result of one agent. */
+export type AgentHealth_Deserialize = {
+	/**  The installed agent id, lowercase. */
+	agentId: string,
+	state: HealthState,
+	/**
+	 *  Milliseconds from sending the prompt to the first reply. `None` when
+	 *  no reply arrived.
+	 */
+	latencyMs?: number | null,
+	/**  Unix time in milliseconds when the check finished. */
+	checkedAtMs: number,
+	/**  Why the check failed, for the tooltip. `None` on success. */
+	detail?: string | null,
+};
+
+/**  The latest health check result of one agent. */
+export type AgentHealth_Serialize = {
+	/**  The installed agent id, lowercase. */
+	agentId: string,
+	state: HealthState,
+	/**
+	 *  Milliseconds from sending the prompt to the first reply. `None` when
+	 *  no reply arrived.
+	 */
+	latencyMs: number | null,
+	/**  Unix time in milliseconds when the check finished. */
+	checkedAtMs: number,
+	/**  Why the check failed, for the tooltip. `None` on success. */
+	detail: string | null,
+};
+
 /**
  *  A condition the UI words itself. The backend never sends display text for
  *  these; the suggested English is in each variant's comment.
@@ -531,6 +598,13 @@ export type AgentSettings_Deserialize = {
 	 *  default. Honoured only from the user's own settings file.
 	 */
 	warmStart?: boolean,
+	/**
+	 *  `agents.healthCheck`: every five minutes, send one tiny prompt to
+	 *  each running agent Span is not chatting with, over a hidden session,
+	 *  and show whether it replied (ADR 0010). Never starts an agent. On by
+	 *  default. Honoured only from the user's own settings file.
+	 */
+	healthCheck?: boolean,
 };
 
 /**  `agents.*` settings. */
@@ -543,6 +617,13 @@ export type AgentSettings_Serialize = {
 	 *  default. Honoured only from the user's own settings file.
 	 */
 	warmStart: boolean,
+	/**
+	 *  `agents.healthCheck`: every five minutes, send one tiny prompt to
+	 *  each running agent Span is not chatting with, over a hidden session,
+	 *  and show whether it replied (ADR 0010). Never starts an agent. On by
+	 *  default. Honoured only from the user's own settings file.
+	 */
+	healthCheck: boolean,
 };
 
 export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
@@ -1205,6 +1286,20 @@ export type FormatWarning = {
 	path: string,
 	message: string,
 };
+
+/**  The outcome of the latest check of one agent. */
+export type HealthState = 
+/**  The agent replied within the slow threshold. */
+"live" | 
+/**  The agent replied, but slower than the slow threshold. */
+"slow" | 
+/**  The agent answered that it needs the user to sign in. */
+"signedOut" | 
+/**
+ *  No reply: the process exited, the check timed out (twice) or the
+ *  protocol failed.
+ */
+"unreachable";
 
 export type HighlightSpan = {
 	from: number,

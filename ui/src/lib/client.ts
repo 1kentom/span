@@ -7,7 +7,7 @@ import type { BootTheme, StartupTimings } from './startup';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
-import type { PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
+import type { AgentHealth_Serialize as AgentHealth, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -455,6 +455,15 @@ export const api = {
   async agentWarmStart(recent: string[]): Promise<number> {
     if (!isDesktop) return 0;
     return commands.agentWarmStart(recent);
+  },
+  /** Agent health check (ADR 0010): the latest result per running agent, empty while `agents.healthCheck` is off. The first call starts the periodic checks, so call it after the window is shown. */
+  async agentHealth(): Promise<AgentHealth[]> {
+    if (!isDesktop) return [];
+    return commands.agentHealth();
+  },
+  /** Every health result, sent whole whenever one changes. */
+  async onAgentHealth(listener: (agents: AgentHealth[]) => void): Promise<() => void> {
+    return isDesktop ? events.agentHealthChanged.listen(event => listener(event.payload.agents)) : () => undefined;
   },
   async agentInstall(id: string): Promise<InstalledAgent> {
     if (!isDesktop) nativeRequired('Installing agents');

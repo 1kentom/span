@@ -37,6 +37,8 @@ pub struct DesktopState {
     /// Installed agents Span started in the background (on demand for
     /// delegation), created on first use. See `agents::background`.
     pub background: Arc<Mutex<Option<span_acp::BackgroundAgents>>>,
+    /// The agent health check (ADR 0010), created on first use. See `agents::health`.
+    pub health: Arc<Mutex<Option<span_acp::HealthMonitor>>>,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
@@ -830,7 +832,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::DiagnosticsPublished,
             language_servers::LanguageServerError,
             startup::StartupRequestError,
-            agents::AgentSessionStatesChanged
+            agents::AgentSessionStatesChanged,
+            agents::AgentHealthChanged
         ])
         .commands(collect_commands![
             open_workspace,
@@ -927,6 +930,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_child_permission,
             agents::agent_cancel_task,
             agents::agent_warm_start,
+            agents::agent_health,
             uploads::uploads_list,
             uploads::uploads_usage,
             uploads::uploads_add,
@@ -1016,6 +1020,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app.state::<DesktopState>();
+            // Before the processes end: close hidden check sessions where the agent can.
+            agents::stop_health(&state);
             let _ = agents::disconnect(&state);
             agents::background(&state).shutdown();
             state.file_index.shutdown();

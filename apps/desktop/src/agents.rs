@@ -2,9 +2,10 @@ use crate::DesktopState;
 use serde::Serialize;
 use span_acp::tools::{DelegationEventSink, DelegationStatus, ToolPolicy, ToolServerConfig};
 use span_acp::{
-    AgentCommand, AgentEvent, AgentPreset, AgentService, AuthCredential, BackgroundAgents,
-    EventSink, InstalledAgent, PromptAttachment, PromptError, RegistryAgent, SessionActivity,
-    SessionKey, SessionOrigin, SessionStates, PROMPT_ALREADY_RUNNING,
+    AgentCommand, AgentEvent, AgentHealth, AgentPreset, AgentService, AuthCredential,
+    BackgroundAgents, EventSink, HealthMonitor, HealthPolicy, InstalledAgent, PromptAttachment,
+    PromptError, RegistryAgent, SessionActivity, SessionKey, SessionOrigin, SessionStates,
+    PROMPT_ALREADY_RUNNING,
 };
 use span_core::{BufferSnapshot, CoreWorkspace};
 use specta::Type;
@@ -33,6 +34,64 @@ pub fn watch_session_states(app: &tauri::AppHandle) {
     }));
     // The watch lasts as long as the app: the manager lives in the app state.
     std::mem::forget(subscription);
+}
+
+/// The latest health check result of every checked agent (ADR 0010), sent
+/// whole whenever one changes.
+#[derive(Debug, Clone, Serialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHealthChanged {
+    pub agents: Vec<AgentHealth>,
+}
+
+/// The agent health check, created on first use. It checks the installed
+/// agents running in the background map (warm, on demand, or the chat's
+/// own when it is installed); it never starts one.
+pub fn health(app: &tauri::AppHandle, state: &DesktopState) -> HealthMonitor {
+    let mut guard = state.health.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .get_or_insert_with(|| {
+            let folder = state.workspace.clone();
+            // `agents.healthCheck` is user-only in core settings, so the open
+            // folder's merged settings carry the user's value. No folder, no
+            // running agents, nothing to check.
+            let enabled = Arc::new(move || {
+                folder
+                    .lock()
+                    .ok()
+                    .and_then(|open| open.clone())
+                    .and_then(|workspace| workspace.lock().ok()?.get_settings().ok())
+                    .is_some_and(|settings| settings.agents.health_check)
+            });
+            let monitor = HealthMonitor::for_background(
+                state.sessions.clone(),
+                background(state),
+                HealthPolicy::default(),
+                enabled,
+            );
+            let handle = app.clone();
+            monitor.set_sink(Some(Arc::new(move |agents| {
+                crate::events::emit(&handle, &AgentHealthChanged { agents });
+            })));
+            monitor
+        })
+        .clone()
+}
+
+/// App exit: stop checking and close hidden check sessions where the agent
+/// supports it, bounded to a few seconds.
+pub fn stop_health(state: &DesktopState) {
+    let monitor = state
+        .health
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    if let Some(monitor) = monitor {
+        tauri::async_runtime::block_on(async move {
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(3), monitor.shutdown()).await;
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -444,6 +503,25 @@ pub async fn agent_warm_start(
 }
 
 const WARM_CAP: usize = 4;
+
+/// The latest health check result per agent (ADR 0010); empty while
+/// `agents.healthCheck` (user settings only) is off. The first call starts
+/// the periodic checks, so the UI calls it once the window is shown; changes
+/// arrive as `AgentHealthChanged`. Each check is one tiny prompt to a running
+/// agent that has not chatted for five minutes, over a hidden session that
+/// never shows in History.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_health(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<AgentHealth>, String> {
+    let monitor = health(&app, state.inner());
+    monitor.start();
+    tauri::async_runtime::spawn_blocking(move || monitor.results())
+        .await
+        .map_err(|error| format!("Agent health task failed: {error}"))
+}
 
 /// Installed agents ordered for a warm start: `recent` ids first in that
 /// order, then the others by id. One entry per id (the newest version).
