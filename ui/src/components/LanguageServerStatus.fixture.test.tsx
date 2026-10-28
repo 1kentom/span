@@ -1,78 +1,42 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
-import { LanguageServerStatus, type LanguageServerStatusProps } from "./LanguageServerStatus";
+import { LanguageServerStatus } from "./LanguageServerStatus";
+import { makeServer, viewOf } from "../stores/language-intelligence.testkit";
 
-// Fixture tests: static states are passed in, no store or server is running.
+// Fixture tests: the status bar item is a short summary that opens the hub panel. The panel itself is
+// covered by LanguageIntelligencePanel.fixture.test.tsx and the button by LanguageIntelligenceButton.fixture.test.tsx.
 const disposers: (() => void)[] = [];
 afterEach(() => { disposers.splice(0).forEach(d => d()); document.body.replaceChildren(); });
-function mount(state: LanguageServerStatusProps["state"], autoInstall = true, extra: Partial<LanguageServerStatusProps> = {}) {
+function mount(server: Parameters<typeof viewOf>[0], open = false, over: Parameters<typeof viewOf>[1] = {}) {
   const root = document.createElement("div"); document.body.append(root);
-  const fns = { onInstall: vi.fn(), onRestart: vi.fn(), onRetry: vi.fn(), onOpenSettings: vi.fn(), onRefresh: vi.fn() };
-  disposers.push(render(() => <LanguageServerStatus state={state} autoInstall={autoInstall} {...fns} {...extra} />, root));
-  return { root, ...fns };
+  const onToggle = vi.fn();
+  disposers.push(render(() => <LanguageServerStatus view={viewOf(server, over)} open={open} onToggle={onToggle} />, root));
+  return { root, onToggle };
 }
-const open = (root: HTMLElement) => { root.querySelector<HTMLButtonElement>(".lsp-status-button")!.click(); return root.querySelector(".lsp-popover")!; };
 
-describe("fixture: language server status", () => {
-  it("renders nothing for unsupported files", () => expect(mount({ kind: "unsupported" }).root.querySelector(".lsp-status")).toBeNull());
-  it("labels the button and offers install with a size hint", () => {
-    const m = mount({ kind: "needs-install", server: "vtsls", version: "0.3", sizeHint: 12 * 1024 * 1024 }, false);
+describe("fixture: language server status item", () => {
+  it("renders nothing for files without a language server", () => expect(mount(undefined).root.querySelector(".lsp-status")).toBeNull());
+  it("is a short summary with a label from the shared view and no title attribute", () => {
+    const m = mount(makeServer("vtsls", { kind: "needs-install", server: "vtsls", version: "0.3" }, { state: { kind: "needsInstall", version: "0.3" }, installed: false }));
     const button = m.root.querySelector(".lsp-status-button")!;
-    expect(button.getAttribute("aria-label")).toBe("Language server. vtsls: Not installed");
+    expect(button.textContent).toBe("TypeScript: not installed");
+    expect(button.getAttribute("aria-label")).toBe("Language intelligence. TypeScript and JavaScript support is not installed.");
     expect(button.getAttribute("aria-expanded")).toBe("false");
-    const pop = open(m.root);
-    const install = [...pop.querySelectorAll("button")].find(b => b.textContent!.startsWith("Install vtsls"))!;
-    expect(install.textContent).toBe("Install vtsls (about 12 MB)");
-    expect(pop.textContent).toContain("Automatic install is off");
-    install.click();
-    expect(m.onInstall).toHaveBeenCalledWith("vtsls");
+    expect(button.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(button.hasAttribute("title")).toBe(false);
+    expect(m.root.querySelector(".lsp-status")!.getAttribute("data-tone")).toBe("warn");
   });
-  it("retries retryable install failures and restarts crashes", () => {
-    const a = mount({ kind: "install-failed", server: "html", reason: "net", retryable: true });
-    [...open(a.root).querySelectorAll("button")].find(b => b.textContent === "Retry install")!.click();
-    expect(a.onRetry).toHaveBeenCalledWith("html");
-    const b = mount({ kind: "crashed", server: "css" });
-    [...open(b.root).querySelectorAll("button")].find(x => x.textContent!.startsWith("Restart"))!.click();
-    expect(b.onRestart).toHaveBeenCalledWith("css");
+  it("opens the panel when clicked and reports being open", () => {
+    const m = mount(makeServer("html", { kind: "ready", server: "html" }, { state: { kind: "ready" } }), true);
+    const button = m.root.querySelector<HTMLButtonElement>(".lsp-status-button")!;
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    button.click();
+    expect(m.onToggle).toHaveBeenCalledWith(button);
   });
-  it("explains a missing runtime and links to settings", () => {
-    const m = mount({ kind: "runtime-missing", server: "jdtls", runtime: "Java", requiredVersion: 25, found: ["17"] });
-    const pop = open(m.root);
-    expect(pop.textContent).toContain("JDT LS needs JDK 25 or newer, found: 17");
-    [...pop.querySelectorAll("button")].find(b => b.textContent!.startsWith("Open language server settings"))!.click();
-    expect(m.onOpenSettings).toHaveBeenCalled();
-  });
-  it("shows install progress and closes on Escape", () => {
-    const m = mount({ kind: "installing", server: "vtsls", received: 1, total: 4 });
-    const pop = open(m.root);
-    expect(pop.querySelector("[role=progressbar]")!.getAttribute("aria-valuenow")).toBe("25");
-    m.root.querySelector(".lsp-status")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(m.root.querySelector(".lsp-popover")).toBeNull();
-  });
-  it("offers Restart and a settings link when an install failure cannot be retried", () => {
-    const m = mount({ kind: "install-failed", server: "jdtls", reason: "no space", retryable: false });
-    const pop = open(m.root);
-    const buttons = [...pop.querySelectorAll("button")];
-    expect(buttons.some(b => b.textContent === "Retry install")).toBe(false);
-    buttons.find(b => b.textContent!.startsWith("Open language server settings"))!.click();
-    expect(m.onOpenSettings).toHaveBeenCalled();
-    const again = open(m.root);
-    [...again.querySelectorAll("button")].find(b => b.textContent === "Restart JDT LS")!.click();
-    expect(m.onRestart).toHaveBeenCalledWith("jdtls");
-  });
-  it("shows a failed status read as an error with a retry instead of Checking", () => {
-    const m = mount({ kind: "unknown", server: "vtsls" }, true, { statusError: "Could not read language server status: boom", error: "Could not read language server status: boom" });
+  it("shows a failed status read as unavailable instead of checking forever", () => {
+    const m = mount(makeServer("vtsls", { kind: "unknown", server: "vtsls" }), false, { statusError: "Could not read language server status: boom" });
     expect(m.root.querySelector(".lsp-status")!.getAttribute("data-tone")).toBe("bad");
-    expect(m.root.querySelector(".lsp-status-button")!.textContent).toContain("Status unavailable");
-    const pop = open(m.root);
-    expect(pop.textContent).toContain("boom");
-    expect(pop.querySelectorAll("[role=alert]")).toHaveLength(0);
-    [...pop.querySelectorAll("button")].find(b => b.textContent === "Retry")!.click();
-    expect(m.onRefresh).toHaveBeenCalled();
-  });
-  it("shows the last background error in the popover", () => {
-    const m = mount({ kind: "ready", server: "vtsls" }, true, { error: "vtsls: crashed twice" });
-    expect(open(m.root).querySelector("[role=alert]")!.textContent).toBe("vtsls: crashed twice");
+    expect(m.root.querySelector(".lsp-status-button")!.textContent).toContain("status unavailable");
   });
 });

@@ -41,7 +41,7 @@ export interface LspBinding {
   /** Why an empty hover may be incomplete: the server is still starting, or is indexing the project. Read, never cached. */
   getServerNotice?: () => ServerNotice | undefined;
   /** Extension point for the language intelligence hub: a hint (for example "dependencies are not loaded") shown under a hover. */
-  hoverHint?: (pos: number) => string | HoverHint | undefined;
+  hoverHint?: (pos: number, hadResult?: boolean) => string | HoverHint | undefined;
   /** Current key label for an action, taken from the configurable bindings. */
   getShortcut?: (id: "goToDefinition" | "peekDefinition" | "quickInfo") => string | undefined;
   /** Opens an http or https link from hover content. */
@@ -561,9 +561,9 @@ class HoverPlugin {
       .map(mark => ({ severity: mark.severity === "error" ? "error" : mark.severity === "warning" ? "warning" : "info", message: mark.message, source: mark.source ?? serverLabels[this.binding.server], code: mark.code } as HoverDiagnostic)).slice(0, 6);
   }
 
-  private hintAt(pos: number): HoverHintView | undefined {
+  private hintAt(pos: number, hadResult = false): HoverHintView | undefined {
     let hint: string | HoverHintView | undefined;
-    try { hint = this.binding.hoverHint?.(pos); } catch { hint = undefined; }
+    try { hint = this.binding.hoverHint?.(pos, hadResult); } catch { hint = undefined; }
     return typeof hint === "string" ? (hint ? { text: hint } : undefined) : hint?.text ? hint : undefined;
   }
 
@@ -606,7 +606,7 @@ class HoverPlugin {
     const shown: TokenAt = range ? { ...token, from: range.from, to: range.to } : token;
     const language = resolveLanguageId("", runtime.path);
     const input = {
-      markdown, diagnostics: this.diagnosticsAt(token), hint: this.hintAt(token.at), actions: [] as HoverAction[],
+      markdown, diagnostics: this.diagnosticsAt(token), hint: this.hintAt(token.at, Boolean(markdown.trim())), actions: [] as HoverAction[],
       fallbackLanguage: language === "text" ? undefined : language,
       openExternal: binding.openExternal, navigate: binding.navigateFile,
       onEscape: () => { this.hide(); view.focus(); },
