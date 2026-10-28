@@ -58,6 +58,16 @@ describe("workspace SettingsPage", () => {
     expect(onChange).toHaveBeenLastCalledWith({ wordWrap: true });
   });
 
+  it("exposes the enabled tab limit, value, and per-group scope", async () => {
+    const { root, onChange } = mount();
+    button(root, "Editor").click(); await settle();
+    expect(button(root, "Limit open tabs").getAttribute("aria-checked")).toBe("true");
+    const limit = input(root, "Maximum open tabs"); limit.value = "12"; limit.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(); expect(onChange).toHaveBeenCalledWith({ tabLimit: 12 });
+    button(root, "Limit tabs per editor group").click(); await settle();
+    expect(onChange).toHaveBeenLastCalledWith({ tabLimitPerGroup: true });
+  });
+
   it("keeps an invalid JSONC draft after save failure and after saved settings change", async () => {
     const onSaveJsonc = vi.fn(async () => { throw new Error("Settings must contain an object"); });
     const onDirtyChange = vi.fn();

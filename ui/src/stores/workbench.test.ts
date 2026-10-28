@@ -199,6 +199,72 @@ describe("workspace views and session state", () => {
     expect(JSON.stringify(saved)).not.toContain("# Project");
   });
 
+  it("restores the saved active file before applying the tab limit", async () => {
+    const first: BufferSnapshot = { path: "src/first.ts", text: "first\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const active: BufferSnapshot = { path: "src/active.ts", text: "active\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(first.path, first); server.set(active.path, active);
+    const session: SessionState = { workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts", first.path, active.path], activePath: active.path }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: false }, markdownViews: {} };
+    client.getSession.mockResolvedValue(session);
+    client.getSettings.mockResolvedValue({ ...preferences, tabLimit: 2 });
+    const workbench = testWorkbench(); await workbench.initialize();
+    expect(workbench.groups()[0].tabs).toEqual([first.path, active.path]);
+    expect(workbench.activePath()).toBe(active.path);
+  });
+
+  it("evicts the least recently focused clean file and keeps dirty files until saved", async () => {
+    const workbench = await setup();
+    const a: BufferSnapshot = { path: "src/a.ts", text: "a\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const b: BufferSnapshot = { path: "src/b.ts", text: "b\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const c: BufferSnapshot = { path: "src/c.ts", text: "c\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(a.path, a); server.set(b.path, b); server.set(c.path, c);
+    workbench.setSettings({ ...preferences, tabLimit: 3 });
+    await workbench.openFile(a.path); await workbench.openFile(b.path); await workbench.openFile("src/file.ts"); await workbench.openFile(c.path);
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts", b.path, c.path]);
+
+    workbench.setSettings({ ...preferences, tabLimit: 1 });
+    append(workbench, "// unsaved\n");
+    await workbench.openFile(a.path);
+    expect(workbench.groups()[0].tabs).toContain("src/file.ts");
+    expect(workbench.dirty("src/file.ts")).toBe(true);
+    await workbench.save("src/file.ts");
+    expect(workbench.dirty("src/file.ts")).toBe(false);
+    expect(workbench.groups()[0].tabs).toEqual([a.path]);
+  });
+
+  it("immediately applies a configured limit decrease", async () => {
+    let configured = { ...preferences };
+    client.getSettings.mockImplementation(async () => configured);
+    client.getSettingsForScope.mockImplementation(async () => configured);
+    client.updateSetting.mockImplementation(async (_scope: string, key: string, value: string) => {
+      configured = { ...configured, [key]: JSON.parse(value) };
+      return configured;
+    });
+    const workbench = await setup();
+    const a: BufferSnapshot = { path: "src/a.ts", text: "a\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const b: BufferSnapshot = { path: "src/b.ts", text: "b\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(a.path, a); server.set(b.path, b);
+    await workbench.openFile(a.path); await workbench.openFile(b.path);
+    await workbench.updateSettings({ tabLimit: 2 });
+    expect(workbench.settings().tabLimit).toBe(2);
+    expect(workbench.groups()[0].tabs).toEqual([a.path, b.path]);
+  });
+
+  it("does not enforce a disabled limit and counts tabs per editor group when configured", async () => {
+    const workbench = await setup();
+    const a: BufferSnapshot = { path: "src/a.ts", text: "a\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const b: BufferSnapshot = { path: "src/b.ts", text: "b\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(a.path, a); server.set(b.path, b);
+    workbench.setSettings({ ...preferences, tabLimitEnabled: false, tabLimit: 1 });
+    await workbench.openFile(a.path); await workbench.openFile(b.path);
+    expect(workbench.groups()[0].tabs).toContain("src/file.ts");
+    expect(workbench.groups()[0].tabs).toContain(a.path);
+    expect(workbench.groups()[0].tabs).toContain(b.path);
+
+    workbench.setSettings({ ...preferences, tabLimit: 1, tabLimitPerGroup: true });
+    await workbench.openFile("src/file.ts");
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts"]);
+  });
+
   it("opens Markdown in preview by default while preserving a source override", async () => {
     const workbench = await setup(); expect(workbench.markdownView("README.md")).toBe("preview");
     workbench.setMarkdownView("README.md", "source");

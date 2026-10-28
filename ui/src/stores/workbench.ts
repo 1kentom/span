@@ -3,6 +3,7 @@ import { createAutoSaveController, type AutoSaveFailure } from "./autosave";
 import { createStore } from "solid-js/store";
 import { ChangeSet, Text } from "@codemirror/state";
 import { isAssetPath, isBinaryAssetPath } from "../components/AssetPreview";
+import { planTabEvictions } from "./tabLimit";
 import type { EditorEdit, EditorDocumentChange } from "../components/Editor";
 import { api, isDesktop } from "../lib/client";
 import type { BufferSnapshot, FileEntry, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
@@ -26,7 +27,7 @@ export function createWorkbench() {
   const [buffers, setBuffers] = createStore<Record<string, BufferSnapshot>>({});
   const [documents, setDocuments] = createSignal<Record<string, { document: Text; change?: EditorDocumentChange }>>({});
   const [groups, setGroups] = createSignal<EditorGroup[]>([{ id: 1, tabs: [] }]);
-  const [activeGroup, setActiveGroup] = createSignal(1);
+  const [activeGroup, setActiveGroupState] = createSignal(1);
   const [files, setFiles] = createSignal<FileEntry[]>([]);
   const [recentPaths, setRecentPaths] = createSignal<string[]>([]);
   const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {} });
@@ -41,6 +42,7 @@ export function createWorkbench() {
   const [markdownViews, setMarkdownViews] = createSignal<Record<string, MarkdownView>>({});
   const [sessionReady, setSessionReady] = createSignal(false);
   const closedTabs: { path: string; group: number }[] = [];
+  const restoreProtectedTabs = new Set<string>();
   const [error, setError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [searchResults, setSearchResults] = createSignal<SearchMatch[]>([]);
@@ -56,12 +58,21 @@ export function createWorkbench() {
   const writes = new Map<string, Promise<void>>();
   const pendingEdits = new Map<string, EditorEdit[]>();
   const histories = new Map<string, { undo: { forward: ChangeSet; backward: ChangeSet; time: number; origin?: object }[]; redo: { forward: ChangeSet; backward: ChangeSet; time: number; origin?: object }[] }>();
+  const tabRecency = new Map<string, number>();
+  let tabClock = 0;
   let workspaceVersion = 0;
   let settingsRequest = 0;
   let searchVersion = 0;
   let activeSearch: { cancel: () => Promise<void> } | undefined;
   const report = (e: unknown) => setError(typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
   const activeTab = () => groups().find(g => g.id === activeGroup())?.active;
+  const tracksTab = (path: string) => path !== SETTINGS_TAB && !isSettingsBuffer(path);
+  function rememberTab(path?: string) { if (path && tracksTab(path)) tabRecency.set(path, ++tabClock); }
+  function setActiveGroup(group: number) {
+    const changed = activeGroup() !== group;
+    setActiveGroupState(group);
+    if (changed) rememberTab(groups().find(item => item.id === group)?.active);
+  }
   const activePath = () => activeTab() === SETTINGS_TAB ? undefined : activeTab();
   const isMarkdown = (path: string) => /\.(md|markdown|mdown)$/i.test(path);
   const markdownView = (path: string): MarkdownView => markdownViews()[path] || (isMarkdown(path) ? settings().markdownPreviewDefault ? "preview" : "source" : isAssetPath(path) ? "preview" : "source");
@@ -83,6 +94,26 @@ export function createWorkbench() {
   onCleanup(() => { if (sessionTimer) clearTimeout(sessionTimer); });
   const dirty = (path: string) => { documents()[path]; const buffer = buffers[path]; const revision = buffer?.revision; const savedRevision = buffer?.savedRevision; return !!buffer && ((pendingEdits.get(path)?.length || 0) > 0 || revision !== savedRevision); };
   const hasDirty = () => Object.keys(buffers).some(dirty);
+  function enforceTabLimit(protectedPaths: ReadonlySet<string> = new Set()) {
+    const preferences = settings();
+    if (!preferences.tabLimitEnabled) return;
+    const paths = [...new Set(groups().flatMap(group => group.tabs).filter(tracksTab))];
+    const mostRecentFirst = paths.sort((a, b) => (tabRecency.get(b) || 0) - (tabRecency.get(a) || 0));
+    const candidates = groups().map(group => ({ ...group, tabs: group.tabs.filter(tracksTab) }));
+    const removals = planTabEvictions(candidates, preferences.tabLimit, preferences.tabLimitPerGroup, mostRecentFirst, dirty, protectedPaths);
+    if (!removals.length) return;
+    const removed = new Map<number, Set<string>>();
+    for (const item of removals) {
+      const paths = removed.get(item.group) || new Set<string>(); paths.add(item.path); removed.set(item.group, paths);
+      tabRecency.delete(item.path);
+    }
+    setGroups(current => current.map(group => {
+      const paths = removed.get(group.id);
+      if (!paths) return group;
+      const tabs = group.tabs.filter(path => !paths.has(path));
+      return { ...group, tabs, active: group.active && tabs.includes(group.active) ? group.active : tabs[0] };
+    }));
+  }
 
   async function loadDirectory(path: string) {
     const version = workspaceVersion;
@@ -99,7 +130,9 @@ export function createWorkbench() {
     try {
       if (!buffers[path] && !isBinaryAssetPath(path)) { const buffer = await readBuffer(path); if (version !== workspaceVersion) return; accepted.set(path, buffer); setBuffers(path, buffer); setDocuments(current => ({ ...current, [path]: { document: Text.of(buffer.text.split("\n")) } })); }
       if (!isSettingsBuffer(path)) setRecentPaths(current => [path, ...current.filter(item => item !== path)].slice(0, 50));
+      rememberTab(path);
       batch(() => { setGroups(current => current.map(g => g.id === group ? { ...g, tabs: g.tabs.includes(path) ? g.tabs : [...g.tabs, path], active: path } : g)); setActiveGroup(group); });
+      enforceTabLimit(restoreProtectedTabs);
     } catch (e) { report(e); }
   }
   async function openWorkspace(path?: string, restore?: SessionState) {
@@ -112,6 +145,8 @@ export function createWorkbench() {
       const value = await api.openWorkspace(path);
       if (!value) return;
       workspaceVersion++;
+      restoreProtectedTabs.clear();
+      tabRecency.clear(); tabClock = 0;
       batch(() => { setWorkspaceGeneration(workspaceVersion); setWorkspace(value); setGroups([{ id: 1, tabs: [] }]); setActiveGroup(1); setExpanded(new Set([""])); setError(""); setSearchResults([]); });
       for (const key of Object.keys(buffers)) setBuffers(key, undefined!);
       for (const key of Object.keys(directories)) setDirectories(key, undefined!);
@@ -123,11 +158,15 @@ export function createWorkbench() {
         setPanels(restore.panels);
         setGroups(restore.groups.slice(0, 2).map((_group, index) => ({ id: index + 1, tabs: [] })));
         if (!groups().length) setGroups([{ id: 1, tabs: [] }]);
+        for (const group of restore.groups.slice(0, 2)) if (group.activePath) restoreProtectedTabs.add(group.activePath);
         for (const [index, group] of restore.groups.slice(0, 2).entries()) {
           for (const file of group.paths) await openFile(file, index + 1);
           setGroups(current => current.map(item => item.id === index + 1 ? { ...item, active: item.tabs.includes(group.activePath || "") ? group.activePath! : item.tabs[0] } : item));
         }
         setActiveGroup(groups()[Math.min(restore.activeGroup, groups().length - 1)]?.id || 1);
+        restoreProtectedTabs.clear();
+        for (const group of groups()) rememberTab(group.active);
+        enforceTabLimit();
         nextGroupId = Math.max(...groups().map(group => group.id)) + 1;
       }
       if (!isDesktop) {
@@ -224,6 +263,7 @@ export function createWorkbench() {
       const current = accepted.get(path);
       accepted.set(path, current && current.revision > result.revision ? { ...current, savedRevision: Math.max(current.savedRevision, result.savedRevision) } : result);
       setBuffers(path, "savedRevision", Math.max(buffers[path].savedRevision, result.savedRevision));
+      if (!dirty(path)) enforceTabLimit();
       void api.listFiles().then(setFiles).catch(report);
       for (const directory of Object.keys(directories)) if (directories[directory]) void loadDirectory(directory);
       if (isSettingsBuffer(path) || path === ".span/settings.jsonc") await refreshSettingsScope(settingsScope());
@@ -351,6 +391,7 @@ export function createWorkbench() {
     const [selected, effective, raw, keys] = await Promise.all([api.getSettingsForScope(scope), api.getSettings(), api.getSettingsJsoncForScope(scope), api.getSettingsKeysForScope(scope)]);
     if (request !== settingsRequest || version !== workspaceVersion) return;
     batch(() => { setSettingsScope(scope); setScopeSettings(selected); setSettings(effective); setSettingsJsonc(raw); setConfiguredSettingsKeys(keys); });
+    enforceTabLimit();
   }
   async function reloadSettingsJsonc(): Promise<string> { await refreshSettingsScope(); return settingsJsonc(); }
   async function openSettingsJsonc(scope = settingsScope()) { await openFile(settingsBufferPath(scope)); }
