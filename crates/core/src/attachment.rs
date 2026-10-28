@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Largest attachment accepted in one save.
@@ -74,6 +74,38 @@ fn check_component(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Split a workspace-relative attachment directory into validated components.
+///
+/// The contract is the same on every platform: components are separated by `/` only.
+/// The raw string is checked before any `Path` parsing, because on Windows `Path` treats
+/// `\`, drive letters and UNC prefixes as structure and would hide them from the
+/// per-component checks. Empty and `.` components are skipped, so `""` is the root.
+fn attachment_dir_parts(dir: &str) -> Result<Vec<&str>> {
+    if dir.contains('\0') {
+        return Err(reject("directory contains NUL"));
+    }
+    if dir.starts_with('/') || dir.starts_with('\\') {
+        return Err(CoreError::OutsideWorkspace(dir.to_owned()));
+    }
+    if dir.contains('\\') {
+        return Err(reject(
+            "directory must use forward slashes, not backslashes",
+        ));
+    }
+    let mut parts = Vec::new();
+    for part in dir.split('/') {
+        match part {
+            "" | "." => continue,
+            ".." => return Err(CoreError::OutsideWorkspace(dir.to_owned())),
+            _ => {
+                check_component(part)?;
+                parts.push(part);
+            }
+        }
+    }
+    Ok(parts)
+}
+
 fn numbered(file_name: &str, n: u32) -> String {
     let path = Path::new(file_name);
     match (path.file_stem(), path.extension()) {
@@ -114,22 +146,10 @@ impl CoreWorkspace {
     /// Validate `dir` lexically, then create it one component at a time, re-checking the
     /// canonical location each step so a symlinked component cannot lead outside the root.
     fn ensure_attachment_dir(&self, dir: &str) -> Result<PathBuf> {
-        if dir.contains('\0') {
-            return Err(reject("directory contains NUL"));
-        }
-        let requested = Path::new(dir);
-        if requested.is_absolute() {
-            return Err(CoreError::OutsideWorkspace(dir.to_owned()));
-        }
+        let parts = attachment_dir_parts(dir)?;
         let mut current = self.root.clone();
-        for component in requested.components() {
-            let part = match component {
-                Component::CurDir => continue,
-                Component::Normal(part) => part.to_string_lossy().into_owned(),
-                _ => return Err(CoreError::OutsideWorkspace(dir.to_owned())),
-            };
-            check_component(&part)?;
-            current.push(&part);
+        for part in parts {
+            current.push(part);
             if current.symlink_metadata().is_err() {
                 fs::create_dir(&current).map_err(|e| io_error("Create directory", &current, e))?;
             }
@@ -311,6 +331,15 @@ mod tests {
             "node_modules",
             "bad\0dir",
             "a\\b",
+            "C:\\x",
+            "C:/x",
+            "C:",
+            "\\\\server\\share",
+            "//server/share",
+            "a/..\\b",
+            "/a\\b",
+            "\\a",
+            "a/b\\",
         ] {
             assert!(ws.save_attachment(dir, "f.txt", b"x").is_err(), "{dir:?}");
         }
@@ -320,6 +349,45 @@ mod tests {
                     .unwrap()
                     .next()
                     .is_none()
+        );
+    }
+
+    /// String-level contract, independent of how the host `Path` parses separators, so
+    /// the Windows behaviour is exercised on every platform.
+    #[test]
+    fn directory_parts_use_forward_slashes_only_on_every_platform() {
+        for dir in ["a\\b", "C:\\x", "a/..\\b", "a/b\\", "a\\"] {
+            assert!(
+                matches!(attachment_dir_parts(dir), Err(CoreError::Attachment(_))),
+                "{dir:?}"
+            );
+        }
+        for dir in [
+            "/a",
+            "/a\\b",
+            "\\a",
+            "\\\\server\\share",
+            "//server/share",
+            "a/../b",
+            "..",
+            "../x",
+        ] {
+            assert!(
+                matches!(
+                    attachment_dir_parts(dir),
+                    Err(CoreError::OutsideWorkspace(_))
+                ),
+                "{dir:?}"
+            );
+        }
+        for dir in ["C:", "C:/x", "a/C:", "bad\0dir", ".git", "a/.Span/b", "con"] {
+            assert!(attachment_dir_parts(dir).is_err(), "{dir:?}");
+        }
+        assert_eq!(attachment_dir_parts("").unwrap(), Vec::<&str>::new());
+        assert_eq!(attachment_dir_parts("./a//b/").unwrap(), vec!["a", "b"]);
+        assert_eq!(
+            attachment_dir_parts("assets/img").unwrap(),
+            vec!["assets", "img"]
         );
     }
 
@@ -333,6 +401,10 @@ mod tests {
             "..",
             "a/b",
             "a\\b",
+            "C:\\x",
+            "C:x",
+            "\\\\server\\share",
+            "..\\x",
             "../x",
             "/abs",
             "n\0ul",
