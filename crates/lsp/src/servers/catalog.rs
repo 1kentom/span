@@ -932,26 +932,28 @@ mod tests {
 
     #[test]
     fn node_servers_launch_with_explicit_args() {
-        let mut ctx = LaunchContext::new("/cache/v", MAC_ARM);
+        let cache = Path::new("/cache/v");
+        let joined = |rel: &str| cache.join(rel).to_string_lossy().into_owned();
+        let mut ctx = LaunchContext::new(cache, MAC_ARM);
         ctx.runtime_program = Some(PathBuf::from("/usr/local/bin/node"));
         let l = launch_spec(ServerId::Vtsls, &ctx).unwrap();
         assert_eq!(l.program, PathBuf::from("/usr/local/bin/node"));
         assert_eq!(
             l.args,
             vec![
-                "/cache/v/node_modules/@vtsls/language-server/bin/vtsls.js".to_string(),
+                joined("node_modules/@vtsls/language-server/bin/vtsls.js"),
                 "--stdio".to_string()
             ]
         );
         assert!(l.env.is_empty());
 
-        let ctx = LaunchContext::new("/cache/v", MAC_ARM);
+        let ctx = LaunchContext::new(cache, MAC_ARM);
         let b = launch_spec(ServerId::Basedpyright, &ctx).unwrap();
         assert_eq!(b.program, PathBuf::from("node"));
         assert_eq!(
             b.args,
             vec![
-                "/cache/v/node_modules/basedpyright/langserver.index.js".to_string(),
+                joined("node_modules/basedpyright/langserver.index.js"),
                 "--stdio".to_string()
             ]
         );
@@ -1005,7 +1007,16 @@ mod tests {
     #[test]
     fn jdtls_launch_args_are_exact() {
         let dir = jdtls_install_dir();
-        let root = dir.path().to_string_lossy().into_owned();
+        let shared = dir
+            .path()
+            .join("config_mac_arm")
+            .to_string_lossy()
+            .into_owned();
+        let launcher = dir
+            .path()
+            .join("plugins/org.eclipse.equinox.launcher_1.8.0.v20260804-1928.jar")
+            .to_string_lossy()
+            .into_owned();
         let mut ctx = LaunchContext::new(dir.path(), MAC_ARM);
         ctx.runtime_program = Some(PathBuf::from("/jdk/bin/java"));
         ctx.java_major = Some(21);
@@ -1018,7 +1029,7 @@ mod tests {
             "-Dosgi.bundles.defaultStartLevel=4".into(),
             "-Declipse.product=org.eclipse.jdt.ls.core.product".into(),
             "-Dosgi.checkConfiguration=true".into(),
-            format!("-Dosgi.sharedConfiguration.area={root}/config_mac_arm"),
+            format!("-Dosgi.sharedConfiguration.area={shared}"),
             "-Dosgi.sharedConfiguration.area.readOnly=true".into(),
             "-Dosgi.configuration.cascaded=true".into(),
             "-Xms1G".into(),
@@ -1028,7 +1039,7 @@ mod tests {
             "--add-opens".into(),
             "java.base/java.lang=ALL-UNNAMED".into(),
             "-jar".into(),
-            format!("{root}/plugins/org.eclipse.equinox.launcher_1.8.0.v20260804-1928.jar"),
+            launcher,
             "-configuration".into(),
             "/data/cfg".into(),
             "-data".into(),
@@ -1047,7 +1058,10 @@ mod tests {
         let l = launch_spec(ServerId::Jdtls, &ctx).unwrap();
         assert_eq!(l.args[0], "-Djdk.xml.maxGeneralEntitySizeLimit=0");
         assert_eq!(l.args[1], "-Djdk.xml.totalEntitySizeLimit=0");
-        assert!(l.args.iter().any(|a| a.ends_with("/config_linux")));
+        assert!(l
+            .args
+            .iter()
+            .any(|a| Path::new(a).ends_with("config_linux")));
         assert_eq!(
             jdtls_config_dir_name(Platform::new(Os::Windows, Arch::Aarch64)),
             "config_win"
