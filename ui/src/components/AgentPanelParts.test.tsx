@@ -72,7 +72,7 @@ describe("AgentPermission", () => {
     ));
     expect([...host.querySelectorAll(".agent-permission-option")].map((button) => button.textContent?.replace(/\s+/g, " ").trim())).toEqual([
       "1Allow once",
-      "2Always allowRemembered for this session",
+      "2Always allowRemembered by Span for this session",
       "3Reject",
     ]);
     expect(host.querySelector(".agent-permission-summary")?.textContent).toBe("git status");
