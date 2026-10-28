@@ -13,6 +13,7 @@ let authenticated = false;
 const rich = process.argv.includes('--rich');
 const needsAuth = process.argv.includes('--auth');
 const agentName = process.argv.find(arg => arg.startsWith('--name='))?.slice(7) ?? 'span-test-peer';
+const slowCancel = Number(process.argv.find(arg => arg.startsWith('--slow-cancel='))?.slice(14) ?? 0);
 const callbacks = new Map();
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const result = (id, value) => {
@@ -138,6 +139,12 @@ input.on('line', line => {
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {
     const sessionId = message.params.sessionId;
-    if (activePrompts.has(sessionId) && !stubborn.has(sessionId)) result(activePrompts.get(sessionId), { stopReason: 'cancelled' });
+    if (activePrompts.has(sessionId) && !stubborn.has(sessionId)) {
+      // --slow-cancel=MS acknowledges Stop late, so the client's next requests
+      // overtake the cancelled prompt response.
+      const id = activePrompts.get(sessionId);
+      if (slowCancel > 0) setTimeout(() => { if (activePrompts.get(sessionId) === id) result(id, { stopReason: 'cancelled' }); }, slowCancel);
+      else result(id, { stopReason: 'cancelled' });
+    }
   }
 });

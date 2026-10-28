@@ -35,8 +35,42 @@ fn subset(expected: &Value, actual: Option<&Value>) -> bool {
     }
 }
 
+/// Replace each `$ROOT` (plus any `/segment` tail up to the closing quote) inside
+/// the JSON text with the native path `root.join(segments)`, JSON-escaped. Agents
+/// report native absolute paths, so on Windows the fixture agent sends backslash
+/// paths and the expected events compare against the same native form; escaping
+/// keeps backslashes from turning into invalid JSON escapes.
 fn substitute(value: &str, root: &Path) -> String {
-    value.replace("$ROOT", &root.to_string_lossy())
+    const TOKEN: &str = "$ROOT";
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find(TOKEN) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + TOKEN.len()..];
+        let tail_len = after.find('"').unwrap_or(after.len());
+        let mut path = root.to_path_buf();
+        for segment in after[..tail_len].split('/').filter(|s| !s.is_empty()) {
+            path.push(segment);
+        }
+        let quoted = serde_json::to_string(&path.to_string_lossy()).unwrap();
+        out.push_str(&quoted[1..quoted.len() - 1]);
+        rest = &after[tail_len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+fn substitute_escapes_backslash_roots_and_joins_natively() {
+    let root = Path::new(r"C:\Users\me\span");
+    let text = r#"{"root": "$ROOT", "file": "$ROOT/src/lib.rs", "other": "keep"}"#;
+    let value: Value = serde_json::from_str(&substitute(text, root)).expect("valid JSON");
+    assert_eq!(value["root"], root.to_string_lossy().as_ref());
+    assert_eq!(
+        value["file"],
+        root.join("src").join("lib.rs").to_string_lossy().as_ref()
+    );
+    assert_eq!(value["other"], "keep");
 }
 
 fn in_order(label: &str, expected: &[Value], actual: &[Value]) {
