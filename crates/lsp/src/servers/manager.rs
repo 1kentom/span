@@ -404,6 +404,20 @@ impl Manager {
             .map(|d| d.content().to_string())
     }
 
+    /// Capabilities the ready server advertised in `initialize`, if it is ready.
+    pub async fn capabilities(
+        &self,
+        id: ServerId,
+        root: &Path,
+    ) -> Option<lsp_types::ServerCapabilities> {
+        let inst = self.get(id, root).await?;
+        let inner = inst.inner.lock().await;
+        if !inner.ready {
+            return None;
+        }
+        inner.client.as_ref()?.server_capabilities()
+    }
+
     pub async fn completion(
         &self,
         id: ServerId,

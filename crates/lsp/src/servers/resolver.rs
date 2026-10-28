@@ -293,6 +293,7 @@ pub struct CatalogResolver {
     cache_root: PathBuf,
     platform: Option<Platform>,
     java_search: JavaSearch,
+    node_search: runtime::NodeSearch,
 }
 
 impl CatalogResolver {
@@ -309,6 +310,7 @@ impl CatalogResolver {
             cache_root,
             platform: Platform::current(),
             java_search: JavaSearch::from_host(),
+            node_search: runtime::NodeSearch::from_env(),
         }
     }
 
@@ -321,6 +323,12 @@ impl CatalogResolver {
     /// Overrides where JDKs are searched for (tests).
     pub fn with_java_search(mut self, search: JavaSearch) -> Self {
         self.java_search = search;
+        self
+    }
+
+    /// Overrides where Node.js is searched for (a user setting, or tests).
+    pub fn with_node_search(mut self, search: runtime::NodeSearch) -> Self {
+        self.node_search = search;
         self
     }
 
@@ -341,13 +349,14 @@ impl CatalogResolver {
         // Runtime first: failing here must not cost a download.
         let req = spec.runtime.clone();
         let search = self.java_search.clone();
+        let node_search = self.node_search.clone();
         let runtime =
             tokio::task::spawn_blocking(move || -> Result<Option<RuntimeInfo>, ResolveError> {
                 match req.runtime {
                     Runtime::None => Ok(None),
                     Runtime::Node => Ok(Some(runtime::locate_node(
                         &SystemProbe,
-                        &runtime::NodeSearch::from_env(),
+                        &node_search,
                         req.min_major,
                     )?)),
                     Runtime::Java => Ok(Some(locate_java(&SystemProbe, &search, req.min_major)?)),
