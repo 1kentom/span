@@ -1364,10 +1364,7 @@ async fn the_user_can_cancel_one_task_and_the_child_tree_stops() {
     let mut client = Client::new(&server);
 
     let delegated = client
-        .tool(
-            "delegate",
-            json!({"agent": "worker", "task": "work:180:10"}),
-        )
+        .tool("delegate", json!({"agent": "worker", "task": "wait"}))
         .await;
     let task = structured(&delegated)["taskId"]
         .as_str()
@@ -1489,4 +1486,63 @@ async fn a_root_session_that_ignores_stop_still_ends_the_connection() {
     assert!(message.contains("connection was terminated"), "{message}");
     h.next(|e| matches!(&e.event, AgentEvent::Status { state, .. } if state == "disconnected"))
         .await;
+}
+
+#[tokio::test]
+async fn a_cancel_right_after_a_prompt_is_never_lost() {
+    // The test runtime is single threaded: the manager's turn driver cannot
+    // run between `enqueue` and `cancel`, which forces the interleaving where
+    // the cancel arrives before the prompt was written to the agent. Before
+    // the fix the cancel was dropped and the child ran to completion.
+    let mut h = harness();
+    let connection = h.connect(&["--name=worker"]).await;
+    let key = h
+        .manager
+        .open_session(&connection, None, SessionOrigin::User)
+        .await
+        .expect("session");
+    let done = h
+        .manager
+        .enqueue(&key, "work:180:10".into(), Vec::new())
+        .expect("enqueue");
+    h.manager.cancel(&key).expect("cancel");
+    let result = tokio::time::timeout(Duration::from_secs(10), done)
+        .await
+        .expect("the turn ends")
+        .expect("reply");
+    assert_eq!(result, Err("Cancelled before the turn started".to_string()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let streamed = drain(&mut h.events).into_iter().any(|e| {
+        e.session_id.as_deref() == Some(key.session_id.as_str())
+            && matches!(
+                e.event,
+                AgentEvent::Thought { .. } | AgentEvent::Text { .. }
+            )
+    });
+    assert!(!streamed, "the cancelled prompt must never reach the agent");
+    // The session is still usable afterwards.
+    let again = h.manager.prompt(&key, "reply:ok".into(), Vec::new()).await;
+    assert_eq!(again, Ok(()));
+}
+
+#[tokio::test]
+async fn a_user_cancel_right_after_delegate_ends_cancelled_not_completed() {
+    // Same forced interleaving through the tool server: the child's turn
+    // is accepted and cancelled before the prompt is written.
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let _worker = h.connect(&["--name=worker"]).await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+    let delegated = client
+        .tool("delegate", json!({"agent": "worker", "task": "work:30:10"}))
+        .await;
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    server.cancel_task(&task).expect("user cancel");
+    let result = client.until_finished(&task).await;
+    assert_eq!(structured(&result)["status"], "failed");
+    assert_eq!(structured(&result)["reason"], "cancelled");
 }

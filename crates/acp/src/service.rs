@@ -286,6 +286,19 @@ impl AgentService {
         text: String,
         attachments: Vec<PromptAttachment>,
     ) -> Result<(), String> {
+        self.start_prompt(session_id, text, attachments)?
+            .await
+            .map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// The synchronous half of [`Self::prompt`]: the prompt command is in the
+    /// service's queue when this returns, so a `cancel` issued afterwards is
+    /// processed after it. The receiver resolves when the turn ends.
+    pub fn start_prompt(
+        &self,
+        session_id: String,
+        text: String,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<oneshot::Receiver<Result<(), String>>, String> {
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("Prompt cannot be empty".into());
         }
@@ -298,7 +311,7 @@ impl AgentService {
         self.tx
             .send(Command::Prompt(session_id, blocks, tx))
             .map_err(|_| "Agent disconnected")?;
-        rx.await.map_err(|_| "Agent disconnected".to_string())?
+        Ok(rx)
     }
     /// Call `authenticate` with an advertised `agent` method. Create the session afterwards.
     pub async fn authenticate(&self, method_id: String) -> Result<(), String> {

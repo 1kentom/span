@@ -295,6 +295,17 @@ Four gaps the delegation UI reported, closed in the backend:
   descendants is the manager's existing `cancel`, covered by
   `cancel_cascades_and_the_server_ends_with_its_lead`. UI wrapper:
   `agentCancelTask(taskId)` in `ui/src/lib/client.ts`.
+  Two guarantees back it. The manager's turn driver is spawned, so a
+  cancel could reach the agent before the accepted turn's prompt and be
+  dropped (the prompt then reset the cancelled flag and ran to the end).
+  `cancel` now bumps a per session epoch and the driver checks it and
+  writes the prompt under the same lock, so the prompt is either ahead of
+  the cancel or refused ("Cancelled before the turn started"). And a task
+  the user cancelled always ends `failed` with reason `cancelled`, even if
+  the child's turn completed normally in the same instant, and a later
+  report cannot overwrite it. Tests: `a_cancel_right_after_a_prompt_is_never_lost`,
+  `a_user_cancel_right_after_delegate_ends_cancelled_not_completed`, and
+  the `tools::tasks` unit tests.
 
 ## Resolved blockers
 

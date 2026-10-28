@@ -16,6 +16,8 @@ const MAX_TEXT_BYTES: usize = 256 * 1024;
 /// Longest `resultSummary`, in characters.
 pub const SUMMARY_CHARS: usize = 600;
 
+const USER_CANCEL: &str = "cancelled by the user";
+
 /// Milliseconds since the Unix epoch.
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -113,6 +115,9 @@ pub struct Task {
     pub started_at_ms: u64,
     pub finished_at_ms: Option<u64>,
     last_progress: Option<String>,
+    /// The user cancelled this task. Its terminal state is then always
+    /// `failed` with reason `cancelled`, whatever the child reports later.
+    user_cancelled: bool,
     permission_rejected: bool,
 }
 
@@ -244,6 +249,7 @@ impl Registry {
                 started_at_ms: now_ms(),
                 finished_at_ms: None,
                 last_progress: None,
+                user_cancelled: false,
                 permission_rejected: false,
             },
         );
@@ -486,6 +492,12 @@ impl Registry {
                 task.detail = Some(detail);
             }
         }
+        if task.user_cancelled {
+            // A completion that raced the cancel must not read as success.
+            task.status = TaskStatus::Failed;
+            task.reason = Some(FailureReason::Cancelled);
+            task.detail = Some(USER_CANCEL.into());
+        }
         if task.events > 0 {
             task.last_progress = Some(task.activity.clone());
         }
@@ -500,6 +512,29 @@ impl Registry {
         }
         drop(inner);
         self.bump();
+    }
+
+    /// The user cancels one task. Returns its child to stop. Refused once
+    /// the task finished; cancelling twice is allowed and changes nothing.
+    pub fn cancel_by_user(&self, task_id: &str) -> Result<SessionKey, String> {
+        let mut inner = self.inner();
+        let task = inner
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("Unknown taskId: {task_id}"))?;
+        if task.status.finished() {
+            return Err(format!(
+                "Task {task_id} already finished, nothing to cancel"
+            ));
+        }
+        task.user_cancelled = true;
+        let key = task.key.clone();
+        if let Some(d) = inner.delegations.get_mut(&key) {
+            if d.stop_override.is_none() {
+                d.stop_override = Some((FailureReason::Cancelled, USER_CANCEL.into()));
+            }
+        }
+        Ok(key)
     }
 
     /// Span is stopping the child; the next `cancelled` stop reports why.
@@ -626,5 +661,47 @@ impl Registry {
 
     pub fn decision_count(&self) -> usize {
         self.inner().decisions.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry() -> (Registry, SessionKey, String) {
+        let registry = Registry::default();
+        let key = SessionKey::new("c", "s");
+        registry.add_delegation(key.clone(), "worker".into(), Budget::default());
+        let id = registry
+            .start_task(&key, None, Duration::from_secs(1))
+            .unwrap();
+        (registry, key, id)
+    }
+
+    #[test]
+    fn a_completion_that_races_the_user_cancel_still_ends_cancelled() {
+        let (registry, key, id) = registry();
+        assert_eq!(registry.cancel_by_user(&id).as_ref(), Ok(&key));
+        // The child's turn ended normally just as the cancel was applied.
+        registry.finish(&id, Ok(()));
+        let task = registry.view(&id, Duration::from_secs(1)).unwrap().task;
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(task.reason, Some(FailureReason::Cancelled));
+        assert_eq!(task.detail.as_deref(), Some(USER_CANCEL));
+        // A later report never overwrites the terminal state.
+        registry.finish(&id, Err("late".into()));
+        let task = registry.view(&id, Duration::from_secs(1)).unwrap().task;
+        assert_eq!(task.reason, Some(FailureReason::Cancelled));
+    }
+
+    #[test]
+    fn cancelling_a_finished_task_is_refused_clearly() {
+        let (registry, _, id) = registry();
+        registry.finish(&id, Ok(()));
+        let error = registry.cancel_by_user(&id).unwrap_err();
+        assert!(error.contains("already finished"), "{error}");
+        let task = registry.view(&id, Duration::from_secs(1)).unwrap().task;
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert!(registry.cancel_by_user("task-99").is_err());
     }
 }

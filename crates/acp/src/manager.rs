@@ -137,6 +137,8 @@ struct Turn {
     text: String,
     attachments: Vec<PromptAttachment>,
     reply: oneshot::Sender<Result<(), String>>,
+    /// The session's `cancel_epoch` when the turn was accepted.
+    epoch: u64,
 }
 
 struct Session {
@@ -145,6 +147,10 @@ struct Session {
     origin: SessionOrigin,
     busy: bool,
     queue: VecDeque<Turn>,
+    /// Bumped by every cancel. A turn accepted before a cancel but not yet
+    /// sent to the agent is refused, so the cancel cannot be lost to the
+    /// gap between accepting a turn and writing its prompt.
+    cancel_epoch: u64,
 }
 
 #[derive(Default)]
@@ -600,6 +606,7 @@ impl SessionManager {
                         origin,
                         busy: false,
                         queue: VecDeque::new(),
+                        cancel_epoch: 0,
                     },
                 );
             }
@@ -634,6 +641,7 @@ impl SessionManager {
             origin,
             busy: false,
             queue: VecDeque::new(),
+            cancel_epoch: 0,
         });
         Ok(())
     }
@@ -738,14 +746,15 @@ impl SessionManager {
             return Err("Prompt cannot be empty".into());
         }
         let (reply, done) = oneshot::channel();
-        let turn = Turn {
-            text,
-            attachments,
-            reply,
-        };
         let start = {
             let mut state = self.state();
             let session = state.sessions.get_mut(key).ok_or("Unknown session")?;
+            let turn = Turn {
+                text,
+                attachments,
+                reply,
+                epoch: session.cancel_epoch,
+            };
             if session.busy {
                 session.queue.push_back(turn);
                 None
@@ -767,13 +776,31 @@ impl SessionManager {
             let mut next = Some(first);
             while let Some(turn) = next.take() {
                 manager.state().rejected.remove(&key);
-                let result = match manager.service(&key.connection_id) {
-                    Some(service) => {
-                        service
-                            .prompt(key.session_id.clone(), turn.text, turn.attachments)
-                            .await
+                // Checked and written under the state lock: `cancel` bumps the
+                // epoch under it and only then tells the agent, so either this
+                // prompt is queued ahead of that cancel or it is refused here.
+                let started = {
+                    let state = manager.state();
+                    match state.sessions.get(&key) {
+                        Some(session) if session.cancel_epoch != turn.epoch => {
+                            Err("Cancelled before the turn started".to_string())
+                        }
+                        _ => match state.service(&key.connection_id) {
+                            Some(service) => service.start_prompt(
+                                key.session_id.clone(),
+                                turn.text,
+                                turn.attachments,
+                            ),
+                            None => Err("Agent disconnected".to_string()),
+                        },
                     }
-                    None => Err("Agent disconnected".into()),
+                };
+                let result = match started {
+                    Ok(done) => done
+                        .await
+                        .map_err(|_| "Agent disconnected".to_string())
+                        .and_then(|result| result),
+                    Err(error) => Err(error),
                 };
                 let _ = turn.reply.send(result);
                 let mut state = manager.state();
@@ -801,6 +828,7 @@ impl SessionManager {
             let mut stops = Vec::new();
             for child in tree.iter().skip(1).rev() {
                 if let Some(session) = state.sessions.get_mut(child) {
+                    session.cancel_epoch += 1;
                     turns.extend(session.queue.drain(..));
                 }
                 if let Some(service) = state.service(&child.connection_id) {
@@ -808,6 +836,7 @@ impl SessionManager {
                 }
             }
             if let Some(session) = state.sessions.get_mut(key) {
+                session.cancel_epoch += 1;
                 turns.extend(session.queue.drain(..));
             }
             (turns, stops, root)

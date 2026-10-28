@@ -258,20 +258,7 @@ impl ToolServer {
     /// when the task already finished.
     pub fn cancel_task(&self, task_id: &str) -> Result<(), String> {
         let control = self.shared.control().map_err(|e| e.message)?;
-        let view = self
-            .shared
-            .registry
-            .view(task_id, self.shared.second())
-            .ok_or_else(|| format!("Unknown taskId: {task_id}"))?;
-        if view.task.status.finished() {
-            return Err("The task already finished".into());
-        }
-        let key = view.task.key;
-        self.shared.registry.stopping(
-            &key,
-            FailureReason::Cancelled,
-            "cancelled by the user".into(),
-        );
+        let key = self.shared.registry.cancel_by_user(task_id)?;
         control.cancel(&key)
     }
 
