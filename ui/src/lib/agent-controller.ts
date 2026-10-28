@@ -1,8 +1,8 @@
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionSummary } from "../bindings";
+import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionSummary } from "../bindings";
 import { createAttachmentIntake } from "../components/attachments";
-import type { Phase } from "../components/agent/types";
-import { api, isDesktop } from "./client";
+import type { AuthSecret, Phase } from "../components/agent/types";
+import { agentAuthenticateWith, agentPresets, api, isDesktop } from "./client";
 import {
   addFeedItem,
   initialAgentState,
@@ -15,7 +15,7 @@ import {
   type AgentState,
   type Failure,
 } from "./agent-session";
-import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolLocations, workspaceRelative } from "./agent-view";
+import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
 import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
 
 export type AgentPanelProps = {
@@ -65,6 +65,7 @@ export function createAgentController(props: AgentPanelProps) {
   const [pendingAction, setPendingAction] = createSignal("");
   const [installed, setInstalled] = createSignal<InstalledAgent[]>([]);
   const [registry, setRegistry] = createSignal<RegistryAgent[]>([]);
+  const [presets, setPresets] = createSignal<AgentPreset_Serialize[]>([]);
   const [registryBusy, setRegistryBusy] = createSignal(false);
   const [installing, setInstalling] = createSignal<string>();
   const [agentName, setAgentName] = createSignal("Select agent");
@@ -101,6 +102,8 @@ export function createAgentController(props: AgentPanelProps) {
 
   const selectionKey = createMemo(() => `${props.selectionContext?.path}:${props.selectionContext?.text}`);
   const selection = createMemo(() => (props.selectionContext?.text && hiddenSelection() !== selectionKey() ? props.selectionContext : undefined));
+  /** Name shown for the connected agent in sentences. */
+  const agentLabel = () => state().agent?.title || state().agent?.name || agentName();
   const connected = createMemo(() => Boolean(sessionId()) && !["disconnected", "error", "unavailable", "connecting"].includes(state().status));
   const caps = createMemo(() => promptCapabilities(state().agent?.features));
   /** Attachments the connected agent cannot take, with the reason. Unknown capabilities block nothing. */
@@ -241,7 +244,9 @@ export function createAgentController(props: AgentPanelProps) {
   async function loadAgents() {
     if (!isDesktop || registryBusy()) return;
     setRegistryBusy(true);
-    const [local, remote] = await Promise.allSettled([api.agentInstalled(), api.agentRegistry()]);
+    const [local, remote, preset] = await Promise.allSettled([api.agentInstalled(), api.agentRegistry(), agentPresets()]);
+    // A preset list that fails to load only hides the preset rows; the rest of the screen still works.
+    if (preset.status === "fulfilled") setPresets(preset.value);
     if (local.status === "fulfilled") setInstalled(local.value);
     else fail({ phase: "connect", message: `Could not read installed agents: ${errorText(local.reason)}` });
     if (remote.status === "fulfilled") setRegistry(remote.value);
@@ -308,6 +313,11 @@ export function createAgentController(props: AgentPanelProps) {
     const entry = installed().find((agent) => agent.id === id);
     if (entry) void connect(entry.launch, registryName(entry.id) || entry.id, entry.id);
   };
+  /** Connects a backend preset (a known launch command). The command shown on the row is exactly what runs. */
+  const connectPreset = (id: string) => {
+    const preset = presets().find((entry) => entry.id === id);
+    if (preset) void connect({ command: preset.launch.command, args: preset.launch.args, env: preset.launch.env }, preset.name, preset.id);
+  };
   function connectCustom(line: string) {
     try {
       const [command, ...args] = splitCommandLine(line);
@@ -357,6 +367,26 @@ export function createAgentController(props: AgentPanelProps) {
     patch({ failure: undefined });
     try {
       const id = await api.agentAuthenticate(methodId);
+      if (!current()) return;
+      patch({ sessionId: id, auth: undefined, status: "ready", statusMessage: "Connected and ready" });
+      focusPrompt();
+    } catch (cause) {
+      if (current()) fail({ phase: "auth", message: errorText(cause) });
+    } finally {
+      if (current()) setPendingAction("");
+    }
+  }
+
+  /**
+   * Signs in with a method that needs a typed value. The secret is a parameter of this call only: it is not put in
+   * state or the feed, not logged, and not kept in a closure after the request settles.
+   */
+  async function authenticateWith(methodId: string, secret: AuthSecret) {
+    const current = guard(agentEpoch);
+    setPendingAction("auth");
+    patch({ failure: undefined });
+    try {
+      const id = await agentAuthenticateWith(methodId, secret);
       if (!current()) return;
       patch({ sessionId: id, auth: undefined, status: "ready", statusMessage: "Connected and ready" });
       focusPrompt();
@@ -726,11 +756,28 @@ export function createAgentController(props: AgentPanelProps) {
     }));
     setQueue((entries) => entries.map((entry) => ({ ...entry, items: entry.items.map((item) => (item.id === next.id ? next : item)) })));
   }
+  /** A raster image a tool call carried as bytes, as a viewer item. Decoded only when the user opens it. */
+  function toolImageAttachment(id: string): Attachment | undefined {
+    for (const item of feed()) {
+      if (item.kind !== "tool" || !id.startsWith(`${item.event.toolCallId}:image:`)) continue;
+      const image = toolImages(item.event).find((candidate) => candidate.id === id);
+      if (!image) continue;
+      let bytes: Uint8Array;
+      try {
+        bytes = Uint8Array.from(atob(image.base64), (char) => char.charCodeAt(0));
+      } catch {
+        return undefined;
+      }
+      return { id, kind: "image", name: image.name, mime: image.mime, size: bytes.length, source: "dropped", bytes, status: "ready" };
+    }
+    return undefined;
+  }
   const findAttachment = (id: string | undefined) =>
     id === undefined
       ? undefined
       : attachments().find((item) => item.id === id) ??
-        feed().flatMap((item) => (item.kind === "user" ? item.attachments ?? [] : [])).find((item) => item.id === id);
+        feed().flatMap((item) => (item.kind === "user" ? item.attachments ?? [] : [])).find((item) => item.id === id) ??
+        toolImageAttachment(id);
   const viewingItem = createMemo(() => findAttachment(viewing()));
   const viewingInComposer = createMemo(() => attachments().some((item) => item.id === viewing()));
   /** Writes the bytes into the workspace (default folder assets) and turns the item into a workspace file. */
@@ -757,7 +804,8 @@ export function createAgentController(props: AgentPanelProps) {
   }
   /** Follow mode: reveal the first valid, not yet shown location of a tool call. Outside-root paths are ignored. */
   function followTool(event: Extract<AgentEvent, { kind: "tool" }>) {
-    for (const location of toolLocations(event.contentJson)) {
+    const typed = event.locations?.flatMap((location) => (location.path.trim() ? [{ path: location.path, line: location.line ?? undefined }] : []));
+    for (const location of typed?.length ? typed : toolLocations(event.contentJson)) {
       const relative = workspaceRelative(props.workspacePath, location.path);
       if (!relative) continue;
       const key = `${event.toolCallId}:${relative}:${location.line ?? ""}`;
@@ -811,7 +859,10 @@ export function createAgentController(props: AgentPanelProps) {
     installed,
     registry,
     registryBusy,
+    presets,
+    connectPreset,
     registryName,
+    agentLabel,
     installing,
     agentName,
     agentId,
@@ -860,6 +911,7 @@ export function createAgentController(props: AgentPanelProps) {
     install,
     disconnect,
     authenticate,
+    authenticateWith,
     send,
     steer,
     sendText,

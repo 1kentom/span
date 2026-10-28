@@ -1,7 +1,9 @@
 import type { AgentFeatures, ConfigOption_Deserialize as ConfigOption, PromptAttachment, SlashCommand } from "../bindings";
-import type { Capability, ChangedFile, ChildStep, ConfigOptionView, DiffLine, QuestionOption, SlashGroup, SlashItem, StepKind, StepStatus, StepView, TermLine } from "../components/agent/types";
-import { isNestedTool, subagentChildren, toolSummary } from "./agent-feed";
-import type { Failure, FeedItem, ToolEvent } from "./agent-session";
+import type { AgentHint } from "../bindings";
+import type { Capability, ChangedFile, ChildStep, ConfigOptionView, DiffLine, PermissionDetails, PermissionDiff, PermissionLocation, QuestionOption, SlashGroup, SlashItem, StepImage, StepKind, StepStatus, StepView, TermLine } from "../components/agent/types";
+import { isNestedTool, subagentChildren, toolTarget } from "./agent-feed";
+import { hintText } from "./agent-hint-text";
+import type { Failure, FeedItem, PermissionEvent, ToolEvent } from "./agent-session";
 import { bytesToBase64, gateAttachments, type Attachment, type PromptCapabilities } from "./attachments";
 
 /** View-model mapping from agent session state to the sidebar components. Pure functions only. */
@@ -221,8 +223,46 @@ function middleDiff(a: string[], b: string[], start: number, endA: number, endB:
 const record = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined);
 const text = (value: unknown) => (typeof value === "string" ? value : undefined);
 
+type ToolDiffLike = { path: string; resolved?: boolean; change?: string; oldText?: string | null; newText: string };
+
+/** Diffs from a tool call's `content` blocks, for requests that carry no typed `diffs`. */
+function contentDiffs(content: unknown): ToolDiffLike[] {
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((entry) => {
+    const block = record(entry);
+    if (!block || block.type !== "diff" || typeof block.path !== "string") return [];
+    return [{ path: block.path, resolved: false, oldText: text(block.oldText) ?? null, newText: text(block.newText) ?? "" }];
+  });
+}
+
+/** Locations as `{ path, line? }`, preferring the typed field and falling back to the raw update. */
+function typedLocations(typed: readonly { path: string; line?: number | null }[] | undefined, contentJson: string): ToolLocation[] {
+  const source = typed?.length ? typed : toolLocations(contentJson);
+  return source.flatMap((entry) => (entry.path.trim() ? [{ path: entry.path, line: entry.line && Number.isInteger(entry.line) && entry.line > 0 ? entry.line : undefined }] : []));
+}
+
+const commandText = (input: unknown) => {
+  const value = record(input);
+  if (!value) return undefined;
+  return Array.isArray(value.command) ? value.command.join(" ") : text(value.command);
+};
+
+const IMAGE_MIME = /^image\/(?:png|jpeg|gif|webp)$/;
+/** Largest base64 payload drawn as a thumbnail. Bigger images are listed without a preview. */
+export const IMAGE_DATA_LIMIT = 6_000_000;
+export type ToolImageData = { id: string; name: string; mime: string; base64: string };
+
+/** Raster images a tool call carried as bytes. A `uri` is never fetched, and svg is never drawn. */
+export function toolImages(tool: Pick<ToolEvent, "toolCallId" | "images">): ToolImageData[] {
+  return (tool.images ?? []).flatMap((image, index) => {
+    const mime = (image.mimeType ?? "").toLowerCase();
+    if (!image.data || !IMAGE_MIME.test(mime) || image.data.length > IMAGE_DATA_LIMIT || !/^[A-Za-z0-9+/=\s]+$/.test(image.data)) return [];
+    return [{ id: `${tool.toolCallId}:image:${index}`, name: `image-${index + 1}.${mime.slice(6) === "jpeg" ? "jpg" : mime.slice(6)}`, mime, base64: image.data.replace(/\s+/g, "") }];
+  });
+}
+
 /** Maps one ACP tool call to a step row, with a diff or terminal detail only when the agent sent one. */
-export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: string, onOpen?: (path: string, line?: number) => void): StepView {
+export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: string, onOpen?: (path: string, line?: number) => void, onOpenImage?: (id: string) => void): StepView {
   const kind = stepKind(tool.toolKind);
   let update: Record<string, unknown> | undefined;
   try {
@@ -231,31 +271,42 @@ export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: s
     update = undefined;
   }
   const content = Array.isArray(update?.content) ? update!.content.map(record).filter(Boolean) as Record<string, unknown>[] : [];
+  // Typed fields win. contentJson is re-read only where the typed field is absent.
+  const rawInput = tool.rawInput ?? update?.rawInput;
+  const rawOutput = tool.rawOutput ?? update?.rawOutput;
+  const hint = hintText(tool.hint);
+  const pendingHint = tool.hint === "toolPending";
   const step: StepView = {
     id: tool.toolCallId,
     kind,
-    verb: tool.title || "Tool call",
-    target: relativeTo(root, toolSummary(tool.contentJson)) || undefined,
+    verb: tool.title || (pendingHint ? hint! : "Tool call"),
+    target: relativeTo(root, toolTarget(tool)) || undefined,
     status: stepStatus(tool.status),
   };
-  const located = toolLocations(tool.contentJson)[0];
+  if (tool.internal) step.internal = true;
+  if (hint && !pendingHint) step.note = hint;
+  const located = typedLocations(tool.locations ?? undefined, tool.contentJson)[0];
   if (located && onOpen) step.onOpen = () => onOpen(located.path, located.line);
-  const diff = content.find((entry) => entry.type === "diff" && typeof entry.path === "string");
+  const diffs: ToolDiffLike[] = tool.diffs?.length ? [...tool.diffs] : contentDiffs(content);
+  const diff = diffs[0];
   if (diff) {
-    const path = relativeTo(root, diff.path as string);
-    const diffed = diffLines(text(diff.oldText) ?? "", text(diff.newText) ?? "");
-    step.delta = { add: diffed.filter((line) => line.kind === "add").length, del: diffed.filter((line) => line.kind === "del").length };
+    const path = relativeTo(root, diff.path);
+    const all = diffs.map((entry) => diffLines(entry.oldText ?? "", entry.newText));
+    const diffed = all[0];
+    step.delta = { add: all.flat().filter((line) => line.kind === "add").length, del: all.flat().filter((line) => line.kind === "del").length };
+    if (diffs.length > 1) step.meta = `+${diffs.length - 1} more ${diffs.length === 2 ? "file" : "files"}`;
     const firstChanged = diffed.find((line) => line.kind !== "ctx" && line.n !== undefined)?.n;
-    step.detail = { type: "diff", path, lines: diffed, onOpen: onOpen ? () => onOpen(path, firstChanged) : undefined };
+    // An unresolved path is a bare name the agent sent, so it is shown but never opened.
+    const openable = diff.resolved !== false || tool.diffs === undefined || tool.diffs.length === 0;
+    step.detail = { type: "diff", path, lines: diffed, onOpen: onOpen && openable ? () => onOpen(path, firstChanged) : undefined };
   } else if (kind === "run") {
-    const input = record(update?.rawInput);
-    const command = Array.isArray(input?.command) ? input!.command.join(" ") : text(input?.command);
+    const command = commandText(rawInput);
     const output: TermLine[] = [];
     for (const entry of content) {
       const block = record(entry.content);
       if (entry.type === "content" && block?.type === "text" && text(block.text)) output.push(...lines(block.text as string).map((line) => ({ kind: "out" as const, text: line })));
     }
-    const raw = update?.rawOutput;
+    const raw = rawOutput;
     let exitCode: number | undefined;
     if (!output.length && typeof raw === "string") output.push(...lines(raw).map((line) => ({ kind: "out" as const, text: line })));
     const rawRecord = record(raw);
@@ -276,13 +327,22 @@ export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: s
       };
     }
   }
+  const images: StepImage[] = toolImages(tool).map((image) => ({
+    id: image.id,
+    name: image.name,
+    mime: image.mime,
+    src: `data:${image.mime};base64,${image.base64}`,
+    onOpen: onOpenImage ? () => onOpenImage(image.id) : undefined,
+  }));
+  if (images.length) step.images = images;
+  if (tool.savedPath) step.savedPath = tool.savedPath;
   if (children.length) {
     step.children = children.map(
       (child): ChildStep => ({
         id: child.toolCallId,
         kind: stepKind(child.toolKind),
-        verb: child.title || "Tool call",
-        target: relativeTo(root, toolSummary(child.contentJson)) || undefined,
+        verb: child.title || (child.hint === "toolPending" ? hintText(child.hint)! : "Tool call"),
+        target: relativeTo(root, toolTarget(child)) || undefined,
         meta: child.status && child.status !== "completed" ? child.status.replaceAll("_", " ") : undefined,
       }),
     );
@@ -290,11 +350,73 @@ export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: s
   return step;
 }
 
+const PERMISSION_DIFFS = 3;
+const INPUT_LIMIT = 1200;
+const COMMAND_LIMIT = 2000;
+const clip = (value: string, limit: number) => (value.length > limit ? `${value.slice(0, limit - 1)}…` : value);
+
+/** A bounded, readable view of a request's raw input. Empty for null, an empty object, or nothing. */
+export function boundedInput(raw: unknown): string | undefined {
+  if (raw === null || raw === undefined || raw === "") return undefined;
+  if (typeof raw === "object" && Object.keys(raw as object).length === 0) return undefined;
+  try {
+    return clip(typeof raw === "string" ? raw : JSON.stringify(raw, null, 2), INPUT_LIMIT);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What a permission request asks the user to approve, from its typed fields (the raw `content` blocks are the
+ * fallback for diffs only). Paths are shown workspace-relative and open only through `onOpen`, which the
+ * caller validates against the workspace.
+ */
+export function permissionDetails(event: PermissionEvent, root?: string, onOpen?: (path: string, line?: number) => void, tool?: ToolEvent): PermissionDetails {
+  const rawInput = event.rawInput ?? tool?.rawInput;
+  const command = commandText(rawInput);
+  const locations: PermissionLocation[] = typedLocations(event.locations ?? tool?.locations ?? undefined, tool?.contentJson ?? "{}").map((location) => ({
+    label: relativeTo(root, location.path),
+    line: location.line,
+    onOpen: onOpen && workspaceRelative(root, location.path) ? () => onOpen(location.path, location.line) : undefined,
+  }));
+  const found: ToolDiffLike[] = event.diffs?.length ? [...event.diffs] : contentDiffs(event.content);
+  const diffs: PermissionDiff[] = found.slice(0, PERMISSION_DIFFS).map((entry) => {
+    const lines = diffLines(entry.oldText ?? "", entry.newText, 2, 120);
+    const firstChanged = lines.find((line) => line.kind !== "ctx" && line.n !== undefined)?.n;
+    return {
+      path: relativeTo(root, entry.path),
+      change: entry.change ?? (entry.oldText ? "modify" : "add"),
+      lines,
+      // A path that was not resolved is a bare name from the agent: shown, never opened.
+      onOpen: onOpen && entry.resolved !== false && workspaceRelative(root, entry.path) ? () => onOpen(entry.path, firstChanged) : undefined,
+    };
+  });
+  const target = command ?? (tool ? toolTarget({ ...tool, rawInput }) : toolTarget({ rawInput, locations: event.locations, contentJson: "{}" }));
+  const onlyCommand = command !== undefined && record(rawInput) && Object.keys(record(rawInput)!).every((key) => key === "command" || key === "description");
+  return {
+    kind: event.toolKind ?? undefined,
+    command: target ? clip(relativeTo(root, target), COMMAND_LIMIT) : undefined,
+    input: onlyCommand ? undefined : boundedInput(rawInput),
+    locations,
+    diffs,
+    moreDiffs: Math.max(0, found.length - PERMISSION_DIFFS),
+    internal: Boolean(event.internal),
+  };
+}
+
+/** Title and body of a notice. The hint copy fills in whichever the agent left empty, and is not repeated. */
+export function noticeView(notice: { title: string; description?: string; hint?: AgentHint | null }): { title: string; description?: string } {
+  const hint = hintText(notice.hint);
+  const title = notice.title.trim() || hint || "";
+  const description = notice.description?.trim() || (hint && hint !== title ? hint : undefined);
+  return { title, description };
+}
+
 /** "Working" or "Worked" plus counts by kind, for example "2 reads, 1 edit". */
 export function workSummary(steps: readonly StepView[]): { headline: string; counts: string } {
   const running = steps.some((step) => step.status === "in_progress" || step.status === "pending");
   const counts = new Map<StepKind, number>();
-  for (const step of steps) counts.set(step.kind, (counts.get(step.kind) ?? 0) + 1);
+  for (const step of steps.filter((entry) => !entry.internal)) counts.set(step.kind, (counts.get(step.kind) ?? 0) + 1);
   const parts = [...counts].map(([kind, count]) => `${count} ${NOUNS[kind][count === 1 ? 0 : 1]}`);
   return { headline: running ? "Working" : "Worked", counts: parts.join(", ") };
 }
@@ -363,7 +485,13 @@ const STOPS: Record<string, StopView> = {
   max_turn_requests: { title: "Turn request limit reached", text: "The agent used its allowed number of model requests for this turn. Continue starts another turn." },
   refusal: { title: "The agent declined to continue", text: "The agent refused this request. Rephrase it, or continue if you think it was a mistake." },
 };
-export const stopView = (reason: string): StopView | undefined => STOPS[reason];
+/** `hint` is the backend's finer reading of a stop reason: Gemini sends max_turn_requests for a loop too. */
+export function stopView(reason: string, hint?: AgentHint | null): StopView | undefined {
+  const view = STOPS[reason];
+  if (view && hint === "turnLimitOrLoop")
+    return { title: hintText(hint)!, text: "This agent reports a turn limit and a loop with the same stop reason, so Span cannot tell which. Continue starts another turn." };
+  return view;
+}
 
 export type FailureView = { level: "error" | "warn"; kind: "missing-binary" | "protocol" | "auth" | "timeout" | "exit" | "provider" | "workspace" | "other"; title: string; text: string };
 

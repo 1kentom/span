@@ -25,7 +25,11 @@ export type Capability = { id: string; label: string; supported: boolean };
 export type KeyHint = { keys: string[]; label: string; where?: string };
 export type RecentSession = { id: string; title: string; time: string; brand?: Brand };
 
-export type AuthMethod = { id: string; name: string; description?: string };
+/** What a sign-in method asks the user to type. Absent for methods that need nothing. */
+export type AuthInputKind = "apiKey" | "gateway";
+export type AuthMethod = { id: string; name: string; description?: string; input?: AuthInputKind };
+/** A secret the user typed. It exists only inside the form and the call that sends it. */
+export type AuthSecret = { kind: "apiKey"; key: string } | { kind: "gateway"; baseUrl: string; headers: Record<string, string> };
 
 export type Level = "error" | "warn";
 export type ActionView = { label: string; primary?: boolean; onAct: () => void };
@@ -57,6 +61,7 @@ export type StepDetail =
   | { type: "terminal"; lines: TermLine[]; cwd?: string; exitCode?: number | null; running?: boolean }
   | { type: "diff"; path: string; lines: DiffLine[]; onOpen?: () => void }
   | { type: "matches"; matches: SearchMatch[] };
+export type StepImage = { id: string; name: string; mime: string; src: string; onOpen?: () => void };
 export type ChildStep = { id: string; kind: StepKind; verb: string; target?: string; meta?: string };
 export type StepView = {
   id: string;
@@ -70,7 +75,34 @@ export type StepView = {
   children?: ChildStep[];
   /** Opens the file this step touched, at its reported line. Set only when the agent reported a location. */
   onOpen?: () => void;
+  /** Agent bookkeeping, shown collapsed under a muted row. */
+  internal?: boolean;
+  /** Short UI copy for a backend hint, for example "Output not available from agent". */
+  note?: string;
+  images?: StepImage[];
+  /** A path the agent says it saved a file to. Text only: Span never opens or reads it. */
+  savedPath?: string;
 };
+
+export type PermissionLocation = { label: string; line?: number; onOpen?: () => void };
+export type PermissionDiff = { path: string; change: string; lines: DiffLine[]; onOpen?: () => void };
+/** What the user is approving, from the typed fields of a permission request. */
+export type PermissionDetails = {
+  kind?: string;
+  /** The command text for an execute request, or the first target of another kind. */
+  command?: string;
+  /** A bounded JSON view of the raw input, only when it says more than the command. */
+  input?: string;
+  locations: PermissionLocation[];
+  diffs: PermissionDiff[];
+  /** Diffs past the first few, counted but not drawn. */
+  moreDiffs: number;
+  internal: boolean;
+  /** The agent asks here and again when it proposes the write. */
+  doubleApproval?: boolean;
+};
+
+export type PresetRow = { id: string; name: string; description: string; command: string };
 
 export type ChangedFile = {
   path: string;

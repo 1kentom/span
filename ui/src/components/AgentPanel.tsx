@@ -1,7 +1,8 @@
-import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
 import { isNearBottom, relativeTime } from "../lib/agent-feed";
+import { hintText } from "../lib/agent-hint-text";
 import { capabilityChips, classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
@@ -16,7 +17,7 @@ import { EditorToast } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
 import { HistoryList } from "./agent/HistoryList";
-import { SignIn } from "./agent/SignIn";
+import { HintLine, SignIn } from "./agent/SignIn";
 import type { ActionView, HistoryScope, KeyHint } from "./agent/types";
 import "../styles/agent.css";
 
@@ -96,7 +97,15 @@ export function AgentPanel(props: AgentPanelProps) {
           .map((session) => ({ id: session.sessionId, title: session.title || "Untitled chat", time: relativeTime(session.updatedAt) }))
       : [],
   );
-  const unsupportedAuth = () => a.state().auth?.methods.filter((method) => !method.supported) ?? [];
+  /** Methods that cannot run from Span and need nothing typed. Methods that take a key or gateway get a form instead. */
+  const unsupportedAuth = () => a.state().auth?.methods.filter((method) => !method.supported && !method.input) ?? [];
+  /** Per-method hints that the header hint does not already say. */
+  const methodHints = () => {
+    const shown = hintText(a.state().auth?.hint);
+    return [...new Set(unsupportedAuth().flatMap((method) => (hintText(method.hint) ? [hintText(method.hint)!] : [])))].filter((line) => line !== shown);
+  };
+  const unhinted = () => unsupportedAuth().filter((method) => !method.hint);
+  const presetRows = () => a.presets().map((preset) => ({ id: preset.id, name: preset.name, description: preset.description, command: [preset.launch.command, ...preset.launch.args].join(" ") }));
   const openHistory = () => {
     a.setView(a.view() === "history" ? "session" : "history");
     if (a.view() === "history") void a.loadSessions();
@@ -267,6 +276,8 @@ export function AgentPanel(props: AgentPanelProps) {
             <div class="agent-body">
               <ConnectScreen
                 found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${entry.launch.command}` }))}
+                presets={presetRows()}
+                onPreset={a.connectPreset}
                 registry={a
                   .registry()
                   .filter((entry) => !a.installed().some((agent) => agent.id === entry.id))
@@ -299,17 +310,25 @@ export function AgentPanel(props: AgentPanelProps) {
                 name={label()}
                 title={`Sign in to ${label()}`}
                 text={a.state().auth!.message}
-                methods={a.state().auth!.methods.filter((method) => method.supported).map((method) => ({ id: method.id, name: method.name, description: method.description ?? undefined }))}
+                hint={hintText(a.state().auth!.hint)}
+                methods={a
+                  .state()
+                  .auth!.methods.filter((method) => method.supported || method.input)
+                  .map((method) => ({ id: method.id, name: method.name, description: method.description ?? undefined, input: method.input ?? undefined }))}
                 busy={a.pendingAction() === "auth"}
                 onPick={(id) => void a.authenticate(id)}
+                onSubmit={(id, secret) => void a.authenticateWith(id, secret)}
               />
               <Show when={unsupportedAuth().length}>
-                <p class="sb-fine">
-                  {unsupportedAuth()
-                    .map((method) => method.name)
-                    .join(", ")}{" "}
-                  {unsupportedAuth().length === 1 ? "needs" : "need"} a terminal sign-in, which Span does not run. Sign in from a terminal, then reconnect.
-                </p>
+                <For each={methodHints()}>{(line) => <p class="sb-fine"><HintLine text={line} /></p>}</For>
+                <Show when={unhinted().length}>
+                  <p class="sb-fine">
+                    {unhinted()
+                      .map((method) => method.name)
+                      .join(", ")}{" "}
+                    {unhinted().length === 1 ? "needs" : "need"} a terminal sign-in, which Span does not run. Sign in from a terminal, then reconnect.
+                  </p>
+                </Show>
                 <div class="sb-actions">
                   <button class="sb-btn" disabled={a.working()} onClick={a.reconnect}>
                     Reconnect

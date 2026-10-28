@@ -141,3 +141,16 @@ export function ContextBanner(props: ContextBannerProps) {
     </section>
   );
 }
+
+/**
+ * Said once beside an agent's edits when it writes files itself and ignores Span's file system. There is no
+ * approve or reject here on purpose: the files are already on disk, so a button would be a lie.
+ */
+export function EditsBypassNote(props: { agent: string }) {
+  return (
+    <p class="sb-fine sb-bypass-note" role="note">
+      <Icon name="InfoCircle" size={11} />
+      <span>{props.agent} writes files directly; Span can't review edits before they land</span>
+    </p>
+  );
+}

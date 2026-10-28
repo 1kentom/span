@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   AgentFeatures,
+  AgentHint,
   AuthMethodInfo,
   ConfigOption_Deserialize as ConfigOption,
   EditProposal,
@@ -8,6 +9,7 @@ import type {
   SlashCommand,
 } from "../bindings";
 import type { Attachment } from "./attachments";
+import { hintText } from "./agent-hint-text";
 
 /** Agent session state built from ACP events. Pure data: the panel derives every view from it. */
 export type ToolEvent = Extract<AgentEvent, { kind: "tool" }>;
@@ -16,16 +18,19 @@ export type ElicitationEvent = Extract<AgentEvent, { kind: "elicitation" }>;
 
 export type FeedItem =
   | { id: number; kind: "user"; text: string; attachments?: Attachment[]; /** Sent by interrupting the running turn. */ steered?: boolean }
-  | { id: number; kind: "text" | "thought" | "note"; text: string }
-  | { id: number; kind: "notice"; severity: string; title: string; description?: string }
+  | { id: number; kind: "text" | "thought"; text: string; /** The agent's id for this message, when it sent one. */ messageId?: string }
+  | { id: number; kind: "note"; text: string }
+  | { id: number; kind: "notice"; severity: string; title: string; description?: string; /** Set for a notice the agent later clears. */ noticeId?: string; hint?: AgentHint }
   | { id: number; kind: "compaction"; compactionId: string; status: string; summary: string; error?: string }
   | { id: number; kind: "tool"; event: ToolEvent }
   | { id: number; kind: "permission"; event: PermissionEvent; resolved: boolean }
   | { id: number; kind: "proposal"; proposal: EditProposal; resolution?: "accepted" | "rejected" }
-  | { id: number; kind: "stop"; reason: string };
+  | { id: number; kind: "stop"; reason: string; hint?: AgentHint };
 
 export type AgentInfo = { name?: string; title?: string; version?: string; features: AgentFeatures };
 export type Usage = { used: number; size: number; cost?: { amount: number; currency: string } };
+/** Tokens the prompt response reported, shown only when the agent never sent a context usage update. */
+export type TurnUsage = { tokens: number };
 /** A failure the panel shows as an error card. `phase` says where it happened. */
 export type Failure = { phase: "connect" | "auth" | "session" | "prompt" | "exit"; message: string; log?: string[] };
 
@@ -34,12 +39,13 @@ export type AgentState = {
   statusMessage: string;
   sessionId?: string;
   agent?: AgentInfo;
-  auth?: { message: string; methods: AuthMethodInfo[] };
+  auth?: { message: string; methods: AuthMethodInfo[]; hint?: AgentHint };
   canLoad: boolean;
   canList: boolean;
   commands: SlashCommand[];
   config: ConfigOption[];
   usage?: Usage;
+  turnUsage?: TurnUsage;
   sessionTitle?: string;
   plan: PlanEntry[];
   elicitations: ElicitationEvent[];
@@ -83,7 +89,7 @@ export function initialAgentState(desktop: boolean): AgentState {
 
 /** Clears everything tied to one conversation, keeping the agent identity and logs. */
 export function resetConversation(state: AgentState): AgentState {
-  return { ...state, feed: [], plan: [], elicitations: [], usage: undefined, sessionTitle: undefined, commands: [], running: false, stopRequested: false };
+  return { ...state, feed: [], plan: [], elicitations: [], usage: undefined, turnUsage: undefined, sessionTitle: undefined, commands: [], running: false, stopRequested: false };
 }
 
 export function addFeedItem(state: AgentState, item: DistributiveOmit<FeedItem, "id">): AgentState {
@@ -96,10 +102,44 @@ function mapFeed(state: AgentState, update: (item: FeedItem) => FeedItem): Agent
   return { ...state, feed: state.feed.map(update) };
 }
 
-function appendText(state: AgentState, kind: "user" | "text" | "thought", text: string): AgentState {
+/** Replayed non-text user blocks become chips without bytes or a path: an agent supplied uri is never read. */
+let replayCounter = 0;
+export function replayAttachments(markers: readonly { kind: string; uri?: string | null; name?: string | null; mimeType?: string | null }[] | undefined): Attachment[] {
+  return (markers ?? []).map((marker) => {
+    const fromUri = marker.uri ? decodeUri(marker.uri.split(/[\\/]/).filter(Boolean).pop() ?? "") : "";
+    const image = marker.kind === "image" || Boolean(marker.mimeType?.startsWith("image/"));
+    return {
+      id: `replay-${++replayCounter}`,
+      kind: image ? "image" : "file",
+      name: marker.name || fromUri || (image ? "Image" : "Attachment"),
+      mime: marker.mimeType ?? "",
+      size: 0,
+      source: "workspace-file",
+      status: "ready",
+    } satisfies Attachment;
+  });
+}
+function decodeUri(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+type Block = { messageId?: string | null; newBlock?: boolean | null };
+function appendText(state: AgentState, kind: "user" | "text" | "thought", text: string, block: Block = {}, attachments: Attachment[] = []): AgentState {
   const last = state.feed[state.feed.length - 1];
-  if (last && last.kind === kind) return { ...state, feed: [...state.feed.slice(0, -1), { ...last, text: last.text + text }] };
-  return addFeedItem(state, { kind, text });
+  const messageId = block.messageId ?? undefined;
+  const sameMessage = !(messageId && last && "messageId" in last && last.messageId && last.messageId !== messageId);
+  if (last && last.kind === kind && !block.newBlock && sameMessage) {
+    const merged = { ...last, text: last.text + text } as FeedItem;
+    if (merged.kind === "user" && attachments.length) merged.attachments = [...(merged.attachments ?? []), ...attachments];
+    if ((merged.kind === "text" || merged.kind === "thought") && messageId && !merged.messageId) merged.messageId = messageId;
+    return { ...state, feed: [...state.feed.slice(0, -1), merged] };
+  }
+  if (kind === "user") return addFeedItem(state, { kind, text, ...(attachments.length ? { attachments } : {}) });
+  return addFeedItem(state, { kind, text, ...(messageId ? { messageId } : {}) });
 }
 
 function parseObject(json: string): Record<string, unknown> | undefined {
@@ -111,12 +151,26 @@ function parseObject(json: string): Record<string, unknown> | undefined {
   }
 }
 
+/** Total tokens from a prompt response `usage` value. Reads camelCase and snake_case; never guesses a window size. */
+export function turnTokens(usage: unknown): number | undefined {
+  const record = usage && typeof usage === "object" && !Array.isArray(usage) ? (usage as Record<string, unknown>) : undefined;
+  if (!record) return undefined;
+  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+  const total = count(record.totalTokens) ?? count(record.total_tokens);
+  if (total !== undefined) return total;
+  const input = count(record.inputTokens) ?? count(record.input_tokens);
+  const output = count(record.outputTokens) ?? count(record.output_tokens);
+  return input !== undefined || output !== undefined ? (input ?? 0) + (output ?? 0) : undefined;
+}
+
 /** Tool updates are partial: keep earlier fields the update leaves out. */
 export function mergeTool(previous: ToolEvent, next: ToolEvent): ToolEvent {
   const before = parseObject(previous.contentJson);
   const after = parseObject(next.contentJson);
   const merged = before && after ? { ...before, ...Object.fromEntries(Object.entries(after).filter(([, value]) => value !== null && value !== undefined)) } : undefined;
-  return {
+  const list = <T,>(value: T[] | undefined, fallback: T[] | undefined) => (value && value.length ? value : fallback);
+  const present = <T,>(value: T | null | undefined, fallback: T | null | undefined) => (value === null || value === undefined ? fallback : value);
+  const result: ToolEvent = {
     ...previous,
     ...next,
     title: next.title ?? previous.title,
@@ -124,7 +178,18 @@ export function mergeTool(previous: ToolEvent, next: ToolEvent): ToolEvent {
     toolKind: next.toolKind ?? previous.toolKind,
     parentToolCallId: next.parentToolCallId ?? previous.parentToolCallId,
     contentJson: merged ? JSON.stringify(merged) : next.contentJson || previous.contentJson,
+    rawInput: present(next.rawInput, previous.rawInput),
+    rawOutput: present(next.rawOutput, previous.rawOutput),
+    locations: list(next.locations, previous.locations),
+    diffs: list(next.diffs, previous.diffs),
+    images: list(next.images, previous.images),
+    savedPath: present(next.savedPath, previous.savedPath),
+    internal: present(next.internal, previous.internal),
+    // The "preparing" hint ends as soon as the agent names the call; any other hint stays.
+    hint: next.hint ?? (previous.hint === "toolPending" ? undefined : previous.hint),
   };
+  for (const key of ["rawInput", "rawOutput", "locations", "diffs", "images", "savedPath", "internal", "hint"] as const) if (result[key] === undefined) delete result[key];
+  return result;
 }
 
 function eventSession(event: AgentEvent): string | undefined {
@@ -169,7 +234,7 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         canList: event.features.canListSessions,
       };
     case "authRequired":
-      return { ...state, auth: { message: event.message, methods: event.authMethods } };
+      return { ...state, auth: { message: event.message, methods: event.authMethods, ...(event.hint ? { hint: event.hint } : {}) } };
     case "availableCommands":
       return { ...state, commands: event.commands };
     case "currentMode":
@@ -192,8 +257,14 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
           cost: event.costAmount !== null && event.costAmount !== undefined && event.costCurrency ? { amount: event.costAmount, currency: event.costCurrency } : undefined,
         },
       };
-    case "notice":
-      return addFeedItem(state, { kind: "notice", severity: event.severity, title: event.title, description: event.description ?? undefined });
+    case "notice": {
+      const notice = { kind: "notice" as const, severity: event.severity, title: event.title, description: event.description ?? undefined, ...(event.noticeId ? { noticeId: event.noticeId } : {}), ...(event.hint ? { hint: event.hint } : {}) };
+      const id = event.noticeId;
+      if (id && state.feed.some((item) => item.kind === "notice" && item.noticeId === id)) return mapFeed(state, (item) => (item.kind === "notice" && item.noticeId === id ? { ...notice, id: item.id } : item));
+      return addFeedItem(state, notice);
+    }
+    case "noticeCleared":
+      return { ...state, feed: state.feed.filter((item) => !(item.kind === "notice" && item.noticeId === event.noticeId)) };
     case "compaction": {
       const found = state.feed.some((item) => item.kind === "compaction" && item.compactionId === event.compactionId);
       if (!found)
@@ -216,10 +287,10 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
     case "elicitationComplete":
       return addFeedItem(state, { kind: "note", text: "The agent finished the browser step" });
     case "user":
-      return appendText(state, "user", event.text);
+      return appendText(state, "user", event.text, {}, replayAttachments(event.attachments));
     case "text":
     case "thought":
-      return appendText(state, event.kind, event.text);
+      return appendText(state, event.kind, event.text, event);
     case "plan":
       return { ...state, plan: event.entries };
     case "config":
@@ -238,10 +309,19 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
     case "proposalResolved":
       return resolveProposal(state, event.proposalId, event.accepted);
     case "complete": {
-      const next: AgentState = { ...state, running: false, stopRequested: false, status: "ready", statusMessage: `Ready · ${event.stopReason.replaceAll("_", " ")}` };
-      if (CARD_STOP_REASONS.includes(event.stopReason)) return addFeedItem(next, { kind: "stop", reason: event.stopReason });
+      const tokens = state.usage ? undefined : turnTokens(event.usage);
+      const next: AgentState = {
+        ...state,
+        running: false,
+        stopRequested: false,
+        status: "ready",
+        statusMessage: `Ready · ${event.stopReason.replaceAll("_", " ")}`,
+        ...(tokens !== undefined ? { turnUsage: { tokens } } : {}),
+      };
+      if (CARD_STOP_REASONS.includes(event.stopReason)) return addFeedItem(next, { kind: "stop", reason: event.stopReason, ...(event.hint ? { hint: event.hint } : {}) });
       if (event.stopReason === "cancelled") return addFeedItem(next, { kind: "note", text: "Stopped" });
-      return next;
+      const quiet = event.hint === "noOutputStreamed" ? hintText(event.hint) : undefined;
+      return quiet ? addFeedItem(next, { kind: "note", text: quiet }) : next;
     }
     case "error":
       return {

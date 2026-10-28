@@ -1,6 +1,6 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { Icon } from "../Icon";
-import type { ChangedFile, ChildStep, DiffLine, SearchMatch, StepDetail, StepKind, StepView, TermLine } from "./types";
+import type { ChangedFile, ChildStep, DiffLine, SearchMatch, StepDetail, StepImage, StepKind, StepView, TermLine } from "./types";
 
 const KIND_ICON: Record<StepKind, string> = {
   read: "DocumentText",
@@ -106,6 +106,25 @@ export function SearchMatches(props: { matches: SearchMatch[]; onOpen?: (loc: st
   );
 }
 
+/** Thumbnails of images a tool produced. Each opens the shared file viewer with the bytes the agent sent. */
+function StepImages(props: { images: StepImage[] }) {
+  return (
+    <ul class="sb-step-images" aria-label="Images from this step">
+      <For each={props.images}>
+        {(image) => (
+          <li>
+            <Show when={image.onOpen} fallback={<img class="sb-thumb" src={image.src} alt={image.name} />}>
+              <button type="button" class="sb-thumb-btn" aria-label={`Open ${image.name}`} onClick={() => image.onOpen?.()}>
+                <img class="sb-thumb" src={image.src} alt="" />
+              </button>
+            </Show>
+          </li>
+        )}
+      </For>
+    </ul>
+  );
+}
+
 function ChildRows(props: { children: ChildStep[] }) {
   return (
     <ul class="sb-children">
@@ -154,7 +173,16 @@ export function StepRow(props: { step: StepView; open?: boolean; onToggle?: () =
           <StepRowBody step={props.step} />
         </button>
       </Show>
+      <Show when={props.step.note}><div class="sb-step-note sb-sub">{props.step.note}</div></Show>
       <Show when={props.open && props.step.detail}><Detail detail={props.step.detail!} /></Show>
+      <Show when={props.step.images?.length}><StepImages images={props.step.images!} /></Show>
+      <Show when={props.step.savedPath}>
+        <div class="sb-step-saved sb-sub">
+          <span>Saved by the agent at </span>
+          <span class="sb-mono" title={props.step.savedPath}>{props.step.savedPath}</span>
+          <span>. Span shows this path only and does not open it.</span>
+        </div>
+      </Show>
       <Show when={props.step.children?.length}><ChildRows children={props.step.children!} /></Show>
     </div>
   );
@@ -175,6 +203,20 @@ function StepRowBody(props: { step: StepView }) {
   );
 }
 
+export type StepSegment = { type: "step"; step: StepView } | { type: "internal"; key: string; steps: StepView[] };
+
+/** Runs of consecutive internal steps collapse into one segment. Order is kept. */
+export function groupInternal(steps: readonly StepView[]): StepSegment[] {
+  const out: StepSegment[] = [];
+  for (const step of steps) {
+    const last = out[out.length - 1];
+    if (!step.internal) out.push({ type: "step", step });
+    else if (last?.type === "internal") last.steps.push(step);
+    else out.push({ type: "internal", key: `internal-${step.id}`, steps: [step] });
+  }
+  return out;
+}
+
 type WorkGroupProps = {
   headline: string;
   counts?: string;
@@ -189,6 +231,13 @@ export function WorkGroup(props: WorkGroupProps) {
   const [open, setOpen] = createSignal(props.defaultOpen ?? true);
   const [expanded, setExpanded] = createSignal(new Set(props.defaultExpanded ?? []));
   const failures = () => props.steps.filter((step) => step.status === "failed").length;
+  const [internalOpen, setInternalOpen] = createSignal(new Set<string>());
+  const segments = createMemo(() => groupInternal(props.steps));
+  const toggleInternal = (key: string) => {
+    const next = new Set(internalOpen());
+    if (!next.delete(key)) next.add(key);
+    setInternalOpen(next);
+  };
   const toggle = (id: string) => {
     const next = new Set(expanded());
     if (!next.delete(id)) next.add(id);
@@ -204,7 +253,25 @@ export function WorkGroup(props: WorkGroupProps) {
       </button>
       <Show when={open()}>
         <div class="sb-steps">
-          <For each={props.steps}>{(step) => <StepRow step={step} open={expanded().has(step.id)} onToggle={() => toggle(step.id)} />}</For>
+          <For each={segments()}>
+            {(segment) =>
+              segment.type === "step" ? (
+                <StepRow step={segment.step} open={expanded().has(segment.step.id)} onToggle={() => toggle(segment.step.id)} />
+              ) : (
+                <div class="sb-internal">
+                  <button class="sb-step-row sb-internal-row" aria-expanded={internalOpen().has(segment.key)} onClick={() => toggleInternal(segment.key)}>
+                    <Icon name={internalOpen().has(segment.key) ? "arrow-down4" : "arrow-right4"} size={9} />
+                    <span class="sb-sub">Agent housekeeping ({segment.steps.length})</span>
+                  </button>
+                  <Show when={internalOpen().has(segment.key)}>
+                    <div class="sb-internal-steps">
+                      <For each={segment.steps}>{(step) => <StepRow step={step} open={expanded().has(step.id)} onToggle={() => toggle(step.id)} />}</For>
+                    </div>
+                  </Show>
+                </div>
+              )
+            }
+          </For>
         </div>
       </Show>
     </section>

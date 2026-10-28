@@ -30,10 +30,13 @@ const mocks = vi.hoisted(() => {
       agentResumeSession: vi.fn(async (id: string) => id),
       agentDeleteSession: vi.fn(async () => undefined),
       agentCloseSession: vi.fn(async () => undefined),
+      agentSetConfig: vi.fn(async () => undefined),
     },
+    agentPresets: vi.fn(async (): Promise<unknown[]> => []),
+    agentAuthenticateWith: vi.fn(async (_method: string, _credential: unknown): Promise<string> => "s-auth"),
   };
 });
-vi.mock("./client", () => ({ isDesktop: true, api: mocks.api }));
+vi.mock("./client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith }));
 
 const features = (patch: Partial<AgentFeatures> = {}): AgentFeatures => ({ loadSession: false, image: false, audio: false, embeddedContext: false, mcpHttp: false, mcpSse: false, canListSessions: false, canResumeSessions: false, canCloseSessions: false, canDeleteSessions: false, ...patch });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));

@@ -2,6 +2,23 @@ import type { AgentEvent } from "../bindings";
 
 export type ToolEvent = Extract<AgentEvent, { kind: "tool" }>;
 
+const limitLine = (text: string) => {
+  const line = text.trim().replace(/\s+/g, " ");
+  return line.length > 240 ? `${line.slice(0, 237)}...` : line;
+};
+
+/** The first useful string of a tool's input or locations: a command, a path, a url, a pattern. */
+function pickTarget(rawInput: unknown, locations: unknown): string {
+  const input = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? (rawInput as Record<string, unknown>) : {};
+  const list = Array.isArray(locations) ? locations : [];
+  const firstLocation = list[0] && typeof list[0] === "object" ? (list[0] as Record<string, unknown>).path : undefined;
+  const command = Array.isArray(input.command) ? input.command.join(" ") : input.command;
+  const pick = [command, input.file_path, input.path, input.url, input.pattern, input.query, firstLocation].find(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  return limitLine(pick ?? "");
+}
+
 /** One line describing what a tool call will touch, from its raw ACP update. */
 export function toolSummary(contentJson: string): string {
   let update: unknown;
@@ -12,14 +29,12 @@ export function toolSummary(contentJson: string): string {
   }
   if (!update || typeof update !== "object") return "";
   const record = update as Record<string, unknown>;
-  const input = record.rawInput && typeof record.rawInput === "object" ? (record.rawInput as Record<string, unknown>) : {};
-  const locations = Array.isArray(record.locations) ? record.locations : [];
-  const firstLocation = locations[0] && typeof locations[0] === "object" ? (locations[0] as Record<string, unknown>).path : undefined;
-  const pick = [input.command, input.file_path, input.path, input.url, input.pattern, input.query, firstLocation].find(
-    (value): value is string => typeof value === "string" && value.trim().length > 0,
-  );
-  const text = (pick ?? "").trim().replace(/\s+/g, " ");
-  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
+  return pickTarget(record.rawInput, record.locations);
+}
+
+/** Like `toolSummary`, but reads the typed rawInput and locations first and re-parses contentJson only when they are absent. */
+export function toolTarget(event: { rawInput?: unknown; locations?: readonly unknown[] | null; contentJson: string }): string {
+  return pickTarget(event.rawInput, event.locations) || toolSummary(event.contentJson);
 }
 
 type FeedLike = { kind: string; event?: unknown };

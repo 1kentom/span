@@ -22,10 +22,13 @@ const mocks = vi.hoisted(() => {
       agentCancel: vi.fn(async () => undefined),
       agentDisconnect: vi.fn(async () => undefined),
       agentListSessions: vi.fn(async () => []),
+      agentSetConfig: vi.fn(async () => undefined),
     },
+    agentPresets: vi.fn(async () => []),
+    agentAuthenticateWith: vi.fn(async () => "s-auth"),
   };
 });
-vi.mock("../../lib/client", () => ({ isDesktop: true, api: mocks.api }));
+vi.mock("../../lib/client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith }));
 
 const features = (patch: Partial<AgentFeatures> = {}): AgentFeatures => ({ loadSession: false, image: true, audio: false, embeddedContext: true, mcpHttp: false, mcpSse: false, canListSessions: false, canResumeSessions: false, canCloseSessions: false, canDeleteSessions: false, ...patch });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));

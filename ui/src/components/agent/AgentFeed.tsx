@@ -3,8 +3,8 @@ import { AgentMarkdown } from "../AgentMarkdown";
 import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
-import { buildBlocks, changedFiles, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
-import { ErrorCard, Notice, StopCard } from "./Banners";
+import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
+import { EditsBypassNote, ErrorCard, Notice, StopCard } from "./Banners";
 import { ChangesCard, WorkGroup } from "./WorkGroup";
 
 const sameKeys = (previous: string[], next: string[]) => previous.length === next.length && previous.every((key, index) => key === next[index]);
@@ -45,12 +45,13 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       <Match when={item().kind === "notice"}>
         {(() => {
           const notice = () => item() as Extract<FeedItem, { kind: "notice" }>;
+          const view = () => noticeView(notice());
           return (
             <Show
               when={notice().severity === "warning" || notice().severity === "error"}
-              fallback={<Notice text={notice().description ? `${notice().title} · ${notice().description}` : notice().title} />}
+              fallback={<Notice text={view().description ? `${view().title} · ${view().description}` : view().title} />}
             >
-              <ErrorCard level={notice().severity === "error" ? "error" : "warn"} title={notice().title} text={notice().description} actions={[]} />
+              <ErrorCard level={notice().severity === "error" ? "error" : "warn"} title={view().title} text={view().description} actions={[]} />
             </Show>
           );
         })()}
@@ -79,7 +80,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       <Match when={item().kind === "stop"}>
         {(() => {
           const reason = () => (item() as Extract<FeedItem, { kind: "stop" }>).reason;
-          const stop = () => stopView(reason())!;
+          const stop = () => stopView(reason(), (item() as Extract<FeedItem, { kind: "stop" }>).hint)!;
           return (
             <Show when={props.last() && !a.running() && a.connected()} fallback={<Notice text={`Stopped: ${stop().title.toLowerCase()}`} />}>
               <StopCard title={stop().title} code={reason()} text={stop().text} onContinue={() => a.sendText("Continue")} />
@@ -93,9 +94,15 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
 
 function Work(props: { agent: AgentController; block: () => Extract<Block, { type: "work" }> }) {
   const a = props.agent;
-  const steps = createMemo(() => props.block().tools.map((tool) => toStep(tool, workChildren(a.feed(), tool), a.props.workspacePath, (path, line) => void a.openInEditor(path, line))));
+  const steps = createMemo(() => props.block().tools.map((tool) => toStep(tool, workChildren(a.feed(), tool), a.props.workspacePath, (path, line) => void a.openInEditor(path, line), (id) => a.setViewing(id))));
   const summary = createMemo(() => workSummary(steps()));
-  return <WorkGroup headline={summary().headline} counts={summary().counts} steps={steps()} />;
+  const bypass = () => Boolean(a.state().agent?.features.editsBypassReview) && steps().some((step) => step.kind === "edit" && !step.internal);
+  return (
+    <>
+      <WorkGroup headline={summary().headline} counts={summary().counts} steps={steps()} />
+      <Show when={bypass()}><EditsBypassNote agent={a.agentLabel()} /></Show>
+    </>
+  );
 }
 
 function Changes(props: { agent: AgentController; block: () => Extract<Block, { type: "changes" }> }) {
@@ -130,6 +137,7 @@ function Changes(props: { agent: AgentController; block: () => Extract<Block, { 
           if (proposal) openPath(proposal.path);
         }}
       />
+      <Show when={a.state().agent?.features.editsBypassReview}><EditsBypassNote agent={a.agentLabel()} /></Show>
       <p class="sb-fine agent-unsaved-note">{note()}</p>
     </div>
   );

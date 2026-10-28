@@ -23,7 +23,7 @@ export function composerHints(input: HintInput): Record<ComposerHintMode, Compos
   const options = input.permission ?? [];
   const permission: ComposerHint[] = [];
   if (options.some((option) => option.kind.startsWith("allow"))) permission.push({ keys: ["Y"], label: "Allow" });
-  if (options.some((option) => option.kind.startsWith("reject"))) permission.push({ keys: ["N"], label: "Reject" });
+  if (options.some((option) => option.kind.startsWith("reject") && option.kind !== "reject_always")) permission.push({ keys: ["N"], label: "Reject" });
   const question: ComposerHint[] = [];
   if (input.elicitation?.mode === "url") question.push({ keys: ["↵"], label: "Open browser" });
   else if (input.field?.options.length) question.push({ keys: ["1-9"], label: "Pick an option" });

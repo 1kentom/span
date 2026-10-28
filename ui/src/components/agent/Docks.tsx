@@ -1,7 +1,8 @@
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
-import type { Brand, PermissionChoice, QuestionAnswer, QuestionOption } from "./types";
+import { DiffView } from "./WorkGroup";
+import type { Brand, PermissionChoice, PermissionDetails, QuestionAnswer, QuestionOption } from "./types";
 import { isTyping } from "./util";
 
 /** Registers a window key handler while `active` is true. */
@@ -84,28 +85,39 @@ export function QuestionDock(props: QuestionDockProps) {
 type PermissionDockProps = {
   title: string;
   brand?: Brand;
-  /** The command or target the tool call will touch. */
+  /** The command or target the tool call will touch. `details.command` wins when both are given. */
   command?: string;
   reason?: string;
+  /** What is being approved: diffs, locations, tool kind and input. */
+  details?: PermissionDetails;
   options: PermissionChoice[];
   active?: boolean;
   busy?: boolean;
   onChoose: (optionId: string) => void;
 };
 
-const ORDER = ["allow_once", "allow_always", "reject_once", "reject_always"];
+const ORDER = ["allow_once", "allow_always", "reject_once"];
 const rank = (kind: string) => {
   const index = ORDER.indexOf(kind);
   return index < 0 ? ORDER.length : index;
 };
-const SCOPE: Record<string, string> = { allow_always: "for this session", reject_always: "for this session" };
+const SCOPE: Record<string, string> = { allow_always: "for this session" };
+const DOUBLE_APPROVAL = "This agent asks for permission here, then sends the write itself, so you may be asked a second time for the same edit.";
 
-/** Permission request using the ACP option kinds. Y picks the first allow option, N the first reject. */
+/**
+ * Permission request using the ACP option kinds. Y picks the first allow option, N the first reject.
+ * `reject_always` is never drawn: the backend only forwards offered kinds and Span does not offer a standing reject.
+ * An internal request (agent bookkeeping) starts collapsed to one row; the buttons stay so it can still be answered.
+ */
 export function PermissionDock(props: PermissionDockProps) {
-  const sorted = () => [...props.options].sort((a, b) => rank(a.kind) - rank(b.kind));
+  const sorted = () => props.options.filter((option) => option.kind !== "reject_always").sort((a, b) => rank(a.kind) - rank(b.kind));
   const allow = () => sorted().find((option) => option.kind.startsWith("allow"));
   const reject = () => sorted().find((option) => option.kind.startsWith("reject"));
   const keyFor = (option: PermissionChoice) => (option === allow() ? "Y" : option === reject() ? "N" : "");
+  const internal = () => Boolean(props.details?.internal);
+  const [open, setOpen] = createSignal(!props.details?.internal);
+  const command = () => props.details?.command ?? props.command;
+  const hasDetails = () => Boolean(command() || props.details?.locations.length || props.details?.diffs.length || props.details?.input || props.reason);
   useKeys(
     () => props.active !== false && !props.busy,
     (event) => {
@@ -119,17 +131,57 @@ export function PermissionDock(props: PermissionDockProps) {
     },
   );
   return (
-    <section class="sb-dock" role="group" aria-label={`Permission requested: ${props.title}`}>
+    <section class="sb-dock" classList={{ internal: internal() }} role="group" aria-label={`Permission requested: ${props.title}`}>
       <div class="sb-dock-head">
         <span class="sb-dot warn" aria-hidden="true" />
-        <span class="sb-dock-title">{props.title}</span>
+        <span class="sb-dock-title" classList={{ muted: internal() }}>{props.title}</span>
+        <Show when={props.details?.kind}><span class="sb-kind sb-mono">{props.details?.kind}</span></Show>
         <span class="sb-flex" />
+        <Show when={internal() && hasDetails()}>
+          <button class="sb-icon-btn" aria-expanded={open()} aria-label={open() ? "Hide details" : "Show details"} onClick={() => setOpen(!open())}>
+            <Icon name={open() ? "arrow-down4" : "arrow-right4"} size={10} />
+          </button>
+        </Show>
         <Show when={props.brand}><BrandIcon id={props.brand?.id} name={props.brand?.name} size={13} /></Show>
       </div>
-      <Show when={props.command}>
-        <div class="sb-code"><span class="sb-prompt">$ </span>{props.command}</div>
+      <Show when={internal()}><div class="sb-sub">Agent housekeeping, not a change to your files</div></Show>
+      <Show when={open()}>
+        <div class="sb-dock-details">
+          <Show when={command()}>
+            <div class="sb-code sb-dock-command"><span class="sb-prompt">$ </span>{command()}</div>
+          </Show>
+          <Show when={props.details?.locations.length}>
+            <ul class="sb-dock-locs" aria-label="Files this touches">
+              <For each={props.details!.locations}>
+                {(location) => (
+                  <li class="sb-mono">
+                    <Show when={location.onOpen} fallback={<span class="dim sb-ellipsis" title={location.label}>{location.label}{location.line ? `:${location.line}` : ""}</span>}>
+                      <button type="button" class="sb-link sb-ellipsis" title={`Open ${location.label}`} onClick={() => location.onOpen?.()}>{location.label}{location.line ? `:${location.line}` : ""}</button>
+                    </Show>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </Show>
+          <For each={props.details?.diffs}>
+            {(diff) => <div class="sb-dock-diff"><DiffView path={diff.path} lines={diff.lines} onOpen={diff.onOpen} /></div>}
+          </For>
+          <Show when={props.details?.moreDiffs}><div class="sb-sub">+{props.details!.moreDiffs} more changed files not shown</div></Show>
+          <Show when={props.details?.input}>
+            <details class="sb-dock-input">
+              <summary>Input</summary>
+              <pre class="sb-mono">{props.details!.input}</pre>
+            </details>
+          </Show>
+          <Show when={props.reason}><div class="sb-body">{props.reason}</div></Show>
+        </div>
       </Show>
-      <Show when={props.reason}><div class="sb-body">{props.reason}</div></Show>
+      <Show when={props.details?.doubleApproval}>
+        <div class="sb-sub sb-double" title={DOUBLE_APPROVAL}>
+          <Icon name="InfoCircle" size={11} />
+          <span>May ask again for the write</span>
+        </div>
+      </Show>
       <div class="sb-actions">
         <For each={sorted()}>
           {(option) => (

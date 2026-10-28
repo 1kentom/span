@@ -5,9 +5,9 @@ import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } 
 import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
-import { formatElapsed, toolSummary } from "../../lib/agent-feed";
-import { canCompact } from "../../lib/agent-session";
-import { configViews, currentChoice, isSlashQuery, leaf, levelOf, slashGroups, type SpanCommand } from "../../lib/agent-view";
+import { formatElapsed } from "../../lib/agent-feed";
+import { canCompact, type PermissionEvent } from "../../lib/agent-session";
+import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { isDesktop } from "../../lib/client";
 import { ContextBanner } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
@@ -66,9 +66,15 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     else if (name === "log") a.setView("logs");
     else if (name === "agents") a.setView("connect");
   }
-  const toolTarget = (toolCallId: string) => {
+  const toolFor = (toolCallId: string) => {
     const tool = a.feed().find((item) => item.kind === "tool" && item.event.toolCallId === toolCallId);
-    return tool?.kind === "tool" ? toolSummary(tool.event.contentJson) : "";
+    return tool?.kind === "tool" ? tool.event : undefined;
+  };
+  const EDIT_KINDS = ["edit", "delete", "move"];
+  const permissionView = (event: PermissionEvent) => {
+    const details = permissionDetails(event, a.props.workspacePath, (path, line) => void a.openInEditor(path, line), toolFor(event.toolCallId));
+    const edits = EDIT_KINDS.includes(event.toolKind ?? "") || details.diffs.length > 0;
+    return { ...details, doubleApproval: Boolean(a.state().agent?.features.doubleApproval) && edits };
   };
   const field = () => a.fields()[a.form()?.index ?? 0];
   const unavailable = isDesktop ? undefined : ATTACH_UNAVAILABLE;
@@ -141,7 +147,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           <PermissionDock
             title={request().event.title}
             brand={props.brand}
-            command={toolTarget(request().event.toolCallId) || undefined}
+            details={permissionView(request().event)}
             options={request().event.options}
             busy={Boolean(a.pendingAction())}
             onChoose={(optionId) => void a.answerPermission(request().event.requestId, optionId)}
@@ -366,6 +372,11 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           <span class="agent-toolbar-spacer" />
           <Show when={a.connected() && usage()}>
             <UsageRing used={usage()!.used} size={usage()!.size} cost={usage()!.cost} warnAt={BANNER_AT} />
+          </Show>
+          <Show when={a.connected() && !usage() && a.state().turnUsage}>
+            <span class="sb-sub nowrap agent-turn-tokens" title="Tokens the agent reported for the last turn. It did not report a context size.">
+              {a.state().turnUsage!.tokens.toLocaleString()} tokens last turn
+            </span>
           </Show>
           <button
             class="agent-send"

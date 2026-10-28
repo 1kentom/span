@@ -2,11 +2,14 @@ import { For, Show, createSignal } from "solid-js";
 import { AnimatedLogo } from "../AnimatedLogo";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
-import type { FoundAgent, RegistryAgent } from "./types";
+import type { FoundAgent, PresetRow, RegistryAgent } from "./types";
 
 type ConnectScreenProps = {
   found: FoundAgent[];
   registry: RegistryAgent[];
+  /** Known launch commands for agents outside the registry. The command is shown exactly as it will run. */
+  presets?: PresetRow[];
+  onPreset?: (id: string) => void;
   busy?: boolean;
   onConnect: (id: string) => void;
   onInstall: (id: string) => void;
@@ -42,6 +45,26 @@ export function ConnectScreen(props: ConnectScreenProps) {
                   <Show when={agent.subtitle}><span class="sb-sub">{agent.subtitle}</span></Show>
                 </span>
                 <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${agent.name}`} onClick={() => props.onConnect(agent.id)}>Connect</button>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+      <Show when={props.presets?.length}>
+        <div class="sb-group" role="group" aria-label="Agents with a known command">
+          <div class="sb-eyebrow">Known commands</div>
+          <For each={props.presets}>
+            {(preset) => (
+              <div class="sb-agent-row stacked">
+                <div class="sb-agent-line">
+                  <BrandIcon id={preset.id} name={preset.name} size={18} />
+                  <span class="sb-agent-text">
+                    <span class="sb-agent-name">{preset.name}</span>
+                    <Show when={preset.description}><span class="sb-sub">{preset.description}</span></Show>
+                  </span>
+                  <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${preset.name}`} onClick={() => props.onPreset?.(preset.id)}>Connect</button>
+                </div>
+                <code class="sb-preset-command sb-mono" aria-label={`Command for ${preset.name}`}>{preset.command}</code>
               </div>
             )}
           </For>

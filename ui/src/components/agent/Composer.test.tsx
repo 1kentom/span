@@ -133,10 +133,10 @@ describe("PermissionDock", () => {
     { optionId: "ao", name: "Allow once", kind: "allow_once" },
     { optionId: "ra", name: "Never", kind: "reject_always" },
   ];
-  it("orders by ACP kind, shows the command, and maps Y and N", () => {
+  it("orders by ACP kind, shows the command, maps Y and N, and never draws reject_always", () => {
     const chosen: string[] = [];
     const host = mount(() => <PermissionDock title="Run command" command="git push" reason="Publishes commits" options={opts} onChoose={(id) => chosen.push(id)} />);
-    expect([...host.querySelectorAll(".sb-actions button")].map((b) => b.textContent?.replace(/[YN]$/, ""))).toEqual(["Allow once", "Always allow", "Reject", "Never"]);
+    expect([...host.querySelectorAll(".sb-actions button")].map((b) => b.textContent?.replace(/[YN]$/, ""))).toEqual(["Allow once", "Always allow", "Reject"]);
     expect(host.querySelector(".sb-code")!.textContent).toContain("git push");
     key("y");
     key("N");
