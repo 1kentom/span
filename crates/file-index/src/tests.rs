@@ -1,0 +1,170 @@
+use std::{fs, path::Path, path::PathBuf, time::Duration};
+
+use super::*;
+
+fn write(root: &Path, relative: &str, contents: &str) -> PathBuf {
+    let path = root.join(relative);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, contents).unwrap();
+    path
+}
+
+async fn indexed(root: &Path) -> (FileIndex, WorkspaceHandle) {
+    let index = FileIndex::default();
+    let workspace = index.open_workspace(root).await.unwrap();
+    index.start_scan(&workspace).unwrap().await.unwrap();
+    (index, workspace)
+}
+
+#[tokio::test]
+async fn scan_respects_gitignore_and_fuzzy_query_is_bounded_and_deterministic() {
+    let temp = tempfile::tempdir().unwrap();
+    write(temp.path(), ".gitignore", "target/\n*.secret\n");
+    write(temp.path(), "src/main.rs", "fn main() {}");
+    write(temp.path(), "src/menu.rs", "fn menu() {}");
+    write(temp.path(), "target/generated.rs", "generated");
+    write(temp.path(), "keys.secret", "secret");
+    for n in 0..130 {
+        write(temp.path(), &format!("src/module_{n:03}.rs"), "module");
+    }
+
+    let (index, workspace) = indexed(temp.path()).await;
+    let snapshot = index.snapshot(&workspace).unwrap();
+    assert_eq!(snapshot.status, ScanStatus::Ready);
+    assert_eq!(snapshot.indexed_files, 133);
+
+    let first = index.query(&workspace, "s", 500).await.unwrap();
+    let second = index.query(&workspace, "s", 500).await.unwrap();
+    assert_eq!(first.len(), 100);
+    assert_eq!(first, second);
+    assert!(first
+        .iter()
+        .any(|item| item.relative_path == Path::new("src/main.rs")));
+    assert!(first
+        .iter()
+        .all(|item| !item.relative_path.starts_with("target")));
+    assert!(index
+        .query(&workspace, "secret", 100)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn watcher_deltas_are_replayed_after_scan_and_rename_remove_are_incremental() {
+    let temp = tempfile::tempdir().unwrap();
+    write(temp.path(), "before.rs", "old");
+    let index = FileIndex::default();
+    let workspace = index.open_workspace(temp.path()).await.unwrap();
+
+    let created = write(temp.path(), "during.rs", "during");
+    index
+        .apply_event(&workspace, FileEvent::Upsert(created))
+        .unwrap();
+    let removed = temp.path().join("before.rs");
+    fs::remove_file(&removed).unwrap();
+    index
+        .apply_event(&workspace, FileEvent::Remove(removed))
+        .unwrap();
+
+    index.start_scan(&workspace).unwrap().await.unwrap();
+    let paths = index.query(&workspace, "", 100).await.unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].relative_path, Path::new("during.rs"));
+
+    let destination = write(temp.path(), "after.rs", "renamed");
+    index
+        .apply_event(
+            &workspace,
+            FileEvent::Rename {
+                from: destination.with_file_name("during.rs"),
+                to: destination,
+            },
+        )
+        .unwrap();
+    let paths = index.query(&workspace, "", 100).await.unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].relative_path, Path::new("after.rs"));
+}
+
+#[tokio::test]
+async fn new_generation_cancels_old_scan_and_old_handles_cannot_mutate_it() {
+    let first = tempfile::tempdir().unwrap();
+    for n in 0..2000 {
+        write(first.path(), &format!("tree/{n:04}.txt"), "file");
+    }
+    let second = tempfile::tempdir().unwrap();
+    write(second.path(), "only.rs", "only");
+
+    let index = FileIndex::default();
+    let old = index.open_workspace(first.path()).await.unwrap();
+    let old_scan = index.start_scan(&old).unwrap();
+    tokio::time::sleep(Duration::from_millis(2)).await;
+
+    let current = index.open_workspace(second.path()).await.unwrap();
+    index.start_scan(&current).unwrap().await.unwrap();
+    old_scan.await.unwrap();
+
+    assert!(matches!(
+        index.snapshot(&old),
+        Err(IndexError::OutsideWorkspace)
+    ));
+    assert_eq!(index.snapshot(&current).unwrap().indexed_files, 1);
+    assert!(matches!(
+        index.apply_event(&old, FileEvent::Remove(PathBuf::from("only.rs"))),
+        Err(IndexError::OutsideWorkspace)
+    ));
+}
+
+#[tokio::test]
+async fn canonical_boundary_rejects_external_symlink_and_dangling_links_are_skipped() {
+    let temp = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let outside = write(external.path(), "outside.rs", "outside");
+    let (index, workspace) = indexed(temp.path()).await;
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, temp.path().join("external.rs")).unwrap();
+        std::os::unix::fs::symlink(
+            temp.path().join("missing.rs"),
+            temp.path().join("dangling.rs"),
+        )
+        .unwrap();
+        assert!(matches!(
+            index.apply_event(
+                &workspace,
+                FileEvent::Upsert(temp.path().join("external.rs"))
+            ),
+            Err(IndexError::OutsideWorkspace)
+        ));
+        index.start_scan(&workspace).unwrap().await.unwrap();
+        assert!(index
+            .query(&workspace, "outside", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(index
+            .query(&workspace, "dangling", 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn bad_scan_root_does_not_poison_a_later_workspace() {
+    let index = FileIndex::default();
+    assert!(index
+        .open_workspace("/path/that/does/not/exist")
+        .await
+        .is_err());
+    let temp = tempfile::tempdir().unwrap();
+    write(temp.path(), "healthy.txt", "ok");
+    let (index, workspace) = indexed(temp.path()).await;
+    assert_eq!(
+        index.snapshot(&workspace).unwrap().status,
+        ScanStatus::Ready
+    );
+    assert_eq!(index.snapshot(&workspace).unwrap().indexed_files, 1);
+}
