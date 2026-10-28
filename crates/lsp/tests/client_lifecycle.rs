@@ -1,5 +1,7 @@
 //! Client lifecycle tests against a small inline python3 server.
 
+mod common;
+
 use lsp_types::*;
 use span_lsp::{LspClient, LspError};
 use std::path::{Path, PathBuf};
@@ -64,9 +66,11 @@ async fn start(mode: &str) -> Fixture {
     let script = dir.path().join("server.py");
     std::fs::write(&script, SERVER).unwrap();
     let log = dir.path().join("server.log");
+    let (program, args) =
+        common::python_args(&[script.to_string_lossy().into_owned(), mode.to_string()]);
     let client = LspClient::spawn_with_env(
-        "python3",
-        &[script.to_string_lossy().into_owned(), mode.to_string()],
+        &program,
+        &args,
         None,
         &[("FAKE_LSP_LOG".into(), log.to_string_lossy().into_owned())],
     )

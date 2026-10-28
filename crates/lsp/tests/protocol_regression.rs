@@ -1,9 +1,12 @@
 //! Protocol regression tests for the LSP client.
 //!
-//! Every process test spawns a real `python3 -I` script that speaks raw LSP bytes
+//! Every process test spawns a real `python -I` script (`python3`, `python` or `py -3`, whichever runs) that speaks raw LSP bytes
 //! over stdio, so each test controls exactly what is written and when. The script
 //! logs every message it receives as one JSON line (`{"in": ...}`) to a file.
 
+mod common;
+
+use common::ps_state;
 use lsp_types::*;
 use serde_json::{json, Value};
 use span_lsp::{LspClient, LspError, ServerEvent, TrackedDocument};
@@ -93,17 +96,12 @@ async fn start(scenario: &str) -> Srv {
     let script = dir.path().join("server.py");
     std::fs::write(&script, format!("{PRELUDE}\n{scenario}\n")).unwrap();
     let log = dir.path().join("server.log");
-    let client = LspClient::spawn(
-        "python3",
-        &[
-            "-I".to_string(),
-            script.to_string_lossy().into_owned(),
-            log.to_string_lossy().into_owned(),
-        ],
-        None,
-    )
-    .await
-    .unwrap();
+    let (py, py_args) = common::python_args(&[
+        "-I".to_string(),
+        script.to_string_lossy().into_owned(),
+        log.to_string_lossy().into_owned(),
+    ]);
+    let client = LspClient::spawn(&py, &py_args, None).await.unwrap();
     client
         .initialize(InitializeParams::default())
         .await
@@ -151,20 +149,6 @@ fn server_pid(log: &Path) -> u32 {
         .iter()
         .find_map(|e| e.get("pid").and_then(Value::as_u64))
         .expect("server logged its pid") as u32
-}
-
-/// `ps` state of a pid: `None` when the pid no longer exists (fully reaped).
-fn ps_state(pid: u32) -> Option<String> {
-    let out = std::process::Command::new("ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-        .unwrap();
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
 }
 
 fn uri() -> Uri {
@@ -867,7 +851,7 @@ async fn dropping_the_client_kills_and_reaps_the_child() {
             None => break,
             Some(state) => assert!(
                 Instant::now() < deadline,
-                "pid {pid} still present after drop (ps state {state:?}, Z means zombie)"
+                "pid {pid} still present after drop (state {state:?}; on unix Z means zombie)"
             ),
         }
     }

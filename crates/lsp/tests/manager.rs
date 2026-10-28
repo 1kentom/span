@@ -1,4 +1,6 @@
-//! Manager tests against a python3 fake language server.
+//! Manager tests against a python fake language server.
+
+mod common;
 
 use lsp_types::*;
 use serde_json::Value;
@@ -31,12 +33,13 @@ impl LaunchResolver for Resolver {
         }
         let script =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-lsp-server.py");
+        let (py, py_args) = common::python_args(&[
+            script.to_string_lossy().into_owned(),
+            (*self.mode.lock().unwrap()).to_string(),
+        ]);
         Ok(LaunchSpec {
-            program: PathBuf::from("python3"),
-            args: vec![
-                script.to_string_lossy().into_owned(),
-                (*self.mode.lock().unwrap()).to_string(),
-            ],
+            program: PathBuf::from(py),
+            args: py_args,
             env: vec![(
                 "FAKE_LSP_LOG".into(),
                 self.log.to_string_lossy().into_owned(),
@@ -609,24 +612,15 @@ async fn shutdown_all_sends_shutdown_and_exit() {
     f.ready().await;
     let pid = f.methods("initialize")[0]["pid"].as_u64().unwrap();
     assert!(
-        process_exists(pid),
+        common::process_exists(pid),
         "child should be running before shutdown"
     );
     f.manager.shutdown_all().await;
     assert!(
-        !process_exists(pid),
+        !common::process_exists(pid),
         "child {pid} must have exited and been reaped (kill -0 on a zombie succeeds)"
     );
     assert_eq!(f.methods("shutdown").len(), 1);
     assert_eq!(f.methods("exit").len(), 1);
     assert_eq!(f.manager.state(ID, &f.root).await, None);
-}
-
-fn process_exists(pid: u64) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
