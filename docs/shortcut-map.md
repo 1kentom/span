@@ -1,0 +1,29 @@
+# Supported shortcut map
+
+Checked 2026-10-28 against the official [VS Code default keyboard shortcuts](https://code.visualstudio.com/docs/reference/default-keybindings) and [keyboard rule documentation](https://code.visualstudio.com/docs/configure/keybindings). Span supports its own command registry and focus rules; matching familiar shortcuts does not implement VS Code's complete keybinding engine.
+
+The requested **Cmd+E shows and focuses the Files sidebar** and **Cmd+P opens Go to**. Cmd+E is a deliberate Span customization. VS Code's documented factory Explorer shortcut is Cmd+Shift+E on macOS (Ctrl+Shift+E on Windows/Linux), retained as an alias. VS Code's factory Open File shortcut is Cmd+O; Span keeps Mod+O for its existing Open Folder action and leaves the separate native file picker unbound. `Mod` below means Command on macOS and Control elsewhere.
+
+| Span action | Default | Comparison or explicit choice |
+| --- | --- | --- |
+| Show Files | Mod+E / Mod+Shift+E | Requested custom mapping plus the documented Explorer factory alias. Always shows Files and focuses its tree; repeating it does not hide the sidebar. |
+| Open File | Unbound | Available from the native File menu, command palette and welcome screen. It does not own Cmd+E. |
+| Go to File | Mod+P; also Ctrl+P on macOS | Mod+P matches VS Code Quick Open; macOS Control alias was requested separately. Mod+E and standalone Mod+K are no longer default Go to aliases. |
+| Open Folder | Mod+O | Existing Span choice, distinct from VS Code's Open File default. |
+| Show All Commands | Mod+Shift+P | Familiar VS Code command entry. |
+| Find in File / Search in Files | Mod+F / Mod+Shift+F | Familiar current-file and workspace distinction. |
+| Open Settings / Save / Close Editor Tab | Mod+, / Mod+S / Mod+W | Familiar macOS defaults; platform close defaults can differ. Close Tab does not quit Span. |
+| Split Editor / Toggle Project Panel | Mod+\\ / Mod+B | Familiar split and sidebar defaults. |
+| Toggle AI Assistant | Mod+Alt+B | Span's assistant panel action; not a provider or extension command. |
+| Toggle Terminal Panel | Mod+J | Span panel toggle, not VS Code's dedicated terminal shortcut. |
+| Toggle Word Wrap / Markdown Preview / Format Document | Alt+Z / Mod+Shift+V / Alt+Shift+F | Familiar actions; formatting requires Span's configured formatter. |
+| Zoom In / Zoom Out / Reset Zoom | Mod+= (also Mod+Shift+=) / Mod+- / Mod+0 | Whole-workbench zoom. Span accepts its documented reset variant rather than requiring the numpad reset key. |
+| Go to Line | Ctrl+G / Mod+Alt+G | Ctrl+G matches the documented VS Code default; Mod+Alt+G is Span's additional alias. |
+
+Explicit user/workspace overrides remain authoritative. If an existing explicit binding claims one of the new Show Files defaults, only that overlapping inherited key becomes unassigned; the saved binding is retained. Explicit conflicting assignments are still rejected. No shortcut migration rewrites user files.
+
+Show Files selects Files even when Search, Git or History was selected, makes the sidebar visible and focuses an existing tree item (or the empty tree). It preserves the active editor draft. The `focusFiles` command is shared by the keybinding table, palette and native View menu. Go to remains separate under Navigation and the native Go menu.
+
+Open File requests one file through the native dialog. Cancel does nothing. A file inside the current workspace opens there without replacing it; the workspace root is checked again after the picker returns. An outside file uses the existing typed startup-request queue and unsaved-project guard. Failures are visible, and concurrent picker requests are ignored while a selection is pending. Welcome Open a file, the command palette, keybinding table and native File menu use the distinct, initially unbound `openFile` command.
+
+Regression evidence: [command dispatch and overrides](../ui/src/lib/commands.test.ts), [native picker options and errors](../ui/src/lib/file-picker.test.ts), [keybinding table](../ui/src/components/KeyboardSettings.test.tsx), [Rust command/schema/collision validation](../crates/core/src/settings.rs), and [browser picker/event fixtures](../e2e/open-file-shortcuts.spec.ts). Browser fixtures prove application routing and draft preservation; they do not operate a physical OS dialog. Native verification must use the rebuilt application for [#65](https://github.com/1kentom/span/issues/65).

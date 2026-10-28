@@ -25,6 +25,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Test website release metadata validation
+        if: runner.os == 'Linux'
+        run: node --test apps/web/scripts/sync-releases.test.mjs
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -74,5 +77,28 @@ jobs:
           }
           # The unchanged test step below establishes runtime success or failure.
           exit 0
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       - run: pnpm desktop:build --no-bundle
+  real-servers:
+    name: real language servers (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache downloaded language servers
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/span-lsp-server-cache
+          key: span-lsp-servers-${{ hashFiles('crates/lsp/src/servers/catalog.rs') }}
+      - name: Real server smoke tests (vtsls, HTML, CSS, JSON, rust-analyzer, basedpyright, JDT LS)
+        env:
+          SPAN_LSP_TEST_CACHE: ${{ runner.temp }}/span-lsp-server-cache
+        run: |
+          export JAVA_HOME="$JAVA_HOME_25_X64"
+          cargo test -p span-lsp --features real-servers --test servers_smoke --no-fail-fast

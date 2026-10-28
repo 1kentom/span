@@ -12,6 +12,8 @@ use tauri_specta::Event;
 #[serde(rename_all = "camelCase")]
 pub enum NativeAction {
     QuickOpen,
+    FocusFiles,
+    OpenFile,
     CommandPalette,
     FindInFile,
     SearchWorkspace,
@@ -39,6 +41,8 @@ pub struct NativeActionEvent {
 
 const ACTIONS: &[(&str, &str, NativeAction)] = &[
     ("quickOpen", "Go to File...", NativeAction::QuickOpen),
+    ("focusFiles", "Show Files", NativeAction::FocusFiles),
+    ("openFile", "Open File...", NativeAction::OpenFile),
     (
         "commandPalette",
         "Show All Commands...",
@@ -130,8 +134,8 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
         "File",
         true,
         &[
+            &items["openFile"],
             &items["openFolder"],
-            &items["quickOpen"],
             &items["save"],
             &items["closeTab"],
         ],
@@ -157,6 +161,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
         true,
         &[
             &items["commandPalette"],
+            &items["focusFiles"],
             &items["splitEditor"],
             &items["toggleProject"],
             &items["toggleAssistant"],
@@ -168,7 +173,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["resetZoom"],
         ],
     )?;
-    let go = Submenu::with_items(app, "Go", true, &[&items["goToLine"]])?;
+    let go = Submenu::with_items(app, "Go", true, &[&items["quickOpen"], &items["goToLine"]])?;
     app.set_menu(Menu::with_items(
         app,
         &[&app_menu, &file, &edit, &view, &go],

@@ -40,6 +40,10 @@ pub enum LspError {
 
     #[error("Client shutdown")]
     Shutdown,
+
+    /// The server did not advertise the capability needed for this request.
+    #[error("Server does not support {0}")]
+    Unsupported(String),
 }
 
 pub type Result<T> = std::result::Result<T, LspError>;

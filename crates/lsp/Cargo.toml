@@ -13,7 +13,22 @@ tokio-util = "0.7"
 lsp-types = "0.97"
 bytes = "1.9"
 url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[features]
+# Real-server tests download and run the pinned language servers (network, Node, a JDK 25+).
+# CI runs them in a dedicated Linux job: `cargo test -p span-lsp --features real-servers`.
+real-servers = []
+
+[[test]]
+name = "servers_smoke"
+required-features = ["real-servers"]
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true, features = ["net"] }
 fluent-uri = "0.1"

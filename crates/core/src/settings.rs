@@ -178,6 +178,8 @@ impl Settings {
 
 const COMMAND_IDS: &[&str] = &[
     "quickOpen",
+    "focusFiles",
+    "openFile",
     "commandPalette",
     "findInFile",
     "searchWorkspace",
@@ -309,9 +311,42 @@ fn validate_shortcut(shortcut: &str) -> Result<()> {
     Ok(())
 }
 
+fn shortcut_conflict_key(shortcut: &str) -> Result<String> {
+    let normalized = normalize_zoom_shortcut(shortcut);
+    let shortcut = normalized.as_str();
+    let mut parts: Vec<&str> = shortcut.split('+').collect();
+    let key = parts
+        .pop()
+        .ok_or_else(|| CoreError::Settings("Empty shortcut".into()))?
+        .to_ascii_uppercase();
+    let mut modifiers: Vec<&str> = parts
+        .into_iter()
+        .map(|modifier| match modifier {
+            "Mod" => {
+                if cfg!(target_os = "macos") {
+                    "Meta"
+                } else {
+                    "Ctrl"
+                }
+            }
+            "Cmd" => "Meta",
+            other => other,
+        })
+        .collect();
+    modifiers.sort_unstable();
+    if modifiers.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(CoreError::Settings(format!(
+            "Duplicate shortcut modifier: {shortcut}"
+        )));
+    }
+    Ok(format!("{}+{key}", modifiers.join("+")))
+}
+
 fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Result<()> {
     let defaults = [
-        ("quickOpen", vec!["Mod+P", "Mod+K", "Mod+E"]),
+        ("quickOpen", vec!["Mod+P"]),
+        ("focusFiles", vec!["Mod+E", "Mod+Shift+E"]),
+        ("openFile", vec![]),
         ("commandPalette", vec!["Mod+Shift+P"]),
         ("findInFile", vec!["Mod+F"]),
         ("searchWorkspace", vec!["Mod+Shift+F"]),
@@ -331,8 +366,18 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("zoomOut", vec!["Mod+-"]),
         ("resetZoom", vec!["Mod+0"]),
     ];
+    let claimed = overrides
+        .values()
+        .flatten()
+        .map(|key| shortcut_conflict_key(key))
+        .collect::<Result<std::collections::HashSet<_>>>()?;
     let mut assigned = HashMap::new();
     for (command, mut defaults) in defaults {
+        if command == "focusFiles" {
+            defaults.retain(|shortcut| {
+                !claimed.contains(&shortcut_conflict_key(shortcut).expect("valid default shortcut"))
+            });
+        }
         if command == "quickOpen" && cfg!(target_os = "macos") {
             defaults.push("Ctrl+P");
         }
@@ -341,34 +386,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
             None => defaults,
         };
         for shortcut in shortcuts {
-            let normalized = normalize_zoom_shortcut(shortcut);
-            let shortcut = normalized.as_str();
-            let mut parts: Vec<&str> = shortcut.split('+').collect();
-            let key = parts
-                .pop()
-                .ok_or_else(|| CoreError::Settings("Empty shortcut".into()))?
-                .to_ascii_uppercase();
-            let mut modifiers: Vec<&str> = parts
-                .into_iter()
-                .map(|modifier| match modifier {
-                    "Mod" => {
-                        if cfg!(target_os = "macos") {
-                            "Meta"
-                        } else {
-                            "Ctrl"
-                        }
-                    }
-                    "Cmd" => "Meta",
-                    other => other,
-                })
-                .collect();
-            modifiers.sort_unstable();
-            if modifiers.windows(2).any(|pair| pair[0] == pair[1]) {
-                return Err(CoreError::Settings(format!(
-                    "Duplicate shortcut modifier: {shortcut}"
-                )));
-            }
-            let normalized = format!("{}+{key}", modifiers.join("+"));
+            let normalized = shortcut_conflict_key(shortcut)?;
             if let Some(existing) = assigned.insert(normalized, command) {
                 if existing == command {
                     continue;
@@ -721,6 +739,48 @@ fn strip_jsonc(text: &str) -> Result<String> {
         }
     }
     Ok(clean)
+}
+
+#[cfg(test)]
+mod file_open_shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn picker_command_validates_and_preserves_existing_explicit_keys() {
+        Settings::default().validate().unwrap();
+        for command in ["openFile", "focusFiles", "quickOpen", "settings"] {
+            let settings = Settings {
+                keybindings: HashMap::from([(command.into(), vec!["Mod+E".into()])]),
+                ..Default::default()
+            };
+            settings.validate().unwrap();
+        }
+        let settings = Settings {
+            keybindings: HashMap::from([("openFile".into(), vec!["Mod+P".into()])]),
+            ..Default::default()
+        };
+        assert!(settings
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("conflicts"));
+        let explicit_collision = Settings {
+            keybindings: HashMap::from([
+                ("focusFiles".into(), vec!["Mod+E".into()]),
+                ("openFile".into(), vec!["Mod+E".into()]),
+            ]),
+            ..Default::default()
+        };
+        assert!(explicit_collision.validate().is_err());
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+        assert!(schema["properties"]["keybindings"]["propertyNames"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == "openFile"));
+        assert!(COMMAND_IDS.contains(&"focusFiles"));
+    }
 }
 
 #[cfg(test)]
