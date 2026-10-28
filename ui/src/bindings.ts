@@ -8,6 +8,9 @@ export const commands = {
 	openWorkspace: (path: string) => __TAURI_INVOKE<Workspace>("open_workspace", { path }),
 	listDirectory: (path: string) => __TAURI_INVOKE<FileEntry[]>("list_directory", { path }),
 	listFiles: () => __TAURI_INVOKE<FileEntry[]>("list_files"),
+	fileIndexStatus: () => __TAURI_INVOKE<FileIndexStatus_Serialize | null>("file_index_status"),
+	queryFile: (query: string, limit: number) => __TAURI_INVOKE<FileIndexQueryResponse>("query_file", { query, limit }),
+	reconcileFileIndex: () => __TAURI_INVOKE<FileIndexStatus_Serialize>("reconcile_file_index"),
 	newFile: (path: string) => __TAURI_INVOKE<BufferSnapshot>("new_file", { path }),
 	newDirectory: (path: string) => __TAURI_INVOKE<FileEntry>("new_directory", { path }),
 	renamePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry>("rename_path", { from, to }),
@@ -191,6 +194,46 @@ export type FileEntry = {
 	path: string,
 	name: string,
 	isDir: boolean,
+};
+
+export type FileIndexMatch = {
+	path: string,
+	score: number,
+};
+
+export type FileIndexQueryResponse = {
+	workspaceRoot: string,
+	generation: number,
+	requestId: number,
+	results: FileIndexMatch[],
+};
+
+export type FileIndexStatus = FileIndexStatus_Serialize | FileIndexStatus_Deserialize;
+
+export type FileIndexStatusKind = "idle" | "scanning" | "ready" | "partial" | "failed";
+
+export type FileIndexStatus_Deserialize = {
+	workspaceRoot: string,
+	generation: number,
+	status: FileIndexStatusKind,
+	scannedEntries: number,
+	indexedFiles: number,
+	errorCount: number,
+	lastError?: string | null,
+	watcherReady: boolean,
+	watcherError?: string | null,
+};
+
+export type FileIndexStatus_Serialize = {
+	workspaceRoot: string,
+	generation: number,
+	status: FileIndexStatusKind,
+	scannedEntries: number,
+	indexedFiles: number,
+	errorCount: number,
+	lastError: string | null,
+	watcherReady: boolean,
+	watcherError: string | null,
 };
 
 export type FoldRange = {

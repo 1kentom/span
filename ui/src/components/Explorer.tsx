@@ -2,6 +2,7 @@ import { For, Show, createSignal, onCleanup } from "solid-js";
 import type { FileEntry } from "../bindings";
 import type { Workbench } from "../stores/workbench";
 import Icon, { FileIcon } from "./Icon";
+import { fileIndexMessage } from "../lib/file-index";
 
 export function Explorer(props: { workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onFileDragStart?: (event: DragEvent, path: string) => void }) {
   const w = props.workbench;
@@ -21,20 +22,22 @@ export function Explorer(props: { workbench: Workbench; view: "Files" | "Search"
     const entry = rowProps.entry;
     const expanded = () => w.expanded().has(entry.path);
     return <>
-      <button class={`tree-row ${w.activePath() === entry.path ? "selected" : ""}`} role="treeitem" aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-selected={!entry.isDir && w.activePath() === entry.path} draggable={!entry.isDir && !!props.onFileDragStart} onDragStart={event => { if (!entry.isDir) props.onFileDragStart?.(event, entry.path); }} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={() => entry.isDir ? void w.toggleDirectory(entry.path) : props.onNavigate(entry.path)} onKeyDown={e => {
+      <button class={`tree-row ${w.activePath() === entry.path ? "selected" : ""}`} role="treeitem" aria-busy={entry.isDir && w.loadingDirectories().has(entry.path)} aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-selected={!entry.isDir && w.activePath() === entry.path} draggable={!entry.isDir && !!props.onFileDragStart} onDragStart={event => { if (!entry.isDir) props.onFileDragStart?.(event, entry.path); }} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={() => entry.isDir ? void w.toggleDirectory(entry.path) : props.onNavigate(entry.path)} onKeyDown={e => {
         if (entry.isDir && ((e.key === "ArrowRight" && !expanded()) || (e.key === "ArrowLeft" && expanded()))) { e.preventDefault(); void w.toggleDirectory(entry.path); }
       }} title={entry.path}>
         <Show when={entry.isDir} fallback={<span class="tree-indent" />}><Icon name={expanded() ? "arrow-down4" : "arrow-right4"} size={13} /></Show>
         <FileIcon path={entry.path} directory={entry.isDir} open={expanded()} /><span class="tree-name">{entry.name}</span><Show when={w.dirty(entry.path)}><span class="dirty-dot" aria-label="Unsaved changes" /></Show>
       </button>
-      <Show when={entry.isDir && expanded()}><TreeRows path={entry.path} depth={rowProps.depth + 1} /></Show>
+      <Show when={entry.isDir && expanded()}><Show when={w.loadingDirectories().has(entry.path)}><div class="tree-loading" role="status" style={{ "padding-left": `${28 + rowProps.depth * 16}px` }}>Loading folder…</div></Show><TreeRows path={entry.path} depth={rowProps.depth + 1} /></Show>
     </>;
   };
   return <>
     <Show when={props.view === "Files"}>
       <Show when={w.workspace()} fallback={<div class="panel-empty"><Icon name="Folder2" size={28} /><strong>No folder open</strong><p>Open a folder to start editing.</p><button class="button" onClick={w.requestWorkspace}>Open folder</button></div>}>
         <div class="tree-root"><button onClick={() => void w.toggleDirectory("")} aria-expanded={w.expanded().has("")}><Icon name={w.expanded().has("") ? "arrow-down4" : "arrow-right4"} size={13} /><strong>{w.workspace()?.name}</strong></button><button class="icon-button subtle" aria-label="Open folder" title="Open folder" onClick={w.requestWorkspace}><Icon name="Folder2" size={15} /></button></div>
-        <div class="file-tree" role="tree" aria-label="Workspace files" onKeyDown={treeKey}><Show when={w.expanded().has("")}><TreeRows path="" depth={0} /></Show></div>
+        <div class="file-index-status" role="status" title={w.indexError() || w.indexStatus()?.lastError || w.indexStatus()?.watcherError || undefined}>{fileIndexMessage(w.indexStatus(), w.indexError())}</div>
+        <Show when={w.loadingDirectories().has("")}><div class="tree-loading" role="status">Loading folder…</div></Show>
+        <div class="file-tree" aria-busy={w.loadingDirectories().has("")} role="tree" aria-label="Workspace files" onKeyDown={treeKey}><Show when={w.expanded().has("")}><TreeRows path="" depth={0} /></Show></div>
       </Show>
     </Show>
     <Show when={props.view === "Search"}>

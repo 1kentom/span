@@ -3,8 +3,9 @@ import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
+import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -150,6 +151,15 @@ export const api = {
   },
   async listFiles(): Promise<FileEntry[]> {
     return isDesktop ? commands.listFiles() : Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
+  },
+  async fileIndexStatus(): Promise<FileIndexStatus | null> {
+    if (isDesktop) return commands.fileIndexStatus();
+    return { workspaceRoot: previewWorkspace.root, generation: 1, status: 'ready', scannedEntries: Object.keys(fixture).length, indexedFiles: Object.keys(fixture).length, errorCount: 0, lastError: null, watcherReady: false, watcherError: null };
+  },
+  async queryFile(query: string, limit = 100): Promise<FileIndexQueryResponse> {
+    if (isDesktop) return commands.queryFile(query, Math.max(1, Math.min(100, limit)));
+    const files = Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
+    return { workspaceRoot: previewWorkspace.root, generation: 1, requestId: 0, results: fileResults(files, query).slice(0, limit).map(file => ({ path: file.path, score: 0 })) };
   },
   async openBuffer(path: string): Promise<BufferSnapshot> {
     return isDesktop ? commands.openBuffer(path) : previewBuffer(path);

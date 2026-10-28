@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createComputed, createRoot } from "solid-js";
 import { ChangeSet } from "@codemirror/state";
-import type { BufferSnapshot, TextEdit, SessionState_Serialize as SessionState, Settings_Serialize as Settings } from "../bindings";
+import type { BufferSnapshot, FileIndexStatus, TextEdit, SessionState_Serialize as SessionState, Settings_Serialize as Settings } from "../bindings";
 
 const client = vi.hoisted(() => ({
-  openWorkspace: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), getSettings: vi.fn(),
+  openWorkspace: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
   openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
@@ -40,6 +40,8 @@ beforeEach(() => {
   client.openWorkspace.mockImplementation(async (root: string) => ({ root, name: "workspace" }));
   client.listDirectory.mockResolvedValue([]);
   client.listFiles.mockResolvedValue([]);
+  client.fileIndexStatus.mockResolvedValue(null);
+  client.queryFile.mockResolvedValue({ workspaceRoot: "/workspace", generation: 1, requestId: 1, results: [] });
   client.getSettings.mockResolvedValue(preferences);
   client.getSettingsForScope.mockResolvedValue(preferences);
   client.getSettingsJsoncForScope.mockResolvedValue('// retained comments\n{ "theme": "Dark" }\n');
@@ -425,4 +427,81 @@ describe("file operations reconcile editor state", () => {
     expect(workbench.pendingClose()).toBeUndefined(); expect(workbench.groups().find(group => group.id === 2)?.tabs).toContain("src/file.ts");
     expect(workbench.documents()["src/file.ts"].document).toBe(document);
   });
+});
+
+
+describe("incremental workspace file index", () => {
+  const status = (root = "/workspace", generation = 1): FileIndexStatus => ({ workspaceRoot: root, generation, status: "scanning", scannedEntries: 80, indexedFiles: 12, errorCount: 0, lastError: null, watcherReady: true, watcherError: null });
+  it("publishes the first visible level without waiting for settings or a recursive file list", async () => {
+    const prefs = deferred<Settings>();
+    client.getSettings.mockReturnValue(prefs.promise);
+    client.listFiles.mockReturnValue(new Promise(() => {}));
+    client.listDirectory.mockResolvedValue([{ path: "src", name: "src", isDir: true }]);
+    client.fileIndexStatus.mockResolvedValue(status());
+    const workbench = testWorkbench(); const opening = workbench.openWorkspace("/workspace");
+    await vi.waitFor(() => expect(workbench.directories[""]?.[0]?.name).toBe("src"));
+    expect(workbench.workspace()?.root).toBe("/workspace");
+    expect(workbench.indexStatus()?.indexedFiles).toBe(12);
+    expect(client.listFiles).not.toHaveBeenCalled();
+    expect(client.listDirectory).toHaveBeenCalledTimes(1);
+    prefs.resolve(preferences); await opening;
+  });
+  it("expands directories lazily, deduplicates reads and respects collapse during loading", async () => {
+    const workbench = await setup(); const listing = deferred<{ path: string; name: string; isDir: boolean }[]>();
+    client.listDirectory.mockClear(); client.listDirectory.mockReturnValue(listing.promise);
+    expect(workbench.expanded().has("src")).toBe(false); expect(client.listDirectory).not.toHaveBeenCalled();
+    const expansion = workbench.toggleDirectory("src");
+    expect(workbench.expanded().has("src")).toBe(true); expect(workbench.loadingDirectories().has("src")).toBe(true);
+    const duplicate = workbench.loadDirectory("src");
+    await workbench.toggleDirectory("src");
+    listing.resolve([{ path: "src/new.ts", name: "new.ts", isDir: false }]); await Promise.all([expansion, duplicate]);
+    expect(client.listDirectory).toHaveBeenCalledTimes(1); expect(workbench.expanded().has("src")).toBe(false);
+    expect(workbench.loadingDirectories().has("src")).toBe(false); expect(workbench.files().some(file => file.path === "src/new.ts")).toBe(true);
+  });
+  it("never rescans files or reloads directory listings on save", async () => {
+    const workbench = await setup(); client.listFiles.mockClear(); client.listDirectory.mockClear();
+    append(workbench, "// incremental save\n"); expect(await workbench.save("src/file.ts")).toBe(true);
+    expect(client.listFiles).not.toHaveBeenCalled(); expect(client.listDirectory).not.toHaveBeenCalled();
+  });
+  it("preserves backend ranking and rejects root/generation mismatches", async () => {
+    client.fileIndexStatus.mockResolvedValue(status("/workspace", 2));
+    const workbench = await setup();
+    client.queryFile.mockResolvedValue({ workspaceRoot: "/workspace", generation: 2, requestId: 2, results: [{ path: "src/zebra.ts", score: 9 }, { path: "alpha.ts", score: 2 }] });
+    expect((await workbench.queryFiles("zt")).map(file => file.path)).toEqual(["src/zebra.ts", "alpha.ts"]);
+    expect(client.queryFile).toHaveBeenCalledWith("zt", 100);
+    client.queryFile.mockResolvedValue({ workspaceRoot: "/other", generation: 2, requestId: 3, results: [{ path: "old.ts", score: 1 }] });
+    expect(await workbench.queryFiles("old")).toEqual([]);
+    client.queryFile.mockResolvedValue({ workspaceRoot: "/workspace", generation: 1, requestId: 4, results: [{ path: "old.ts", score: 1 }] });
+    expect(await workbench.queryFiles("old")).toEqual([]);
+  });
+  it("rejects late file queries, directory reads and progress from the previous workspace", async () => {
+    const workbench = await setup();
+    const query = deferred<{ workspaceRoot: string; generation: number; requestId: number; results: { path: string; score: number }[] }>();
+    const directory = deferred<{ path: string; name: string; isDir: boolean }[]>();
+    client.queryFile.mockReturnValue(query.promise);
+    client.listDirectory.mockImplementation((path: string) => path === "old" ? directory.promise : Promise.resolve([]));
+    const lookup = workbench.queryFiles("old"); const listing = workbench.loadDirectory("old");
+    client.fileIndexStatus.mockResolvedValue(status("/new", 2));
+    await workbench.openWorkspace("/new");
+    query.resolve({ workspaceRoot: "/workspace", generation: 1, requestId: 1, results: [{ path: "old.ts", score: 2 }] });
+    directory.resolve([{ path: "old/a.ts", name: "a.ts", isDir: false }]);
+    expect(await lookup).toEqual([]); await listing;
+    expect(workbench.directories.old).toBeUndefined(); expect(workbench.indexStatus()?.workspaceRoot).toBe("/new");
+    expect(workbench.files()).toEqual([]);
+  });
+});
+
+
+it("ignores an older workspace progress response and stops polling when disposed", async () => {
+  vi.useFakeTimers();
+  try {
+    const old = deferred<FileIndexStatus | null>();
+    client.fileIndexStatus.mockReturnValueOnce(old.promise).mockResolvedValue({ workspaceRoot: "/next", generation: 2, status: "ready", indexedFiles: 7, scannedEntries: 10, errorCount: 0, lastError: null, watcherReady: true, watcherError: null });
+    const workbench = testWorkbench(); await workbench.openWorkspace("/workspace"); await workbench.openWorkspace("/next");
+    old.resolve({ workspaceRoot: "/workspace", generation: 1, status: "scanning", indexedFiles: 99, scannedEntries: 100, errorCount: 0, lastError: null, watcherReady: true, watcherError: null });
+    await Promise.resolve(); expect(workbench.indexStatus()?.workspaceRoot).toBe("/next");
+    await vi.advanceTimersByTimeAsync(2000); expect(client.fileIndexStatus).toHaveBeenCalledTimes(3);
+    for (const dispose of roots.splice(0)) dispose();
+    await vi.advanceTimersByTimeAsync(6000); expect(client.fileIndexStatus).toHaveBeenCalledTimes(3);
+  } finally { vi.useRealTimers(); }
 });
