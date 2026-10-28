@@ -22,6 +22,12 @@ export const commands = {
 	 *  and never reaches the language servers, so highlighting a file starts nothing.
 	 */
 	peekBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("peek_buffer", { path }),
+	/**
+	 *  The last editor showing `path` closed or was evicted: close the document in the language
+	 *  servers so they stop tracking (and holding memory for) a file nobody is looking at. The
+	 *  backend reopens it on the next `open_buffer`. Returns the paths that were closed.
+	 */
+	bufferReleased: (path: string) => __TAURI_INVOKE<string[]>("buffer_released", { path }),
 	editBufferDelta: (path: string, expectedRevision: number, changes: TextEdit[]) => __TAURI_INVOKE<BufferRevision>("edit_buffer_delta", { path, expectedRevision, changes }),
 	saveBuffer: (path: string, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("save_buffer", { path, expectedRevision }),
 	discardBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("discard_buffer", { path }),

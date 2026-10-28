@@ -856,3 +856,42 @@ async fn changing_run_project_code_restarts_the_running_servers() {
     f.svc.flush().await;
     assert_eq!(initialize_options(&f.log).len(), 2);
 }
+
+#[tokio::test]
+async fn releasing_a_buffer_closes_it_and_a_reopen_keeps_versions_rising() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    f.open_ready().await;
+    let versions = |method: &str| -> Vec<i64> {
+        log_entries(&f.log)
+            .iter()
+            .filter(|e| e["method"] == method)
+            .filter_map(|e| e["params"]["textDocument"]["version"].as_i64())
+            .collect()
+    };
+    eventually("first didOpen", || {
+        !versions("textDocument/didOpen").is_empty()
+    })
+    .await;
+
+    // What the `buffer_released` command does.
+    assert_eq!(f.svc.on_closed("a.json"), vec!["a.json".to_string()]);
+    f.svc.flush().await;
+    eventually("didClose", || {
+        methods(&f.log).iter().any(|m| m == "textDocument/didClose")
+    })
+    .await;
+
+    // Opening it again re-syncs the file with a newer version than before.
+    let snapshot = f.ws.open_buffer("a.json").unwrap();
+    f.svc.on_snapshot(&snapshot);
+    f.svc.flush().await;
+    eventually("second didOpen", || {
+        versions("textDocument/didOpen").len() == 2
+    })
+    .await;
+    let opens = versions("textDocument/didOpen");
+    assert!(opens[1] > opens[0], "versions must keep rising: {opens:?}");
+
+    // Releasing a path nothing tracks is a no-op.
+    assert!(f.svc.on_closed("never-opened.json").is_empty());
+}

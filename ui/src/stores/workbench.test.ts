@@ -5,7 +5,7 @@ import type { BufferSnapshot, FileIndexStatus, TextEdit, SessionState_Serialize 
 
 const client = vi.hoisted(() => ({
   openWorkspace: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
-  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(),
+  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
 import { createWorkbench, settleIntent, SETTINGS_TAB } from "./workbench";
@@ -69,6 +69,7 @@ beforeEach(() => {
     server.set(path, next); return next;
   });
   client.cancelFormatBuffer.mockResolvedValue(undefined);
+  client.releaseBuffer.mockResolvedValue(undefined);
 });
 
 describe("authoritative buffer synchronization", () => {
@@ -328,6 +329,46 @@ describe("workspace views and session state", () => {
     await workbench.save("src/file.ts");
     expect(workbench.dirty("src/file.ts")).toBe(false);
     expect(workbench.groups()[0].tabs).toEqual([a.path]);
+  });
+
+  it("releases a buffer to the language servers once when its last tab closes or is evicted", async () => {
+    const workbench = await setup();
+    const a: BufferSnapshot = { path: "src/a.ts", text: "a\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const b: BufferSnapshot = { path: "src/b.ts", text: "b\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(a.path, a); server.set(b.path, b);
+    await workbench.openFile(a.path);
+    workbench.closeTab(a.path, 1);
+    expect(client.releaseBuffer.mock.calls).toEqual([[a.path]]);
+    // Eviction by the tab limit releases the evicted file.
+    client.releaseBuffer.mockClear();
+    workbench.setSettings({ ...preferences, tabLimit: 1 });
+    await workbench.openFile(b.path);
+    expect(workbench.groups()[0].tabs).toEqual([b.path]);
+    expect(client.releaseBuffer.mock.calls).toEqual([["src/file.ts"]]);
+  });
+
+  it("does not release a buffer another group still shows, and releases a closed group once", async () => {
+    const workbench = await setup();
+    workbench.splitEditor();
+    expect(workbench.groups().map(group => group.tabs.includes("src/file.ts"))).toEqual([true, true]);
+    workbench.closeTab("src/file.ts", 1);
+    expect(client.releaseBuffer).not.toHaveBeenCalled();
+    workbench.splitEditor();
+    workbench.closeGroup(workbench.groups()[1].id);
+    expect(client.releaseBuffer).not.toHaveBeenCalled();
+    workbench.closeTab("src/file.ts", workbench.groups()[0].id);
+    expect(client.releaseBuffer.mock.calls).toEqual([["src/file.ts"]]);
+  });
+
+  it("keeps dirty files open and unreleased when the tab limit would evict them", async () => {
+    const workbench = await setup();
+    const a: BufferSnapshot = { path: "src/a.ts", text: "a\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(a.path, a);
+    workbench.setSettings({ ...preferences, tabLimit: 1 });
+    append(workbench, "// unsaved\n");
+    await workbench.openFile(a.path);
+    expect(workbench.groups()[0].tabs).toContain("src/file.ts");
+    expect(client.releaseBuffer).not.toHaveBeenCalled();
   });
 
   it("immediately applies a configured limit decrease", async () => {

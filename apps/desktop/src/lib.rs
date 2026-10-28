@@ -190,6 +190,18 @@ async fn open_buffer(
     .await
 }
 
+/// The last editor showing `path` closed or was evicted: close the document in the language
+/// servers so they stop tracking (and holding memory for) a file nobody is looking at. The
+/// backend reopens it on the next `open_buffer`. Returns the paths that were closed.
+#[tauri::command]
+#[specta::specta]
+async fn buffer_released(
+    lsp: State<'_, language_servers::LspService>,
+    path: String,
+) -> Result<Vec<String>, String> {
+    Ok(lsp.on_closed(&path))
+}
+
 /// Reads a file for a preview (the Goto picker). Unlike `open_buffer` it opens no buffer
 /// and never reaches the language servers, so highlighting a file starts nothing.
 #[tauri::command]
@@ -826,6 +838,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             trash_path,
             open_buffer,
             peek_buffer,
+            buffer_released,
             edit_buffer_delta,
             save_buffer,
             discard_buffer,

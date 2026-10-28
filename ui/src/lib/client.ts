@@ -174,6 +174,10 @@ export const api = {
   async peekBuffer(path: string): Promise<BufferSnapshot> {
     return isDesktop ? commands.peekBuffer(path) : previewBuffer(path);
   },
+  /** The last editor showing `path` closed: language servers may drop the document. */
+  async releaseBuffer(path: string): Promise<void> {
+    if (isDesktop) await commands.bufferReleased(path);
+  },
   async editBuffer(path: string, expectedRevision: number, changes: TextEdit[]): Promise<BufferRevision> {
     if (isDesktop) return commands.editBufferDelta(path, expectedRevision, changes);
     const buffer = previewBuffer(path);

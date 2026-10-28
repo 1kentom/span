@@ -121,6 +121,11 @@ export function createWorkbench() {
   const activeTab = () => groups().find(g => g.id === activeGroup())?.active;
   const activePath = () => activeTab() === SETTINGS_TAB ? undefined : activeTab();
   const hasOpenEditor = (path: string) => groups().some(group => group.tabs.includes(path));
+  /** Tell the backend language servers a file is no longer shown anywhere, so they can close it. */
+  function releaseBuffer(path: string) {
+    if (!isDesktop || path === SETTINGS_TAB || isSettingsBuffer(path) || hasOpenEditor(path)) return;
+    void Promise.resolve(api.releaseBuffer(path)).catch(() => undefined);
+  }
   function cancelFormat(path: string) {
     const requestId = activeFormatTickets.get(path);
     if (requestId === undefined) return;
@@ -170,6 +175,7 @@ export function createWorkbench() {
       const tabs = group.tabs.filter(path => !paths.has(path));
       return { ...group, tabs, active: group.active && tabs.includes(group.active) ? group.active : tabs[0] };
     }));
+    for (const path of new Set(removals.map(item => item.path))) releaseBuffer(path);
   }
 
   function applyFormatterSnapshot(path: string, snapshot: BufferSnapshot): boolean {
@@ -451,7 +457,7 @@ export function createWorkbench() {
     const index = current.findIndex(item => item.id === group);
     const next = current.filter(item => item.id !== group);
     batch(() => { setGroups(next); if (activeGroup() === group) setActiveGroup(next[Math.max(0, Math.min(index, next.length - 1))].id); });
-    for (const path of current[index]?.tabs || []) if (!hasOpenEditor(path)) cancelFormat(path);
+    for (const path of current[index]?.tabs || []) if (!hasOpenEditor(path)) { cancelFormat(path); releaseBuffer(path); }
   }
   function removeTab(path: string, group: number, recordClosed = true) {
     if (recordClosed && path !== SETTINGS_TAB && !isSettingsBuffer(path)) { closedTabs.push({ path, group }); if (closedTabs.length > 20) closedTabs.shift(); }
@@ -462,7 +468,7 @@ export function createWorkbench() {
       return { ...item, tabs, active: item.active === path ? tabs[Math.min(item.tabs.indexOf(path), tabs.length - 1)] : item.active };
     }));
     if (!groups().find(item => item.id === group)?.tabs.length) removeGroup(group);
-    if (!hasOpenEditor(path)) cancelFormat(path);
+    if (!hasOpenEditor(path)) { cancelFormat(path); releaseBuffer(path); }
   }
   function closeGroup(group: number) {
     const current = groups().find(item => item.id === group); if (!current || groups().length <= 1) return;
