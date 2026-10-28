@@ -109,8 +109,8 @@ fn workspace(state: &DesktopState) -> Result<Arc<Mutex<CoreWorkspace>>, String> 
 
 /// `agents.delegation.enabled`. Core settings honour it only from the user's
 /// own settings file, never from a workspace `.span/settings.jsonc`, so a
-/// cloned repository cannot switch delegation on. Unreadable settings count
-/// as off.
+/// cloned repository cannot change it. It is on by default. Unreadable
+/// settings count as off.
 async fn delegation_enabled(workspace: Arc<Mutex<CoreWorkspace>>) -> bool {
     tauri::async_runtime::spawn_blocking(move || {
         workspace

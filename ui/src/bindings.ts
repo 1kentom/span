@@ -922,7 +922,9 @@ export type DelegationSettings = DelegationSettings_Serialize | DelegationSettin
 export type DelegationSettings_Deserialize = {
 	/**
 	 *  Offer the delegation tools to new lead sessions of agents that
-	 *  advertise MCP over HTTP. Off by default.
+	 *  advertise MCP over HTTP. On by default; the user can turn it off.
+	 *  Honoured only from the user's own settings file, and the depth and
+	 *  budget limits apply either way.
 	 */
 	enabled?: boolean,
 };
@@ -931,7 +933,9 @@ export type DelegationSettings_Deserialize = {
 export type DelegationSettings_Serialize = {
 	/**
 	 *  Offer the delegation tools to new lead sessions of agents that
-	 *  advertise MCP over HTTP. Off by default.
+	 *  advertise MCP over HTTP. On by default; the user can turn it off.
+	 *  Honoured only from the user's own settings file, and the depth and
+	 *  budget limits apply either way.
 	 */
 	enabled: boolean,
 };

@@ -415,6 +415,8 @@ export function AgentPanel(props: AgentPanelProps) {
                 onInstall={(id) => void a.install(id)}
                 onCustom={a.connectCustom}
                 onOpenExternal={props.onOpenExternal}
+                delegationEnabled={props.delegationEnabled}
+                onDelegationChange={props.onDelegationChange}
               />
               <Show when={a.registryBusy()}>
                 <p class="sb-fine" role="status">

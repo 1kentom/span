@@ -47,6 +47,10 @@ export type AgentPanelProps = {
   /** Opens a workspace file in the editor, at `line` (1-based) when given. */
   onOpenFile?: (path: string, line?: number) => void;
   onOpenExternal?: (url: string) => void;
+  /** The merged `agents.delegation.enabled`. Unset means the default, which is on. */
+  delegationEnabled?: boolean;
+  /** Writes `agents.delegation.enabled` to the user settings file. Without it the switch is read-only. */
+  onDelegationChange?: (enabled: boolean) => void;
   /** Called after the panel writes a file into the workspace, so the explorer can refresh. */
   onFilesChanged?: () => void;
   onProposalsChange?: (proposals: EditProposal[]) => void;

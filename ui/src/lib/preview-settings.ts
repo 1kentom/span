@@ -51,12 +51,19 @@ function normalized(raw: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(result).filter(([key]) => key in defaults));
 }
 
+function withoutUserOnly(value: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...value };
+  delete rest.agents;
+  return rest;
+}
+
 export function createPreviewSettings() {
   const texts: Record<SettingsScope, string> = { user: '{\n}\n', workspace: '{\n}\n' };
   const buffers = new Map<SettingsScope, BufferSnapshot>();
   function get(scope: SettingsScope = 'workspace'): Settings {
     const user = normalized(decode(texts.user));
-    const workspace = scope === 'workspace' ? normalized(decode(texts.workspace)) : {};
+    // `agents` holds only `agents.delegation.enabled`, which is honoured from the user scope only, as in core settings.
+    const workspace = scope === 'workspace' ? withoutUserOnly(normalized(decode(texts.workspace))) : {};
     return structuredClone({ ...defaults, ...user, ...workspace,
       keybindings: { ...defaults.keybindings, ...(user.keybindings as Settings['keybindings']), ...(workspace.keybindings as Settings['keybindings']) },
       formatters: { ...defaults.formatters, ...(user.formatters as Settings['formatters']), ...(workspace.formatters as Settings['formatters']) },
