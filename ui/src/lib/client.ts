@@ -3,7 +3,8 @@ import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import { createPreviewSettings } from './preview-settings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -90,7 +91,7 @@ export function Editor(props: EditorProps) {
 };
 
 const buffers = new Map<string, BufferSnapshot>();
-let previewSettings: Settings = { theme: 'Dark', fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: 'Inter', editorFontFamily: 'JetBrains Mono', collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, keybindings: {}, formatters: {} };
+const previewSettings = createPreviewSettings();
 let previewSession: SessionState | null = null;
 const previewWorkspace: Workspace = { name: 'intellij', root: '/preview/intellij' };
 const agentListeners = new Set<(event: AgentEvent) => void>();
@@ -164,6 +165,7 @@ export const api = {
     }
     for (const change of [...changes].reverse()) buffer.text = buffer.text.slice(0, change.from) + change.insert + buffer.text.slice(change.to);
     if (changes.length) buffer.revision += 1;
+    if (buffer.text === fixture[path]) buffer.savedRevision = buffer.revision;
     buffers.set(path, buffer);
     return { path, revision: buffer.revision, savedRevision: buffer.savedRevision };
   },
@@ -212,11 +214,83 @@ export const api = {
       cancel: async () => { cancelled = true; },
     };
   },
+  async getSettingsForScope(scope: SettingsScope): Promise<Settings> {
+    return isDesktop ? commands.getSettingsForScope(scope) : previewSettings.get(scope);
+  },
+  async getSettingsJsoncForScope(scope: SettingsScope): Promise<string> {
+    return isDesktop ? commands.getSettingsJsoncForScope(scope) : previewSettings.raw(scope);
+  },
+  async getSettingsKeysForScope(scope: SettingsScope): Promise<string[]> {
+    return isDesktop ? commands.getSettingsKeysForScope(scope) : previewSettings.keys(scope);
+  },
+  async updateSettingsJsoncForScope(scope: SettingsScope, text: string): Promise<Settings> {
+    if (!isDesktop) return previewSettings.updateJsonc(scope, text);
+    return commands.updateSettingsJsoncForScope(scope, text);
+  },
+  async updateSetting(scope: SettingsScope, key: string, valueJson: string | null): Promise<Settings> {
+    if (!isDesktop) return previewSettings.update(scope, key, valueJson);
+    return commands.updateSetting(scope, key, valueJson);
+  },
+  async openSettingsBuffer(scope: SettingsScope): Promise<BufferSnapshot> {
+    if (!isDesktop) return previewSettings.open(scope);
+    return commands.openSettingsBuffer(scope);
+  },
+  async editSettingsBuffer(scope: SettingsScope, expectedRevision: number, changes: TextEdit[]): Promise<BufferRevision> {
+    if (!isDesktop) return previewSettings.edit(scope, expectedRevision, changes);
+    return commands.editSettingsBuffer(scope, expectedRevision, changes);
+  },
+  async saveSettingsBuffer(scope: SettingsScope, expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) return previewSettings.save(scope, expectedRevision);
+    return commands.saveSettingsBuffer(scope, expectedRevision);
+  },
+  async discardSettingsBuffer(scope: SettingsScope): Promise<BufferSnapshot> {
+    if (!isDesktop) return previewSettings.discard(scope);
+    return commands.discardSettingsBuffer(scope);
+  },
+  async newFile(path: string): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Creating files');
+    return commands.newFile(path);
+  },
+  async newDirectory(path: string): Promise<FileEntry> {
+    if (!isDesktop) nativeRequired('Creating folders');
+    return commands.newDirectory(path);
+  },
+  async renamePath(from: string, to: string): Promise<FileEntry> {
+    if (!isDesktop) nativeRequired('Renaming files');
+    return commands.renamePath(from, to);
+  },
+  async duplicatePath(from: string, to: string): Promise<FileEntry> {
+    if (!isDesktop) nativeRequired('Duplicating files');
+    return commands.duplicatePath(from, to);
+  },
+  async trashPath(path: string): Promise<string[]> {
+    if (!isDesktop) nativeRequired('Moving files to Trash');
+    return commands.trashPath(path);
+  },
+  async enqueueDroppedPaths(paths: string[], cwd: string | null = null): Promise<void> {
+    if (!isDesktop) nativeRequired('Opening dropped filesystem paths');
+    await commands.enqueueDroppedPaths(paths, cwd);
+  },
+  async onOpenRequestError(listener: (message: string) => void): Promise<() => void> {
+    return isDesktop ? events.startupRequestError.listen(event => listener(event.payload.message)) : () => undefined;
+  },
+  async onWindowFocus(listener: (focused: boolean) => void): Promise<() => void> {
+    if (isDesktop) return getCurrentWindow().onFocusChanged(event => listener(event.payload));
+    const focus = () => listener(true);
+    const blur = () => listener(false);
+    window.addEventListener('focus', focus);
+    window.addEventListener('blur', blur);
+    return () => { window.removeEventListener('focus', focus); window.removeEventListener('blur', blur); };
+  },
+  async agentRemove(id: string, uninstall: boolean): Promise<void> {
+    if (!isDesktop) nativeRequired('Removing installed agents');
+    await commands.agentRemove(id, uninstall);
+  },
   async getSettings(): Promise<Settings> {
-    return isDesktop ? commands.getSettings() : { ...previewSettings };
+    return isDesktop ? commands.getSettings() : previewSettings.get();
   },
   async getSettingsJsonc(): Promise<string> {
-    return isDesktop ? commands.getSettingsJsonc() : JSON.stringify(previewSettings, null, 2);
+    return isDesktop ? commands.getSettingsJsonc() : previewSettings.raw('workspace');
   },
   async getSession(): Promise<SessionState | null> {
     return isDesktop ? commands.getSession() : previewSession;
@@ -307,13 +381,15 @@ export const api = {
   async onNativeAction(listener: (action: NativeAction) => void): Promise<() => void> {
     return isDesktop ? events.nativeActionEvent.listen(event => listener(event.payload.action)) : () => undefined;
   },
+  async onFormatWarning(listener: (warning: FormatWarning) => void): Promise<() => void> {
+    return isDesktop ? events.formatWarning.listen(event => listener(event.payload)) : () => undefined;
+  },
   async updateSettings(settings: Settings): Promise<Settings> {
     if (isDesktop) return commands.updateSettings(settings);
-    previewSettings = { ...settings };
-    return { ...previewSettings };
+    return previewSettings.updateJsonc('workspace', JSON.stringify(settings, null, 2));
   },
   async updateSettingsJsonc(text: string): Promise<Settings> {
-    if (!isDesktop) nativeRequired('Validating and saving JSONC settings');
+    if (!isDesktop) return previewSettings.updateJsonc('workspace', text);
     return commands.updateSettingsJsonc(text);
   },
   async syntax(path: string): Promise<SyntaxSnapshot> {

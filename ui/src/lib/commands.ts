@@ -12,8 +12,12 @@ export const actionDefinitions = [
   { id: "toggleProject", label: "Toggle Project Panel", category: "View", keys: ["Mod+B"], inputs: true },
   { id: "toggleAssistant", label: "Toggle AI Assistant", category: "View", keys: ["Mod+Alt+B"], inputs: true },
   { id: "toggleTerminal", label: "Toggle Terminal Panel", category: "View", keys: ["Mod+J"], inputs: true },
+  { id: "toggleWordWrap", label: "Toggle Word Wrap", category: "View", keys: ["Alt+Z"], inputs: false },
   { id: "markdownPreview", label: "Toggle Markdown Preview", category: "Editor", keys: ["Mod+Shift+V"], inputs: false },
   { id: "formatDocument", label: "Format Document", category: "Editor", keys: ["Alt+Shift+F"], inputs: false },
+  { id: "zoomIn", label: "Zoom In", category: "View", keys: ["Mod+=", "Mod+Shift+="], inputs: true },
+  { id: "zoomOut", label: "Zoom Out", category: "View", keys: ["Mod+-"], inputs: true },
+  { id: "resetZoom", label: "Reset Zoom", category: "View", keys: ["Mod+0"], inputs: true },
   { id: "goToLine", label: "Go to Line", category: "Editor", keys: ["Ctrl+G", "Mod+Alt+G"], inputs: false },
 ] as const;
 export type ActionId = typeof actionDefinitions[number]["id"];
@@ -28,9 +32,10 @@ export function currentPlatform(): Platform {
 }
 const modifierNames: Record<string, string> = { mod: "Mod", cmdorctrl: "Mod", commandorcontrol: "Mod", ctrl: "Ctrl", control: "Ctrl", cmd: "Meta", command: "Meta", meta: "Meta", alt: "Alt", option: "Alt", shift: "Shift" };
 const modifierOrder = ["Mod", "Meta", "Ctrl", "Alt", "Shift"];
-const namedKeys: Record<string, string> = { esc: "Escape", escape: "Escape", enter: "Enter", return: "Enter", tab: "Tab", space: "Space", backspace: "Backspace", delete: "Delete", insert: "Insert", home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown", arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight" };
+const namedKeys: Record<string, string> = { equal: "=", numpadequal: "=", plus: "=", numpadplus: "=", numpadadd: "=", minus: "-", numpadminus: "-", numpadsubtract: "-", numpad0: "0", esc: "Escape", escape: "Escape", enter: "Enter", return: "Enter", tab: "Tab", space: "Space", backspace: "Backspace", delete: "Delete", insert: "Insert", home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown", arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight" };
 export function normalizeShortcut(value: string, platform?: Platform): string | undefined {
-  const tokens = value.split("+").map(token => token.trim());
+  const plusKey = /\+\+$/.test(value.trim());
+  const tokens = (plusKey ? `${value.trim().slice(0, -1)}Plus` : value).split("+").map(token => token.trim());
   if (tokens.some(token => !token) || tokens.length < 2) return;
   const modifiers = new Set<string>(); let key: string | undefined;
   for (const token of tokens) {
@@ -38,6 +43,7 @@ export function normalizeShortcut(value: string, platform?: Platform): string | 
     if (modifier === "Mod" && platform) modifier = platform === "mac" ? "Meta" : "Ctrl";
     if (modifier) { if (modifiers.has(modifier)) return; modifiers.add(modifier); continue; }
     if (key) return;
+    if (token.toLowerCase() === "plus") modifiers.add("Shift");
     key = namedKeys[token.toLowerCase()] || (/^f(?:[1-9]|1[0-9]|2[0-4])$/i.test(token) ? token.toUpperCase() : /^[a-z0-9`\\,./;'\[\]\-=]$/i.test(token) ? token.toUpperCase() : undefined);
     if (!key) return;
   }
@@ -61,7 +67,7 @@ export function validateKeybindings(overrides: KeybindingOverrides, platform: Pl
     for (const value of values) {
       const key = typeof value === "string" ? normalizeShortcut(value, platform) : undefined;
       if (!key) issues.push({ action, message: `Invalid shortcut: ${String(value)}. Use modifiers and one key, for example Mod+Shift+P.` });
-      else if (/^(?:Meta|Ctrl)\+Q$/.test(key)) issues.push({ action, message: "Quit is reserved by the application. Choose another shortcut." });
+      else if (key.endsWith("+Q") && key.split("+").some(part => part === "Meta" || part === "Ctrl")) issues.push({ action, message: "Quit is reserved by the application. Choose another shortcut." });
       else if (/^(?:Meta|Ctrl)\+(?:C|V|X|A|Z|Shift\+Z|Y)$/.test(key)) issues.push({ action, message: "This shortcut is reserved for text editing. Choose another shortcut." });
     }
   }
@@ -87,8 +93,15 @@ export function shortcutFromEvent(event: KeyboardEvent): string | undefined {
   // KeyboardEvent.key follows the active layout, while shifted punctuation is mapped by physical code.
   const punctuation: Record<string, string> = { Backslash: "\\", Comma: ",", Period: ".", Slash: "/", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Minus: "-", Equal: "=" };
   const optionLetter = event.altKey && /^Key[A-Z]$/.test(event.code) ? event.code.slice(3) : undefined;
-  const key = punctuation[event.code] || optionLetter || (event.key === " " ? "Space" : event.key);
+  const key = punctuation[event.code] || (event.key === "+" ? "=" : event.key === "Equal" ? "=" : event.key === "Minus" ? "-" : undefined) || optionLetter || (event.key === " " ? "Space" : event.key);
   return normalizeShortcut([...event.metaKey ? ["Meta"] : [], ...event.ctrlKey ? ["Ctrl"] : [], ...event.altKey ? ["Alt"] : [], ...event.shiftKey ? ["Shift"] : [], key].join("+"));
+}
+/** These labels describe the actual focus checks below, not an editable expression language. */
+export function actionContext(id: ActionId): { label: string; description: string } {
+  const action = actionDefinitions.find(action => action.id === id)!;
+  return action.inputs
+    ? { label: "Workbench", description: "Available throughout the workbench, except while recording a shortcut." }
+    : { label: "Editor or non-text focus", description: "Available in the editor or outside text inputs. Ignored in other text fields and while recording a shortcut." };
 }
 function textInput(target: EventTarget | null): boolean { return target instanceof Element && Boolean(target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')); }
 export function canDispatchAction(id: ActionId, target: EventTarget | null): boolean {
@@ -109,5 +122,10 @@ export function dispatchKeyboard(event: KeyboardEvent, options: { bindings: Reso
 }
 /** Only primary native accelerators are installed. Alternate keys use the same webview dispatcher. */
 export function nativeMenuBindings(bindings: ResolvedKeybindings): Record<string, string[]> {
-  return Object.fromEntries(actionDefinitions.map(action => [action.id, bindings[action.id].slice(0, 1)]));
+  return Object.fromEntries(actionDefinitions.map(action => {
+    const primary = bindings[action.id][0];
+    // Native Alt-letter accelerators consume Option characters before a text field can receive them.
+    const textSensitive = !action.inputs && primary?.startsWith("Alt+");
+    return [action.id, textSensitive ? [] : bindings[action.id].slice(0, 1)];
+  }));
 }

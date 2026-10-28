@@ -1,0 +1,22 @@
+.span-editor .cm-panel.cm-search.span-find{container-type:inline-size;padding:6px 8px;margin:0;border:0;background:var(--island,#18191b);color:var(--text,#e0e1e4);font:11px/18px var(--ui-font-family,Inter),sans-serif}
+.span-find .span-find-row{display:flex;align-items:center;gap:3px;min-width:0}
+.span-find .span-find-field{display:flex;align-items:center;gap:1px;min-width:80px;flex:1;height:28px;padding:2px 3px 2px 8px;border:1px solid var(--border,#363739);border-radius:4px;background:var(--field,#111214)}
+.span-find .span-find-field:focus-within{border-color:var(--accent,#726cf9)}
+.span-editor .span-find input{min-width:64px;width:100%;flex:1;height:22px;padding:0;margin:0!important;border:0;border-radius:0;background:transparent;color:inherit;font:12px/20px var(--ui-font-family,Inter),sans-serif;outline:none}
+.span-editor .span-find input:focus-visible{outline:none}
+.span-editor .span-find .span-find-button{position:static;display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;margin:0;border:0;border-radius:3px;background:transparent;color:var(--dim,#898e94);font:11px/18px var(--ui-font-family,Inter),sans-serif;box-shadow:none;cursor:pointer}
+.span-find .span-find-button>.icon{width:14px;height:14px}
+.span-find .span-find-button:hover:not(:disabled){background:var(--hover,#222325);color:var(--text,#e0e1e4)}
+.span-find .span-find-button[aria-pressed=true]{color:var(--text,#e0e1e4);background:var(--sel,#363739)}
+.span-find .span-find-button:focus-visible{outline:1px solid var(--accent,#726cf9);outline-offset:1px}
+.span-find .span-find-button:disabled{opacity:.3;cursor:default}
+.span-find .span-find-word{text-decoration:underline;text-underline-offset:3px}
+.span-find .span-find-count{flex:none;min-width:66px;padding:0 6px;color:var(--dim,#898e94);font-size:10px;white-space:nowrap;text-align:center;font-variant-numeric:tabular-nums}
+.span-find .span-find-count.is-empty{color:var(--faint,#6e747b)}
+.span-find .span-find-replace-row{display:flex;align-items:center;gap:3px;padding:4px 120px 0 27px}
+.span-find .span-find-replace-row[hidden],.span-find .span-find-error[hidden]{display:none}
+.span-find .span-find-error{padding:4px 0 0 27px;color:#f87c88;font-size:11px}
+.span-find [aria-invalid=true]{color:#f87c88}
+@media(max-width:600px){.span-editor .cm-panel.cm-search.span-find{padding:5px}.span-find .span-find-count{min-width:52px;padding:0 3px}.span-editor .span-find .span-find-button{width:22px}.span-find .span-find-replace-row{padding-left:25px;padding-right:102px}}
+@container(max-width:440px){.span-find .span-find-row{flex-wrap:wrap;row-gap:4px}.span-find .span-find-row>.span-find-field{flex-basis:calc(100% - 30px)}.span-find .span-find-count{flex:1;margin-left:27px;text-align:left}.span-find .span-find-replace-row{padding-right:0}}
+@container(max-width:240px){.span-find .span-find-row>.span-find-field{flex-basis:100%;flex-wrap:wrap;height:auto;min-height:28px}.span-find .span-find-row>.span-find-field>input{flex-basis:100%}.span-find .span-find-count{min-width:40px;margin-left:0;padding-left:0}.span-find .span-find-replace-row{padding-left:0}}

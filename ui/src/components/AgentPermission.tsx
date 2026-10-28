@@ -1,4 +1,4 @@
-import { For, Show, createEffect, onCleanup } from "solid-js";
+import { For, Show, createEffect } from "solid-js";
 import type { PermissionOption } from "../bindings";
 import { permissionScope, sortPermissionOptions } from "../lib/agent-feed";
 
@@ -8,7 +8,7 @@ type AgentPermissionProps = {
   summary: string;
   options: PermissionOption[];
   resolved: boolean;
-  /** Only the oldest open request answers number keys. */
+  /** Only the oldest open request answers number keys within its focused choices. */
   active: boolean;
   busy: boolean;
   onChoose: (optionId: string | null) => void;
@@ -20,26 +20,20 @@ export function AgentPermission(props: AgentPermissionProps) {
   const options = () => sortPermissionOptions(props.options);
   const buttons = () => [...(group?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
 
-  createEffect(() => {
-    if (props.resolved || !props.active) return;
-    const keyboard = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || props.busy) return;
-      const target = event.target;
-      const typing =
-        target instanceof HTMLTextAreaElement
-          ? target.value.length > 0
-          : target instanceof HTMLInputElement;
-      if (typing) return;
-      const index = /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : -1;
-      const option = options()[index];
-      if (option) {
-        event.preventDefault();
-        props.onChoose(option.optionId);
-      }
-    };
-    window.addEventListener("keydown", keyboard);
-    onCleanup(() => window.removeEventListener("keydown", keyboard));
-  });
+  function keyboard(event: KeyboardEvent) {
+    if (props.resolved || !props.active || props.busy || event.defaultPrevented || event.isComposing || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !group?.contains(target) || !group.contains(document.activeElement)) return;
+    if (target.closest('input,textarea,[role="textbox"],[contenteditable]:not([contenteditable="false"]),[inert]')) return;
+    const modal = [...document.querySelectorAll('[role="dialog"][aria-modal="true"],dialog[open]')].at(-1);
+    if (modal && !modal.contains(group)) return;
+    const index = /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : -1;
+    const option = options()[index];
+    if (option) {
+      event.preventDefault();
+      props.onChoose(option.optionId);
+    }
+  }
   createEffect(() => {
     if (props.resolved || !props.active) return;
     const focused = document.activeElement;
@@ -65,7 +59,7 @@ export function AgentPermission(props: AgentPermissionProps) {
         <span class="agent-state">{props.resolved ? "resolved" : "needs approval"}</span>
       </div>
       <Show when={!props.resolved}>
-        <div class="agent-permission" role="group" aria-label="Permission choices" ref={group} onKeyDown={move}>
+        <div class="agent-permission" role="group" aria-label="Permission choices" ref={group} onKeyDown={(event) => { keyboard(event); move(event); }}>
           <Show when={props.summary}>
             <code class="agent-permission-summary" title={props.summary}>{props.summary}</code>
           </Show>

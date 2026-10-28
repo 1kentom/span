@@ -33,14 +33,35 @@ export function pathBreadcrumbs(path: string, workspace?: Workspace | null): Bre
   ];
 }
 
-export function fileResults(files: FileEntry[], query: string, recent: readonly string[] = []): FileEntry[] {
-  const term = query.replace(/:\d+$/, "").trim().toLowerCase();
-  const candidates = files.filter(file => !file.isDir && (!term || normalizePath(file.path).toLowerCase().includes(term)));
+export type FileQuery = { filter: string; suffix: string; line?: number; column?: number; invalidPosition?: boolean };
+
+/** Real colon-containing paths take priority over an ambiguous position suffix. */
+export function parseFileQuery(query: string, files: readonly FileEntry[] = [], root?: string): FileQuery {
+  const value = query.trim();
+  const normalized = relativePath(value, root).toLowerCase();
+  const filePaths = files.filter(file => !file.isDir).map(file => relativePath(file.path, root).toLowerCase());
+  if (!value || /^[a-z]:$/i.test(value) || filePaths.some(path => path.includes(normalized))) return { filter: value, suffix: "" };
+  const candidates = [/^(.*):([0-9]+):([0-9]*)$/, /^(.*):([0-9]*)$/].flatMap(pattern => {
+    const match = value.match(pattern);
+    if (!match || (/^[a-z]$/i.test(match[1]) && value[1] === ":" && !match[2])) return [];
+    const [, filter, rawLine, rawColumn] = match;
+    const line = rawLine ? Number(rawLine) : undefined;
+    const column = rawColumn ? Number(rawColumn) : undefined;
+    return [{ filter, suffix: value.slice(filter.length), line, column, invalidPosition: [line, column].some(number => number !== undefined && (!Number.isSafeInteger(number) || number < 1)) }];
+  });
+  return candidates.find(candidate => filePaths.some(path => path === relativePath(candidate.filter, root).toLowerCase() || fileName(path) === candidate.filter.toLowerCase())) || candidates[0] || { filter: value, suffix: "" };
+}
+
+export function fileResults(files: FileEntry[], query: string, recent: readonly string[] = [], root?: string): FileEntry[] {
+  const parsed = parseFileQuery(query, files, root);
+  if (parsed.invalidPosition) return [];
+  const term = relativePath(parsed.filter, root).toLowerCase();
+  const candidates = files.filter(file => !file.isDir && (!term || relativePath(file.path, root).toLowerCase().includes(term)));
   if (!term && recent.length) {
     const order = new Map(recent.map((path, index) => [normalizePath(path), index]));
     candidates.sort((a, b) => (order.get(normalizePath(a.path)) ?? Infinity) - (order.get(normalizePath(b.path)) ?? Infinity));
   }
-  return candidates.slice(0, 80);
+  return candidates.slice(0, 100);
 }
 
 export function contextMenuPosition(event: MouseEvent | KeyboardEvent): { x: number; y: number } {

@@ -12,8 +12,34 @@ pub enum Theme {
     Purple,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoSaveMode {
+    #[default]
+    Off,
+    AfterDelay,
+    OnFocusChange,
+    OnWindowChange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SettingsScope {
+    User,
+    Workspace,
+}
+
+impl SettingsScope {
+    pub fn buffer_path(self) -> &'static str {
+        match self {
+            Self::User => "settings://user",
+            Self::Workspace => "settings://workspace",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub theme: Theme,
     pub font_size: u32,
@@ -25,6 +51,12 @@ pub struct Settings {
     pub collapse_panels_on_drag: bool,
     pub markdown_preview_default: bool,
     pub format_on_save: bool,
+    pub auto_save: AutoSaveMode,
+    pub auto_save_delay: u32,
+    pub tab_limit_enabled: bool,
+    pub tab_limit: u32,
+    pub tab_limit_per_group: bool,
+    pub zoom_level: Option<f64>,
     pub keybindings: HashMap<String, Vec<String>>,
     pub formatters: HashMap<String, Vec<String>>,
 }
@@ -42,6 +74,12 @@ impl Default for Settings {
             collapse_panels_on_drag: true,
             markdown_preview_default: true,
             format_on_save: false,
+            auto_save: AutoSaveMode::Off,
+            auto_save_delay: 1000,
+            tab_limit_enabled: true,
+            tab_limit: 10,
+            tab_limit_per_group: false,
+            zoom_level: None,
             keybindings: HashMap::new(),
             formatters: HashMap::new(),
         }
@@ -49,6 +87,24 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
+        if !(1..=200).contains(&self.tab_limit) {
+            return Err(CoreError::Settings(
+                "tabLimit must be between 1 and 200".into(),
+            ));
+        }
+        if self.auto_save_delay > 3_600_000 {
+            return Err(CoreError::Settings(
+                "autoSaveDelay must be between 0 and 3600000 milliseconds".into(),
+            ));
+        }
+        if self
+            .zoom_level
+            .is_some_and(|level| !level.is_finite() || !(-5.0..=5.0).contains(&level))
+        {
+            return Err(CoreError::Settings(
+                "zoomLevel must be between -5 and 5".into(),
+            ));
+        }
         if !(8..=40).contains(&self.font_size) {
             return Err(CoreError::Settings(
                 "fontSize must be between 8 and 40".into(),
@@ -133,12 +189,45 @@ const COMMAND_IDS: &[&str] = &[
     "toggleProject",
     "toggleAssistant",
     "toggleTerminal",
+    "toggleWordWrap",
     "markdownPreview",
     "formatDocument",
     "goToLine",
+    "zoomIn",
+    "zoomOut",
+    "resetZoom",
 ];
 
+// Normalize keyboard naming variants before validation and collision checks.
+fn normalize_zoom_shortcut(shortcut: &str) -> String {
+    let value = if let Some(prefix) = shortcut.strip_suffix("++") {
+        format!("{prefix}+Plus")
+    } else {
+        shortcut.to_owned()
+    };
+    let Some((prefix, key)) = value.rsplit_once('+') else {
+        return value;
+    };
+    let mut modifiers: Vec<&str> = prefix.split('+').collect();
+    let key = match key.to_ascii_lowercase().as_str() {
+        "equal" | "numpadequal" => "=",
+        "plus" => {
+            if !modifiers.contains(&"Shift") {
+                modifiers.push("Shift");
+            }
+            "="
+        }
+        "numpadplus" | "numpadadd" => "=",
+        "minus" | "numpadminus" | "numpadsubtract" => "-",
+        "numpad0" => "0",
+        _ => key,
+    };
+    format!("{}+{key}", modifiers.join("+"))
+}
+
 fn validate_shortcut(shortcut: &str) -> Result<()> {
+    let normalized = normalize_zoom_shortcut(shortcut);
+    let shortcut = normalized.as_str();
     let parts: Vec<&str> = shortcut.split('+').collect();
     let invalid = || CoreError::Settings(format!("Invalid portable shortcut: {shortcut}"));
     if parts.is_empty() || parts.len() > 5 || shortcut.len() > 80 {
@@ -234,9 +323,13 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("toggleProject", vec!["Mod+B"]),
         ("toggleAssistant", vec!["Mod+Alt+B"]),
         ("toggleTerminal", vec!["Mod+J"]),
+        ("toggleWordWrap", vec!["Alt+Z"]),
         ("markdownPreview", vec!["Mod+Shift+V"]),
         ("formatDocument", vec!["Alt+Shift+F"]),
         ("goToLine", vec!["Ctrl+G", "Mod+Alt+G"]),
+        ("zoomIn", vec!["Mod+=", "Mod+Shift+="]),
+        ("zoomOut", vec!["Mod+-"]),
+        ("resetZoom", vec!["Mod+0"]),
     ];
     let mut assigned = HashMap::new();
     for (command, mut defaults) in defaults {
@@ -248,6 +341,8 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
             None => defaults,
         };
         for shortcut in shortcuts {
+            let normalized = normalize_zoom_shortcut(shortcut);
+            let shortcut = normalized.as_str();
             let mut parts: Vec<&str> = shortcut.split('+').collect();
             let key = parts
                 .pop()
@@ -275,6 +370,9 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
             }
             let normalized = format!("{}+{key}", modifiers.join("+"));
             if let Some(existing) = assigned.insert(normalized, command) {
+                if existing == command {
+                    continue;
+                }
                 return Err(CoreError::Settings(format!(
                     "Shortcut {shortcut} conflicts with {existing}"
                 )));
@@ -294,16 +392,6 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
     decode(value)
 }
 
-pub(crate) fn load_with_workspace_text(user: Option<&Path>, text: &str) -> Result<Settings> {
-    let mut value = serde_json::to_value(Settings::default())
-        .map_err(|e| CoreError::Settings(e.to_string()))?;
-    if let Some(path) = user {
-        merge_file(&mut value, path)?;
-    }
-    merge(&mut value, parse(text)?);
-    decode(value)
-}
-
 fn decode(value: Value) -> Result<Settings> {
     let settings: Settings =
         serde_json::from_value(value).map_err(|e| CoreError::Settings(e.to_string()))?;
@@ -319,11 +407,11 @@ fn merge_file(target: &mut Value, path: &Path) -> Result<()> {
     };
     let value =
         parse(&text).map_err(|e| CoreError::Settings(format!("{}: {e}", path.display())))?;
-    merge(target, value);
+    merge(target, normalize(value)?);
     Ok(())
 }
 
-fn parse(text: &str) -> Result<Value> {
+pub(crate) fn parse(text: &str) -> Result<Value> {
     let mut value: Value = serde_json::from_str(&strip_jsonc(text)?)
         .map_err(|e| CoreError::Settings(e.to_string()))?;
     if !value.is_object() {
@@ -340,6 +428,208 @@ fn parse(text: &str) -> Result<Value> {
         }
     }
     Ok(value)
+}
+
+pub(crate) const ALIASES: &[(&str, &str)] = &[
+    ("files.autoSave", "autoSave"),
+    ("files.autoSaveDelay", "autoSaveDelay"),
+    ("editor.wordWrap", "wordWrap"),
+    ("editor.fontSize", "fontSize"),
+    ("editor.fontFamily", "editorFontFamily"),
+    ("editor.tabSize", "tabSize"),
+    ("editor.formatOnSave", "formatOnSave"),
+    ("window.zoomLevel", "zoomLevel"),
+    ("workbench.editor.limit.enabled", "tabLimitEnabled"),
+    ("workbench.editor.limit.value", "tabLimit"),
+    ("workbench.editor.limit.perEditorGroup", "tabLimitPerGroup"),
+];
+
+fn normalize(mut value: Value) -> Result<Value> {
+    let object = value.as_object_mut().expect("parsed settings object");
+    for (alias, key) in ALIASES {
+        if let Some(mut configured) = object.remove(*alias) {
+            if *alias == "editor.wordWrap" {
+                configured = match configured.as_str() {
+                    Some("on") => Value::Bool(true),
+                    Some("off") => Value::Bool(false),
+                    _ => return Err(CoreError::Settings("editor.wordWrap supports on or off; bounded and wordWrapColumn are not implemented".into())),
+                };
+            }
+            object.insert((*key).into(), configured);
+        }
+    }
+    Ok(value)
+}
+
+pub(crate) fn load_with_texts(user: &str, workspace: &str) -> Result<Settings> {
+    let mut value = serde_json::to_value(Settings::default())
+        .map_err(|error| CoreError::Settings(error.to_string()))?;
+    merge(&mut value, normalize(parse(user)?)?);
+    merge(&mut value, normalize(parse(workspace)?)?);
+    decode(value)
+}
+
+pub(crate) fn canonical_key(key: &str) -> Option<String> {
+    if let Some((_, canonical)) = ALIASES.iter().find(|(alias, _)| *alias == key) {
+        return Some((*canonical).into());
+    }
+    serde_json::to_value(Settings::default())
+        .ok()?
+        .as_object()?
+        .contains_key(key)
+        .then(|| key.into())
+}
+
+/// Edits one top-level setting. Unrelated comments, unknown keys and formatting remain intact.
+pub(crate) fn patch(text: &str, key: &str, value_json: Option<&str>) -> Result<String> {
+    parse(text)?;
+    let canonical = canonical_key(key)
+        .ok_or_else(|| CoreError::Settings(format!("Unsupported setting: {key}")))?;
+    let value = value_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|error| CoreError::Settings(error.to_string()))?;
+    let mask = comment_mask(text);
+    let mut members = Vec::new();
+    let mut index = skip_space(&mask, 0) + 1;
+    let close;
+    loop {
+        index = skip_space(&mask, index);
+        if mask.get(index) == Some(&b'}') {
+            close = index;
+            break;
+        }
+        let start = index;
+        index = string_end(&mask, index);
+        let member_key: String = serde_json::from_slice(&mask[start..index])
+            .map_err(|error| CoreError::Settings(error.to_string()))?;
+        index = skip_space(&mask, index) + 1;
+        let value_start = skip_space(&mask, index);
+        index = value_start;
+        let mut depth = 0;
+        while index < mask.len() {
+            match mask[index] {
+                b'"' => {
+                    index = string_end(&mask, index);
+                    continue;
+                }
+                b'{' | b'[' => depth += 1,
+                b'}' if depth == 0 => break,
+                b'}' | b']' => depth -= 1,
+                b',' if depth == 0 => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        let mut end = index;
+        while end > value_start && mask[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        let comma = (mask.get(index) == Some(&b',')).then_some(index);
+        let remove = canonical_key(&member_key).as_ref() == Some(&canonical);
+        members.push((start, end, comma, remove));
+        if comma.is_some() {
+            index += 1;
+        }
+    }
+    let matching: Vec<_> = members.iter().filter(|member| member.3).collect();
+    if let (Some(value), [member]) = (&value, matching.as_slice()) {
+        let key_end = string_end(&mask, member.0);
+        let existing_key: String = serde_json::from_slice(&mask[member.0..key_end])
+            .map_err(|error| CoreError::Settings(error.to_string()))?;
+        if existing_key == key {
+            let colon = skip_space(&mask, key_end);
+            let value_start = skip_space(&mask, colon + 1);
+            let mut patched = text.to_owned();
+            patched.replace_range(value_start..member.1, &value.to_string());
+            parse(&patched)?;
+            return Ok(patched);
+        }
+    }
+    let mut result = text.as_bytes().to_vec();
+    for (start, end, comma, remove) in &members {
+        if *remove {
+            for position in *start..*end {
+                if !mask[position].is_ascii_whitespace() {
+                    result[position] = b' ';
+                }
+            }
+            if let Some(position) = comma {
+                result[*position] = b' ';
+            }
+        }
+    }
+    if let Some(value) = value {
+        let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        let addition = format!(
+            "{ending}  {}: {}{ending}",
+            serde_json::to_string(key).unwrap(),
+            serde_json::to_string(&value).unwrap()
+        );
+        result.splice(close..close, addition.bytes());
+        if let Some((_, end, None, _)) = members.iter().rev().find(|member| !member.3) {
+            result.insert(*end, b',');
+        }
+    }
+    let patched =
+        String::from_utf8(result).map_err(|error| CoreError::Settings(error.to_string()))?;
+    parse(&patched)?;
+    Ok(patched)
+}
+
+fn skip_space(bytes: &[u8], mut index: usize) -> usize {
+    while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+        index += 1;
+    }
+    index
+}
+
+fn string_end(bytes: &[u8], mut index: usize) -> usize {
+    index += 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'"' => return index + 1,
+            _ => index += 1,
+        }
+    }
+    index
+}
+
+fn comment_mask(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let mut mask = bytes.to_vec();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'"' {
+            index = string_end(bytes, index);
+            continue;
+        }
+        if bytes[index..].starts_with(b"//") {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                mask[index] = b' ';
+                index += 1;
+            }
+        } else if bytes[index..].starts_with(b"/*") {
+            mask[index] = b' ';
+            mask[index + 1] = b' ';
+            index += 2;
+            while index < bytes.len() && !bytes[index..].starts_with(b"*/") {
+                if !matches!(bytes[index], b'\n' | b'\r') {
+                    mask[index] = b' ';
+                }
+                index += 1;
+            }
+            if index + 1 < bytes.len() {
+                mask[index] = b' ';
+                mask[index + 1] = b' ';
+                index += 2;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    mask
 }
 
 fn merge(target: &mut Value, value: Value) {
@@ -431,4 +721,77 @@ fn strip_jsonc(text: &str) -> Result<String> {
         }
     }
     Ok(clean)
+}
+
+#[cfg(test)]
+mod zoom_shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn validates_zoom_commands_and_portable_key_variants() {
+        for keys in [
+            vec!["Mod+=", "Mod+Shift+="],
+            vec!["Mod+Equal", "Mod+Plus"],
+            vec!["Mod++", "Mod+NumpadPlus"],
+        ] {
+            let settings = Settings {
+                keybindings: HashMap::from([
+                    (
+                        "zoomIn".into(),
+                        keys.into_iter().map(str::to_owned).collect(),
+                    ),
+                    ("zoomOut".into(), vec!["Mod+Minus".into()]),
+                    ("resetZoom".into(), vec!["Mod+Numpad0".into()]),
+                ]),
+                ..Default::default()
+            };
+            settings.validate().unwrap();
+        }
+        assert_eq!(normalize_zoom_shortcut("Mod+Shift+Plus"), "Mod+Shift+=");
+        assert_eq!(normalize_zoom_shortcut("Ctrl+NumpadAdd"), "Ctrl+=");
+    }
+
+    #[test]
+    fn detects_zoom_collisions_against_defaults_and_named_aliases() {
+        let mut settings = Settings {
+            keybindings: HashMap::from([("settings".into(), vec!["Mod+Equal".into()])]),
+            ..Default::default()
+        };
+        assert!(settings
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("conflicts"));
+        settings.keybindings.insert("zoomIn".into(), vec![]);
+        settings.validate().unwrap();
+        settings
+            .keybindings
+            .insert("settings".into(), vec!["Mod+Numpad0".into()]);
+        assert!(settings
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("conflicts"));
+    }
+}
+
+#[cfg(test)]
+mod word_wrap_shortcut_tests {
+    use super::*;
+    #[test]
+    fn word_wrap_can_be_rebound_and_its_default_participates_in_conflicts() {
+        let mut settings = Settings {
+            keybindings: HashMap::from([("toggleWordWrap".into(), vec!["Alt+W".into()])]),
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        settings.keybindings = HashMap::from([("settings".into(), vec!["Alt+Z".into()])]);
+        assert!(settings
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("conflicts"));
+        settings.keybindings.insert("toggleWordWrap".into(), vec![]);
+        settings.validate().unwrap();
+    }
 }

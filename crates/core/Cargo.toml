@@ -20,3 +20,14 @@ similar = "=3.2.0"
 
 [dev-dependencies]
 tempfile = "3"
+
+# Native recoverable deletion, never a permanent-delete fallback.
+[dependencies.trash]
+version = "=5.2.9"
+
+# Native atomic no-replace rename avoids check-then-overwrite races.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+rustix = { version = "1.1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

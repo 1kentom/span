@@ -1,6 +1,6 @@
 # Cached brand artwork
 
-These SVGs come from the SVGL API and are served locally. The editor does not call the registry or load remote brand images at runtime.
+These SVGs come from the SVGL API, except the Z.ai mark for the GLM adapter, which comes from its official ACP registry entry. All artwork is served locally. The editor does not call the registry or load remote brand images at runtime.
 
 `provenance.json` records the retrieval date, API metadata, original SVG URLs, brand guidance URLs when supplied by SVGL, and SHA-256 hashes. Light and dark variants are preserved as supplied. The SVGs were inspected as XML and contain no scripts, event attributes, embedded documents, images, or external references. Internal fragment references are allowed.
 

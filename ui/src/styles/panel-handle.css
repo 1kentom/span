@@ -1,0 +1,142 @@
+/* Edge grips use curved shoulders that flow into the workbench canvas. */
+.panel-handle {
+  --edge-grip-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 56'%3E%3Cpath d='M0 0C0 10 16 8 16 20V36C16 48 0 46 0 56Z'/%3E%3C/svg%3E");
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.panel-handle .panel-rail-grip {
+  width: 16px;
+  height: 56px;
+  padding: 0;
+  gap: 4px;
+  border-radius: 7px;
+  background: transparent;
+  opacity: 0;
+  transform: scale(1);
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.panel-handle .panel-rail-grip::before {
+  inset: 0;
+  background: var(--canvas);
+  clip-path: none;
+  mask: var(--edge-grip-mask) center / 100% 100% no-repeat;
+  opacity: 1;
+  transform: none;
+  transition: none;
+}
+
+.panel-handle .panel-rail-grip i {
+  width: 2px;
+  height: 2px;
+  opacity: .65;
+  transform: scale(1);
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.panel-handle[data-panel-side="left"] {
+  justify-content: flex-start;
+}
+
+.panel-handle[data-panel-side="left"] .panel-rail-grip {
+  transform-origin: left center;
+}
+
+.panel-handle[data-panel-side="right"] {
+  justify-content: flex-end;
+}
+
+.panel-handle[data-panel-side="right"] .panel-rail-grip {
+  transform-origin: right center;
+}
+
+.panel-handle[data-panel-side="right"] .panel-rail-grip::before {
+  transform: scaleX(-1);
+}
+
+.panel-handle[data-panel-side="bottom"] .panel-rail-grip {
+  --edge-grip-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 56 16'%3E%3Cpath d='M0 16C10 16 8 0 20 0H36C48 0 46 16 56 16Z'/%3E%3C/svg%3E");
+  width: 56px;
+  height: 16px;
+  padding: 0;
+  transform-origin: center bottom;
+}
+
+.panel-handle.collapsed .panel-rail-grip {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+/* The overlay leaves editor scrollbars and content usable outside the bump. */
+.panel-handle.collapsed {
+  pointer-events: none;
+}
+
+.panel-handle:hover .panel-rail-grip,
+.panel-handle.dragging .panel-rail-grip,
+.panel-handle:focus-visible .panel-rail-grip {
+  transform: scale(1.14);
+}
+
+.panel-handle.collapsed:hover .panel-rail-grip,
+.panel-handle.collapsed.dragging .panel-rail-grip,
+.panel-handle:focus-visible .panel-rail-grip {
+  opacity: 1;
+}
+
+.panel-handle:hover .panel-rail-grip i,
+.panel-handle.dragging .panel-rail-grip i,
+.panel-handle:focus-visible .panel-rail-grip i {
+  opacity: 1;
+  transform: scale(1.35);
+}
+
+.panel-handle:hover .panel-rail-grip::before,
+.panel-handle.dragging .panel-rail-grip::before,
+.panel-handle:focus-visible .panel-rail-grip::before {
+  transform: none;
+}
+
+.panel-handle[data-panel-side="right"]:is(:hover, .dragging, :focus-visible) .panel-rail-grip::before {
+  transform: scaleX(-1);
+}
+
+/* Collapsed targets overlay the panels without reserving any flex space. */
+.workbench-main > .panel-handle.collapsed {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  z-index: 6;
+}
+
+.workbench-main > .panel-handle.collapsed[data-panel-side="left"] {
+  left: 8px;
+}
+
+.workbench-main > .panel-handle.collapsed[data-panel-side="right"] {
+  right: 8px;
+}
+
+.center-area > .panel-handle.collapsed[data-panel-side="bottom"] {
+  position: absolute;
+  inset: auto 0 0;
+  height: 16px;
+  align-items: flex-end;
+  z-index: 6;
+}
+
+.panel-handle[data-panel-side="left"] .panel-handle-tooltip { left: 24px; }
+.panel-handle[data-panel-side="right"] .panel-handle-tooltip { right: 24px; }
+.panel-handle[data-panel-side="bottom"] .panel-handle-tooltip { bottom: 26px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-handle .panel-rail-grip,
+  .panel-handle .panel-rail-grip i,
+  .panel-handle .panel-rail-grip::before {
+    transition: none;
+  }
+}

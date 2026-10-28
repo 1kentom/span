@@ -8,7 +8,7 @@ import { SettingsPage, type SettingsPageProps } from "./SettingsPage";
 const defaults: SettingsValue = {
   theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false,
   uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono",
-  collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false,
+  collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null,
   keybindings: {}, formatters: {},
 };
 const disposers: (() => void)[] = [];
@@ -122,5 +122,47 @@ describe("workspace SettingsPage", () => {
     choices[1].click(); await settle();
     expect(onChange).toHaveBeenCalledWith({ uiFontFamily: "system-ui" });
     expect(root.querySelector("select")).toBeNull();
+  });
+
+  it("offers four Auto Save modes with a delay control active only after selecting After delay", async () => {
+    const { root, onChange } = mount(); button(root, "Files").click(); await settle();
+    expect(input(root, "Auto Save delay").disabled).toBe(true);
+    button(root, "Auto Save").click(); await settle();
+    expect([...root.querySelectorAll('[role="option"]')].map(option => option.textContent)).toEqual(["Off✓", "After delay", "On focus change", "On window change"]);
+    button(root, "After delay").click(); await settle(); expect(onChange).toHaveBeenCalledWith({ autoSave: "afterDelay" });
+    expect(input(root, "Auto Save delay").disabled).toBe(false);
+    const delay = input(root, "Auto Save delay"); delay.value = "250"; delay.dispatchEvent(new Event("change", { bubbles: true })); await settle();
+    expect(onChange).toHaveBeenLastCalledWith({ autoSaveDelay: 250 });
+  });
+
+  it("requests real scope changes and disables scope switching while a JSONC draft is dirty", async () => {
+    const onScopeChange = vi.fn(async () => {}); const { root } = mount({ scope: "workspace", onScopeChange });
+    button(root, "User").click(); await settle(); expect(onScopeChange).toHaveBeenCalledWith("user");
+    button(root, "JSONC").click(); await settle(); type(root.querySelector<HTMLTextAreaElement>("textarea")!, "{ draft"); await settle();
+    expect(button(root, "User").disabled).toBe(true); expect(root.textContent).toContain("Auto Save never applies this draft");
+    button(root, "User").click(); expect(onScopeChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets an explicit scoped override even when it equals the factory default and filters modified settings", async () => {
+    const onReset = vi.fn(async () => {}); const { root, onChange } = mount({ configuredKeys: ["fontSize"], onReset });
+    type(input(root, "Search settings"), "@modified"); await settle();
+    expect(input(root, "Editor font size")).not.toBeNull(); expect(input(root, "Tab size")).toBeNull();
+    expect(button(root, "Reset editor font size override").disabled).toBe(false);
+    button(root, "Reset editor font size override").click(); await settle();
+    expect(onReset).toHaveBeenCalledWith("fontSize"); expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("accepts fractional window zoom without changing the editor font", async () => {
+    const { root, onChange } = mount(); const zoom = input(root, "Window zoom level"); zoom.value = "1.5"; zoom.dispatchEvent(new Event("change", { bubbles: true })); await settle();
+    expect(onChange).toHaveBeenCalledWith({ zoomLevel: 1.5 }); expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ fontSize: expect.anything() }));
+  });
+
+  it("opens the real settings editor through the file icon and JSONC navigation", async () => {
+    const onOpenJsonc = vi.fn(); const { root } = mount({ onOpenJsonc });
+    button(root, "Open settings JSONC").click(); expect(onOpenJsonc).toHaveBeenCalledOnce();
+    button(root, "JSONC").click(); await settle(); expect(onOpenJsonc).toHaveBeenCalledTimes(2);
+    expect(root.querySelector('textarea[aria-label="Settings JSONC"]')).toBeNull();
+    button(root, "Files").click(); await settle(); button(root, "Configure formatters in JSONC").click();
+    expect(onOpenJsonc).toHaveBeenCalledTimes(3);
   });
 });
