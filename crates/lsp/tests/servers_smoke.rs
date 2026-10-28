@@ -15,6 +15,9 @@
 //! server process (and everything it spawned) is gone and that the server exited with
 //! status 0 after receiving `shutdown` and `exit`.
 
+mod common;
+
+use common::{is_alive, kill_force, process_table};
 use lsp_types::*;
 use span_lsp::path_to_uri;
 use span_lsp::servers::catalog;
@@ -25,7 +28,6 @@ use span_lsp::servers::resolver::CatalogResolver;
 use span_lsp::servers::spec::{LaunchSpec, ServerId};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
@@ -61,7 +63,7 @@ fn cache_root() -> PathBuf {
 // Launch wrapper: records the server pid and its exit status
 // ---------------------------------------------------------------------------
 
-/// Runs the real launch command under `sh -c` with explicit arguments so the test
+/// Runs the real launch command under `sh -c` (unix) or PowerShell (windows) with explicit arguments so the test
 /// can learn the pid and the exit status of the server. `$@` is the untouched
 /// program and argument array. The wrapper is test-only; the resolver itself never
 /// uses a shell.
@@ -72,6 +74,8 @@ struct RecordingResolver {
 }
 
 impl RecordingResolver {
+    /// Unix: `sh -c` records `$$` (the wrapper pid) and the exit status of the server.
+    #[cfg(unix)]
     fn wrap(&self, spec: LaunchSpec) -> LaunchSpec {
         let mut args = vec![
             "-c".to_string(),
@@ -89,6 +93,54 @@ impl RecordingResolver {
             env: spec.env,
         }
     }
+
+    /// Windows: the same contract through a small PowerShell script run with `-File`,
+    /// so every argument stays an explicit array element. `$PID` is the wrapper pid
+    /// and `$LASTEXITCODE` the server's exit status. Unverified on a real Windows host.
+    #[cfg(windows)]
+    fn wrap(&self, spec: LaunchSpec) -> LaunchSpec {
+        let script = self.pidfile.with_file_name("launch-wrapper.ps1");
+        std::fs::write(
+            &script,
+            "param($pidfile, $statusfile, $prog)\r\n\
+             Set-Content -Path $pidfile -Value $PID -Encoding ascii\r\n\
+             & $prog @args\r\n\
+             Set-Content -Path $statusfile -Value $LASTEXITCODE -Encoding ascii\r\n",
+        )
+        .expect("write launch wrapper");
+        let mut args = vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.to_string_lossy().into_owned(),
+            self.pidfile.to_string_lossy().into_owned(),
+            self.statusfile.to_string_lossy().into_owned(),
+            spec.program.to_string_lossy().into_owned(),
+        ];
+        args.extend(spec.args);
+        LaunchSpec {
+            program: PathBuf::from("powershell.exe"),
+            args,
+            env: spec.env,
+        }
+    }
+}
+
+/// Canonical path; on Windows the `\\?\` verbatim prefix is stripped because
+/// language servers and `file:` URIs do not handle it well.
+fn canonical(p: &Path) -> PathBuf {
+    let c = std::fs::canonicalize(p).unwrap();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = c.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            if !rest.starts_with("UNC") {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    c
 }
 
 impl LaunchResolver for RecordingResolver {
@@ -105,24 +157,6 @@ impl LaunchResolver for RecordingResolver {
 // Process helpers
 // ---------------------------------------------------------------------------
 
-fn process_table() -> Vec<(u32, u32, String)> {
-    let out = Command::new("ps")
-        .args(["-axo", "pid=,ppid=,stat="])
-        .output()
-        .expect("run ps");
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| {
-            let mut it = l.split_whitespace();
-            Some((
-                it.next()?.parse().ok()?,
-                it.next()?.parse().ok()?,
-                it.next()?.to_string(),
-            ))
-        })
-        .collect()
-}
-
 fn descendants(root: u32) -> Vec<u32> {
     let table = process_table();
     let mut found = vec![root];
@@ -137,12 +171,6 @@ fn descendants(root: u32) -> Vec<u32> {
         i += 1;
     }
     found
-}
-
-fn is_alive(pid: u32) -> bool {
-    process_table()
-        .iter()
-        .any(|(p, _, stat)| *p == pid && !stat.starts_with('Z'))
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +294,7 @@ impl H {
     /// for it and waits until it is `Ready`.
     async fn start(id: ServerId, files: &[(&str, &str)]) -> H {
         let tmp = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(tmp.path()).unwrap().join("project");
+        let root = canonical(tmp.path()).join("project");
         std::fs::create_dir_all(&root).unwrap();
         for (rel, text) in files {
             let p = root.join(rel);
@@ -643,7 +671,7 @@ impl H {
             }
             if Instant::now() > deadline {
                 for p in &alive {
-                    let _ = Command::new("kill").args(["-9", &p.to_string()]).status();
+                    kill_force(*p);
                 }
                 panic!(
                     "{:?}: processes still alive after shutdown_all: {alive:?}",

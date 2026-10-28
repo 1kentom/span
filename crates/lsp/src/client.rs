@@ -22,6 +22,10 @@ use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// JSON-RPC error code a server sends when a request raced a document change (LSP 3.17).
+const CONTENT_MODIFIED: i64 = -32801;
+const CONTENT_MODIFIED_RETRIES: u32 = 3;
+const CONTENT_MODIFIED_BACKOFF: Duration = Duration::from_millis(150);
 
 pub enum ServerEvent {
     Notification {
@@ -523,14 +527,36 @@ impl LspClient {
         params: Value,
         cancel: Option<&CancellationToken>,
     ) -> Result<Option<T>> {
-        let result = self
-            .send_request_inner(
-                method.to_string(),
-                Some(params),
-                DEFAULT_REQUEST_TIMEOUT,
-                cancel,
-            )
-            .await?;
+        let mut attempt = 0;
+        let result = loop {
+            match self
+                .send_request_inner(
+                    method.to_string(),
+                    Some(params.clone()),
+                    DEFAULT_REQUEST_TIMEOUT,
+                    cancel,
+                )
+                .await
+            {
+                // ContentModified: the server's state changed under the request. The spec
+                // lets the client retry, and servers such as rust-analyzer send it while
+                // they re-analyse after an edit.
+                Err(LspError::ServerError { code, .. })
+                    if code == CONTENT_MODIFIED && attempt < CONTENT_MODIFIED_RETRIES =>
+                {
+                    attempt += 1;
+                    let backoff = CONTENT_MODIFIED_BACKOFF * attempt;
+                    match cancel {
+                        Some(token) => tokio::select! {
+                            _ = tokio::time::sleep(backoff) => {}
+                            _ = token.cancelled() => return Err(LspError::Cancelled),
+                        },
+                        None => tokio::time::sleep(backoff).await,
+                    }
+                }
+                other => break other?,
+            }
+        };
 
         if result.is_null() {
             return Ok(None);

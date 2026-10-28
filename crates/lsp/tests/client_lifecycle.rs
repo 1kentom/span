@@ -1,5 +1,7 @@
 //! Client lifecycle tests against a small inline python3 server.
 
+mod common;
+
 use lsp_types::*;
 use span_lsp::{LspClient, LspError};
 use std::path::{Path, PathBuf};
@@ -27,6 +29,13 @@ def read():
         headers[k.lower()] = v.strip()
     return json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
 
+def reply_error(msg, code, message):
+    b = json.dumps({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": code, "message": message}}).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(b) + b)
+    sys.stdout.buffer.flush()
+
+completions = 0
+
 def reply(msg, result):
     b = json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}).encode()
     sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(b) + b)
@@ -45,6 +54,12 @@ while True:
         else:
             caps["hoverProvider"] = False
         reply(msg, {"capabilities": caps})
+    elif method == "textDocument/completion":
+        completions += 1
+        if mode == "modified_always" or (mode == "modified_twice" and completions <= 2):
+            reply_error(msg, -32801, "content modified")
+        else:
+            reply(msg, {"isIncomplete": False, "items": []})
     elif method == "textDocument/hover":
         pass  # never answered
     elif method == "shutdown":
@@ -64,9 +79,11 @@ async fn start(mode: &str) -> Fixture {
     let script = dir.path().join("server.py");
     std::fs::write(&script, SERVER).unwrap();
     let log = dir.path().join("server.log");
+    let (program, args) =
+        common::python_args(&[script.to_string_lossy().into_owned(), mode.to_string()]);
     let client = LspClient::spawn_with_env(
-        "python3",
-        &[script.to_string_lossy().into_owned(), mode.to_string()],
+        &program,
+        &args,
         None,
         &[("FAKE_LSP_LOG".into(), log.to_string_lossy().into_owned())],
     )
@@ -184,4 +201,47 @@ async fn unadvertised_completion_and_hover_return_unsupported_without_sending() 
         !methods.iter().any(|m| m.starts_with("textDocument/")),
         "{methods:?}"
     );
+}
+
+fn count(log: &Path, method: &str) -> usize {
+    logged_methods(log).iter().filter(|m| *m == method).count()
+}
+
+#[tokio::test]
+async fn content_modified_is_retried_until_the_server_answers() {
+    let f = start("modified_twice").await;
+    let result = f.client.completion(completion_params()).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(count(&f.log, "textDocument/completion"), 3);
+}
+
+#[tokio::test]
+async fn content_modified_retries_are_bounded_and_the_error_is_surfaced() {
+    let f = start("modified_always").await;
+    let err = f.client.completion(completion_params()).await.unwrap_err();
+    assert!(
+        matches!(err, LspError::ServerError { code: -32801, .. }),
+        "{err:?}"
+    );
+    // One attempt plus three retries, no more.
+    assert_eq!(count(&f.log, "textDocument/completion"), 4);
+}
+
+#[tokio::test]
+async fn cancelling_during_a_content_modified_backoff_returns_cancelled() {
+    let f = start("modified_always").await;
+    let token = tokio_util::sync::CancellationToken::new();
+    let t = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        t.cancel();
+    });
+    let started = Instant::now();
+    let err = f
+        .client
+        .completion_with_cancel(completion_params(), token)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LspError::Cancelled), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
 }

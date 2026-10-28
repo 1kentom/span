@@ -1014,7 +1014,8 @@ mod tests {
             .into_owned();
         let launcher = dir
             .path()
-            .join("plugins/org.eclipse.equinox.launcher_1.8.0.v20260804-1928.jar")
+            .join("plugins")
+            .join("org.eclipse.equinox.launcher_1.8.0.v20260804-1928.jar")
             .to_string_lossy()
             .into_owned();
         let mut ctx = LaunchContext::new(dir.path(), MAC_ARM);
