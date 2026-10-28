@@ -1,5 +1,5 @@
 import { For, Match, Show, Switch, createMemo } from "solid-js";
-import { Icon } from "../Icon";
+import { Icon, MenuIcon } from "../Icon";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
@@ -8,6 +8,7 @@ import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, 
 import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
 import { urlRecordText } from "../../lib/agent-url-request";
 import { handoffDivider } from "../../lib/agent-handoff";
+import { branchDivider } from "../../lib/agent-rewind";
 import { EditsBypassNote, ErrorCard, Notice, StopCard, WarningNote } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
 import { DelegationCard } from "./DelegationCard";
@@ -26,6 +27,32 @@ function UrlRecordLine(props: { record: Extract<FeedItem, { kind: "signin" }> })
   );
 }
 
+/**
+ * Actions under a user message. Edit, resend and fork start a new session (ACP cannot rewind one), so they wait until
+ * the turn ends and no edit waits for review; restore only lists the files changed since and never rewinds the chat.
+ */
+function MessageActions(props: { agent: AgentController; id: number }) {
+  const a = props.agent;
+  const busy = () => a.running() || a.working();
+  const branchTitle = (fallback: string) => a.branchBlock() ?? fallback;
+  return (
+    <div class="agent-message-actions" role="group" aria-label="Message actions">
+      <button class="sb-btn ghost" aria-label="Edit this message and send it in a new session" title={a.running() ? "Wait for the agent to finish this turn." : "Edit and send in a new session"} disabled={busy()} onClick={() => a.editFrom(props.id)}>
+        <Icon name="Edit2" size={11} />Edit
+      </button>
+      <button class="sb-btn ghost" aria-label="Resend this message in a new session" title={branchTitle("Resend in a new session")} disabled={busy() || Boolean(a.branchBlock())} onClick={() => a.resendFrom(props.id)}>
+        <Icon name="Refresh2" size={11} />Resend
+      </button>
+      <button class="sb-btn ghost" aria-label="Restore files to before this message" title="Revert edits after this message that still wait for review" disabled={busy()} onClick={() => a.restoreTo(props.id)}>
+        <MenuIcon name="reset" size={11} />Restore
+      </button>
+      <button class="sb-btn ghost" aria-label="Fork a new session from here" title={branchTitle("Fork a new session from here")} disabled={busy() || Boolean(a.branchBlock())} onClick={() => a.forkFrom(props.id)}>
+        <Icon name="Hierarchy" size={11} />Fork
+      </button>
+    </div>
+  );
+}
+
 function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: () => boolean }) {
   const a = props.agent;
   const item = props.item;
@@ -34,7 +61,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
   return (
     <Switch>
       <Match when={item().kind === "user"}>
-        <div class="agent-message user" data-feed-id={item().id} classList={{ steered: Boolean((item() as Extract<FeedItem, { kind: "user" }>).steered) }}>
+        <div class="agent-message user" data-feed-id={item().id} classList={{ steered: Boolean((item() as Extract<FeedItem, { kind: "user" }>).steered), editing: a.rewind()?.mode === "edit" && a.rewind()?.itemId === item().id }}>
           <Show when={(item() as Extract<FeedItem, { kind: "user" }>).steered}>
             <div class="agent-steer-tag"><Icon name="arrow-right4" size={11} /><span>Steered</span><span class="agent-steer-note"> · read after the current step</span></div>
           </Show>
@@ -44,7 +71,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           <Show when={(item() as Extract<FeedItem, { kind: "user" }>).context}>
             {(context) => (
               <details class="agent-summary agent-context-sent">
-                <summary><Icon name="arrow-right4" size={11} /><span>Context sent</span><span class="agent-steer-note"> · carried over from the previous agent</span></summary>
+                <summary><Icon name="arrow-right4" size={11} /><span>Context sent</span><span class="agent-steer-note">{(item() as Extract<FeedItem, { kind: "user" }>).contextNote ?? " · carried over from the previous agent"}</span></summary>
                 <pre class="agent-context-text">{context()}</pre>
               </details>
             )}
@@ -52,6 +79,9 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           {message().text}
           <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.setViewing(attachment.id)} />
         </div>
+        <Show when={a.connected()}>
+          <MessageActions agent={a} id={item().id} />
+        </Show>
       </Match>
       <Match when={item().kind === "text" || item().kind === "thought"}>
         <div class={`agent-message ${item().kind}`} aria-busy={a.running() && props.last() ? "true" : undefined}>
@@ -76,6 +106,22 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           const view = () => handoffDivider(switched().from, switched().to, switched().carried);
           return (
             <div class="agent-handoff" role="separator" aria-label={view().text}>
+              <div class="sb-notice" aria-hidden="true">
+                <span class="sb-rule" />
+                <span class="sb-ellipsis">{view().title}</span>
+                <span class="sb-rule" />
+              </div>
+              <p class="sb-fine agent-handoff-note" aria-hidden="true">{view().note}</p>
+            </div>
+          );
+        })()}
+      </Match>
+      <Match when={item().kind === "branch"}>
+        {(() => {
+          const branch = () => item() as Extract<FeedItem, { kind: "branch" }>;
+          const view = () => branchDivider(branch().mode, branch().carried);
+          return (
+            <div class="agent-handoff agent-branch" role="separator" aria-label={view().text}>
               <div class="sb-notice" aria-hidden="true">
                 <span class="sb-rule" />
                 <span class="sb-ellipsis">{view().title}</span>

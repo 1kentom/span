@@ -12,7 +12,7 @@ import { api, isDesktop } from "../../lib/client";
 import { URL_COPY, parseUrlRequest, withBrowserWait, type UrlRequestView } from "../../lib/agent-url-request";
 import { ContextBanner } from "./Banners";
 import { AgentStatusBar } from "./AgentStatusBar";
-import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
+import { ActivityBar, PermissionDock, QuestionDock, RewindDock, UrlDock, focusDock } from "./Docks";
 import { RunningStep } from "./RunningStep";
 import { RUN_TEXT } from "../../lib/agent-hint-text";
 import { createPickers } from "./ComposerPickers";
@@ -239,6 +239,20 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           elapsed={a.turnElapsed()}
           hint={a.state().stopRequested || a.elicitation() || waitingStep() ? undefined : "Esc to stop"}
         />
+      </Show>
+      <Show when={a.rewind()}>
+        {(pick) => (
+          <RewindDock
+            mode={pick().mode}
+            files={a.rewindFiles()}
+            blockReason={a.branchBlock()}
+            busy={Boolean(a.pendingAction())}
+            onReview={(path) => void a.openInEditor(path, undefined, a.props.onReviewInEditor ?? a.props.onOpenFile)}
+            onRevert={(ids) => void a.revertFiles(ids)}
+            onKeep={() => void a.keepFiles()}
+            onCancel={a.cancelRewind}
+          />
+        )}
       </Show>
       <Show when={leadRequest()} keyed>
         {(request) => (

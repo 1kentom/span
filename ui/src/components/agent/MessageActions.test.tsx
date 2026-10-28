@@ -3,8 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, AgentFeatures } from "../../bindings";
 import { createAgentController, type AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
+import { AgentComposer } from "./AgentComposer";
 import { AgentFeed } from "./AgentFeed";
-import { mount } from "./test-utils";
+import { key, mount, text } from "./test-utils";
 
 const mocks = vi.hoisted(() => {
   const listeners: ((event: AgentEvent) => void)[] = [];
@@ -50,11 +51,16 @@ beforeEach(() => {
 });
 
 /** Codex in session s1 with two exchanges. The second turn proposed b.ts; `review` decides what happened to it. */
-async function twoTurns(review: "accepted" | "pending" = "accepted") {
+async function twoTurns(review: "accepted" | "pending" = "accepted", onReviewInEditor?: (path: string) => void) {
   let a!: AgentController;
   const host = mount(() => {
-    a = createAgentController({ workspacePath: "/w", workspaceGeneration: 1 });
-    return <AgentFeed agent={a} />;
+    a = createAgentController({ workspacePath: "/w", workspaceGeneration: 1, onReviewInEditor });
+    return (
+      <>
+        <AgentFeed agent={a} />
+        <AgentComposer agent={a} brand={{ id: "codex", name: "Codex" }} label="Codex" />
+      </>
+    );
   });
   await tick();
   mocks.api.agentConnect.mockImplementationOnce(async () => {
@@ -217,5 +223,94 @@ describe("restoring files to a message", () => {
     await a.keepFiles();
     expect(mocks.api.agentReview).toHaveBeenCalledWith("p1", true, 1);
     expect(a.rewind()).toBeUndefined();
+  });
+});
+
+describe("message actions in the feed", () => {
+  const button = (host: HTMLElement, index: number, label: string) =>
+    [...host.querySelectorAll<HTMLElement>(".agent-message-actions")][index].querySelector<HTMLButtonElement>(`button[aria-label^="${label}"]`)!;
+
+  it("offers edit, resend, restore and fork under each user message, and marks the message being edited", async () => {
+    const { a, host } = await twoTurns();
+    const rows = host.querySelectorAll(".agent-message-actions");
+    expect(rows).toHaveLength(2);
+    expect([...rows[1].querySelectorAll("button")].map((entry) => entry.getAttribute("aria-label"))).toEqual([
+      "Edit this message and send it in a new session",
+      "Resend this message in a new session",
+      "Restore files to before this message",
+      "Fork a new session from here",
+    ]);
+    button(host, 1, "Edit").click();
+    expect(a.prompt()).toBe("second ask");
+    expect(host.querySelectorAll(".agent-message.user")[1].classList.contains("editing")).toBe(true);
+    const dock = host.querySelector(".sb-rewind-dock")!;
+    expect(text(dock)).toContain("Editing an earlier message");
+    expect(text(dock)).toContain("Sending starts a new session from this message, because ACP cannot rewind the current one.");
+    expect(text(dock)).toContain("this chat is left as it was");
+    expect(text(host)).not.toMatch(/\u2014/);
+  });
+
+  it("disables resend and fork with the reason while an edit waits for review", async () => {
+    const { host } = await twoTurns("pending");
+    const fork = button(host, 0, "Fork");
+    expect(fork.disabled).toBe(true);
+    expect(fork.title).toBe("1 edit waits for review. Accept or reject it before starting a new session.");
+    expect(button(host, 0, "Resend").disabled).toBe(true);
+    expect(button(host, 0, "Restore").disabled).toBe(false);
+  });
+
+  it("shows the branch divider and the context card note after a fork", async () => {
+    const { a, host } = await twoTurns();
+    button(host, 0, "Fork").click();
+    await tick();
+    await tick();
+    const divider = host.querySelector(".agent-handoff.agent-branch");
+    expect(divider?.getAttribute("aria-label")).toContain("Forked into a new session. ACP cannot rewind a session, so this is a new one.");
+    a.setPrompt("go on");
+    a.send();
+    await tick();
+    expect(text(host.querySelector(".agent-context-sent summary"))).toContain("earlier turns of this chat");
+  });
+});
+
+describe("the restore dock", () => {
+  it("lists changed files with review and revert, and says applied edits cannot be undone", async () => {
+    const opened: string[] = [];
+    const { a, host } = await twoTurns("pending", (path) => opened.push(path));
+    mocks.emit(proposal("p2", "/w/src/c.ts"));
+    await tick();
+    await a.review(a.state().feed.flatMap((item) => (item.kind === "proposal" && item.proposal.id === "p2" ? [item.proposal] : []))[0], true);
+    mocks.api.agentReview.mockClear();
+
+    [...host.querySelectorAll<HTMLElement>(".agent-message-actions")][1].querySelector<HTMLButtonElement>('button[aria-label^="Restore"]')!.click();
+    await tick();
+    const dock = host.querySelector<HTMLElement>(".sb-rewind-dock")!;
+    expect(text(dock.querySelector(".sb-dock-title"))).toBe("Revert files to this message?");
+    expect(text(dock)).toContain("2 files changed since this message.");
+    expect(text(dock)).toContain("Edits already applied cannot be undone here");
+    const rows = dock.querySelectorAll(".sb-rewind-file");
+    expect([...rows].map((row) => text(row.querySelector(".sb-change-name")))).toEqual(["b.ts", "c.ts"]);
+    expect(text(rows[0])).toContain("waiting for review");
+    expect(text(rows[1])).toContain("applied, cannot be undone here");
+    expect(rows[1].querySelector('button[aria-label^="Revert"]')).toBeNull();
+
+    rows[1].querySelector<HTMLButtonElement>('button[aria-label="Review src/c.ts"]')!.click();
+    expect(opened).toEqual(["src/c.ts"]);
+
+    rows[0].querySelector<HTMLButtonElement>('button[aria-label="Revert src/b.ts"]')!.click();
+    await tick();
+    expect(mocks.api.agentReview).toHaveBeenCalledWith("p1", false, 1);
+  });
+
+  it("closes on Escape from inside the dock", async () => {
+    const { a, host } = await twoTurns("pending");
+    a.restoreTo(userIds(a)[0]);
+    await tick();
+    const dock = host.querySelector<HTMLElement>(".sb-rewind-dock")!;
+    dock.querySelector<HTMLButtonElement>("button")!.focus();
+    key("Escape", {}, document.activeElement!);
+    await tick();
+    expect(a.rewind()).toBeUndefined();
+    expect(host.querySelector(".sb-rewind-dock")).toBeNull();
   });
 });
