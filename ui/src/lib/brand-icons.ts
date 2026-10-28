@@ -9,6 +9,8 @@ const assets: Record<string, { variants?: boolean; aliases: string[] }> = {
       "claude ai",
       "claude code acp",
       "claude agent acp",
+      "claude acp",
+      "claude agent",
       "anthropic",
     ],
   },
@@ -53,6 +55,20 @@ const normalize = (value: string) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
+/** Brands that are coding agents. Only these get the suffix-insensitive fallback, so tools such as node or go never match loosely. */
+const agentBrands = new Set(["claude", "codex", "gemini", "copilot", "cursor", "opencode", "qwen", "mistral", "grok", "glm"]);
+const scopePrefixes = ["agentclientprotocol ", "zed industries "];
+const suffixWords = new Set(["acp", "agent", "cli", "code"]);
+
+/** Drops a leading scope and trailing acp, agent, cli or code words, never down to nothing. */
+function stripAgentWords(value: string): string {
+  let words = value;
+  for (const prefix of scopePrefixes) if (words.startsWith(prefix)) words = words.slice(prefix.length);
+  const list = words.split(" ");
+  while (list.length > 1 && suffixWords.has(list[list.length - 1])) list.pop();
+  return list.join(" ");
+}
+
 /** Branding only. Identity never determines agent capabilities or executable availability. */
 export function brandIconFor(
   identity: BrandIdentity,
@@ -69,7 +85,9 @@ export function brandIconFor(
             (alias) =>
               value === `zed industries ${alias}` ||
               value === `agentclientprotocol ${alias}`,
-          ),
+          ) ||
+          (agentBrands.has(id) &&
+            asset.aliases.some((alias) => stripAgentWords(alias) === stripAgentWords(value))),
       )
     ) {
       const base = `/brands/${id}`;

@@ -15,6 +15,46 @@ const options: ConfigOptionView[] = [
   { id: "mode", name: "Mode", category: "mode", currentValue: "ask", choices: [{ value: "ask", name: "Ask" }, { value: "plan", name: "Plan" }] },
 ];
 
+const claudeModels: ConfigOptionView = {
+  id: "model", name: "Model", category: "model", currentValue: "default",
+  choices: [
+    { value: "default", name: "Default (recommended)", description: "Sonnet 5.5" },
+    { value: "opus", name: "Opus 5.5", description: "For complex work and everyday tasks" },
+    { value: "haiku", name: "Haiku 5.5", description: "Fastest for quick answers" },
+    { value: "luna", name: "gpt-6-luna" },
+  ],
+};
+
+describe("ModelPopover traits", () => {
+  const rows = () => [...document.querySelectorAll<HTMLButtonElement>(".sb-option[role=radio]")];
+  it("shows an icon on every model row and the bolt only on fast models", () => {
+    mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[claudeModels]} onSelect={() => {}} onClose={() => {}} />);
+    expect(rows()).toHaveLength(4);
+    for (const row of rows()) expect(row.querySelector(".sb-model-icon img")).not.toBeNull();
+    expect(rows().map((row) => row.querySelectorAll(".sb-trait-badge").length)).toEqual([0, 0, 1, 0]);
+    const badge = rows()[2].querySelector(".sb-trait-badge")!;
+    expect(badge.getAttribute("aria-label")).toBe("Fast model");
+    expect(badge.getAttribute("title")).toBe("Fast model");
+  });
+  it("labels the other trait chip, skips redundant and unknown ones, and keeps the check", () => {
+    mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[claudeModels]} onSelect={() => {}} onClose={() => {}} />);
+    expect(rows().map((row) => row.querySelector(".sb-trait-chip")?.getAttribute("aria-label") ?? null)).toEqual([null, "Most capable", null, null]);
+    expect(rows()[3].querySelector(".sb-trait-badge")).toBeNull();
+    expect(rows().map((row) => Boolean(row.querySelector(".sb-accent")))).toEqual([true, false, false, false]);
+    expect(rows().map((row) => row.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "false"]);
+  });
+  it("applies an explicit fast switch to the current model only", () => {
+    const fastSwitch: ConfigOptionView = { id: "fast", name: "Fast", currentValue: "true", choices: [{ value: "true", name: "On" }, { value: "false", name: "Off" }] };
+    mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[{ ...claudeModels, currentValue: "opus" }, fastSwitch]} onSelect={() => {}} onClose={() => {}} />);
+    expect(rows().slice(0, 4).map((row) => row.querySelectorAll(".sb-trait-badge").length)).toEqual([0, 1, 1, 0]);
+  });
+  it("keeps keyboard focus on the selected model", async () => {
+    mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[claudeModels]} onSelect={() => {}} onClose={() => {}} />);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(rows()[0]);
+  });
+});
+
 describe("ModelPopover", () => {
   it("builds sections from the config options and selects by value", () => {
     const picked: string[] = [];
