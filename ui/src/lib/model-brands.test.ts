@@ -29,6 +29,16 @@ describe("model brands", () => {
     expect(modelBrandFor({ value: "opencode/ministral-8b", name: "Ministral 8B" })?.name).toBe("Ministral");
     expect(modelBrandFor({ value: "opencode/gemma-4", name: "Gemma 4" })?.name).toBe("Gemma");
   });
+  it("maps DeepSeek, NVIDIA, Meta Llama and MiniMax to their own marks", () => {
+    expect(brand("opencode/deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free")).toBe("deepseek");
+    expect(brand("deepseek/deepseek-chat")).toBe("deepseek");
+    expect(brand("opencode/nemotron-3.5-super-vl-free", "Nemotron 3.5 Super VL Free")).toBe("nvidia");
+    expect(brand("nvidia/some-model")).toBe("nvidia");
+    expect(brand("opencode/llama-4-maverick", "Llama 4 Maverick")).toBe("meta");
+    expect(brand("opencode/meta-llama/llama-3.3-70b")).toBe("meta");
+    expect(brand("opencode/minimax-m3", "MiniMax M3")).toBe("minimax");
+    expect(modelBrandFor({ value: "opencode/minimax-m3", name: "MiniMax M3" })).toMatchObject({ name: "MiniMax", light: "/brands/models/minimax.svg", mono: true });
+  });
   it("matches on the display name when the id is opaque", () => {
     expect(brand("opencode/x1", "Claude Haiku 5")).toBe("claude");
   });
@@ -39,8 +49,7 @@ describe("model brands", () => {
       ["opencode/flint-free", "Flint Free"],
       ["opencode-go/iceman-contributor-free", "Iceman Free"],
       ["opencode/nova-lite-free", "Nova Lite Free"],
-      ["opencode/deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free"],
-      ["opencode/nemotron-3.5-super-vl-free", "Nemotron 3.5 Super VL Free"],
+      ["ollama/some-local-model", "Some Local Model"],
       ["default", "Default"],
     ]) expect(modelBrandFor({ value, name }), value).toBeUndefined();
   });
@@ -65,7 +74,7 @@ describe("model brands", () => {
         if (asset.colour === "currentColor") expect(svg).toContain('fill="currentColor"');
       }
     }
-    for (const [value, file] of [["opencode/amazon/nova", "amazon-nova.png"], ["cohere", "cohere.svg"], ["poolside/x", "poolside.svg"], ["groq/x", "groq.png"]]) {
+    for (const [value, file] of [["opencode/amazon/nova", "amazon-nova.png"], ["cohere", "cohere.svg"], ["poolside/x", "poolside.svg"], ["groq/x", "groq.png"], ["deepseek/x", "deepseek.svg"], ["nvidia/x", "nvidia.svg"], ["llama-4", "meta.svg"], ["minimax-m3", "minimax.svg"]]) {
       expect(modelBrandFor({ value, name: value })?.light).toBe(`/brands/models/${file}`);
     }
   });

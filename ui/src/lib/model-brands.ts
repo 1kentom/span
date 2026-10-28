@@ -16,8 +16,7 @@ type Rule = {
 
 /**
  * Model id to vendor, after the rule table in taifa-ai's glyphs.ts. Order matters: the first match wins, so
- * Ministral sits before Mistral. Vendors that have no sourced mark (DeepSeek, NVIDIA, Meta, MiniMax) have no
- * rule at all, and stealth models such as Big Pickle or a bare "nova-" id match nothing: guessing a logo is worse
+ * Ministral sits before Mistral. Stealth models such as Big Pickle or a bare "nova-" id match nothing: guessing a logo is worse
  * than showing the agent mark.
  */
 const RULES: Rule[] = [
@@ -38,6 +37,11 @@ const RULES: Rule[] = [
   { match: /gemini/, id: "gemini", name: "Gemini", brand: "gemini" },
   { match: /gemma/, id: "gemini", name: "Gemma", brand: "gemini" },
   { match: /qwen/, id: "qwen", name: "Qwen", brand: "qwen" },
+  { match: /^deepseek\/|deepseek/, id: "deepseek", name: "DeepSeek", file: "deepseek.svg", mono: true },
+  { match: /minimax/, id: "minimax", name: "MiniMax", file: "minimax.svg", mono: true },
+  { match: /^nvidia\/|nemotron/, id: "nvidia", name: "NVIDIA", file: "nvidia.svg", mono: true },
+  // Not after "o": Ollama ids are a runtime, not Meta's models.
+  { match: /(?<!o)llama/, id: "meta", name: "Llama", file: "meta.svg", mono: true },
 ];
 
 /** The text after a leading provider segment: "opencode/claude-opus-5-5" becomes "claude-opus-5-5". */
