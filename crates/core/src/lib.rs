@@ -3,6 +3,7 @@
 mod attachment;
 mod buffer;
 mod format;
+mod format_native;
 mod fs_ops;
 mod images;
 mod proposal_diff;
@@ -18,7 +19,8 @@ mod workspace;
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
 pub use format::{
-    native_program_path, resolve_program, run_formatter, FormatRequest, FormatResult,
+    native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
+    FormatResult,
 };
 pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
@@ -26,8 +28,8 @@ pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration}
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use settings::{
-    AgentSettings, AutoSaveMode, DelegationSettings, RunToolsSettings, Settings, SettingsScope,
-    Theme,
+    AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, RunToolsSettings,
+    Settings, SettingsScope, Theme, LANGUAGE_SERVER_IDS,
 };
 pub use tools::{list_tools, ToolInfo};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};

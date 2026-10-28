@@ -121,3 +121,46 @@ it("keeps shared view controls outside the shell tablist and preserves shell rov
   expect(header.firstElementChild?.querySelector('[aria-selected="true"]')?.textContent).toBe("Terminal");
   expect(view.transport.close).not.toHaveBeenCalled();
 });
+
+
+it("closes only the selected shell through the dock controller", async () => {
+  const view = mount(true); await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
+  view.button("New terminal").click(); await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledTimes(2));
+  await view.dock().closeCurrent();
+  expect(view.transport.close).toHaveBeenCalledExactlyOnceWith("pty-2");
+  const tabs = [...view.root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+  expect(tabs).toHaveLength(1); expect(tabs[0].textContent).toContain("Shell 1");
+  expect(tabs[0].getAttribute("aria-selected")).toBe("true"); expect(view.shown()).toBe(true);
+});
+
+it("deduplicates controller close and preserves a newer selected shell", async () => {
+  const view = mount(true); await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
+  let release!: () => void;
+  vi.mocked(view.transport.close).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+  const closing = view.dock().closeCurrent(); const duplicate = view.dock().closeCurrent();
+  await vi.waitFor(() => expect(view.transport.close).toHaveBeenCalledOnce());
+  view.button("New terminal").click(); await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledTimes(2));
+  release(); await Promise.all([closing, duplicate]);
+  expect(view.transport.close).toHaveBeenCalledExactlyOnceWith("pty-1");
+  const selected = view.root.querySelector('[role="tab"][aria-selected="true"]');
+  expect(selected?.textContent).toContain("Shell 2"); expect(view.shown()).toBe(true);
+  expect(view.root.querySelectorAll('[role="tab"]')).toHaveLength(1);
+});
+
+it("retains a selected shell and reports native controller-close failure for retry", async () => {
+  const view = mount(true); await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
+  vi.mocked(view.transport.close).mockRejectedValueOnce(new Error("Close denied"));
+  await view.dock().closeCurrent();
+  expect(view.root.querySelector('[role="alert"]')?.textContent).toContain("Close denied");
+  expect(view.root.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Shell 1");
+  expect(view.shown()).toBe(true);
+  await view.dock().closeCurrent();
+  expect(view.transport.close).toHaveBeenCalledTimes(2); expect(view.shown()).toBe(false);
+});
+
+it("refuses controller close after the dock is disposed", async () => {
+  const view = mount(true); await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
+  const controller = view.dock(); view.dispose(); disposers.pop(); vi.mocked(view.transport.close).mockClear();
+  await expect(controller.closeCurrent()).rejects.toThrow("workspace is no longer available");
+  expect(view.transport.close).not.toHaveBeenCalled();
+});

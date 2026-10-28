@@ -4,6 +4,7 @@ import { TerminalPanel, type TerminalController, type TerminalTransport } from "
 
 export interface TerminalDockController {
   send(code: string, execute: boolean): Promise<void>;
+  closeCurrent(): Promise<void>;
 }
 export interface TerminalDockProps {
   visible: boolean;
@@ -77,6 +78,11 @@ export function TerminalDock(props: TerminalDockProps) {
     try { await run(await controller(id)); } catch (cause) { report(cause); }
   }
   const commands: TerminalDockController = {
+    async closeCurrent() {
+      if (disposed) throw new Error("Terminal workspace is no longer available");
+      const id = active();
+      if (id !== undefined) await closeSession(id);
+    },
     async send(code, execute) {
       if (disposed) throw new Error("Terminal workspace is no longer available");
       // A fresh shell preserves the requested workspace cwd without injecting a cd command.

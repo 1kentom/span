@@ -1,5 +1,6 @@
 import { For, Show } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
+import { KeyGlyph } from "./KeyGlyph";
 import type { Brand, KeyHint, RecentSession } from "./types";
 
 type EmptySessionProps = Brand & {
@@ -25,7 +26,7 @@ export function EmptySession(props: EmptySessionProps) {
           {(hint) => (
             <li class="sb-key-row">
               <span class="sb-keycaps">
-                <For each={hint.keys}>{(key) => <kbd class="sb-kbd">{key}</kbd>}</For>
+                <For each={hint.keys}>{(key) => <kbd class="sb-kbd"><KeyGlyph value={key} size={14} /></kbd>}</For>
               </span>
               <span>
                 {hint.label} <Show when={hint.where}><span class="sb-where">{hint.where}</span></Show>

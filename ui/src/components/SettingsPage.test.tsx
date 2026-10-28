@@ -9,7 +9,7 @@ const defaults: SettingsValue = {
   theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false,
   uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono",
   collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null,
-  keybindings: {}, formatters: {},
+  keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false },
 };
 const disposers: (() => void)[] = [];
 afterEach(() => { disposers.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); });
@@ -56,6 +56,16 @@ describe("workspace SettingsPage", () => {
     expect(onChange).toHaveBeenLastCalledWith({ fontSize: 13 });
     button(root, "Word wrap").click(); await settle();
     expect(onChange).toHaveBeenLastCalledWith({ wordWrap: true });
+  });
+
+  it("exposes the enabled tab limit, value, and per-group scope", async () => {
+    const { root, onChange } = mount();
+    button(root, "Editor").click(); await settle();
+    expect(button(root, "Limit open tabs").getAttribute("aria-checked")).toBe("true");
+    const limit = input(root, "Maximum open tabs"); limit.value = "12"; limit.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(); expect(onChange).toHaveBeenCalledWith({ tabLimit: 12 });
+    button(root, "Limit tabs per editor group").click(); await settle();
+    expect(onChange).toHaveBeenLastCalledWith({ tabLimitPerGroup: true });
   });
 
   it("keeps an invalid JSONC draft after save failure and after saved settings change", async () => {

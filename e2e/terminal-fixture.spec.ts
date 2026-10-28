@@ -8,6 +8,7 @@ type Trace = { writes: { id: string; text: string }[]; creates: string[]; closes
 
 test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run versus staged Send", async ({ page }, testInfo) => {
   await page.addInitScript(settings => {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
     let callback = 0; let next = 0;
     const trace = { writes: [], creates: [], closes: [], resizes: [], acknowledgements: 0, warnings: [], menus: [] } as Trace;
     const warn = console.warn.bind(console);
@@ -32,6 +33,9 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
         if (command === "update_setting") { settings[String(args.key)] = JSON.parse(String(args.valueJson)); return { ...settings }; }
         if (command === "get_settings_jsonc" || command === "get_settings_jsonc_for_scope") return "{}";
         if (["take_startup_requests", "recent_projects", "get_settings_keys_for_scope", "agent_installed", "sync_native_menu", "pending_run_approvals", "list_runs"].includes(command)) return [];
+        if (command === "lsp_status") return [];
+        if (command === "file_index_status") return { workspaceRoot: root, generation: 1, status: "ready", scannedEntries: 1, indexedFiles: 1, errorCount: 0, lastError: null, watcherReady: true, watcherError: null };
+        if (command === "query_file") return { workspaceRoot: root, generation: 1, requestId: 1, results: [{ path: "README.md", name: "README.md", isDir: false }] };
         if (command === "run_tools_enabled") return false;
         if (command === "run_configurations") return { workspaceRoot: root, configurations: [], detected: [] };
         if (command === "run_context") return { workspaceRoot: root, workspaceEpoch: 1, runs: [] };
@@ -69,12 +73,20 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
   await page.evaluate(() => document.fonts.load('13px "JetBrains Mono"'));
   expect(await page.evaluate(() => document.fonts.check('13px "JetBrains Mono"'))).toBe(true);
   await input.focus();
-  await expect.poll(async () => (await trace()).menus.at(-1)).toEqual({});
+  await expect.poll(async () => (await trace()).menus.at(-1)?.toggleFiles).toEqual(["Meta+E"]);
+  expect(Object.values((await trace()).menus.at(-1) || {}).flat().some(key => key.includes("Ctrl+"))).toBe(false);
   await page.keyboard.insertText("typed 日本語");
   await expect.poll(async () => (await trace()).writes.map(value => value.text).join("")).toContain("typed 日本語");
-  await input.press("Control+c"); await input.press("Control+p");
-  await expect.poll(async () => (await trace()).writes.map(value => value.text).join("")).toContain("\x03\x10");
+  await input.press("Control+c"); await input.press("Control+p"); await input.press("Control+w");
+  await expect.poll(async () => (await trace()).writes.map(value => value.text).join("")).toContain("\x03\x10\x17");
   await expect(page.getByRole("dialog", { name: "Goto", exact: true })).toHaveCount(0);
+  const project = page.getByRole("complementary", { name: "Project", exact: true });
+  await input.press("Meta+e"); await expect(project).toBeHidden();
+  await input.press("Meta+e"); await expect(project).toBeVisible();
+  await input.press("Meta+p"); await expect(page.getByRole("dialog", { name: "Goto", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape"); await input.focus();
+  await input.press("Meta+j"); await expect(terminal).toBeHidden();
+  await page.keyboard.press("Meta+j"); await expect(input).toBeFocused();
   await expect.poll(async () => (await trace()).acknowledgements).toBeGreaterThan(0);
   const initialResize = (await trace()).resizes.length; await page.setViewportSize({ width: 1280, height: 800 });
   await expect.poll(async () => (await trace()).resizes.length).toBeGreaterThan(initialResize);
@@ -135,6 +147,12 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
   await page.screenshot({ path: testInfo.outputPath("terminal-ipc-fixture.png") });
   await terminal.getByRole("button", { name: "Run draft", exact: true }).click();
   await expect.poll(async () => (await trace()).writes.some(value => value.id === "fixture:4" && value.text === "npm run fixture-only\r")).toBe(true);
+  await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest(".xterm"))).toBe(true);
+  await page.keyboard.press("Meta+w");
+  await expect.poll(async () => (await trace()).closes).toContain("fixture:4");
+  await expect(terminal.getByRole("tab", { name: "Shell 4", exact: true })).toHaveCount(0);
+  await expect(terminal.getByRole("tab", { name: "Shell 3", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab").filter({ hasText: "README.md" })).toBeVisible();
   expect((await trace()).warnings).toEqual([]);
 });
 

@@ -1,0 +1,15 @@
+[package]
+name = "span-file-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ignore.workspace = true
+nucleo-matcher.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7.20", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"

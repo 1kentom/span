@@ -245,3 +245,88 @@ fn output_is_capped_for_dense_documents() {
     assert!(snapshot.highlights.len() <= MAX_HIGHLIGHTS);
     assert!(snapshot.indent_guides.len() <= MAX_GUIDE_LINES);
 }
+
+const JAVA_SAMPLE: &str = "package demo;\n\n/** Docs. */\n@Deprecated\npublic class Größe {\n    // note\n    private int zähler = 42;\n    String name = \"Span 😀\";\n\n    public void run() {\n        System.out.println(name);\n        return;\n    }\n}\n";
+
+fn java_kinds(source: &str, needle: &str) -> Vec<String> {
+    let snapshot = analyze("Main.java", source);
+    let byte = source.find(needle).unwrap_or(usize::MAX);
+    assert_ne!(byte, usize::MAX, "{needle} missing");
+    let from = source[..byte].encode_utf16().count() as u32;
+    let to = from + needle.encode_utf16().count() as u32;
+    snapshot
+        .highlights
+        .iter()
+        .filter(|span| span.from < to && span.to > from)
+        .map(|span| span.kind.clone())
+        .collect()
+}
+
+#[test]
+fn java_is_detected_and_reports_its_language_name() {
+    for path in ["Main.java", "Main.JAVA", "Old.jav"] {
+        assert_eq!(analyze(path, "class A {}\n").language, "java", "{path}");
+    }
+}
+
+#[test]
+fn java_highlights_cover_the_main_token_classes() {
+    let has = |needle: &str, capture: &str| {
+        let kinds = java_kinds(JAVA_SAMPLE, needle);
+        assert!(
+            kinds.iter().any(|kind| kind.contains(capture)),
+            "{needle} expected {capture}, got {kinds:?}"
+        );
+    };
+    has("class", "keyword");
+    has("public", "keyword");
+    has("return", "keyword");
+    has("Deprecated", "attribute");
+    has("\"Span", "string");
+    has("42", "number");
+    has("// note", "comment");
+    has("/** Docs. */", "comment");
+    has("println", "function");
+    has("int", "type");
+}
+
+#[test]
+fn java_unicode_identifiers_and_emoji_keep_utf16_offsets() {
+    let source = JAVA_SAMPLE;
+    let snapshot = analyze("Main.java", source);
+    let units = source.encode_utf16().count() as u32;
+    assert!(snapshot
+        .highlights
+        .iter()
+        .all(|span| span.from < span.to && span.to <= units));
+    let byte = source.find("42").unwrap_or(0);
+    let from = source[..byte].encode_utf16().count() as u32;
+    assert!(snapshot
+        .highlights
+        .iter()
+        .any(|span| span.from == from && span.to == from + 2 && span.kind.contains("number")));
+    assert!(!snapshot.folds.is_empty());
+}
+
+#[test]
+fn java_incremental_edits_match_a_fresh_parse() {
+    let mut cached = SyntaxEngine::new();
+    let versions = [
+        JAVA_SAMPLE.to_owned(),
+        JAVA_SAMPLE.replace("42", "4200").replace("Größe", "Grösse"),
+        JAVA_SAMPLE
+            .replace("\"Span 😀\"", "\"日本\"")
+            .replace("// note", "/* é */"),
+        String::new(),
+        "class B { void f() { g(1); } }\n".to_owned(),
+    ];
+    for (revision, source) in versions.iter().enumerate() {
+        let actual = cached
+            .highlight("Main.java", source, revision as u32, None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let expected = SyntaxEngine::new()
+            .highlight("Main.java", source, revision as u32, None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(actual, expected, "revision {revision}");
+    }
+}
