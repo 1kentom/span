@@ -43,25 +43,30 @@ export function TraitBadge(props: { trait: ModelTrait; class?: string }) {
   );
 }
 
+/** True for a provider-prefixed id such as "opencode/deepseek-v4.1-flash-free": the mark of a router agent that serves many vendors. */
+export const isRouted = (model?: { value: string }) => Boolean(model?.value.includes("/"));
+
 /**
- * The model's vendor mark with the agent that serves it as a small badge at the bottom left, and the primary trait
- * badge at the bottom right. A model with no known vendor mark shows the agent mark alone, never a guessed logo.
+ * A router agent (OpenCode) shows the model's vendor mark with the agent that serves it as a small badge at the bottom
+ * left, and the primary trait badge at the bottom right. A routed model with no known vendor mark shows the agent mark
+ * alone, never a guessed logo. Every other agent keeps its own single mark with the trait badge, no vendor logo.
  */
 export function ModelIcon(props: BrandIdentity & { traits: readonly ModelTrait[]; size?: number; model?: { value: string; name: string }; agentName?: string }) {
   const size = () => props.size ?? 16;
-  const vendor = createMemo(() => (props.model ? modelBrandFor(props.model) : undefined));
+  const routed = () => isRouted(props.model);
+  const vendor = createMemo(() => (props.model && routed() ? modelBrandFor(props.model) : undefined));
   const agent = () => props.agentName ?? props.name ?? props.id;
   const label = () => {
     const where = agent() ? ` on ${agent()}` : "";
     return vendor() ? `${vendor()!.name} model${where}` : `Model${where}`;
   };
   return (
-    <span class="sb-model-icon" role="img" aria-label={label()}>
+    <span class="sb-model-icon" role={routed() ? "img" : undefined} aria-label={routed() ? label() : undefined}>
       <Show when={vendor()} fallback={<BrandIcon id={props.id} name={props.name} size={size()} />}>
         {(mark) => (
           <>
             <BrandIcon id={mark().id} name={mark().name} asset={mark()} size={size()} />
-            <BrandIcon class="sb-agent-badge" id={props.id} name={props.name} size={Math.round(size() * 0.45)} />
+            <BrandIcon class="sb-agent-badge" id={props.id} name={props.name} size={Math.round(size() * 0.58)} />
           </>
         )}
       </Show>

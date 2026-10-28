@@ -76,12 +76,12 @@ describe("model rows carry the model vendor mark", () => {
     const plain = claude.querySelector(".sb-model-icon")!;
     expect(plain.querySelectorAll(".brand-icon, .brand-mask")).toHaveLength(1);
     expect(plain.querySelector(".sb-agent-badge")).toBeNull();
-    expect(plain.getAttribute("aria-label")).not.toMatch(/model on/i);
+    expect(plain.getAttribute("aria-label")).toBeNull();
     expect(plain.querySelector(".brand-icon img")?.getAttribute("src")).toContain("claude");
     expect(plain.querySelector(".sb-trait-badge")?.getAttribute("data-trait")).toBe("frontier");
     const codex = mount(() => <ModelIcon id="codex" name="Codex" agentName="Codex" model={{ value: "gpt-5.6-luna", name: "GPT 5.6 Luna" }} traits={[]} />);
     expect(codex.querySelector(".sb-agent-badge")).toBeNull();
     expect(codex.querySelectorAll(".sb-model-icon .brand-icon, .sb-model-icon .brand-mask")).toHaveLength(1);
-    expect(codex.querySelector(".sb-model-icon")?.getAttribute("aria-label")).not.toMatch(/model on/i);
+    expect(codex.querySelector(".sb-model-icon")?.getAttribute("aria-label")).toBeNull();
   });
 });

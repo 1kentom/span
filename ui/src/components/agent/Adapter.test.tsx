@@ -597,7 +597,7 @@ describe("composer pickers", () => {
     expect(text(host.querySelector(".agent-mode-button .agent-model-name"))).toBe("Fast mode: On");
   });
 
-  it("puts the model vendor mark on the model chip, with the agent badge, only when the model has one", async () => {
+  it("puts the model vendor mark on the model chip, with the agent badge, only for provider-prefixed ids", async () => {
     const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "opencode", name: "OpenCode" }} label="OpenCode" />);
     mocks.emit({ kind: "config", sessionId: "s1", options: [select("model", "Model", "model", "opencode/claude-opus-5-5", [["opencode/claude-opus-5-5", "Claude Opus 5.5"], ["opencode/big-pickle", "Big Pickle"]])] } as AgentEvent);
     await tick();
@@ -608,6 +608,19 @@ describe("composer pickers", () => {
     mocks.emit({ kind: "config", sessionId: "s1", options: [select("model", "Model", "model", "opencode/big-pickle", [["opencode/claude-opus-5-5", "Claude Opus 5.5"], ["opencode/big-pickle", "Big Pickle"]])] } as AgentEvent);
     await tick();
     expect(chip.querySelector(".sb-model-icon")).toBeNull();
+  });
+
+  it("keeps the chip free of vendor mark and agent badge for unprefixed ids", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "claude", name: "Claude" }} label="Claude" />);
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("model", "Model", "model", "opus", [["opus", "Opus"], ["gpt-5.6-luna", "GPT 5.6 Luna"]])] } as AgentEvent);
+    await tick();
+    const chip = host.querySelector(".agent-model-button")!;
+    expect(chip.querySelector(".sb-model-icon")).toBeNull();
+    expect(chip.querySelector(".sb-agent-badge")).toBeNull();
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("model", "Model", "model", "gpt-5.6-luna", [["opus", "Opus"], ["gpt-5.6-luna", "GPT 5.6 Luna"]])] } as AgentEvent);
+    await tick();
+    expect(chip.querySelector(".sb-model-icon")).toBeNull();
+    expect(chip.querySelector(".sb-agent-badge")).toBeNull();
   });
 });
 

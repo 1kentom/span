@@ -477,7 +477,10 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-trait-badge[data-trait="frontier"] { background: var(--sb-warning); color: var(--sb-surface); }
 /* The model vendor mark leads; the agent that serves it sits bottom left as a small square badge, ringed in the row surface so it reads on any row. */
 .sb-model-icon > .brand-icon:first-child { color: var(--sb-fg); }
-.sb-model-icon > .sb-agent-badge { position: absolute; left: -1px; bottom: -2px; border-radius: 2px; background: var(--sb-ring); box-shadow: 0 0 0 1.5px var(--sb-ring); }
+.sb-model-icon > .sb-agent-badge { position: absolute; left: -2px; bottom: -3px; border-radius: 3px; background: var(--sb-ring); box-shadow: 0 0 0 1.5px var(--sb-ring); overflow: hidden; animation: sb-badge-pop 180ms cubic-bezier(0.3, 1.32, 0.52, 1) both; }
+.sb-model-icon > .sb-agent-badge img, .sb-model-icon > .sb-agent-badge .brand-mask { border-radius: 2px; }
+@keyframes sb-badge-pop { from { transform: scale(0.6); } to { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .sb-model-icon > .sb-agent-badge { animation: none; } }
 .sb-option-line { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
 .sb-trait-chip { display: inline-flex; align-items: center; gap: 3px; flex: none; padding: 0 5px; border: 1px solid var(--sb-border); border-radius: 8px; font-size: 10.5px; line-height: 15px; color: var(--sb-dim); }
 
