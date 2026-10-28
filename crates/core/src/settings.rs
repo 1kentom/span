@@ -12,6 +12,61 @@ pub enum Theme {
     Purple,
 }
 
+/// Language server behaviour, stored under the `languageServers` settings key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct LanguageServerSettings {
+    /// Download missing language servers on first use. When false, nothing is
+    /// downloaded until the user asks for an install.
+    pub auto_install: bool,
+    /// Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
+    /// `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+    pub enabled: HashMap<String, bool>,
+    /// JDK home used to run JDT LS, instead of searching the host.
+    pub java_home: Option<String>,
+    /// Node.js executable used to run the npm based servers, instead of searching the host.
+    pub node_path: Option<String>,
+}
+
+pub const LANGUAGE_SERVER_IDS: &[&str] = &[
+    "vtsls",
+    "html",
+    "css",
+    "json",
+    "rust-analyzer",
+    "basedpyright",
+    "jdtls",
+];
+
+impl LanguageServerSettings {
+    pub fn is_enabled(&self, server: &str) -> bool {
+        self.enabled.get(server).copied().unwrap_or(true)
+    }
+
+    fn validate(&self) -> Result<()> {
+        for server in self.enabled.keys() {
+            if !LANGUAGE_SERVER_IDS.contains(&server.as_str()) {
+                return Err(CoreError::Settings(format!(
+                    "Unknown language server: {server}"
+                )));
+            }
+        }
+        for (name, value) in [("javaHome", &self.java_home), ("nodePath", &self.node_path)] {
+            if let Some(value) = value {
+                if value.trim().is_empty()
+                    || value.len() > 4096
+                    || value.chars().any(char::is_control)
+                {
+                    return Err(CoreError::Settings(format!(
+                        "languageServers.{name} must be a path of at most 4096 characters"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
@@ -27,6 +82,7 @@ pub struct Settings {
     pub format_on_save: bool,
     pub keybindings: HashMap<String, Vec<String>>,
     pub formatters: HashMap<String, Vec<String>>,
+    pub language_servers: LanguageServerSettings,
 }
 
 impl Default for Settings {
@@ -44,6 +100,7 @@ impl Default for Settings {
             format_on_save: false,
             keybindings: HashMap::new(),
             formatters: HashMap::new(),
+            language_servers: LanguageServerSettings::default(),
         }
     }
 }
@@ -93,6 +150,7 @@ impl Settings {
             }
         }
         validate_shortcut_collisions(&self.keybindings)?;
+        self.language_servers.validate()?;
         for (language, argv) in &self.formatters {
             if language.is_empty()
                 || language.len() > 64
@@ -431,4 +489,37 @@ fn strip_jsonc(text: &str) -> Result<String> {
         }
     }
     Ok(clean)
+}
+
+#[cfg(test)]
+mod language_server_tests {
+    use super::*;
+
+    #[test]
+    fn language_server_settings_default_to_opt_in_installs() {
+        let defaults = Settings::default().language_servers;
+        assert!(!defaults.auto_install);
+        assert!(defaults.is_enabled("jdtls"));
+        let value = load_with_workspace_text(
+            None,
+            r#"{ "languageServers": { "autoInstall": true, "enabled": { "jdtls": false },
+                 "javaHome": "/opt/jdk", "nodePath": "/usr/bin/node" } }"#,
+        )
+        .unwrap()
+        .language_servers;
+        assert!(value.auto_install && !value.is_enabled("jdtls") && value.is_enabled("vtsls"));
+        assert_eq!(value.java_home.as_deref(), Some("/opt/jdk"));
+    }
+
+    #[test]
+    fn language_server_settings_reject_unknown_servers_and_bad_paths() {
+        for text in [
+            r#"{ "languageServers": { "enabled": { "gopls": true } } }"#,
+            r#"{ "languageServers": { "javaHome": "" } }"#,
+            r#"{ "languageServers": { "nodePath": "a\u0000b" } }"#,
+            r#"{ "languageServers": { "bogus": 1 } }"#,
+        ] {
+            assert!(load_with_workspace_text(None, text).is_err(), "{text}");
+        }
+    }
 }
