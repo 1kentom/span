@@ -1367,6 +1367,10 @@ export function createAgentController(props: AgentPanelProps) {
       waiting: (task) => childPermissionList().some((entry) => permissionWaitsOn(entry, task)),
       earlier,
       health: health(),
+      resolve: (name) => {
+        const entry = installed().find((agent) => agent.id.toLowerCase() === name.toLowerCase());
+        return entry ? { id: entry.id, name: registryName(entry.id) || entry.id } : undefined;
+      },
     });
   });
   /** The open chat's title: the thread's user title, else the title it had when it switched agent, else the agent's. */

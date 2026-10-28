@@ -132,6 +132,17 @@ describe("live agents of the current chat", () => {
     expect(list[0].health?.state).toBe("live");
   });
 
+  it("names a delegated installed agent by its display name and brand id", () => {
+    const list = liveAgentsOf({
+      lead: { id: "codex-acp", name: "Codex", state: "Idle" },
+      tasks: [task("t1", "claude-acp", "running")],
+      health: [result("claude-acp", "live")],
+      resolve: (name) => (name === "claude-acp" ? { id: "claude-acp", name: "Claude Agent" } : undefined),
+    });
+    expect(list[1]).toMatchObject({ id: "claude-acp", name: "Claude Agent", state: "Working" });
+    expect(list[1].health?.state).toBe("live");
+  });
+
   it("says Waiting for you while a child's permission request is open, and Done once finished", () => {
     const waiting = liveAgentsOf({ lead: { name: "Codex", state: "Idle" }, tasks: [task("t1", "Gemini CLI", "running")], waiting: () => true, health: [] });
     expect(waiting[1].state).toBe("Waiting for you");

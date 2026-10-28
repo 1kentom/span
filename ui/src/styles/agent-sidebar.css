@@ -844,9 +844,9 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-agent-name-line { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 
 /* Live agents of the current chat, stacked on the prompt box (shape from the shared stack rule in agent.css). */
-.sb-live-agents { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; }
-.sb-live-title { flex: none; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
-.sb-live-list { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.sb-live-agents { display: flex; align-items: flex-start; gap: 10px; min-height: 30px; padding: 4px 10px; }
+.sb-live-title { flex: none; font-size: 10px; line-height: 22px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
+.sb-live-list { display: flex; flex: 1; flex-wrap: wrap; gap: 0 12px; min-width: 0; margin: 0; padding: 0; list-style: none; }
 .sb-live-agent { display: flex; min-width: 0; }
 .sb-live-entry { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; height: 22px; font-size: 11.5px; color: var(--sb-fg); }
 .sb-live-entry.sb-plain { border-radius: 5px; }

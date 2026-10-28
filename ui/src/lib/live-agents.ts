@@ -30,6 +30,8 @@ export type LiveInput = {
   /** Agents of earlier segments of this thread, oldest first. */
   earlier?: ReadonlyArray<{ id?: string; name: string }>;
   health: readonly AgentHealth[];
+  /** The installed id and display name for a reported agent name, when Span knows the agent. */
+  resolve?: (name: string) => { id?: string; name: string } | undefined;
 };
 
 /** Higher wins when one agent has several tasks. */
@@ -66,9 +68,11 @@ export function liveAgentsOf(input: LiveInput): LiveAgent[] {
     add({ key: "", id: input.lead.id, name: input.lead.name, state: input.lead.state, lead: true, health: findHealth(input.health, input.lead.id, input.lead.name) }, input.lead.id || input.lead.name);
   }
   for (const task of input.tasks) {
-    const name = task.agentName || task.startingAgentId || "Delegated agent";
-    const id = task.startingAgentId;
-    add({ key: "", id, name, state: taskState(task, input.waiting?.(task) ?? false), taskId: task.taskId, health: findHealth(input.health, id, task.agentName) }, id || name);
+    const reported = task.agentName || task.startingAgentId || "Delegated agent";
+    const known = input.resolve?.(task.startingAgentId || reported);
+    const id = known?.id ?? task.startingAgentId;
+    const name = known?.name ?? reported;
+    add({ key: "", id, name, state: taskState(task, input.waiting?.(task) ?? false), taskId: task.taskId, health: findHealth(input.health, id, task.agentName, name) }, id || reported);
   }
   for (const segment of input.earlier ?? []) {
     add({ key: "", id: segment.id, name: segment.name, state: "Done", health: findHealth(input.health, segment.id, segment.name) }, segment.id || segment.name);
