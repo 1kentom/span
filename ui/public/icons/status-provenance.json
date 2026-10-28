@@ -1,0 +1,14 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "The shuffle icon shown in the agent status row while agents work together. Original SVG bytes and geometry are preserved.",
+  "processing": "SVG XML inspected for active content and external references. Application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied from the user-provided local icon library at the user’s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "Shuffle.svg",
+      "source": "arrow2/iconsax-shuffle-9b7d3e75af58-.svg",
+      "sourceSha256": "dd585b085a872b140052a5c5073512470f62bf6783182924bfa3fc39eb0421be",
+      "assetSha256": "dd585b085a872b140052a5c5073512470f62bf6783182924bfa3fc39eb0421be"
+    }
+  ]
+}

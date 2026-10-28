@@ -27,3 +27,13 @@
 @container (max-width: 700px) { .agent-statusbar .sb-hint:nth-child(n + 4) { display: none; } }
 @container (max-width: 520px) { .agent-statusbar .sb-hint:nth-child(n + 3) { display: none; } }
 @container (max-width: 340px) { .agent-statusbar .sb-hints { display: none; } }
+
+/* Shuffle icon: delegation is attached to this chat. Quiet while idle, accent while a child agent runs. */
+.agent-delegating { display: inline-flex; flex: none; color: var(--sb-faint); }
+.agent-delegating.active { color: var(--sb-accent-fg); }
+@media (prefers-reduced-motion: no-preference) {
+  .agent-delegating { animation: agent-delegating-in 0.4s ease-out both; }
+  .agent-delegating.active .icon { animation: agent-delegating-swap 1.6s ease-in-out infinite; }
+}
+@keyframes agent-delegating-in { from { opacity: 0; transform: translateX(-6px) rotate(-20deg); } to { opacity: 1; transform: none; } }
+@keyframes agent-delegating-swap { 0%, 60%, 100% { transform: none; } 80% { transform: scaleX(-1); } }

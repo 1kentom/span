@@ -5,7 +5,7 @@ import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
 import { shouldFocusDock } from "../../lib/agent-dock-focus";
-import { delegationLine } from "../../lib/agent-delegation";
+import { delegationLine, isFinished } from "../../lib/agent-delegation";
 import { canCompact, type FeedItem, type PermissionEvent } from "../../lib/agent-session";
 import { isSlashQuery, leaf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { api, isDesktop } from "../../lib/client";
@@ -533,6 +533,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           failed: a.state().status === "error",
         }}
         hints={{ mode: hintMode(), hints: a.connected() ? hints() : {} }}
+        delegating={Boolean(a.state().sessionId && a.state().delegation.attached?.sessionId === a.state().sessionId)}
+        delegationActive={a.feed().some((item) => item.kind === "delegation" && !isFinished(item.task.status))}
       />
     </footer>
   );
