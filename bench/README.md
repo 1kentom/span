@@ -14,7 +14,7 @@ The benchmark uses a fresh Chromium browser context for each navigation and reco
 
 For typing, it records the interval from the DOM `keydown` event until two animation frame callbacks have run. This gives the browser one paint opportunity after the input. It includes frame scheduling delay and cannot observe when pixels physically reached the screen. The script reports median and p95 together with the exact method, viewport, browser version, sample count, and runtime. Input samples edit the actual CodeMirror document through keyboard events.
 
-The final local browser run on an Apple M3 Pro (11 logical CPUs, 18 GiB memory) reported fresh-context navigation p50 194.09 ms and p95 220.24 ms across five samples. The 100-key second-animation-frame proxy reported p50 30.00 ms and p95 30.80 ms. These are development-browser measurements; the typing proxy includes frame scheduling by definition.
+The latest local browser run on an Apple M3 Pro (11 logical CPUs, 18 GiB memory) using Chromium 156 reported fresh-context navigation p50 267.90 ms and p95 352.32 ms across five samples. The 100-key second-animation-frame proxy reported p50 29.10 ms and p95 30.40 ms. These are development-browser measurements; the typing proxy includes frame scheduling by definition and does not establish native startup or physical paint timing.
 
 The output is `bench/results/web.json`. No release budget is marked passed from this proxy alone. Use a packaged Tauri app and an instrumented native capture to establish cold start, warm start, and actual keystroke-to-pixel gates on reference hardware.
 
