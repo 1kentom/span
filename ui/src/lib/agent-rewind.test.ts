@@ -76,6 +76,6 @@ describe("branch wording", () => {
 
   it("has no em dashes in any user facing text", () => {
     const all = [branchReason("edit"), branchReason("resend"), branchReason("fork"), ...(["edit", "resend", "fork"] as const).flatMap((mode) => Object.values(branchDivider(mode, true)))];
-    expect(all.join(" ")).not.toMatch(/—/);
+    expect(all.join(" ")).not.toMatch(/\u2014/);
   });
 });
