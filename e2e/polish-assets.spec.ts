@@ -1,0 +1,50 @@
+import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { modifier, openFile, ready } from "./helpers";
+
+test("dotenv files receive syntax tokens in a real editable view", async ({ page }) => {
+  await ready(page);
+  await openFile(page, ".env.local");
+  const editor = page.getByRole("textbox", { name: "Edit .env.local", exact: true });
+  await expect(editor).toContainText("SPAN_SAMPLE_ONLY=true");
+  await expect(editor.locator(".cm-line span[class]").first()).toBeVisible();
+  await editor.press(`${modifier}+End`);
+  await page.keyboard.insertText('\nQUOTED="value # kept" # outside comment\nURL=${SPAN_ENV}/api');
+  await expect(editor).toContainText('QUOTED="value # kept" # outside comment');
+  await expect(editor.locator("span").filter({ hasText: "# outside comment" }).last()).toHaveCSS("font-style", "italic");
+  await expect(editor.locator("span").filter({ hasText: "value # kept" }).last()).toHaveCSS("font-style", "normal");
+});
+
+test("Markdown defaults to preview, keeps Source and Both editable, and gates remote images", async ({ page }) => {
+  const remote = "https://example.com/span-markdown-image.png";
+  let remoteRequests = 0;
+  await page.route(remote, async route => { remoteRequests++; await route.fulfill({ contentType: "image/png", body: await readFile("e2e/assets/remote-pixel.png") }); });
+  await ready(page);
+  await openFile(page, "README.md");
+  const preview = page.getByRole("region", { name: "Markdown preview", exact: true });
+  await expect(preview).toContainText("browser preview workspace");
+  await expect(page.getByRole("textbox", { name: "Edit README.md", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Both", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Edit README.md", exact: true });
+  await expect(editor).toBeVisible();
+  await expect(preview).toBeVisible();
+  await editor.focus();
+  await editor.press(`${modifier}+a`);
+  await page.keyboard.insertText(`# Preview safety\n\n\`\`\`typescript\nconst ready = true;\n\`\`\`\n\n![Local sample](assets/span-sample.png)\n\n![Remote sample](${remote})\n\n<script>window.__spanMarkdownUnsafe = true</script>\n\n[Unsafe](javascript:alert(1))\n`);
+  await expect(preview.getByRole("heading", { name: "Preview safety", exact: true })).toBeVisible();
+  await expect(preview.locator("code .tok-keyword")).toContainText("const");
+  const localImage = preview.locator('img[alt="Local sample"]');
+  await expect(localImage).toBeVisible();
+  await expect.poll(() => localImage.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(64);
+  await expect(preview.getByRole("button", { name: "Load remote image", exact: true })).toBeVisible();
+  expect(remoteRequests).toBe(0);
+  expect(await page.evaluate(() => (window as unknown as Record<string, unknown>).__spanMarkdownUnsafe)).toBeUndefined();
+  await expect(preview.locator("script, a[href^='javascript:']")).toHaveCount(0);
+  await preview.getByRole("button", { name: "Load remote image", exact: true }).click();
+  const image = preview.locator('img[alt="Remote sample"]');
+  await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(8);
+  expect(remoteRequests).toBe(1);
+  await page.getByRole("button", { name: "Source", exact: true }).click();
+  await expect(preview).toBeHidden();
+  await expect(editor).toContainText("Preview safety");
+});

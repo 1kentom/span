@@ -5,9 +5,113 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "theme": { "type": "string", "enum": ["Dark", "Light", "Purple"], "default": "Dark" },
-    "fontSize": { "type": "integer", "minimum": 8, "maximum": 40, "default": 13 },
-    "tabSize": { "type": "integer", "minimum": 1, "maximum": 8, "default": 2 },
-    "wordWrap": { "type": "boolean", "default": false }
+    "theme": {
+      "type": "string",
+      "enum": [
+        "Dark",
+        "Light",
+        "Purple"
+      ],
+      "default": "Dark"
+    },
+    "fontSize": {
+      "type": "integer",
+      "minimum": 8,
+      "maximum": 40,
+      "default": 13
+    },
+    "tabSize": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "default": 2
+    },
+    "wordWrap": {
+      "type": "boolean",
+      "default": false
+    },
+    "$schema": {
+      "type": "string"
+    },
+    "uiFontSize": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 24,
+      "default": 13
+    },
+    "uiFontFamily": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "default": "Inter"
+    },
+    "editorFontFamily": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "default": "JetBrains Mono"
+    },
+    "collapsePanelsOnDrag": {
+      "type": "boolean",
+      "default": true
+    },
+    "markdownPreviewDefault": {
+      "type": "boolean",
+      "default": true
+    },
+    "formatOnSave": {
+      "type": "boolean",
+      "default": false
+    },
+    "keybindings": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "enum": [
+          "quickOpen",
+          "commandPalette",
+          "findInFile",
+          "searchWorkspace",
+          "settings",
+          "closeTab",
+          "save",
+          "openFolder",
+          "splitEditor",
+          "toggleProject",
+          "toggleAssistant",
+          "toggleTerminal",
+          "markdownPreview",
+          "formatDocument",
+          "goToLine"
+        ]
+      },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 4,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "description": "Portable shortcuts. Mod means Command on macOS and Control elsewhere. An empty array disables an action."
+    },
+    "formatters": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 64,
+        "items": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "description": "Per-language executable argv. Document text is sent on stdin. Arguments may contain {path}. Commands never run through a shell implicitly."
+    }
   }
 }

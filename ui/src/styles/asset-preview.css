@@ -1,0 +1,20 @@
+.asset-preview{display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;background:var(--island,#131417);color:var(--text,#d9dadd);font-size:12px}
+.asset-preview-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border,#303136);background:var(--panel-bg,#191a1e)}
+.asset-preview-controls{display:flex;align-items:center;gap:3px}
+.asset-preview button,.asset-preview select{font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:4px;padding:4px 7px;cursor:pointer}
+.asset-preview button:hover,.asset-preview button.selected{background:var(--hover,#292b31);border-color:var(--border,#303136)}
+.asset-preview button:focus-visible,.asset-preview select:focus-visible,.asset-preview-stage:focus-visible{outline:2px solid var(--accent,#9b8cff);outline-offset:1px}
+.asset-preview-zoom{min-width:42px;text-align:center;font-variant-numeric:tabular-nums}
+.asset-preview-background-label{display:flex;align-items:center;gap:6px;color:var(--dim,#a4a5ab)}
+.asset-preview select{border-color:var(--border,#303136);background:var(--panel-bg,#191a1e)}
+.asset-preview-stage{position:relative;flex:1;min-height:0;overflow:auto;padding:24px;display:flex;align-items:safe center;justify-content:safe center}
+.asset-preview-stage[data-background="checkerboard"]{background-color:var(--asset-checker-base,#1a1b20);background-image:conic-gradient(var(--asset-checker-tile,#23252c) 25%,transparent 0 50%,var(--asset-checker-tile,#23252c) 0 75%,transparent 0);background-size:20px 20px}
+.asset-preview-stage[data-background="light"]{background:#f5f5f5}.asset-preview-stage[data-background="dark"]{background:#18191c}
+.asset-preview-stage img{display:block;flex:none;object-fit:contain}
+.asset-preview-fit img{max-width:100%;max-height:100%;width:auto;height:auto}
+.asset-preview-message{padding:20px;max-width:460px;line-height:1.6;text-align:center;color:var(--dim,#a4a5ab)}
+.asset-preview-stage:has(img) .asset-preview-message{position:absolute;inset:0;pointer-events:none}
+.asset-preview-error{color:var(--error,#e5a1a1)}
+.asset-preview-metadata{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:8px 12px;border-top:1px solid var(--border,#303136);color:var(--dim,#a4a5ab);font-size:11px}
+.asset-preview-metadata>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40%}
+[data-theme="light"] .asset-preview{--asset-checker-base:#fafafa;--asset-checker-tile:#ececef}

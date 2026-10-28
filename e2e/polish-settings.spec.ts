@@ -1,0 +1,71 @@
+import { expect, test } from "@playwright/test";
+import { modifier, openSettings, ready } from "./helpers";
+
+test("Settings is a full tab and preserves a dirty JSONC draft through tab changes and close review", async ({ page }) => {
+  await ready(page);
+  await openSettings(page);
+  await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "JSONC", exact: true }).click();
+  const draft = page.getByRole("textbox", { name: "Settings JSONC", exact: true });
+  const invalid = "// keep this unsaved draft\n{ invalid";
+  await draft.fill(invalid);
+  await page.getByRole("tab", { name: "rpc-node.ts", exact: true }).click();
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  await expect(draft).toHaveValue(invalid);
+  await draft.press(`${modifier}+w`);
+  const review = page.getByRole("dialog", { name: "Unsaved settings", exact: true });
+  await expect(review).toBeVisible();
+  await review.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(draft).toHaveValue(invalid);
+  await page.getByRole("button", { name: "Save settings", exact: true }).click();
+  await expect(page.locator(".settings-page").getByRole("alert")).toBeVisible();
+  await expect(draft).toHaveValue(invalid);
+  await draft.press(`${modifier}+w`);
+  await review.getByRole("button", { name: "Discard changes", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Settings", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "rpc-node.ts", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "rpc-node.ts", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/127\.0\.0\.1:1420/);
+});
+
+test("a Settings draft survives collapsing its split group and reopening the tab", async ({ page }) => {
+  await ready(page);
+  await page.getByRole("button", { name: "Split editor", exact: true }).click();
+  await openSettings(page);
+  await page.getByRole("button", { name: "JSONC", exact: true }).click();
+  const draft = page.getByRole("textbox", { name: "Settings JSONC", exact: true });
+  const value = "// split draft must survive\n{";
+  await draft.fill(value);
+  await page.getByRole("region", { name: "Editor group 1", exact: true }).getByRole("button", { name: "Split editor", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Editor group 2", exact: true })).toHaveCount(0);
+  await openSettings(page);
+  await expect(draft).toHaveValue(value);
+  await draft.press(`${modifier}+w`);
+  await expect(page.getByRole("dialog", { name: "Unsaved settings", exact: true })).toBeVisible();
+});
+
+test("keyboard shortcut recording detects conflicts and a saved rebind controls the panel", async ({ page }) => {
+  await ready(page);
+  await openSettings(page);
+  await page.getByRole("button", { name: "Keyboard Shortcuts", exact: true }).click();
+  await page.getByRole("button", { name: "Change shortcut for Save File", exact: true }).click();
+  await page.getByRole("textbox", { name: "Record shortcut for Save File", exact: true }).press(`${modifier}+w`);
+  await expect(page.getByRole("tab", { name: "Settings", exact: true })).toBeVisible();
+  await page.locator(".shortcut-controls").getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("already assigned to Close Editor Tab");
+  await page.locator(".shortcut-controls").getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Change shortcut for Toggle Project Panel", exact: true }).click();
+  await page.getByRole("textbox", { name: "Record shortcut for Toggle Project Panel", exact: true }).press(`${modifier}+Alt+p`);
+  await page.locator(".shortcut-controls").getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Keyboard shortcuts saved.", { exact: true })).toBeVisible();
+  await page.keyboard.press(`${modifier}+w`);
+  await expect(page.getByRole("tab", { name: "Settings", exact: true })).toHaveCount(0);
+  const project = page.getByRole("complementary", { name: "Project", exact: true });
+  await page.keyboard.press(`${modifier}+Alt+p`);
+  await expect(project).toBeHidden();
+  await page.keyboard.press(`${modifier}+Alt+p`);
+  await expect(project).toBeVisible();
+  await page.keyboard.press(`${modifier}+b`);
+  await expect(project).toBeVisible();
+});

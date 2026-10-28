@@ -473,6 +473,18 @@ impl CoreWorkspace {
         crate::settings::load(self.user_settings.as_deref(), &path)
     }
 
+    pub fn get_settings_jsonc(&self) -> Result<String> {
+        if !self.root.join(".span").exists() {
+            return Ok("{\n}\n".into());
+        }
+        let path = self.resolve(".span/settings.jsonc")?;
+        match fs::read_to_string(&path) {
+            Ok(text) => Ok(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("{\n}\n".into()),
+            Err(error) => Err(io_error("Read settings", &path, error)),
+        }
+    }
+
     pub fn update_settings_jsonc(&self, text: &str) -> Result<Settings> {
         let merged =
             crate::settings::load_with_workspace_text(self.user_settings.as_deref(), text)?;

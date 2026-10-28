@@ -18,6 +18,7 @@ import type {
 } from "../bindings";
 import { api, isDesktop } from "../lib/client";
 import { FileIcon, Icon } from "./Icon";
+import { BrandIcon } from "./BrandIcon";
 import "../styles/agent.css";
 
 type AgentPanelProps = {
@@ -1121,7 +1122,7 @@ export function AgentPanel(props: AgentPanelProps) {
                           )
                         }
                       >
-                        <span class="agent-logo" />
+                        <BrandIcon id={entry.id} name={registry().find((agent) => agent.id === entry.id)?.name} size={17} />
                         <span>
                           <strong>
                             {registry().find((agent) => agent.id === entry.id)
@@ -1160,6 +1161,7 @@ export function AgentPanel(props: AgentPanelProps) {
                       }
                       onClick={() => void install(entry)}
                     >
+                      <BrandIcon id={entry.id} name={entry.name} size={17} />
                       <span>
                         <strong>{entry.name}</strong>
                         <small>{entry.description}</small>
@@ -1439,7 +1441,7 @@ export function AgentPanel(props: AgentPanelProps) {
               onClick={() => openMenu("agent")}
             >
               <span class="agent-agent-logo">
-                <span class="agent-logo" />
+                <BrandIcon name={agentName()} size={17} />
                 <span
                   class="agent-dot"
                   classList={{
