@@ -168,7 +168,7 @@ describe('edge states', () => {
     expect(root.querySelector('.vw-binary button')?.textContent).toBe('Open with system app');
   });
   it('is honest about formats whose viewers are separate work', () => {
-    for (const name of ['a.pdf', 'a.docx', 'a.xlsx', 'a.zip']) {
+    for (const name of ['a.7z']) {
       const root = show({ name, content: ready(bytes('x')) });
       expect(root.querySelector('[data-state="unsupported"]')?.textContent).toContain('files cannot be previewed here');
       expect(root.querySelector('.vw-code, .vw-json, img, video, audio')).toBeNull();

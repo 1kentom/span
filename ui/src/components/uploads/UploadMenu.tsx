@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
 import { clampMenu } from '../../lib/navigation';
 import Icon from '../Icon';
+import { KeyGlyph } from '../agent/KeyGlyph';
 import type { MenuItem } from './upload-model';
 import '../../styles/uploads.css';
 
@@ -81,7 +82,7 @@ function Panel(props: { items: MenuItem[]; x: number; y: number; label: string; 
             onClick={() => activate(item, button)}>
             <span class="up-menu-icon"><Show when={item.icon}><Icon name={item.icon!} size={13} /></Show></span>
             <span class="up-menu-label">{item.label}</span>
-            <Show when={item.shortcut}><span class="up-menu-key">{item.shortcut}</span></Show>
+            <Show when={item.shortcut}><span class="up-menu-key"><KeyGlyph value={item.shortcut!} size={11} /></span></Show>
             <Show when={item.checked}><Icon name="Check" size={12} class="up-menu-tick" /></Show>
             <Show when={item.children?.length}><Icon name="arrow-right4" size={8} class="up-menu-chevron" /></Show>
           </button>

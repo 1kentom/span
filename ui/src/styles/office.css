@@ -1,0 +1,182 @@
+/* Document viewers: Word, slides, spreadsheets, PDF and archives. Interface colours come only from the theme
+   custom properties (Dark, Light, Purple). The one exception is the paper: a Word page, a slide and a PDF page
+   are white documents in every theme, as the image backgrounds in viewer.css are. Their surface and ink live
+   in the named local variables below and nowhere else. */
+.ox-doc,.ox-slides,.ox-sheet,.ox-pdf,.ox-archive{--ox-paper:#fff;--ox-paper-ink:#1f2328;--ox-paper-dim:#6b6f76;--ox-paper-line:#d5dae1;--ox-paper-head:#eef2f7;--ox-stage:var(--canvas);--ox-hit:color-mix(in srgb,var(--warning) 45%,transparent);--ox-hit-on:color-mix(in srgb,var(--accent) 55%,transparent);display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;color:var(--text);font-size:12px}
+.ox-dim{color:var(--dim)}
+.ox-mono{font:11px "JetBrains Mono",monospace;font-variant-numeric:tabular-nums}
+.ox-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-height:36px;padding:5px 12px;border-bottom:1px solid var(--border);flex:none}
+.ox-rail-label{padding:0 8px 6px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.ox-input{height:24px;padding:0 8px;border:1px solid var(--border);border-radius:4px;background:var(--field);color:var(--text)}
+.ox-find{display:flex;align-items:center;gap:6px;height:26px;padding:0 4px 0 8px;border:1px solid var(--border);border-radius:5px;background:var(--field);color:var(--faint);min-width:170px}
+.ox-find-input{flex:1;min-width:60px;border:0;outline:0;background:transparent;color:var(--text)}
+.ox-find-input::placeholder{color:var(--faint)}
+.ox-find:focus-within,.ox-input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.ox-find-count{white-space:nowrap;font-variant-numeric:tabular-nums}
+.ox-check{width:14px;height:14px;margin:0;accent-color:var(--accent);cursor:pointer}
+.ox-check:disabled{cursor:default;opacity:.4}
+.ox-outline-item:focus-visible,.ox-doc-stage:focus-visible,.ox-thumb:focus-visible,.ox-slide-stage:focus-visible,.ox-present:focus-visible,.ox-grid:focus-visible,.ox-tab:focus-visible,.ox-pdf-stage:focus-visible,.ox-pdf-thumb:focus-visible,.ox-row:focus-visible,.ox-pop-item:focus-visible,.ox-seg:focus-visible,.ox-check:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+
+/* Word */
+.ox-doc-main{display:flex;flex:1;min-height:0}
+.ox-outline{width:200px;flex:none;display:flex;flex-direction:column;gap:1px;padding:12px 8px;border-right:1px solid var(--border);overflow:auto}
+.ox-outline-item{padding:5px 8px;border:0;border-radius:4px;background:transparent;color:var(--text);text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ox-outline-item:hover{background:var(--hover)}
+.ox-doc-stage{flex:1;min-width:0;overflow:auto;display:flex;justify-content:safe center;align-items:flex-start;gap:16px;padding:28px 20px 60px;background:var(--ox-stage)}
+.ox-page{width:612px;min-height:792px;flex:none;box-sizing:border-box;padding:64px 72px 80px;border-radius:2px;background:var(--ox-paper);color:var(--ox-paper-ink);box-shadow:var(--shadow);font:14px/22px Aptos,Calibri,"Segoe UI",Inter,sans-serif;overflow-wrap:anywhere}
+.ox-page h1{margin:0 0 8px;font-size:28px;line-height:34px;font-weight:600}
+.ox-page h2{margin:18px 0 6px;font-size:17px;line-height:24px;font-weight:600}
+.ox-page h3,.ox-page h4,.ox-page h5,.ox-page h6{margin:14px 0 6px;font-size:14px;font-weight:600}
+.ox-page p{margin:0 0 12px}
+.ox-page ul,.ox-page ol{margin:0 0 12px;padding-left:22px}
+.ox-page table{width:100%;margin:6px 0 16px;border-collapse:collapse;font-size:12.5px}
+.ox-page th,.ox-page td{padding:6px 8px;border:1px solid var(--ox-paper-line);text-align:left;vertical-align:top}
+.ox-page th{background:var(--ox-paper-head)}
+.ox-page img{max-width:100%;height:auto}
+.ox-page a,.ox-doc-link{color:inherit;text-decoration:underline;text-decoration-color:var(--ox-paper-dim)}
+.ox-page blockquote{margin:0 0 12px;padding-left:12px;border-left:3px solid var(--ox-paper-line);color:var(--ox-paper-dim)}
+.ox-comments{width:220px;flex:none;display:flex;flex-direction:column;gap:10px;padding-top:120px}
+.ox-comment{display:flex;flex-direction:column;gap:7px;padding:10px 11px;border:1px solid var(--pillBd);border-radius:8px;background:var(--popup);box-shadow:var(--shadow)}
+.ox-comment-head{display:flex;align-items:center;gap:7px;font-size:12px}
+.ox-comment-head strong{font-weight:500}
+.ox-avatar{display:grid;place-items:center;width:20px;height:20px;flex:none;border-radius:50%;background:var(--amberSurface);color:var(--warning);font-size:10px;font-weight:600}
+.ox-comment-anchor{margin:0;padding-left:8px;border-left:2px solid var(--warning);color:var(--dim);font-size:11.5px}
+.ox-comment-text{margin:0;font-size:12px;line-height:17px;white-space:pre-wrap}
+.ox-replies{display:flex;flex-direction:column;gap:6px;margin:0;padding:6px 0 0 10px;border-top:1px solid var(--border);list-style:none;font-size:11.5px}
+.ox-comment-foot{display:flex;gap:10px;font-size:11px}
+/* Narrow panels: a slimmer outline rail and stage gutter. Kept after the rules it overrides. */
+.ox-doc{container-type:inline-size}
+@container (max-width:480px){.ox-outline{width:132px;padding:10px 4px}.ox-doc-stage{padding:16px 12px 40px}}
+
+/* Slides */
+.ox-slides{container-type:inline-size}
+.ox-slides-main{display:flex;flex:1;min-height:0}
+.ox-slide-rail{width:168px;flex:none;display:flex;flex-direction:column;gap:10px;padding:12px 10px;border-right:1px solid var(--border);overflow:auto}
+.ox-thumb{display:flex;gap:6px;align-items:flex-start;padding:2px;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer}
+.ox-thumb-n{width:12px;padding-top:2px;text-align:right;font-size:10.5px;color:var(--faint)}
+.ox-thumb-frame{display:block;width:128px;flex:none;border:1px solid var(--border);border-radius:3px;overflow:hidden;opacity:.85}
+.ox-thumb[aria-current="true"] .ox-thumb-frame{outline:2px solid var(--accent);outline-offset:2px;opacity:1}
+.ox-slide{position:relative;width:100%;container-type:size;overflow:hidden;background:var(--ox-paper);color:var(--ox-paper-ink);font-family:Inter,"Segoe UI",sans-serif;line-height:1.15}
+.ox-slide-thumb{pointer-events:none}
+.ox-shape{position:absolute;box-sizing:border-box;overflow:hidden}
+.ox-shape-text{display:flex;flex-direction:column;padding:0.6cqh 1cqh}
+.ox-anchor-middle{justify-content:center}
+.ox-anchor-bottom{justify-content:flex-end}
+.ox-slide-p{margin:0 0 0.8cqh;overflow-wrap:anywhere}
+.ox-slide-bullet{position:relative;padding-left:1.1em}
+.ox-slide-bullet::before{content:"";position:absolute;left:0.25em;top:0.5em;width:0.32em;height:0.32em;border-radius:50%;background:currentColor}
+.ox-shape-image img{display:block;width:100%;height:100%;object-fit:contain}
+.ox-shape-placeholder,.ox-shape-image:has(.ox-shape-label){display:flex;align-items:center;justify-content:center;border:1px dashed var(--ox-paper-line);background:var(--ox-paper-head)}
+.ox-shape-label{padding:0 4px;font-size:max(9px,2.2cqh);color:var(--ox-paper-dim);text-align:center}
+.ox-shape-table table{width:100%;height:100%;border-collapse:collapse}
+.ox-shape-table td{padding:0.4cqh 0.8cqh;border:1px solid var(--ox-paper-line);vertical-align:top}
+.ox-slide-col{display:flex;flex-direction:column;flex:1;min-width:0}
+.ox-slide-stage{display:flex;align-items:center;justify-content:center;flex:1;min-height:0;padding:24px;background:var(--ox-stage);overflow:hidden}
+.ox-slide-stage>.ox-slide{max-width:760px;max-height:100%;border-radius:3px;box-shadow:var(--shadow)}
+.ox-notes{height:92px;flex:none;display:flex;flex-direction:column;gap:4px;padding:10px 14px;border-top:1px solid var(--border);overflow:auto}
+.ox-notes .ox-rail-label{padding:0}
+.ox-notes-text{margin:0;font-size:12.5px;line-height:19px;white-space:pre-wrap}
+.ox-present{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;background:var(--vw-image-dark,var(--canvas));color:var(--text)}
+.ox-present-stage{display:flex;align-items:center;justify-content:center;flex:1;min-height:0;padding:2vh 2vw}
+.ox-present-stage>.ox-slide{width:min(96vw,calc(88vh * 16 / 9));max-height:88vh}
+.ox-present-bar{display:flex;align-items:center;gap:12px;padding:8px 16px;font-size:12px;color:var(--dim)}
+/* Narrow panels: a slimmer rail leaves room for the stage. Kept after the rules it overrides. */
+@container (max-width:480px){.ox-slide-rail{width:92px;padding:10px 6px}.ox-thumb-frame{width:64px}.ox-slide-stage{padding:12px}}
+
+/* Spreadsheet */
+.ox-formula{display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;border-bottom:1px solid var(--border);flex:none}
+.ox-ref,.ox-fx-text{display:flex;align-items:center;height:24px;padding:0 8px;border:1px solid var(--border);border-radius:4px;background:var(--field);font:11.5px "JetBrains Mono",monospace}
+.ox-ref{width:58px;flex:none}
+.ox-fx{font:italic 600 12px Georgia,serif;color:var(--faint)}
+.ox-fx-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ox-sheet-status{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;min-height:28px;padding:4px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim);flex:none}
+.ox-grid-scroll{flex:1;min-height:0;overflow:auto}
+.ox-grid{border-collapse:separate;border-spacing:0;min-width:100%;font-size:12px}
+.ox-grid th{position:sticky;background:var(--panel-bg,var(--island));color:var(--dim);font-weight:500;border-right:1px solid var(--sepLine);border-bottom:1px solid var(--sepLine)}
+.ox-corner{top:0;left:0;z-index:3;width:44px;min-width:44px;height:24px}
+.ox-col-head{top:0;z-index:2;height:24px;padding:0 8px;text-align:center}
+.ox-row-head{left:0;z-index:1;height:26px;font-size:11px;text-align:center;color:var(--faint)}
+.ox-head-on{color:var(--text)!important;background:var(--hover)!important}
+.ox-cell{height:26px;box-sizing:border-box;max-width:600px;padding:0 8px;border-right:1px solid var(--hover);border-bottom:1px solid var(--hover);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:cell}
+.ox-num{text-align:right;font-variant-numeric:tabular-nums}
+.ox-bool{text-align:center}
+.ox-err{color:var(--error)}
+.ox-sel{box-shadow:inset 0 0 0 2px var(--accent);background:var(--accentDock)}
+.ox-spacer td{padding:0;border:0}
+.ox-sheet-tabs{display:flex;align-items:center;gap:2px;height:32px;padding:0 8px;border-top:1px solid var(--border);overflow-x:auto;flex:none}
+.ox-tab{height:24px;padding:0 12px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--dim);cursor:pointer;white-space:nowrap}
+.ox-tab:hover{color:var(--text)}
+.ox-tab[aria-selected="true"]{background:var(--pill);border-color:var(--pillBd);color:var(--strong)}
+.ox-tab-note{margin-left:8px;font-size:11px;white-space:nowrap}
+
+/* PDF */
+.ox-page-input{width:48px;text-align:center;font-variant-numeric:tabular-nums}
+.ox-pdf .ox-toolbar{justify-content:space-between}
+.ox-pdf-main{display:flex;flex:1;min-height:0}
+.ox-pdf-rail{width:112px;flex:none;border-right:1px solid var(--border);overflow:auto}
+.ox-pdf-thumb{position:absolute;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:4px;padding:0;border:0;background:transparent;color:inherit;font-size:10.5px;cursor:pointer}
+.ox-pdf-thumb-page{position:relative;display:block;max-height:84px;overflow:hidden;border-radius:2px;background:var(--ox-paper);opacity:.8}
+.ox-pdf-thumb[aria-current="page"] .ox-pdf-thumb-page{outline:2px solid var(--accent);outline-offset:2px;opacity:1}
+.ox-pdf-stage{flex:1;min-width:0;overflow:auto;background:var(--ox-stage)}
+.ox-pdf-pages{position:relative}
+.ox-pdf-page{position:absolute;left:50%;transform:translateX(-50%);border-radius:2px;background:var(--ox-paper);box-shadow:var(--shadow);overflow:hidden}
+.ox-pdf-canvas{position:absolute;inset:0;width:100%;height:100%}
+.ox-pdf-pending{visibility:hidden}
+.ox-pdf-hit{position:absolute;border-radius:2px;background:var(--ox-hit);pointer-events:none}
+.ox-pdf-hit-on{background:var(--ox-hit-on);outline:1px solid var(--accent)}
+
+/* Archive */
+.ox-archive{container-type:inline-size}
+.ox-archive-bar{position:relative}
+.ox-archive-filter{width:220px}
+.ox-split{display:flex}
+.ox-split-main{border-radius:5px 0 0 5px}
+.ox-split-toggle{min-width:26px;padding:3px 6px;border-radius:0 5px 5px 0;border-left-color:var(--accentFillHover)}
+.ox-popover{position:absolute;right:12px;top:calc(100% + 4px);z-index:20;display:flex;flex-direction:column;width:290px;padding:5px;border:1px solid var(--pillBd);border-radius:8px;background:var(--popup);box-shadow:var(--shadow)}
+@media (prefers-reduced-motion:no-preference){.ox-popover{animation:ox-pop .12s ease-out both;transform-origin:top right}}
+@keyframes ox-pop{from{opacity:0;transform:scale(.97)}}
+.ox-pop-item{display:flex;align-items:center;gap:9px;padding:7px 8px;border:0;border-radius:5px;background:transparent;color:var(--text);text-align:left;cursor:pointer}
+.ox-pop-item:hover{background:var(--accentDock)}
+.ox-pop-item .icon{background-color:var(--dim)}
+.ox-pop-text{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0;font-size:12.5px}
+.ox-pop-text .ox-dim{font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ox-pop-sep{margin:4px 2px;border-top:1px solid var(--border)}
+.ox-pop-toggle{display:flex;align-items:center;gap:9px;min-height:30px;padding:0 8px;border-radius:5px;font-size:12.5px;cursor:pointer}
+.ox-pop-toggle:hover{background:var(--accentDock)}
+.ox-pop-conflict{display:flex;align-items:center;gap:8px;padding:6px 8px 4px;color:var(--dim)}
+.ox-segmented{display:flex;gap:2px;padding:2px;border:1px solid var(--border);border-radius:5px}
+.ox-seg{padding:1px 7px;border:0;border-radius:3px;background:transparent;color:var(--dim);font-size:11.5px;cursor:pointer}
+.ox-seg[aria-checked="true"]{background:var(--sel);color:var(--strong)}
+.ox-warning{display:flex;align-items:flex-start;gap:8px;padding:7px 12px;border-bottom:1px solid var(--amberBorder);background:var(--amberSurface);color:var(--warning);flex:none}
+.ox-warning .icon{flex:none;margin-top:2px;background-color:var(--warning)}
+.ox-warning-body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ox-warning summary{cursor:pointer;font-size:11px}
+.ox-unsafe-list{margin:4px 0 0;padding-left:16px;color:var(--error);font:11px "JetBrains Mono",monospace;overflow-wrap:anywhere}
+.ox-progress{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);flex:none}
+.ox-progress-error{background:var(--redSurface);color:var(--diffDelText)}
+.ox-progress-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ox-bar{flex:1;min-width:60px;height:4px;border-radius:2px;background:var(--pill);overflow:hidden}
+.ox-bar-fill{display:block;height:4px;background:var(--accent)}
+@media (prefers-reduced-motion:no-preference){.ox-bar-fill{transition:width .25s}}
+.ox-archive-head,.ox-row{display:flex;align-items:center;padding:0 12px 0 6px}
+.ox-archive-head{height:28px;border-bottom:1px solid var(--border);font-size:11px;color:var(--faint);flex:none}
+.ox-col-check{display:flex;align-items:center;width:24px;flex:none}
+.ox-col-name{display:flex;align-items:center;flex:1 1 120px;min-width:120px}
+.ox-col-num{width:84px;flex:none;text-align:right}
+.ox-col-date{width:130px;flex:none;text-align:right;font-size:11px}
+.ox-col-actions{display:flex;justify-content:flex-end;gap:2px;width:60px;flex:none}
+.ox-archive-list{flex:1;min-height:0;overflow:auto;padding:2px 0 8px}
+.ox-row{position:absolute;left:4px;right:4px;height:28px;border-radius:5px;font-size:12.5px;cursor:pointer}
+.ox-row:hover{background:var(--hover)}
+.ox-row-hidden .ox-name{color:var(--dim)}
+.ox-row-unsafe .ox-name{color:var(--error)}
+.ox-indent{flex:none}
+.ox-chev{display:flex;justify-content:center;width:14px;flex:none;color:var(--faint)}
+.ox-chev .icon{background-color:var(--faint)}
+.ox-file-icon{width:16px;height:16px;margin:0 6px 0 2px;flex:none}
+.ox-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ox-empty{padding:24px;text-align:center}
+/* Narrow panels keep the name readable: Modified goes first, then Packed. */
+@container (max-width:560px){.ox-col-date{display:none}}
+@container (max-width:420px){.ox-col-packed{display:none}.ox-col-num{width:64px}}
+@media (prefers-reduced-motion:reduce){.ox-doc *,.ox-slides *,.ox-sheet *,.ox-pdf *,.ox-archive *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

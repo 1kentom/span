@@ -62,7 +62,7 @@ describe('attachment kinds map to the viewer', () => {
     open(file('blob.bin', 'application/octet-stream', new Uint8Array([0, 1, 2, 0, 255, 0, 3])));
     expect(kind()).toBe('hex');
     document.body.replaceChildren();
-    open(file('doc.pdf', 'application/pdf', new Uint8Array(64)));
+    open(file('bundle.7z', 'application/x-7z-compressed', new Uint8Array(64)));
     expect(kind()).toBe('unsupported');
     expect(document.querySelector('img')).toBeNull();
   });
@@ -262,12 +262,11 @@ describe('inline attachment view for workbench tabs', () => {
     expect(remove).toHaveBeenCalledWith(item);
     expect(close).toHaveBeenCalled();
   });
-  it('keeps the honest unavailable state for formats whose viewer needs a backend adapter', () => {
+  it('opens the document viewers for office and archive formats', () => {
     for (const [name, mime] of [['report.pdf', 'application/pdf'], ['spec.docx', ''], ['deck.pptx', ''], ['data.xlsx', ''], ['bundle.zip', 'application/zip']]) {
       document.body.replaceChildren();
       inline(file(name, mime, new Uint8Array([80, 75, 3, 4, 1, 2])));
-      expect(kind()).toBe('unsupported');
-      expect(document.querySelector('.vw')?.textContent).toContain('cannot be previewed here yet');
+      expect(kind()).toBe('office');
     }
   });
 });

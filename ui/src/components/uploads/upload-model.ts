@@ -2,6 +2,7 @@
 import type { Platform } from '../../lib/commands';
 import type { UploadEntry, UploadsCapabilities } from '../../lib/uploads-api';
 import { classifyFile, extensionOf } from '../../lib/viewer';
+import { ENTER_KEY } from '../agent/KeyGlyph';
 
 export type UploadGroupId = 'documents' | 'data' | 'media' | 'code';
 export const UPLOAD_GROUPS: { id: UploadGroupId; label: string }[] = [
@@ -96,7 +97,7 @@ export const revealLabel = (platform: Platform) => platform === 'mac' ? 'Reveal 
 export const revealPlace = (platform: Platform) => platform === 'mac' ? 'Finder' : platform === 'windows' ? 'File Explorer' : 'the file manager';
 /** Shortcut labels for the keys the uploads workspace binds. Nothing else gets a shortcut label. */
 export const shortcutLabels = (platform: Platform) => ({
-  open: platform === 'mac' ? '↵' : 'Enter', rename: 'F2', remove: platform === 'mac' ? '⌫' : 'Delete', reveal: platform === 'mac' ? '⌥⌘R' : 'Ctrl+Alt+R',
+  open: ENTER_KEY, rename: 'F2', remove: platform === 'mac' ? '⌫' : 'Delete', reveal: platform === 'mac' ? '⌥⌘R' : 'Ctrl+Alt+R',
 });
 
 function sections(groups: (MenuItem | false | undefined)[][]): MenuItem[] {

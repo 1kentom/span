@@ -7,6 +7,7 @@ import {
 } from '../../lib/viewer';
 import { FileIcon } from '../FileIcon';
 import Icon from '../Icon';
+import { KeyGlyph } from '../agent/KeyGlyph';
 import { FileViewer, type ViewerContent } from '../viewer/FileViewer';
 import { ToastHost, createToaster } from './Toast';
 import { UploadMenu } from './UploadMenu';
@@ -199,7 +200,7 @@ export function UploadsWorkspace(props: UploadsWorkspaceProps) {
           <Show when={props.api.available} fallback={<p>{props.api.unavailableReason ?? 'Uploads need the desktop app'}</p>}>
             <p>Open an upload to preview it</p>
             <dl class="up-start-keys">
-              <For each={hints()}>{hint => <div><dt>{hint.label}</dt><dd><kbd>{hint.key}</kbd></dd></div>}</For>
+              <For each={hints()}>{hint => <div><dt>{hint.label}</dt><dd><kbd><KeyGlyph value={hint.key} size={11} /></kbd></dd></div>}</For>
             </dl>
             <Show when={caps().add}><button type="button" class="vw-btn vw-btn-outline" onClick={() => void add()}><Icon name="Add" size={12} />Upload files</button></Show>
           </Show>

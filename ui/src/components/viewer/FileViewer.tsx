@@ -25,6 +25,9 @@ import { ModeSwitch, type ModeOption } from './ModeSwitch';
 import { mdxToMarkdown } from './mdx';
 import { TextView } from './TextView';
 import { TypeIcon, ViewerState, type StateAction } from './ViewerStates';
+// Document viewers (docx, pptx, xlsx, pdf, archives): OfficeView loads each viewer as a lazy chunk.
+import { officeKindOf, type OfficeKind } from '../../lib/office/kind';
+import { OfficeView } from './office/OfficeView';
 import '../../styles/viewer.css';
 
 export type ViewerContent =
@@ -91,7 +94,8 @@ type View =
   | { t: 'font'; bytes: Uint8Array }
   | { t: TextKind; text: string; truncated: string }
   | { t: 'json'; text: string; value?: unknown; error?: string; truncated: string }
-  | { t: 'hex'; bytes: Uint8Array; binary: boolean };
+  | { t: 'hex'; bytes: Uint8Array; binary: boolean }
+  | { t: 'office'; kind: OfficeKind; bytes: Uint8Array };
 
 const kindLabels: Record<string, string> = { image: 'Image', svg: 'SVG', markdown: 'Markdown', mdx: 'MDX', html: 'HTML', json: 'JSON', csv: 'CSV', font: 'Font', text: 'Text', audio: 'Audio', video: 'Video', unsupported: 'File' };
 const modeIcons: Record<ViewerMode, string> = { preview: 'markdown-preview', split: 'markdown-both', source: 'markdown-source' };
@@ -111,6 +115,9 @@ export function FileViewer(props: FileViewerProps) {
   const [failure, setFailure] = createSignal('');
   const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
   const identity = () => [props.name, props.content] as const;
+  // Document viewers report their own footer facts (pages, words, slides, sheets).
+  const [officeMeta, setOfficeMeta] = createSignal<string[]>([]);
+  createEffect(on(identity, () => setOfficeMeta([])));
   createEffect(on(identity, () => { setMode(props.defaultMode ?? 'preview'); setLocalBinary(false); setShowLarge(false); setDamaged(''); setDimensions(''); setDuration(0); setExtraMeta([]); setImageZoom('fit'); setStatus(''); setFailure(''); }));
 
   const asBinary = () => props.viewAs !== undefined ? props.viewAs === 'hex' : localBinary();
@@ -134,6 +141,8 @@ export function FileViewer(props: FileViewerProps) {
     const data = bytes();
     const { kind, reason, label } = classification();
     if (asBinary()) return data ? { t: 'hex', bytes: data, binary: false } : { t: 'damaged', text: 'File data is not available.' };
+    const office = officeKindOf(props.name, props.mime);
+    if (office) return data ? { t: 'office', kind: office, bytes: data } : { t: 'damaged', text: 'File data is not available.' };
     if (kind === 'unsupported') {
       const title = `${label} files cannot be previewed here`;
       if (reason === 'format' && label === 'Image') return { t: 'unsupported', title, text: 'Preview supports PNG, JPEG, GIF, WebP and SVG. This format is not supported.' };
@@ -221,7 +230,8 @@ export function FileViewer(props: FileViewerProps) {
     parts.push(...extraMeta());
     const text = textInfo();
     if (text !== undefined) parts.push(`${splitLines(text).length} lines`, 'UTF-8', lineEnding(text) === 'none' ? 'LF' : lineEnding(text));
-    if (!extraMeta().length || !['csv', 'font'].includes(view().t)) parts.push(props.mime || kindLabels[classification().kind]);
+    if (view().t === 'office') parts.push(...officeMeta());
+    else if (!extraMeta().length || !['csv', 'font'].includes(view().t)) parts.push(props.mime || kindLabels[classification().kind]);
     return parts;
   });
   const preview = () => mode() !== 'source';
@@ -293,6 +303,8 @@ export function FileViewer(props: FileViewerProps) {
             <Show when={v().error}><p class="vw-note vw-note-error" role="alert">{v().error}</p></Show>
             <Show when={v().error || mode() === 'source'} fallback={<JsonView value={v().value} name={props.name} />}><TextView text={v().text} name={props.name} /></Show>
           </>; })()}</Match>
+        <Match when={view().t === 'office'}>{(() => { const v = () => view() as { kind: OfficeKind; bytes: Uint8Array };
+          return <OfficeView kind={v().kind} name={props.name} bytes={v().bytes} onMeta={setOfficeMeta} onOpenWithSystem={props.onOpenWithSystem ? () => void run('Open with system app', props.onOpenWithSystem!) : undefined} />; })()}</Match>
         <Match when={view().t === 'hex'}>{(() => { const v = () => view() as { bytes: Uint8Array; binary: boolean };
           return <>
             <HexView bytes={v().bytes} name={props.name} />
