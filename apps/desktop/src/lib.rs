@@ -3,11 +3,13 @@ use span_core::{
     SearchQuery, Settings, SettingsScope, TextEdit, Workspace,
 };
 use span_syntax::{SyntaxEngine, SyntaxSnapshot};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
 mod cli;
+mod file_index;
 mod menu;
 mod services;
 mod startup;
@@ -26,6 +28,8 @@ pub struct DesktopState {
     pub formatter_jobs: Arc<
         Mutex<std::collections::HashMap<(usize, String), (u64, Option<u64>, CancellationToken)>>,
     >,
+    pub file_index: file_index::FileIndexRuntime,
+    pub file_index_root: Arc<Mutex<Option<PathBuf>>>,
 }
 
 async fn with_workspace<T, F>(state: DesktopState, operation: F) -> Result<T, String>
@@ -102,15 +106,29 @@ async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<
     .map_err(|error| format!("Open folder task failed: {error}"))??;
     agents::disconnect_and_wait(&state).await?;
     services::cancel_all_formatter_jobs(&state);
+    let (result, workspace) = tauri::async_runtime::spawn_blocking(move || {
+        let result = workspace.workspace();
+        Ok::<_, String>((result, workspace))
+    })
+    .await
+    .map_err(|error| format!("Open folder task failed: {error}"))??;
+    state
+        .file_index
+        .activate(PathBuf::from(&result.root))
+        .await?;
     let worker_state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = workspace.workspace();
         let mut guard = worker_state
             .workspace
             .lock()
             .map_err(|_| "Workspace state is unavailable".to_owned())?;
         *guard = Some(Arc::new(Mutex::new(workspace)));
         drop(guard);
+        *worker_state
+            .file_index_root
+            .lock()
+            .map_err(|_| "Workspace state is unavailable".to_owned())? =
+            Some(PathBuf::from(&result.root));
         if let Err(error) = span_core::RecentProjectStore::for_current_user()
             .and_then(|store| store.record_open(std::path::Path::new(&result.root)))
         {
@@ -184,14 +202,26 @@ async fn save_buffer(
             eprintln!("Could not report formatter notice: {error}");
         }
     });
-    services::format_or_save_with_warning(
+    let index_root = state
+        .file_index_root
+        .lock()
+        .map_err(|_| "Workspace state is unavailable".to_owned())?
+        .clone();
+    let snapshot = services::format_or_save_with_warning(
         state.inner().clone(),
         path,
         expected_revision,
         true,
         Some(warning),
     )
-    .await
+    .await?;
+    if let Some(root) = index_root {
+        let _ = state.file_index.apply_for_root(
+            &root,
+            span_file_index::FileEvent::Upsert(PathBuf::from(&snapshot.path)),
+        );
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -383,19 +413,42 @@ async fn syntax(state: State<'_, DesktopState>, path: String) -> Result<SyntaxSn
 #[tauri::command]
 #[specta::specta]
 async fn new_file(state: State<'_, DesktopState>, path: String) -> Result<BufferSnapshot, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
-        workspace.new_file(&path)
-    })
-    .await
+    let state = state.inner().clone();
+    let index_root = state
+        .file_index_root
+        .lock()
+        .ok()
+        .and_then(|root| root.clone());
+    let snapshot =
+        with_workspace(state.clone(), move |workspace| workspace.new_file(&path)).await?;
+    if let Some(root) = index_root {
+        let _ = state.file_index.apply_for_root(
+            &root,
+            span_file_index::FileEvent::Upsert(PathBuf::from(&snapshot.path)),
+        );
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn new_directory(state: State<'_, DesktopState>, path: String) -> Result<FileEntry, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
+    let state = state.inner().clone();
+    let entry = with_workspace(state.clone(), move |workspace| {
         workspace.new_directory(&path)
     })
-    .await
+    .await?;
+    if entry.is_dir {
+        if let Some(root) = state
+            .file_index_root
+            .lock()
+            .ok()
+            .and_then(|root| root.clone())
+        {
+            let _ = state.file_index.reconcile(&root);
+        }
+    }
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -405,10 +458,35 @@ async fn rename_path(
     from: String,
     to: String,
 ) -> Result<FileEntry, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
-        workspace.rename_path(&from, &to)
+    let state = state.inner().clone();
+    let index_root = state
+        .file_index_root
+        .lock()
+        .ok()
+        .and_then(|root| root.clone());
+    let worker_from = from.clone();
+    let worker_to = to.clone();
+    let entry = with_workspace(state.clone(), move |workspace| {
+        workspace.rename_path(&worker_from, &worker_to)
     })
-    .await
+    .await?;
+    if let Some(root) = index_root {
+        let event = if entry.is_dir {
+            state.file_index.reconcile(&root).map(|_| ())
+        } else {
+            state.file_index.apply_for_root(
+                &root,
+                span_file_index::FileEvent::Rename {
+                    from: PathBuf::from(from),
+                    to: PathBuf::from(&entry.path),
+                },
+            )
+        };
+        if let Err(error) = event {
+            eprintln!("Could not update file index after rename: {error}");
+        }
+    }
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -418,19 +496,58 @@ async fn duplicate_path(
     from: String,
     to: String,
 ) -> Result<FileEntry, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
+    let state = state.inner().clone();
+    let index_root = state
+        .file_index_root
+        .lock()
+        .ok()
+        .and_then(|root| root.clone());
+    let entry = with_workspace(state.clone(), move |workspace| {
         workspace.duplicate_path(&from, &to)
     })
-    .await
+    .await?;
+    if let Some(root) = index_root {
+        let result = if entry.is_dir {
+            state.file_index.reconcile(&root).map(|_| ())
+        } else {
+            state.file_index.apply_for_root(
+                &root,
+                span_file_index::FileEvent::Upsert(PathBuf::from(&entry.path)),
+            )
+        };
+        if let Err(error) = result {
+            eprintln!("Could not update file index after duplicate: {error}");
+        }
+    }
+    Ok(entry)
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn trash_path(state: State<'_, DesktopState>, path: String) -> Result<Vec<String>, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
-        workspace.trash_path(&path)
-    })
-    .await
+    let state = state.inner().clone();
+    let index_root = state
+        .file_index_root
+        .lock()
+        .ok()
+        .and_then(|root| root.clone());
+    let absolute = index_root.as_ref().map(|root| root.join(&path));
+    let is_dir = absolute.as_ref().is_some_and(|path| path.is_dir());
+    let removed =
+        with_workspace(state.clone(), move |workspace| workspace.trash_path(&path)).await?;
+    if let (Some(root), Some(absolute)) = (index_root, absolute) {
+        let result = if is_dir {
+            state.file_index.reconcile(&root).map(|_| ())
+        } else {
+            state
+                .file_index
+                .apply_for_root(&root, span_file_index::FileEvent::Remove(absolute))
+        };
+        if let Err(error) = result {
+            eprintln!("Could not update file index after trash: {error}");
+        }
+    }
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -562,6 +679,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             open_workspace,
             list_directory,
             list_files,
+            file_index::file_index_status,
+            file_index::query_file,
+            file_index::reconcile_file_index,
             new_file,
             new_directory,
             rename_path,
@@ -683,6 +803,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app.state::<DesktopState>();
             let _ = agents::disconnect(&state);
+            state.file_index.shutdown();
             if let Ok(searches) = state.searches.lock() {
                 for cancellation in searches.values() {
                     cancellation.cancel();
