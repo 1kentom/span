@@ -91,6 +91,36 @@ describe("per-chat state in the controller", () => {
     expect(a.queue().map((entry) => entry.text)).toEqual(["second"]);
   });
 
+  it("keeps a Send now and its tag with the chat it was picked in", async () => {
+    mocks.api.agentPrompt.mockImplementation(() => new Promise(() => undefined));
+    const a = await connected();
+    for (const text of ["first", "q1", "q2"]) {
+      a.setPrompt(text);
+      await a.send();
+    }
+    // Send now on q2 goes out once the running turn is cancelled, tagged in this chat's feed.
+    a.sendQueuedNow(a.queue()[1].id);
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "cancelled" });
+    await tick();
+    const tagged = a.feed().find((item) => item.kind === "user" && item.text === "q2")!;
+    expect([...a.sentNowIds()]).toEqual([tagged.id]);
+    // A Send now still waiting for its turn boundary is dropped when the chat is left.
+    a.sendQueuedNow(a.queue()[0].id);
+    expect(a.queueSending()).toBe(a.queue()[0].id);
+    mocks.publish({ connectionId: "connection-1", sessions: [runtime("s1", { state: "running", startedAtMs: 1000 })] });
+    await a.newChat();
+    expect(a.queueSending()).toBeUndefined();
+    // The new chat's feed ids start again, so a tag kept by id would land on its messages.
+    for (const text of ["n1", "n2", "n3", "n4"]) {
+      a.setPrompt(text);
+      await a.send();
+    }
+    expect(a.sentNowIds().size).toBe(0);
+    // Its queue can be reordered: nothing from the other chat holds the order.
+    a.reorderQueue(0, 2);
+    expect(a.queue().map((entry) => entry.text)).toEqual(["n3", "n4", "n2"]);
+  });
+
   it("a chat left running keeps working in the background and comes back with its feed, running flag, queue and draft", async () => {
     mocks.api.agentPrompt.mockImplementation(() => new Promise(() => undefined));
     const a = await connected();

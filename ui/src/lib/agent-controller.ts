@@ -140,8 +140,9 @@ export function createAgentController(props: AgentPanelProps) {
   let priority: string | undefined;
   /** The queued message picked with Send now, until it goes out (or is dropped). The panel shows a spinner on it. */
   const [queueSending, setQueueSending] = createSignal<string>();
-  /** Feed ids of user messages that went out through Send now, so the feed can tag them. */
-  const [sentNowIds, setSentNowIds] = createSignal<ReadonlySet<number>>(new Set());
+  /** Feed ids of the open chat's user messages that went out through Send now, so the feed can tag them. Feed ids
+   * restart per chat, so the flag lives on the feed item and travels with its chat. */
+  const sentNowIds = createMemo<ReadonlySet<number>>(() => new Set(state().feed.flatMap((item) => (item.kind === "user" && item.sentNow ? [item.id] : []))));
   const pick = (id: string | undefined) => {
     priority = id;
     setQueueSending(id);
@@ -741,11 +742,10 @@ export function createAgentController(props: AgentPanelProps) {
     if (steering && !options.steered) releaseSteer();
     const turn = ++turnCounter;
     setBusyNotice(false);
-    if (options.sentNow) setSentNowIds((previous) => new Set(previous).add(state().nextId + 1));
     update((previous) =>
       addFeedItem(
         { ...previous, running: true, stopRequested: false, status: "busy", statusMessage: "Agent is working", failure: undefined },
-        { kind: "user", text: entry.text, attachments: entry.items.length ? entry.items : undefined, ...(options.steered ? { steered: true } : {}) },
+        { kind: "user", text: entry.text, attachments: entry.items.length ? entry.items : undefined, ...(options.steered ? { steered: true } : {}), ...(options.sentNow ? { sentNow: true } : {}) },
       ),
     );
     const itemId = state().nextId;
@@ -1001,6 +1001,8 @@ export function createAgentController(props: AgentPanelProps) {
   }
   /** Shows a chat: the stored snapshot when there is one, otherwise an empty view. */
   function showChat(sessionId: string | undefined, chat: ChatSnapshot | undefined, full: boolean) {
+    // A Send now picked in the chat being left belongs to it: it must not lock this chat's queue order or release its hold.
+    pick(undefined);
     if (chat && full) update((live) => ({ ...withConversation(live, chat.conversation), sessionId }));
     else update((live) => ({ ...resetConversation(live), sessionId, failure: undefined }));
     setPrompt(chat?.draft ?? "");
