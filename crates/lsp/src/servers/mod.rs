@@ -10,6 +10,7 @@ pub mod cache;
 pub mod catalog;
 pub mod install;
 pub mod manager;
+pub mod resolver;
 pub mod runtime;
 pub mod spec;
 

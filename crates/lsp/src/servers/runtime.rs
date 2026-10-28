@@ -229,10 +229,21 @@ pub fn detect_with(
     if candidates.is_empty() {
         return Ok(None);
     }
+    probe_candidates(probe, &candidates, req).map(Some)
+}
+
+/// Probes candidates in order and returns the first that satisfies `req`.
+/// When none does, the most informative error wins (too old or unparseable
+/// beats missing). `candidates` must not be empty.
+fn probe_candidates(
+    probe: &dyn CommandProbe,
+    candidates: &[PathBuf],
+    req: &RuntimeRequirement,
+) -> Result<RuntimeInfo, RuntimeError> {
     let mut first_err: Option<RuntimeError> = None;
-    for program in &candidates {
+    for program in candidates {
         match probe_one(probe, program, req) {
-            Ok(info) => return Ok(Some(info)),
+            Ok(info) => return Ok(info),
             Err(e) => {
                 // Prefer an informative error (too old, unparseable) over a
                 // missing candidate, whichever order they were probed in.
@@ -250,6 +261,116 @@ pub fn detect_with(
         }
     }
     Err(first_err.expect("at least one candidate was probed"))
+}
+
+/// Where to look for Node.js. A GUI app started from Finder gets a minimal
+/// `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), so Homebrew, nvm, Volta and fnm
+/// installs are only found through the explicit locations below.
+#[derive(Debug, Clone, Default)]
+pub struct NodeSearch {
+    /// Explicit node executable, tried first (for example a user setting).
+    pub override_program: Option<PathBuf>,
+    /// Value of `PATH`. Only absolute entries are used.
+    pub path_env: Option<std::ffi::OsString>,
+    /// Home directory for `~/.volta`, `~/.nvm` and `~/.local/share/fnm`.
+    pub home: Option<PathBuf>,
+    /// System directories tried after `PATH` and before the home locations.
+    pub system_dirs: Vec<PathBuf>,
+}
+
+impl NodeSearch {
+    /// Search configuration for the current process environment.
+    pub fn from_env() -> Self {
+        Self {
+            override_program: std::env::var_os("SPAN_NODE").map(PathBuf::from),
+            path_env: std::env::var_os("PATH"),
+            home: std::env::var_os("HOME").map(PathBuf::from),
+            system_dirs: vec![
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/local/bin"),
+            ],
+        }
+    }
+
+    /// Candidate absolute paths in probe order: override, `PATH`, system
+    /// directories, Volta, nvm (newest first), fnm (newest first).
+    pub fn candidates(&self) -> Vec<PathBuf> {
+        let exe = if cfg!(windows) { "node.exe" } else { "node" };
+        let mut out: Vec<PathBuf> = Vec::new();
+        let mut push = |p: PathBuf| {
+            if p.is_absolute() && !out.contains(&p) {
+                out.push(p);
+            }
+        };
+        if let Some(p) = &self.override_program {
+            push(p.clone());
+        }
+        if let Some(path) = &self.path_env {
+            for dir in std::env::split_paths(path) {
+                push(dir.join(exe));
+            }
+        }
+        for dir in &self.system_dirs {
+            push(dir.join(exe));
+        }
+        if let Some(home) = &self.home {
+            push(home.join(".volta").join("bin").join(exe));
+            for dir in versioned_dirs(&home.join(".nvm").join("versions").join("node")) {
+                push(dir.join("bin").join(exe));
+            }
+            for dir in versioned_dirs(
+                &home
+                    .join(".local")
+                    .join("share")
+                    .join("fnm")
+                    .join("node-versions"),
+            ) {
+                push(dir.join("installation").join("bin").join(exe));
+            }
+        }
+        out
+    }
+}
+
+/// Subdirectories of `root` named like `v22.1.0`, newest version first.
+fn versioned_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(Vec<u32>, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let parts: Option<Vec<u32>> = name
+                .trim_start_matches('v')
+                .split('.')
+                .map(|p| p.parse().ok())
+                .collect();
+            Some((parts?, e.path()))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Finds a Node.js that satisfies `min_major`. The returned
+/// [`RuntimeInfo::program`] is always an absolute path.
+pub fn locate_node(
+    probe: &dyn CommandProbe,
+    search: &NodeSearch,
+    min_major: u32,
+) -> Result<RuntimeInfo, RuntimeError> {
+    let req = RuntimeRequirement {
+        runtime: Runtime::Node,
+        min_major,
+    };
+    let mut candidates = search.candidates();
+    if candidates.is_empty() {
+        // Keep a typed Missing error that names what was wanted.
+        candidates.push(PathBuf::from("node"));
+    }
+    probe_candidates(probe, &candidates, &req)
 }
 
 /// Detects the runtime on the host with the real process probe.
@@ -488,6 +609,121 @@ mod tests {
         };
         assert_eq!(detect_with(&probe, &req, None), Ok(None));
         assert!(probe.calls.borrow().is_empty());
+    }
+
+    fn fake_home() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for v in ["v18.20.0", "v22.1.0", "v9.0.0"] {
+            std::fs::create_dir_all(dir.path().join(".nvm/versions/node").join(v).join("bin"))
+                .unwrap();
+        }
+        dir
+    }
+
+    fn search_in(home: &Path) -> NodeSearch {
+        NodeSearch {
+            override_program: None,
+            path_env: Some(std::ffi::OsString::new()),
+            home: Some(home.to_path_buf()),
+            system_dirs: vec![PathBuf::from("/opt/homebrew/bin")],
+        }
+    }
+
+    #[test]
+    fn node_candidates_follow_documented_order_with_empty_path() {
+        let home = fake_home();
+        let mut search = search_in(home.path());
+        search.override_program = Some(PathBuf::from("/custom/node"));
+        let c = search.candidates();
+        let h = home.path();
+        assert_eq!(
+            c,
+            vec![
+                PathBuf::from("/custom/node"),
+                PathBuf::from("/opt/homebrew/bin/node"),
+                h.join(".volta/bin/node"),
+                h.join(".nvm/versions/node/v22.1.0/bin/node"),
+                h.join(".nvm/versions/node/v18.20.0/bin/node"),
+                h.join(".nvm/versions/node/v9.0.0/bin/node"),
+            ]
+        );
+        assert!(c.iter().all(|p| p.is_absolute()));
+    }
+
+    #[test]
+    fn locate_node_finds_nvm_install_with_empty_path_and_returns_absolute() {
+        let home = fake_home();
+        let newest = home.path().join(".nvm/versions/node/v22.1.0/bin/node");
+        let probe = FakeProbe::new().with(newest.to_str().unwrap(), ok("v22.1.0\n", ""));
+        let info = locate_node(&probe, &search_in(home.path()), 18).unwrap();
+        assert_eq!(info.program, newest);
+        assert!(info.program.is_absolute());
+        assert_eq!(info.major, 22);
+        // Nothing bare was ever probed.
+        assert!(probe.calls.borrow().iter().all(|(p, _)| p.is_absolute()));
+    }
+
+    #[test]
+    fn locate_node_prefers_override_then_path_then_known_dirs() {
+        let home = fake_home();
+        let mut search = search_in(home.path());
+        search.path_env = Some(std::env::join_paths(["/usr/bin", "relative/bin"]).unwrap());
+        let brew = FakeProbe::new().with("/opt/homebrew/bin/node", ok("v20.0.0\n", ""));
+        assert_eq!(
+            locate_node(&brew, &search, 18).unwrap().program,
+            PathBuf::from("/opt/homebrew/bin/node")
+        );
+        let both = FakeProbe::new()
+            .with("/opt/homebrew/bin/node", ok("v20.0.0\n", ""))
+            .with("/usr/bin/node", ok("v19.0.0\n", ""));
+        assert_eq!(
+            locate_node(&both, &search, 18).unwrap().program,
+            PathBuf::from("/usr/bin/node")
+        );
+        search.override_program = Some(PathBuf::from("/custom/node"));
+        let all = both.with("/custom/node", ok("v21.0.0\n", ""));
+        assert_eq!(
+            locate_node(&all, &search, 18).unwrap().program,
+            PathBuf::from("/custom/node")
+        );
+        // Relative PATH entries are never probed.
+        assert!(all.calls.borrow().iter().all(|(p, _)| p.is_absolute()));
+    }
+
+    #[test]
+    fn locate_node_skips_too_old_and_reports_it_when_nothing_else_works() {
+        let home = fake_home();
+        let old = home.path().join(".nvm/versions/node/v22.1.0/bin/node");
+        let probe = FakeProbe::new().with(old.to_str().unwrap(), ok("v16.0.0\n", ""));
+        let err = locate_node(&probe, &search_in(home.path()), 18).unwrap_err();
+        assert!(
+            matches!(err, RuntimeError::TooOld { required: 18, .. }),
+            "{err:?}"
+        );
+
+        let err = locate_node(&FakeProbe::new(), &search_in(home.path()), 18).unwrap_err();
+        assert!(matches!(err, RuntimeError::Missing { .. }), "{err:?}");
+
+        let empty = NodeSearch::default();
+        let err = locate_node(&FakeProbe::new(), &empty, 18).unwrap_err();
+        assert!(matches!(err, RuntimeError::Missing { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn locate_node_runs_the_real_node_found_by_the_probe() {
+        let search = NodeSearch::from_env();
+        if search.candidates().iter().all(|p| !p.is_file()) {
+            eprintln!("skipped: no node binary at any probed location on this host");
+            return;
+        }
+        let info = locate_node(&SystemProbe, &search, 1).unwrap();
+        assert!(info.program.is_absolute(), "{:?}", info.program);
+        assert!(info.major >= 1 && !info.version.is_empty());
+        let out = Command::new(&info.program)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).contains(&info.version));
     }
 
     #[test]
