@@ -12,6 +12,7 @@ mod menu;
 mod services;
 pub mod session_meta;
 mod startup;
+mod uploads;
 
 /// The authoritative workspace is only accessed by blocking workers.
 #[derive(Clone, Default)]
@@ -651,7 +652,18 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_review_hunks,
             agents::agent_delegation_status,
             agents::agent_child_permission,
-            agents::agent_cancel_task
+            agents::agent_cancel_task,
+            uploads::uploads_list,
+            uploads::uploads_usage,
+            uploads::uploads_add,
+            uploads::uploads_read,
+            uploads::uploads_rename,
+            uploads::uploads_duplicate,
+            uploads::uploads_remove,
+            uploads::uploads_save_to_workspace,
+            uploads::uploads_copy_path,
+            uploads::uploads_reveal,
+            uploads::uploads_open
         ])
 }
 
