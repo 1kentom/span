@@ -8,6 +8,7 @@ import type { AgentHint } from "../bindings";
 import { buildAgentCatalog, curatedAgent } from "../lib/acp-catalog";
 import { capabilityChips, classifyFailure, configViews, leaf } from "../lib/agent-view";
 import { fallbackModels } from "../lib/agent-options";
+import { cleanAgentText, signInCopy } from "../lib/sign-in-copy";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
 import { Icon } from "./Icon";
@@ -46,6 +47,13 @@ export function AgentPanel(props: AgentPanelProps) {
   const label = () => agent()?.title || agent()?.name || a.agentName();
   const brand = () => ({ id: a.agentId() ?? agent()?.name, name: label() });
   const hasAgent = () => Boolean(a.agentId() || agent());
+  /** Other models for a refused prompt: only with an open session, where the model can be switched in place. */
+  const signInModels = createMemo(() => (a.state().sessionId ? fallbackModels(configViews(a.state().config)) : []));
+  const signInText = () => {
+    const auth = a.state().auth;
+    const promptFailed = Boolean(a.state().sessionId) && a.state().feed.some((item) => item.kind === "user");
+    return signInCopy({ agent: label(), message: auth?.message ?? "", agentMessage: auth?.agentMessage, promptFailed, models: signInModels().length });
+  };
   /**
    * A workbench tab view of one attachment. Every field is a getter over live panel state, so the tab
    * follows a save (the item becomes a workspace file) and drops session actions once the message is gone.
@@ -427,14 +435,14 @@ export function AgentPanel(props: AgentPanelProps) {
           <Match when={body() === "signin"}>
             <div class="agent-body">
               <Show when={a.state().auth!.agentMessage}>
-                {(message) => <ErrorCard level="error" title={`${label()} reported a problem`} text={message()} actions={[]} />}
+                {(message) => <ErrorCard level="error" title={`${label()} reported a problem`} text={cleanAgentText(message())} actions={[]} />}
               </Show>
               <SignIn
                 id={brand().id}
                 name={label()}
-                title={a.state().auth!.agentMessage ? "Other sign-in options" : `Sign in to ${label()}`}
-                text={a.state().auth!.agentMessage ? undefined : a.state().auth!.message}
-                secondary={Boolean(a.state().auth!.agentMessage)}
+                title={signInText().title}
+                text={signInText().text}
+                secondary={signInText().secondary}
                 hint={hintText(a.state().auth!.hint)}
                 methods={a
                   .state()
@@ -443,7 +451,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 busy={a.pendingAction() === "auth"}
                 onPick={(id) => void a.authenticate(id)}
                 onRetry={a.reconnect}
-                models={a.state().sessionId ? fallbackModels(configViews(a.state().config)) : []}
+                models={signInModels()}
                 onUseModel={(value) => void a.retryWithModel(value)}
                 onSubmit={(id, secret) => void a.authenticateWith(id, secret)}
               />
