@@ -148,3 +148,9 @@ jobs:
             --title "Span $RELEASE_TAG" --notes-file release-assets/release-notes.md "${flags[@]}" "${create_flags[@]}"
           gh release upload "$RELEASE_TAG" release-assets/*
           gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
+      - name: Refresh verified website release metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: bash scripts/release/update-website-manifest.sh
