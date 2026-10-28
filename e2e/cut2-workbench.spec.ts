@@ -5,8 +5,9 @@ test("empty and last-tab split groups close without closing the app", async ({ p
   await ready(page);
   await openSettings(page);
   await page.getByRole("button", { name: "Split editor", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Editor group 2", exact: true })).toContainText("No file open");
-  await expect(page.locator(".animated-logo")).toHaveCount(0);
+  const emptyGroup = page.getByRole("region", { name: "Editor group 2", exact: true });
+  await expect(emptyGroup).toContainText("No file open");
+  await expect(emptyGroup.locator(".animated-logo")).toHaveCount(0);
   await page.keyboard.press(`${modifier}+w`);
   await expect(page.getByRole("region", { name: "Editor group 2", exact: true })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Settings", exact: true })).toBeVisible();
