@@ -459,19 +459,140 @@ describe("Gemini legacy modes and models", () => {
       { id: "model", name: "Model", description: null, category: "model", currentValue: "gemini-2.5-pro", groups: [{ name: "", choices: [{ value: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }, { value: "gemini-2.5-flash", name: "Gemini 2.5 Flash" }] }] },
     ],
   } as AgentEvent;
-  it("shows them as normal options in the model popover and changes them through set-config", async () => {
+  it("shows the models in the model popover and the modes in the mode popover, and changes them through set-config", async () => {
     const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "gemini", name: "Gemini" }} label="Gemini" />);
     mocks.emit(config);
     await tick();
-    click(host.querySelector("[aria-label^='Agent and model']"));
+    click(host.querySelector("[aria-label^='Model:']"));
     await tick();
-    const popover = host.querySelector("[role=dialog]")!;
-    expect([...popover.querySelectorAll("[role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Model", "Mode"]);
+    let popover = host.querySelector("[role=dialog]")!;
+    expect([...popover.querySelectorAll("[role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Model"]);
     expect(text(popover)).toContain("Gemini 2.5 Flash");
-    expect(text(popover)).toContain("YOLO");
+    expect(text(popover)).not.toContain("YOLO");
     click([...popover.querySelectorAll("[role=radio]")].find((option) => option.textContent?.includes("Gemini 2.5 Flash")));
     await tick();
     expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("model", "gemini-2.5-flash");
+    click(host.querySelector(".agent-mode-button"));
+    await tick();
+    popover = host.querySelector("[role=dialog]")!;
+    expect([...popover.querySelectorAll("[role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Mode"]);
+    click([...popover.querySelectorAll("[role=radio]")].find((option) => option.textContent?.includes("YOLO")));
+    await tick();
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("mode", "yolo");
+  });
+});
+
+describe("composer pickers", () => {
+  const select = (id: string, name: string, category: string | null, current: string, choices: [string, string, string?][]) => ({
+    id, name, description: null, category, currentValue: current,
+    groups: [{ name: "", choices: choices.map(([value, label, description]) => ({ value, name: label, description: description ?? null })) }],
+  });
+  const codex = {
+    kind: "config",
+    sessionId: "s1",
+    options: [
+      select("mode", "Mode", "mode", "agent", [["read-only", "Read-only", "Requires approval to edit files and access the internet."], ["workspace", "Workspace access"], ["agent", "Auto review", "Only ask for actions detected as potentially unsafe"], ["agent-full-access", "Full access"]]),
+      select("model", "Model", "model", "sol", [["sol", "6.1 Sol"], ["luna", "6 Luna"]]),
+      select("reasoning_effort", "Reasoning effort", "thought_level", "medium", [["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"]]),
+      select("collaboration_mode", "Collaboration mode", null, "default", [["default", "Default"], ["plan", "Plan", "Plan before making changes"]]),
+      select("fast_mode", "Fast mode", null, "off", [["off", "Off", "Default speed, normal usage"], ["on", "On", "1.5x speed, increased usage"]]),
+    ],
+  } as AgentEvent;
+  const dialogs = (host: Element) => [...host.querySelectorAll("[role=dialog]")].map((dialog) => dialog.getAttribute("aria-label"));
+  async function codexComposer() {
+    const ready = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "codex-acp", name: "Codex" }} label="Codex" />);
+    mocks.emit(codex);
+    await tick();
+    const chip = (selector: string) => ready.host.querySelector<HTMLButtonElement>(selector)!;
+    return { ...ready, agentChip: chip(".agent-agent-button"), modelChip: chip(".agent-model-button"), modeChip: chip(".agent-mode-button") };
+  }
+
+  it("draws three chips with their own accessible names and the full mode label", async () => {
+    const { agentChip, modelChip, modeChip } = await codexComposer();
+    expect(agentChip.getAttribute("aria-label")).toBe("Agent: Codex");
+    expect(modelChip.getAttribute("aria-label")).toBe("Model: 6.1 Sol, Reasoning effort: Medium");
+    expect(text(modelChip.querySelector(".agent-model-name"))).toBe("6.1 Sol");
+    expect(modelChip.querySelectorAll(".agent-level > span")).toHaveLength(4);
+    expect(modeChip.getAttribute("aria-label")).toBe("Mode: Auto review");
+    expect(text(modeChip.querySelector(".agent-model-name"))).toBe("Auto review");
+    for (const chip of [agentChip, modelChip, modeChip]) expect(chip.getAttribute("aria-haspopup")).toBe("dialog");
+  });
+
+  it("opens one popover at a time, each with its own content", async () => {
+    const { host, modelChip, modeChip, agentChip } = await codexComposer();
+    click(modelChip);
+    await tick();
+    expect(dialogs(host)).toEqual(["Codex model"]);
+    expect(modelChip.getAttribute("aria-expanded")).toBe("true");
+    click(modeChip);
+    await tick();
+    expect(dialogs(host)).toEqual(["Codex mode"]);
+    expect([modelChip.getAttribute("aria-expanded"), modeChip.getAttribute("aria-expanded")]).toEqual(["false", "true"]);
+    expect([...host.querySelectorAll("[role=dialog] [role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Mode", "Collaboration mode", "Fast mode"]);
+    click(agentChip);
+    await tick();
+    expect(dialogs(host)).toEqual(["Agents"]);
+    click(agentChip);
+    await tick();
+    expect(dialogs(host)).toEqual([]);
+  });
+
+  it("applies a mode popover pick at once through set-config", async () => {
+    const { host, modeChip } = await codexComposer();
+    click(modeChip);
+    await tick();
+    click([...host.querySelectorAll("[role=dialog] [role=radio]")].find((row) => row.textContent?.includes("1.5x speed")));
+    await tick();
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("fast_mode", "on");
+  });
+
+  it("returns focus to the chip on Escape and on an outside click", async () => {
+    const { host, modelChip, modeChip } = await codexComposer();
+    click(modeChip);
+    await tick();
+    await tick();
+    expect(host.querySelector("[role=dialog]")!.contains(document.activeElement)).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(dialogs(host)).toEqual([]);
+    expect(document.activeElement).toBe(modeChip);
+    click(modelChip);
+    await tick();
+    click(host.querySelector(".agent-menu-dismiss"));
+    await tick();
+    expect(dialogs(host)).toEqual([]);
+    expect(document.activeElement).toBe(modelChip);
+  });
+
+  it("opens the agent popover from the provider row and returns focus to the model chip", async () => {
+    const { host, modelChip } = await codexComposer();
+    click(modelChip);
+    await tick();
+    click(host.querySelector(".sb-provider"));
+    await tick();
+    expect(dialogs(host)).toEqual(["Agents"]);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(document.activeElement).toBe(modelChip);
+  });
+
+  it("hides the mode chip and the model chip when the agent reports nothing for them", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "a", name: "Agent" }} label="Agent" />);
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("effort", "Effort", "thought_level", "low", [["low", "Low"], ["high", "High"]])] } as AgentEvent);
+    await tick();
+    expect(host.querySelector(".agent-mode-button")).toBeNull();
+    expect(host.querySelector(".agent-model-button")).not.toBeNull();
+    mocks.emit({ kind: "config", sessionId: "s1", options: [] } as AgentEvent);
+    await tick();
+    expect(host.querySelector(".agent-model-button")).toBeNull();
+    expect(host.querySelector(".agent-agent-button")!.getAttribute("aria-label")).toBe("Agent: Agent");
+  });
+
+  it("labels an on/off option on the chip with its name when the agent has no mode", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "a", name: "Agent" }} label="Agent" />);
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("fast_mode", "Fast mode", null, "on", [["off", "Off"], ["on", "On"]])] } as AgentEvent);
+    await tick();
+    expect(text(host.querySelector(".agent-mode-button .agent-model-name"))).toBe("Fast mode: On");
   });
 });
 

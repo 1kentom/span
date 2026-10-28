@@ -61,7 +61,44 @@ describe("composer layout rules", () => {
     const toolbar = rule(".agent-composer-toolbar");
     has(toolbar, "min-width: 0");
     has(rule(".agent-composer-toolbar > *"), "min-width: 0");
-    has(rule(".agent-model-button,\n.agent-mode-button"), "min-width: 0");
     has(rule(".agent-model-name"), "min-width: 0");
+  });
+  it("never shrinks the mode chip: it keeps its full label up to a cap", () => {
+    const chip = rule(".agent-mode-button");
+    has(chip, "flex: 0 0 auto");
+    expect(chip).toMatch(/max-width:\s*\d+px/);
+    expect(rule(".agent-mode-button .agent-model-name")).not.toMatch(/max-width/);
+    const flexNone = rule(".agent-composer-toolbar > :is(.agent-send, .agent-tool-button:not(.agent-model-button), .agent-toolbar-end)");
+    has(flexNone, "flex: none");
+    expect(css).not.toMatch(/\.agent-mode-button[^{]*\{[^}]*display:\s*none/);
+  });
+  it("lets the model chip give way first and ellipsise its name, then the usage ring text", () => {
+    // Small bases that grow back to the content: line breaking sees the minimum, so these give way before anything wraps.
+    const chip = rule(".agent-model-button");
+    const [, grow, shrink, basis] = /flex:\s*(\d+)\s+(\d+)\s+(\d+)px/.exec(chip) ?? [];
+    expect(Number(shrink)).toBeGreaterThan(1);
+    expect(Number(grow)).toBeGreaterThan(1);
+    has(chip, `min-width: ${basis}px`);
+    has(chip, "max-width: max-content");
+    const name = rule(".agent-model-name");
+    has(name, "overflow: hidden");
+    has(name, "text-overflow: ellipsis");
+    const ring = rule(".agent-composer-toolbar > .sb-ring");
+    const [, ringGrow] = /flex:\s*(\d+)\s+1\s+\d+px/.exec(ring) ?? [];
+    expect(Number(ringGrow)).toBeLessThan(Number(grow));
+    has(ring, "max-width: max-content");
+    has(rule(".agent-composer-toolbar > .sb-ring > span"), "text-overflow: ellipsis");
+  });
+  it("wraps a short row instead of overflowing, keeping expand, send and stop together on the right", () => {
+    has(rule(".agent-composer-toolbar"), "flex-wrap: wrap");
+    const end = rule(".agent-toolbar-end");
+    has(end, "display: inline-flex");
+    has(end, "margin-left: auto");
+  });
+  it("keeps the bypass mode chip uncut and warning coloured", () => {
+    const warn = rule(".agent-mode-button.warn");
+    has(warn, "flex: none");
+    has(warn, "max-width: none");
+    has(rule(".agent-mode-button.warn .agent-model-name"), "color: var(--sb-warning)");
   });
 });

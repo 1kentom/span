@@ -60,14 +60,14 @@ describe("ModelPopover traits", () => {
 });
 
 describe("ModelPopover", () => {
-  it("builds sections from the config options and selects by value", () => {
+  it("builds the model list and the effort slider from the config options and selects by value", () => {
     const picked: string[] = [];
     const closed = vi.fn();
     const host = mount(() => (
-      <ModelPopover agentName="Claude" options={options} agents={[{ id: "claude", name: "Claude", current: true }, { id: "gemini", name: "Gemini" }]}
-        onSelect={(id, value) => picked.push(`${id}=${value}`)} onSwitchAgent={(id) => picked.push(`agent:${id}`)} onClose={closed} />
+      <ModelPopover agentName="Claude" options={options} onSelect={(id, value) => picked.push(`${id}=${value}`)} onOpenAgents={() => picked.push("agents")} onClose={closed} />
     ));
-    expect(host.querySelectorAll("[role=radiogroup]")).toHaveLength(2);
+    expect([...host.querySelectorAll("[role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Model"]);
+    expect(host.textContent).not.toContain("Ask");
     const slider = host.querySelector<HTMLElement>("[role=slider]")!;
     expect(slider.getAttribute("aria-label")).toBe("Reasoning");
     expect([slider.getAttribute("aria-valuemin"), slider.getAttribute("aria-valuemax"), slider.getAttribute("aria-valuenow")]).toEqual(["0", "3", "1"]);
@@ -76,19 +76,16 @@ describe("ModelPopover", () => {
     key("End", {}, slider);
     host.querySelector<HTMLElement>(".fx-track")!.dispatchEvent(new KeyboardEvent("keyup", { key: "End", bubbles: true }));
     host.querySelector<HTMLButtonElement>("[role=radio][aria-checked=false]")!.click();
-    const gemini = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Gemini"))!;
-    gemini.click();
-    expect(picked).toEqual(["effort=d", "model=deep", "agent:gemini"]);
-    const current = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Connected"))!;
-    expect(current.disabled).toBe(true);
+    host.querySelector<HTMLButtonElement>(".sb-provider")!.click();
+    expect(picked).toEqual(["effort=d", "model=deep", "agents"]);
     key("Escape");
     expect(closed).toHaveBeenCalledOnce();
   });
 
-  it("omits the level control and agent list when the agent reports neither", () => {
+  it("omits the level control and the provider row when the agent reports no level and no switch is offered", () => {
     const host = mount(() => <ModelPopover agentName="A" options={[options[0]]} onSelect={() => {}} onClose={() => {}} />);
     expect(host.querySelector(".fx")).toBeNull();
-    expect(host.textContent).not.toContain("Agent");
+    expect(host.querySelector(".sb-provider")).toBeNull();
   });
 
   it("keeps arrow keys on the slider and the model line focuses the selected model", () => {
@@ -106,7 +103,7 @@ describe("ModelPopover", () => {
   });
 
   it("moves focus with arrow keys", () => {
-    const host = mount(() => <ModelPopover agentName="A" options={[options[2]]} onSelect={() => {}} onClose={() => {}} />);
+    const host = mount(() => <ModelPopover agentName="A" options={[options[0]]} onSelect={() => {}} onClose={() => {}} />);
     const [first, second] = [...host.querySelectorAll<HTMLButtonElement>("button")];
     first.focus();
     key("ArrowDown", {}, first);
@@ -114,16 +111,16 @@ describe("ModelPopover", () => {
   });
 
   it("keeps keyboard focus and the rows when a config update delivers new option objects", () => {
-    const fresh = (current: string) => options.map((option) => ({ ...option, choices: option.choices.map((choice) => ({ ...choice })), currentValue: option.id === "mode" ? current : option.currentValue }));
-    const [list, setList] = createSignal(fresh("ask"));
+    const fresh = (current: string) => options.map((option) => ({ ...option, choices: option.choices.map((choice) => ({ ...choice })), currentValue: option.id === "model" ? current : option.currentValue }));
+    const [list, setList] = createSignal(fresh("fast"));
     const host = mount(() => <ModelPopover agentName="A" options={list()} onSelect={() => {}} onClose={() => {}} />);
-    const plan = [...host.querySelectorAll<HTMLButtonElement>("button[role=radio]")].find((b) => b.textContent?.includes("Plan"))!;
-    plan.focus();
-    setList(fresh("plan"));
-    const after = [...host.querySelectorAll<HTMLButtonElement>("button[role=radio]")].find((b) => b.textContent?.includes("Plan"))!;
-    expect(after).toBe(plan);
-    expect(document.activeElement).toBe(plan);
-    expect(plan.getAttribute("aria-checked")).toBe("true");
+    const deep = [...host.querySelectorAll<HTMLButtonElement>("button[role=radio]")].find((b) => b.textContent?.includes("Deep"))!;
+    deep.focus();
+    setList(fresh("deep"));
+    const after = [...host.querySelectorAll<HTMLButtonElement>("button[role=radio]")].find((b) => b.textContent?.includes("Deep"))!;
+    expect(after).toBe(deep);
+    expect(document.activeElement).toBe(deep);
+    expect(deep.getAttribute("aria-checked")).toBe("true");
   });
 });
 

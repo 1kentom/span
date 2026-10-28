@@ -467,9 +467,7 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .agent-model-button { --sb-ring: var(--sb-surface); }
 .agent-model-button[aria-expanded="true"] { --sb-ring: var(--sb-control); }
 .sb-model-icon { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 20px; height: 18px; }
-.agent-model-button .sb-model-icon { width: 17px; }
 .sb-trait-badge { position: absolute; right: -2px; bottom: -3px; display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: var(--sb-accent-fill); color: var(--sb-on-accent); box-shadow: 0 0 0 1.5px var(--sb-ring); }
-.agent-model-button .sb-trait-badge { right: -4px; }
 /* Heavy models carry a gold star where fast models carry the accent bolt. */
 .sb-trait-badge[data-trait="frontier"] { background: var(--sb-warning); color: var(--sb-surface); }
 .sb-option-line { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
