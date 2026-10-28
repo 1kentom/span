@@ -158,10 +158,10 @@ export function dispatchKeyboard(event: KeyboardEvent, options: { bindings: Reso
 /** Only primary native accelerators are installed. Alternate keys use the same webview dispatcher. */
 /**
  * Actions that only the keyboard dispatcher and the command palette handle. The native menu has no item
- * for them, and sending one makes `sync_native_menu` fail with "Unknown native menu action".
+ * for them (none today: the language server format and the navigation actions all have a menu item), and sending one makes `sync_native_menu` fail with "Unknown native menu action".
  * `commands.test.ts` checks this list against the ids in `apps/desktop/src/menu.rs`.
  */
-const uiOnlyActions: ReadonlySet<string> = new Set(["formatWithLanguageServer"]);
+const uiOnlyActions: ReadonlySet<string> = new Set<string>([]);
 
 export function nativeMenuBindings(bindings: ResolvedKeybindings): Record<string, string[]> {
   return Object.fromEntries(actionDefinitions.filter(action => !uiOnlyActions.has(action.id)).map(action => {

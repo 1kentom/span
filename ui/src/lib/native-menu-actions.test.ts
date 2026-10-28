@@ -25,9 +25,10 @@ describe("native menu action ids", () => {
     expect(sent.filter(id => !owned.has(id))).toEqual([]);
   });
 
-  it("keeps the language server format shortcut a keyboard and palette action without a native menu item", () => {
+  it("sends the language server format shortcut now that the native menu has an item for it", () => {
     expect(actionDefinitions.some(action => action.id === "formatWithLanguageServer")).toBe(true);
-    expect(Object.keys(nativeMenuBindings(resolveKeybindings({}, "mac")))).not.toContain("formatWithLanguageServer");
+    expect(nativeMenuIds()).toContain("formatWithLanguageServer");
+    expect(Object.keys(nativeMenuBindings(resolveKeybindings({}, "mac")))).toContain("formatWithLanguageServer");
   });
 
   it("still sends every other action that has a native menu item", () => {
