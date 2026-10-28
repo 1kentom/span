@@ -1206,9 +1206,9 @@ async fn work_done_progress_is_forwarded_and_the_create_request_answered() {
 fn work_progress_params_parse() {
     use span_lsp::servers::manager::{parse_work_progress, WorkProgressKind};
     let begin = serde_json::json!({"token": 7, "value": {"kind": "begin", "title": "T", "percentage": 250}});
-    let (token, kind, title, _, pct) = parse_work_progress(&begin).unwrap();
+    let p = parse_work_progress(&begin).unwrap();
     assert_eq!(
-        (token.as_str(), kind, title.as_deref(), pct),
+        (p.token.as_str(), p.kind, p.title.as_deref(), p.percentage),
         ("7", WorkProgressKind::Begin, Some("T"), Some(100))
     );
     assert!(

@@ -50,15 +50,18 @@ fn trust_covers_the_root_and_everything_below_it() {
 fn work_reports_are_throttled_but_begin_and_end_always_pass() {
     let mut w = WorkTracker::default();
     let root = Path::new("/w");
+    let report = |kind, token: &str, title: Option<&str>, pct| WorkProgress {
+        token: token.into(),
+        kind,
+        title: title.map(str::to_owned),
+        message: None,
+        percentage: pct,
+    };
     let call = |w: &mut WorkTracker, kind, pct| {
         w.apply(
             ServerId::Jdtls,
             root,
-            "t".into(),
-            kind,
-            Some("Importing".into()),
-            None,
-            pct,
+            report(kind, "t", Some("Importing"), pct),
         )
     };
     assert!(call(&mut w, WorkProgressKind::Begin, Some(0)).is_some());
@@ -72,11 +75,7 @@ fn work_reports_are_throttled_but_begin_and_end_always_pass() {
         .apply(
             ServerId::Jdtls,
             root,
-            "u".into(),
-            WorkProgressKind::Begin,
-            None,
-            None,
-            None
+            report(WorkProgressKind::Begin, "u", None, None)
         )
         .is_some());
     assert_eq!(w.activity(ServerId::Jdtls, root).len(), 2);

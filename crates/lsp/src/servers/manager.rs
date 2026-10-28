@@ -121,17 +121,19 @@ pub enum WorkProgressKind {
     End,
 }
 
+/// One decoded work done report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkProgress {
+    pub token: String,
+    pub kind: WorkProgressKind,
+    pub title: Option<String>,
+    pub message: Option<String>,
+    pub percentage: Option<u32>,
+}
+
 /// Parse the params of a `$/progress` notification that carries work done progress.
 /// Other progress payloads (partial results) are ignored.
-pub fn parse_work_progress(
-    params: &serde_json::Value,
-) -> Option<(
-    String,
-    WorkProgressKind,
-    Option<String>,
-    Option<String>,
-    Option<u32>,
-)> {
+pub fn parse_work_progress(params: &serde_json::Value) -> Option<WorkProgress> {
     let token = match params.get("token")? {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Number(n) => n.to_string(),
@@ -149,7 +151,13 @@ pub fn parse_work_progress(
         .get("percentage")
         .and_then(|v| v.as_u64())
         .map(|p| p.min(100) as u32);
-    Some((token, kind, text("title"), text("message"), percentage))
+    Some(WorkProgress {
+        token,
+        kind,
+        title: text("title"),
+        message: text("message"),
+        percentage,
+    })
 }
 
 /// Broadcast to subscribers; slow receivers may lag and miss events.
@@ -1105,8 +1113,13 @@ async fn pump_events(inst: Arc<Instance>, client: Arc<LspClient>) {
             }
             ServerEvent::Notification { method, params } => {
                 if method == "$/progress" {
-                    if let Some((token, kind, title, message, percentage)) =
-                        params.as_ref().and_then(parse_work_progress)
+                    if let Some(WorkProgress {
+                        token,
+                        kind,
+                        title,
+                        message,
+                        percentage,
+                    }) = params.as_ref().and_then(parse_work_progress)
                     {
                         let _ = inst.events.send(ManagerEvent::Progress {
                             server: inst.id,

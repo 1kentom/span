@@ -1295,9 +1295,14 @@ impl LanguageServers {
                 message,
                 percentage,
             } => {
-                let event = lock(&self.state)
-                    .work
-                    .apply(server, &root, token, kind, title, message, percentage);
+                let report = span_lsp::servers::manager::WorkProgress {
+                    token,
+                    kind,
+                    title,
+                    message,
+                    percentage,
+                };
+                let event = lock(&self.state).work.apply(server, &root, report);
                 if let Some(event) = event {
                     self.emit(LspEvent::WorkProgress(event));
                 }

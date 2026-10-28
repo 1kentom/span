@@ -6,7 +6,7 @@ use super::dto::LanguageServerId;
 use super::{InstallPhase, LanguageServerStateDto};
 use serde::{Deserialize, Serialize};
 use span_lsp::servers::install::InstallProgress;
-use span_lsp::servers::manager::WorkProgressKind;
+use span_lsp::servers::manager::{WorkProgress, WorkProgressKind};
 use span_lsp::servers::ServerId;
 use specta::Type;
 use std::collections::HashMap;
@@ -220,12 +220,15 @@ impl WorkTracker {
         &mut self,
         server: ServerId,
         root: &Path,
-        token: String,
-        kind: WorkProgressKind,
-        title: Option<String>,
-        message: Option<String>,
-        percentage: Option<u32>,
+        report: WorkProgress,
     ) -> Option<LanguageServerWorkProgress> {
+        let WorkProgress {
+            token,
+            kind,
+            title,
+            message,
+            percentage,
+        } = report;
         let key = (server, root.to_path_buf(), token.clone());
         let entry = match kind {
             WorkProgressKind::End => self.entries.remove(&key),
