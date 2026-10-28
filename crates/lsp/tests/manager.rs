@@ -57,6 +57,14 @@ struct Fixture {
 }
 
 fn fixture_with(mode: &'static str, missing: bool) -> Fixture {
+    fixture_full(mode, missing, Duration::from_secs(3))
+}
+
+fn fixture_with_grace(mode: &'static str, grace: Duration) -> Fixture {
+    fixture_full(mode, false, grace)
+}
+
+fn fixture_full(mode: &'static str, missing: bool, grace: Duration) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("project");
     std::fs::create_dir(&root).unwrap();
@@ -84,7 +92,7 @@ fn fixture_with(mode: &'static str, missing: bool) -> Fixture {
         resolver.clone(),
         ManagerConfig {
             init_timeout: Duration::from_secs(10),
-            shutdown_grace: Duration::from_secs(3),
+            shutdown_grace: grace,
         },
     );
     Fixture {
@@ -639,6 +647,50 @@ async fn shutdown_all_stops_slow_servers_in_parallel() {
     // Each server needs about 1.5 s to answer shutdown; one after the other would be 3 s.
     assert!(elapsed < Duration::from_millis(2500), "took {elapsed:?}");
     assert_eq!(f.manager.state(ID, &f.root).await, None);
+}
+
+#[tokio::test]
+async fn slow_exit_is_waited_for_within_the_grace_and_killed_after_it() {
+    // The fake leaves 1.5 s after `exit`. Grace 3 s (the fixture): clean exit.
+    let f = fixture("slow-exit");
+    f.ready().await;
+    let started = std::time::Instant::now();
+    f.manager.shutdown(ID, &f.root).await;
+    assert!(started.elapsed() >= Duration::from_millis(1400));
+    assert_eq!(
+        f.methods("exited-cleanly").len(),
+        1,
+        "server should exit by itself"
+    );
+
+    // Grace below the exit time: the server is killed before it finishes.
+    let f = fixture_with_grace("slow-exit", Duration::from_millis(400));
+    f.ready().await;
+    let started = std::time::Instant::now();
+    f.manager.shutdown(ID, &f.root).await;
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_millis(1400),
+        "kill backstop took {took:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        f.methods("exited-cleanly").is_empty(),
+        "server must have been killed"
+    );
+}
+
+#[test]
+fn slow_runtimes_get_a_longer_shutdown_grace() {
+    let c = ManagerConfig::default();
+    assert!(c.grace_for(ServerId::Jdtls) >= Duration::from_secs(30));
+    assert!(c.grace_for(ServerId::RustAnalyzer) >= Duration::from_secs(15));
+    assert_eq!(c.grace_for(ServerId::Vtsls), c.shutdown_grace);
+    let long = ManagerConfig {
+        shutdown_grace: Duration::from_secs(60),
+        ..c
+    };
+    assert_eq!(long.grace_for(ServerId::Jdtls), Duration::from_secs(60));
 }
 
 #[tokio::test]

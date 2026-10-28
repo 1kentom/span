@@ -1,7 +1,7 @@
 """Minimal fake LSP server for manager tests.
 
 Usage: fake-lsp-server.py MODE
-Modes: progress, progress-open, nav, nav-flat, nav-modified, nav-hang (navigation requests), normal, slow-init, bad-init, nodef, hang, slow-shutdown, save-text, save
+Modes: progress, progress-open, nav, nav-flat, nav-modified, nav-hang (navigation requests), normal, slow-exit, slow-init, bad-init, nodef, hang, slow-shutdown, save-text, save
 Every message received is appended as one JSON line to $FAKE_LSP_LOG.
 """
 import json
@@ -180,6 +180,9 @@ while True:
             caps.update(NAV_CAPS)
         reply(msg, {"capabilities": caps})
     elif method == "initialized":
+        if os.environ.get("FAKE_LSP_STDERR"):
+            sys.stderr.write("fake stderr line\n")
+            sys.stderr.flush()
         send({"id": "srv-1", "method": "workspace/configuration",
               "params": {"items": [{"section": "x"}]}})
         if mode.startswith("progress"):
@@ -208,6 +211,9 @@ while True:
             time.sleep(1.5)
         reply(msg, None)
     elif method == "exit":
+        if mode == "slow-exit":
+            time.sleep(float(os.environ.get("FAKE_LSP_EXIT_DELAY", "1.5")))
+            log({"method": "exited-cleanly"})
         sys.exit(0)
     elif mode.startswith("nav") and "id" in msg and nav_reply(msg, mode):
         pass

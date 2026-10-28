@@ -486,7 +486,30 @@ impl Env {
         what: &str,
         pred: impl Fn(&DiagnosticsPublished) -> bool,
     ) -> DiagnosticsPublished {
-        let deadline = Instant::now() + diag_limit(server);
+        match self
+            .try_diagnostics(server, rel, from, what, diag_limit(server), pred)
+            .await
+        {
+            Some(d) => d,
+            None => panic!(
+                "{server:?}: no matching DiagnosticsPublished for {rel} ({what}) within {:?}. events:\n  {}",
+                diag_limit(server),
+                self.event_dump()
+            ),
+        }
+    }
+
+    /// Waits up to `limit` for a matching publish after event index `from`.
+    async fn try_diagnostics(
+        &self,
+        server: ServerId,
+        rel: &str,
+        from: usize,
+        what: &str,
+        limit: Duration,
+        pred: impl Fn(&DiagnosticsPublished) -> bool,
+    ) -> Option<DiagnosticsPublished> {
+        let deadline = Instant::now() + limit;
         loop {
             {
                 let events = self.events.lock().unwrap();
@@ -499,19 +522,64 @@ impl Env {
                                 d.revision,
                                 describe(&d.diagnostics)
                             );
-                            return d.clone();
+                            return Some(d.clone());
                         }
                     }
                 }
             }
-            assert!(
-                Instant::now() < deadline,
-                "{server:?}: no matching DiagnosticsPublished for {rel} ({what}) within {:?}. events:\n  {}",
-                diag_limit(server),
-                self.event_dump()
-            );
+            if Instant::now() >= deadline {
+                return None;
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// Syntax error diagnostics for the buffer after `edit` (issue #72).
+    ///
+    /// rust-analyzer can lose the diagnostics of an edit that lands while it is
+    /// (re)priming its caches: it publishes an empty list for the new version and
+    /// never recomputes until the document changes again (protocol traces from CI:
+    /// the edit arrived 70 ms after the previous publish, cachePriming was cancelled
+    /// and restarted, an empty publish for the new version followed, then silence).
+    /// An editor recovers on the next keystroke, so this does the same: when no
+    /// fresh syntax error arrives within `SETTLE`, append a space after the final
+    /// newline (which leaves line 0 and its diagnostics untouched) and wait for
+    /// that revision instead. The assertions on the result are unchanged.
+    async fn syntax_diagnostics_after(
+        &self,
+        server: ServerId,
+        rel: &str,
+        what: &str,
+        mark: usize,
+        edit: BufferRevision,
+    ) -> DiagnosticsPublished {
+        const SETTLE: Duration = Duration::from_secs(30);
+        const NUDGES: usize = 6;
+        let mut mark = mark;
+        let mut revision = edit.revision;
+        for attempt in 0..=NUDGES {
+            let found = self
+                .try_diagnostics(server, rel, mark, what, SETTLE, |d| {
+                    fresh(d, revision) && has_message(&d.diagnostics, "Syntax Error")
+                })
+                .await;
+            if let Some(d) = found {
+                return d;
+            }
+            if attempt == NUDGES {
+                break;
+            }
+            eprintln!(
+                "[evidence] {server:?} {rel} ({what}): no syntax error for revision {revision} within {SETTLE:?}, nudging with a trailing space"
+            );
+            mark = self.mark();
+            let end = utf16_len(&self.snapshot(rel).text);
+            revision = self.insert(rel, end, " ").revision;
+        }
+        panic!(
+            "{server:?}: no matching DiagnosticsPublished for {rel} ({what}) after {NUDGES} nudges. events:\n  {}",
+            self.event_dump()
+        );
     }
 
     // --- status ---------------------------------------------------------------
@@ -1246,9 +1314,7 @@ async fn rust_family() {
     let mark = env.mark();
     let rev1 = env.replace("src/main.rs", one_line);
     let d1 = env
-        .diagnostics(id, "src/main.rs", mark, "syntax error", |d| {
-            fresh(d, rev1.revision) && has_message(&d.diagnostics, "Syntax Error")
-        })
+        .syntax_diagnostics_after(id, "src/main.rs", "syntax error", mark, rev1)
         .await;
     assert!(d1.diagnostics.iter().all(|x| x.range.start.line == 0));
     let at = one_line.find("\"\"").unwrap() + 1;
@@ -1256,9 +1322,7 @@ async fn rust_family() {
     let mark = env.mark();
     let rev2 = env.insert("src/main.rs", offset16(one_line, at), "😀日本");
     let d2 = env
-        .diagnostics(id, "src/main.rs", mark, "syntax error after unicode", |d| {
-            fresh(d, rev2.revision) && has_message(&d.diagnostics, "Syntax Error")
-        })
+        .syntax_diagnostics_after(id, "src/main.rs", "syntax error after unicode", mark, rev2)
         .await;
     assert_shifted(&d1.diagnostics, &d2.diagnostics, insert_col, 4);
 

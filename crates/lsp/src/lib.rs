@@ -15,6 +15,7 @@ mod error;
 mod navigation;
 mod protocol;
 pub mod servers;
+mod trace;
 mod transport;
 
 pub use bytes::Bytes;

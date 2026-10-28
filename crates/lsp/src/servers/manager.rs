@@ -93,6 +93,22 @@ pub struct ManagerConfig {
     pub shutdown_grace: Duration,
 }
 
+impl ManagerConfig {
+    /// Grace a given server gets between `exit` and the kill: `shutdown_grace`, raised
+    /// to the floor its runtime needs. JDT LS tears down an OSGi runtime and its worker
+    /// JVMs and rust-analyzer drains its analysis threads, which takes seconds on a
+    /// loaded 2 vCPU machine, while the node servers leave in milliseconds. The app exit
+    /// path stays bounded by its own limit in `shutdown_all_within`.
+    pub fn grace_for(&self, id: ServerId) -> Duration {
+        let floor = match id {
+            ServerId::Jdtls => Duration::from_secs(30),
+            ServerId::RustAnalyzer => Duration::from_secs(15),
+            _ => Duration::ZERO,
+        };
+        self.shutdown_grace.max(floor)
+    }
+}
+
 impl Default for ManagerConfig {
     fn default() -> Self {
         Self {
@@ -846,7 +862,7 @@ impl Manager {
         };
         if let Some(client) = client {
             let _ = client
-                .shutdown_with_timeout(self.shared.config.shutdown_grace)
+                .shutdown_with_timeout(self.shared.config.grace_for(inst.id))
                 .await;
         }
         inst.set_state(ServerState::Stopped);
