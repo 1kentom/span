@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { FileIcon, Icon } from "../Icon";
 import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } from "../attachments";
@@ -8,9 +8,10 @@ import { composerHints } from "../../lib/agent-hints";
 import { shouldFocusDock } from "../../lib/agent-dock-focus";
 import { formatElapsed } from "../../lib/agent-feed";
 import { delegationLine } from "../../lib/agent-delegation";
-import { canCompact, type PermissionEvent } from "../../lib/agent-session";
+import { canCompact, type FeedItem, type PermissionEvent } from "../../lib/agent-session";
 import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
-import { isDesktop } from "../../lib/client";
+import { api, isDesktop } from "../../lib/client";
+import { URL_COPY, activityLabel, parseUrlRequest, type UrlRequestView } from "../../lib/agent-url-request";
 import { ContextBanner } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
@@ -48,7 +49,35 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     },
     onFocusChange: setDockFocused,
   };
-  const dockOpen = () => Boolean(a.permission() || a.childPermission() || a.elicitation());
+  const dockOpen = () => Boolean(a.permission() || a.childPermission() || a.elicitation() || waitingStep());
+  const urlView = createMemo(() => {
+    const ask = a.elicitation();
+    return parseUrlRequest(ask?.message, ask?.url);
+  });
+  /** The page the user opened. Held in this component only, so the code is gone when the step ends or the panel closes. */
+  const [browserStep, setBrowserStep] = createSignal<{ requestId: string; url: string; view: UrlRequestView } | undefined>();
+  onCleanup(() => setBrowserStep(undefined));
+  const stepRecord = () => {
+    const step = browserStep();
+    return step ? a.state().feed.find((item): item is Extract<FeedItem, { kind: "signin" }> => item.kind === "signin" && item.requestId === step.requestId) : undefined;
+  };
+  const waitingStep = createMemo(() => {
+    const step = browserStep();
+    return step && !a.elicitation() && a.connected() && a.running() && stepRecord()?.status === "opened" ? step : undefined;
+  });
+  createEffect(() => {
+    if (!browserStep()) return;
+    const status = stepRecord()?.status;
+    if (!stepRecord() || status === "completed" || status === "cancelled" || !a.connected() || !a.running()) setBrowserStep(undefined);
+  });
+  /** A URL request the app cannot open is declined at once. The feed already records why. */
+  const declinedUrls = new Set<string>();
+  createEffect(() => {
+    const ask = a.elicitation();
+    if (ask?.mode !== "url" || !urlView().rejection || declinedUrls.has(ask.requestId)) return;
+    declinedUrls.add(ask.requestId);
+    void a.respondElicitation(ask.requestId, "decline");
+  });
   const config = createMemo(() => configViews(a.state().config));
   const model = () => config().find((option) => option.category === "model");
   const level = () => levelOf(config().find((option) => option.category === "thought_level"));
@@ -191,7 +220,11 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         />
       </Show>
       <Show when={a.running()}>
-        <ActivityBar label={a.state().stopRequested ? "Stopping" : "Working"} elapsed={formatElapsed(a.clock() - a.turnStart())} hint={a.state().stopRequested ? undefined : "Esc to stop"} />
+        <ActivityBar
+          label={activityLabel({ stopRequested: a.state().stopRequested, mode: a.elicitation()?.mode, browserWaiting: Boolean(waitingStep()) })}
+          elapsed={formatElapsed(a.clock() - a.turnStart())}
+          hint={a.state().stopRequested || a.elicitation() || waitingStep() ? undefined : "Esc to stop"}
+        />
       </Show>
       <Show when={leadRequest()} keyed>
         {(request) => (
@@ -260,16 +293,38 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             }
           >
             <UrlDock
-              title="The agent asks you to open a page"
-              text={`${request().message} Span opens this address in your browser only after you choose Open browser.`}
+              title={urlView().title}
+              text={`${urlView().text} ${URL_COPY.consent}`.trim()}
               brand={props.brand}
               href={request().url ?? ""}
+              code={urlView().code}
               autoFocus={dockFocusProps.autoFocus}
               onFocusChange={dockFocusProps.onFocusChange}
-              onOpen={() => void a.openElicitationUrl(request().requestId, request().url ?? "")}
+              onCopyCode={(code) => api.writeClipboard(code)}
+              onOpen={() => {
+                setBrowserStep({ requestId: request().requestId, url: request().url ?? "", view: urlView() });
+                void a.openElicitationUrl(request().requestId, request().url ?? "");
+              }}
               onCancel={() => void a.respondElicitation(request().requestId, "decline")}
             />
           </Show>
+        )}
+      </Show>
+      <Show when={waitingStep()}>
+        {(step) => (
+          <UrlDock
+            waiting
+            title={step().view.title}
+            text={step().view.text}
+            brand={props.brand}
+            href={step().url}
+            code={step().view.code}
+            autoFocus={dockFocusProps.autoFocus}
+            onFocusChange={dockFocusProps.onFocusChange}
+            onCopyCode={(code) => api.writeClipboard(code)}
+            onOpen={() => void api.openExternal(step().url).catch(() => undefined)}
+            onCancel={() => setBrowserStep(undefined)}
+          />
         )}
       </Show>
       <div class="att-dropzone agent-composer">
