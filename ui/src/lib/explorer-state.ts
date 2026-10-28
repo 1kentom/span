@@ -2,7 +2,8 @@ import { batch, createSignal } from "solid-js";
 import type { FileEntry } from "../bindings";
 import type { Workbench } from "../stores/workbench";
 import { copyName, creationFolder, join, rangeBetween, renameSelectionEnd, topLevelPaths, validateName } from "./explorer-ops";
-import { confirmDelete } from "./explorer-prefs";
+import { compactChain } from "./compact-tree";
+import { compactFolders, confirmDelete } from "./explorer-prefs";
 import { fileName, parentPath } from "./navigation";
 
 export type ExplorerEdit = { mode: "create" | "rename"; kind: "file" | "folder"; parent: string; path?: string; value: string; template?: string; error?: string; warning?: string; select?: [number, number]; busy?: boolean };
@@ -46,6 +47,9 @@ export function createExplorerState(w: Workbench) {
   function toggleSelect(path: string) { batch(() => { const current = selection(); setSelection(current.includes(path) ? current.filter(item => item !== path) : [...current, path]); setFocus(path); setAnchor(path); }); }
   function selectRange(path: string) { batch(() => { setSelection(rangeBetween(visiblePaths(), anchor() ?? path, path)); setFocus(path); }); }
   function clearSelection() { setSelection([]); }
+  function clearClipboard() { setClipboard(undefined); }
+  function selectAll() { const all = visiblePaths(); batch(() => { setSelection(all); setAnchor(all[0]); }); }
+  const scrollTo = (path: string) => scrollIntoView(path);
   /** Selected paths, or the focused row when nothing is selected. */
   const targets = () => selection().length ? [...selection()] : focus() ? [focus()!] : [];
 
@@ -67,6 +71,8 @@ export function createExplorerState(w: Workbench) {
   async function startCreate(kind: "file" | "folder", folder = creationParent(), template?: string) {
     const known = templates.find(item => item.id === template);
     await ensureExpanded(folder);
+    // A compact chain shows only its deepest folder, so a new row for an inner segment belongs under that one.
+    if (compactFolders() && folder) { const deepest = compactChain(folder, w.directories).deepest; if (deepest !== folder) { await ensureExpanded(deepest); folder = deepest; } }
     setEdit({ mode: "create", kind, parent: folder, value: known?.ext ?? "", template, select: [0, 0] });
     scrollIntoView("");
   }
@@ -184,6 +190,6 @@ export function createExplorerState(w: Workbench) {
   }
   function collapseAll() { for (const path of [...w.expanded()]) if (path !== "") void w.toggleDirectory(path); }
 
-  return { selection, focus, setFocus, anchor, edit, clipboard, dialog, setDialog, templateRequest, setTemplateRequest, notice, setNotice, selectOnly, toggleSelect, selectRange, clearSelection, targets, startCreate, startTemplate, startRename, setEditValue, cancelEdit, commitEdit, setClip, paste, duplicate, trash, transfer, undo, reveal, ensureExpanded, collapseAll, creationParent, isDirectory, entryOf, visiblePaths };
+  return { clearClipboard, selectAll, scrollTo, selection, focus, setFocus, anchor, edit, clipboard, dialog, setDialog, templateRequest, setTemplateRequest, notice, setNotice, selectOnly, toggleSelect, selectRange, clearSelection, targets, startCreate, startTemplate, startRename, setEditValue, cancelEdit, commitEdit, setClip, paste, duplicate, trash, transfer, undo, reveal, ensureExpanded, collapseAll, creationParent, isDirectory, entryOf, visiblePaths };
 }
 export type ExplorerState = ReturnType<typeof createExplorerState>;
