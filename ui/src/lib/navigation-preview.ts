@@ -61,7 +61,8 @@ export async function load(): Promise<string[]> {
 `,
 };
 
-const externalPath = 'jdt:///preview/lib.es5.d.ts';
+// PREVIEW FIXTURE: shaped like a real JDT LS class file URI, with a jar segment and the query of encoded project information.
+const externalPath = 'jdt://contents/preview-lib-1.0.jar/preview/lib.es5.d.ts?=span-preview/%5C/Users%5C/preview%5C/.m2%5C/repository%5C/preview-lib%5C/1.0%5C/preview-lib-1.0.jar=/maven.pomderived=/true=/=/module=/true=/=/javadoc_location=/jar:file:...';
 const externalText = `// Preview library source, shown read only.
 interface PromiseLike<T> {
   then<R>(onfulfilled?: (value: T) => R): PromiseLike<R>;
@@ -72,10 +73,28 @@ interface Promise<T> {
   catch(onrejected?: (reason: unknown) => void): Promise<T>;
 }
 `;
-const externalLocation = (word: string): LocationDto | undefined => {
-  const line = externalText.split('\n').findIndex(row => new RegExp(`^interface ${word}\\b`).test(row));
-  return line < 0 ? undefined : { path: externalPath, range: { start: { line, character: 10 }, end: { line, character: 10 + word.length } }, external: true, displayPath: 'lib.es5.d.ts (preview library)' };
+// PREVIEW FIXTURE: a Maven jar class, shaped like the real JDT LS URI in the bug report (jar segment, encoded project query).
+const comboBoxPath = 'jdt://contents/javafx-controls-21.0.2-mac-aarch64.jar/javafx.scene.control/ComboBox.java?=todo/%5C/Users%5C/user%5C/.m2%5C/repository%5C/org%5C/openjfx%5C/javafx-controls%5C/21.0.2%5C/javafx-controls-21.0.2-mac-aarch64.jar=/maven.pomderived=/true=/=/module=/true=/=/javadoc_location=/jar:file:...';
+const comboBoxText = `package javafx.scene.control;
+
+/**
+ * Preview library source, shown read only.
+ */
+public class ComboBox<T> extends ComboBoxBase<T> {
+    public ComboBox() {
+    }
+}
+`;
+const externals: Record<string, { path: string; text: string; display: string; language: string; line: number; from: number }> = {
+  PromiseLike: { path: externalPath, text: externalText, display: 'preview/lib.es5.d.ts', language: 'typescript', line: 1, from: 10 },
+  Promise: { path: externalPath, text: externalText, display: 'preview/lib.es5.d.ts', language: 'typescript', line: 5, from: 10 },
+  ComboBox: { path: comboBoxPath, text: comboBoxText, display: 'javafx.scene.control/ComboBox.java', language: 'java', line: 5, from: 13 },
 };
+const externalLocation = (word: string): LocationDto | undefined => {
+  const entry = Object.hasOwn(externals, word) ? externals[word] : undefined;
+  return entry ? { path: entry.path, range: { start: { line: entry.line, character: entry.from }, end: { line: entry.line, character: entry.from + word.length } }, external: true, displayPath: entry.display } : undefined;
+};
+const externalByPath = (path: string) => Object.values(externals).find(entry => entry.path === path);
 
 const identifier = /^[A-Za-z_$][\w$]*$/;
 const range = (line: number, from: number, to: number): RangeDto => ({ start: { line, character: from }, end: { line, character: to } });
@@ -299,12 +318,13 @@ export function createPreviewNavigationPort(files: () => Record<string, PreviewF
       return reply(path, data);
     },
     async readSource(target, contextLines): Promise<SourceSnippetDto> {
-      const text = target.external ? externalText : textOf(target.path);
+      const library = target.external ? externalByPath(target.path) : undefined;
+      const text = target.external ? library?.text : textOf(target.path);
       if (!text) throw new Error(`Sample source is not available: ${target.displayPath || target.path}`);
       const rows = lines(text);
       const start = Math.max(0, target.range.start.line - contextLines);
       const end = Math.min(rows.length - 1, target.range.end.line + contextLines);
-      return { path: target.path, displayPath: target.displayPath || target.path, language: 'typescript', startLine: start, text: rows.slice(start, end + 1).join('\n'), highlightRange: target.range, external: target.external, readOnly: target.external };
+      return { path: target.path, displayPath: target.displayPath || target.path, language: library?.language ?? 'typescript', startLine: start, text: rows.slice(start, end + 1).join('\n'), highlightRange: target.range, external: target.external, readOnly: target.external };
     },
     cancel: async () => null,
   };
