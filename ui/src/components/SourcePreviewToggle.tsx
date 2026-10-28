@@ -17,6 +17,6 @@ export function SourcePreviewToggle(props: { value: MarkdownView; onChange: (val
     group.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
   }
   return <div ref={group} class="markdown-view-toggle" role="radiogroup" aria-label={props.label || "Document view"} onKeyDown={keydown}>
-    <For each={modes}>{mode => <button type="button" role="radio" aria-label={labels[mode]} aria-checked={props.value === mode} tabIndex={props.value === mode ? 0 : -1} title={labels[mode]} onClick={() => props.onChange(mode)}><Icon name={`markdown-${mode}`} size={15} /></button>}</For>
+    <For each={modes}>{mode => <button type="button" role="radio" aria-label={labels[mode]} aria-checked={props.value === mode} tabIndex={props.value === mode ? 0 : -1} title={labels[mode]} onClick={() => props.onChange(mode)}><Icon name={`markdown-view-${mode}`} size={16} /></button>}</For>
   </div>;
 }

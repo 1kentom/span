@@ -386,8 +386,33 @@ impl H {
         what: &str,
         pred: impl Fn(&[Diagnostic]) -> bool,
     ) -> Vec<Diagnostic> {
+        match self
+            .diagnostics_within(rel, what, diag_limit(self.id), pred)
+            .await
+        {
+            Some(d) => d,
+            None => {
+                let ev = self.events.lock().await;
+                panic!(
+                    "{:?}: no matching publishDiagnostics for {rel} ({what}) within {:?}; latest = {:?}",
+                    self.id,
+                    diag_limit(self.id),
+                    ev.latest.get(&self.uri(rel).to_string())
+                );
+            }
+        }
+    }
+
+    /// Like `diagnostics`, but gives up after `limit` and returns `None`.
+    async fn diagnostics_within(
+        &self,
+        rel: &str,
+        what: &str,
+        limit: Duration,
+        pred: impl Fn(&[Diagnostic]) -> bool,
+    ) -> Option<Vec<Diagnostic>> {
         let key = self.uri(rel).to_string();
-        let deadline = Instant::now() + diag_limit(self.id);
+        let deadline = Instant::now() + limit;
         let mut ev = self.events.lock().await;
         loop {
             while let Ok(e) = ev.rx.try_recv() {
@@ -416,17 +441,12 @@ impl H {
                         "[evidence] {:?} {rel} diagnostics ({what}): {msgs:?}",
                         self.id
                     );
-                    return d.clone();
+                    return Some(d.clone());
                 }
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                panic!(
-                    "{:?}: no matching publishDiagnostics for {rel} ({what}) within {:?}; latest = {:?}",
-                    self.id,
-                    diag_limit(self.id),
-                    ev.latest.get(&key)
-                );
+                return None;
             }
             match tokio::time::timeout(left, ev.rx.recv()).await {
                 Ok(Ok(ManagerEvent::Diagnostics { params, .. })) => {
@@ -1205,11 +1225,35 @@ async fn rust_analyzer_server() {
     // manual probes, and cargo check only sees saved files).
     let wrong = "struct Point {\n    x: i32,\n}\nfn main( {\n    let p = Point { x: 1 };\n}\n";
     h.change("src/main.rs", vec![full_change(wrong)]).await;
-    let d = h
-        .diagnostics("src/main.rs", "syntax error", |d| {
-            has_message(d, "Syntax Error")
-        })
-        .await;
+    // rust-analyzer can lose the diagnostics of an edit that lands while it primes
+    // its caches (publishes [] for the new version, then stays silent until the next
+    // change; issue #72). Like an editor, type again: a trailing space leaves line 3
+    // and its diagnostic untouched.
+    let mut current = wrong.to_string();
+    let mut nudges = 0;
+    let d = loop {
+        if let Some(d) = h
+            .diagnostics_within(
+                "src/main.rs",
+                "syntax error",
+                Duration::from_secs(30),
+                |d| has_message(d, "Syntax Error"),
+            )
+            .await
+        {
+            break d;
+        }
+        nudges += 1;
+        assert!(
+            nudges <= 6,
+            "no syntax error published after {nudges} nudges"
+        );
+        eprintln!(
+            "[evidence] RustAnalyzer: no syntax error within 30s, nudging with a trailing space"
+        );
+        current.push(' ');
+        h.change("src/main.rs", vec![full_change(&current)]).await;
+    };
     assert!(d.iter().any(|d| d.range.start.line == 3));
 
     h.change(

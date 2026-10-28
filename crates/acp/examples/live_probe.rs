@@ -850,6 +850,9 @@ async fn probe(agent: &str, out: &Path) -> Res<()> {
         let config = ToolServerConfig {
             workspace: workspace.clone(),
             policy: ToolPolicy::default(),
+            // The probe exercises the delegation tools; run tools stay off.
+            delegation_enabled: true,
+            run_tools: None,
             installed: probe_installed(),
             // Lists installed agents as ready to start; refuses any start.
             background: Some(span_acp::BackgroundAgents::new(

@@ -1,7 +1,9 @@
+import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
+import type { TerminalEvent_Deserialize as TerminalEvent, TerminalInfo } from '../bindings';
 import type { LspPort } from './lsp-client';
 import type { BootTheme, StartupTimings } from './startup';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
@@ -138,6 +140,48 @@ function previewEntries(path: string): FileEntry[] {
 }
 
 export const api = {
+  // Interactive terminal commands always use the native PTY backend.
+  async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>): Promise<TerminalInfo> {
+    if (!isDesktop) nativeRequired('Creating terminal sessions');
+    return commands.terminalCreate(cwd, cols, rows, onEvent);
+  },
+  async terminalWrite(id: string, data: Uint8Array): Promise<void> {
+    if (!isDesktop) nativeRequired('Writing terminal input');
+    await commands.terminalWrite(id, Array.from(data));
+  },
+  async terminalResize(id: string, cols: number, rows: number): Promise<void> {
+    if (!isDesktop) nativeRequired('Resizing terminal sessions');
+    await commands.terminalResize(id, cols, rows);
+  },
+  async terminalInterrupt(id: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Interrupting terminal commands');
+    await commands.terminalInterrupt(id);
+  },
+  async terminalClose(id: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Closing terminal sessions');
+    await commands.terminalClose(id);
+  },
+  async terminalAcknowledge(id: string, sequence: number): Promise<void> {
+    if (!isDesktop) nativeRequired('Acknowledging terminal output');
+    await commands.terminalAcknowledge(id, sequence);
+  },
+  async runConfigurations(): Promise<RunCatalog> { if (!isDesktop) nativeRequired('Loading run configurations'); return commands.runConfigurations(); },
+  async saveRunConfiguration(configuration: RunConfiguration, expectedWorkspaceRoot: string): Promise<RunConfiguration> { if (!isDesktop) nativeRequired('Saving run configurations'); return commands.saveRunConfiguration(configuration, expectedWorkspaceRoot); },
+  async deleteRunConfiguration(id: string, expectedWorkspaceRoot: string): Promise<void> { if (!isDesktop) nativeRequired('Deleting run configurations'); await commands.deleteRunConfiguration(id, expectedWorkspaceRoot); },
+  async duplicateRunConfiguration(id: string, expectedWorkspaceRoot: string): Promise<RunConfiguration> { if (!isDesktop) nativeRequired('Duplicating run configurations'); return commands.duplicateRunConfiguration(id, expectedWorkspaceRoot); },
+  async startRun(configuration: RunConfiguration, expectedWorkspaceRoot: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Running configurations'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.startRun(configuration, expectedWorkspaceRoot, channel); },
+  async stopRun(id: string): Promise<RunInfo> { if (!isDesktop) nativeRequired('Stopping processes'); return commands.stopRun(id); },
+  async restartRun(id: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Restarting processes'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.restartRun(id, channel); },
+  async runContext(): Promise<RunContext> { if (!isDesktop) nativeRequired('Reading run workspace context'); return commands.runContext(); },
+  async listRuns(): Promise<RunInfo[]> { if (!isDesktop) nativeRequired('Listing process runs'); return commands.listRuns(); },
+  async runOutput(id: string): Promise<RunOutput> { if (!isDesktop) nativeRequired('Reading run output'); return commands.runOutput(id); },
+  async acknowledgeRun(id: string, sequence: number): Promise<void> { if (!isDesktop) nativeRequired('Acknowledging run output'); await commands.acknowledgeRun(id, sequence); },
+  async onRunEvent(listener: (event: RunEvent) => void): Promise<() => void> { if (!isDesktop) return () => {}; return events.runEvent.listen(event => listener(event.payload)); },
+  async pendingRunApprovals(): Promise<RunApprovalRequest[]> { if (!isDesktop) nativeRequired('Reading agent run requests'); return commands.pendingRunApprovals(); },
+  async resolveRunApproval(id: string, allow: boolean): Promise<void> { if (!isDesktop) nativeRequired('Answering agent run requests'); await commands.resolveRunApproval(id, allow); },
+  async onRunApprovalsChanged(listener: (requests: RunApprovalRequest[]) => void): Promise<() => void> { if (!isDesktop) return () => {}; return events.runApprovalsChanged.listen(event => listener(event.payload.pending)); },
+  async runToolsEnabled(): Promise<boolean> { if (!isDesktop) nativeRequired('Reading agent run tools preference'); return commands.runToolsEnabled(); },
+  async runToolsSetEnabled(enabled: boolean): Promise<void> { if (!isDesktop) nativeRequired('Changing agent run tools preference'); await commands.runToolsSetEnabled(enabled); },
   async pickFile(): Promise<string | null> {
     if (!isDesktop) nativeRequired('Opening files');
     const selected = await open({ directory: false, multiple: false, title: 'Open a file in span' });

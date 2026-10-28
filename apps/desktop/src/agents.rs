@@ -123,26 +123,37 @@ async fn delegation_enabled(workspace: Arc<Mutex<CoreWorkspace>>) -> bool {
     .unwrap_or(false)
 }
 
-/// The span-agents config for a new or restored lead session, or `None`
-/// when delegation is off.
+/// MCP tool config for a new or restored lead session, or `None` when both
+/// delegation and workspace run tools are off.
 async fn delegation_config(
     app: &tauri::AppHandle,
     state: &DesktopState,
     agent: &ActiveAgent,
 ) -> Result<Option<ToolServerConfig>, String> {
     let workspace = workspace(state)?;
-    if !delegation_enabled(workspace.clone()).await {
+    let delegation_enabled = delegation_enabled(workspace.clone()).await;
+    let run_tools_enabled = crate::run_tools::enabled(workspace.clone()).await;
+    if !delegation_enabled && !run_tools_enabled {
         return Ok(None);
     }
-    // The user turned delegation on, so an installed agent the lead
-    // delegates to is started in the background; the UI shows the start on
-    // the delegation card (ADR 0003 section 8).
-    let installed = installed_agents(app).await;
+    // With delegation on, an installed agent the lead delegates to is
+    // started in the background; the UI shows the start on the delegation
+    // card (ADR 0003 section 8).
+    let installed = if delegation_enabled {
+        installed_agents(app).await
+    } else {
+        Vec::new()
+    };
+    let background_agents = delegation_enabled.then(|| background(state));
+    let run_tools = run_tools_enabled
+        .then(|| crate::run_tools::backend(app.clone(), state.clone(), workspace.clone()));
     Ok(Some(ToolServerConfig {
         workspace,
         policy: ToolPolicy::default(),
+        delegation_enabled,
+        run_tools,
         installed,
-        background: Some(background(state)),
+        background: background_agents,
         events: Some(agent.delegation_events.clone()),
     }))
 }
@@ -207,8 +218,8 @@ fn same_command(a: &AgentCommand, b: &AgentCommand) -> bool {
     a.command == b.command && a.args == b.args && a.env == b.env
 }
 
-/// Open a user session on the active connection. With delegation on, the
-/// span-agents entry is offered in this `session/new` only.
+/// Open a user session on the active connection. Enabled Span tools are
+/// offered in this `session/new` only.
 async fn open_lead(
     app: &tauri::AppHandle,
     state: &DesktopState,
@@ -229,6 +240,7 @@ pub fn disconnect(state: &DesktopState) -> Result<(), String> {
         .map_err(|_| "Agent state is unavailable".to_owned())?
         .take()
     {
+        state.run_approvals.cancel_connection(&active.connection);
         state.sessions.disconnect(&active.connection)?;
     }
     Ok(())
@@ -243,6 +255,7 @@ pub async fn disconnect_and_wait(state: &DesktopState) -> Result<(), String> {
     if let Some(active) = active {
         // End the connection's sessions and delegated children in the
         // session manager, then wait for the process and its callbacks.
+        state.run_approvals.cancel_connection(&active.connection);
         let _ = state.sessions.disconnect(&active.connection);
         active.service.shutdown_and_wait().await?;
     }
@@ -528,7 +541,9 @@ pub async fn agent_close_session(
     session_id: String,
 ) -> Result<(), String> {
     let agent = active(state.inner())?;
-    state.sessions.close(&agent.key(&session_id)).await?;
+    let key = agent.key(&session_id);
+    state.run_approvals.cancel_lead(&key);
+    state.sessions.close(&key).await?;
     clear_if_active(state.inner(), &session_id)
 }
 
@@ -541,7 +556,9 @@ pub async fn agent_delete_session(
     session_id: String,
 ) -> Result<(), String> {
     let agent = active(state.inner())?;
-    state.sessions.delete(&agent.key(&session_id)).await?;
+    let key = agent.key(&session_id);
+    state.run_approvals.cancel_lead(&key);
+    state.sessions.delete(&key).await?;
     clear_if_active(state.inner(), &session_id)
 }
 

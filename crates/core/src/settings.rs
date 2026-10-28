@@ -1,4 +1,4 @@
-use crate::{io_error, CoreError, Result};
+use crate::{io_error, CoreError, CoreWorkspace, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use specta::Type;
@@ -163,6 +163,7 @@ pub struct UpdateSettings {
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSettings {
     pub delegation: DelegationSettings,
+    pub run_tools: RunToolsSettings,
     /// `agents.warmStart`: when a folder opens, start installed agents in
     /// the background (process and ACP initialize only, no session) so a
     /// delegation or an agent switch does not wait for the start. On by
@@ -174,6 +175,7 @@ impl Default for AgentSettings {
     fn default() -> Self {
         Self {
             delegation: DelegationSettings::default(),
+            run_tools: RunToolsSettings::default(),
             warm_start: true,
         }
     }
@@ -194,6 +196,14 @@ impl Default for DelegationSettings {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// `agents.runTools.*`: workspace run configuration tools offered to agents.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunToolsSettings {
+    /// Offer run configuration tools to new lead sessions. Off by default.
+    pub enabled: bool,
 }
 
 impl Default for Settings {
@@ -328,6 +338,10 @@ const COMMAND_IDS: &[&str] = &[
     "save",
     "openFolder",
     "splitEditor",
+    "splitEditorDown",
+    "newFile",
+    "newFolder",
+    "newFromTemplate",
     "toggleProject",
     "toggleAssistant",
     "toggleTerminal",
@@ -497,6 +511,10 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("save", vec!["Mod+S"]),
         ("openFolder", vec!["Mod+O"]),
         ("splitEditor", vec!["Mod+\\"]),
+        ("splitEditorDown", vec!["Mod+Alt+\\"]),
+        ("newFile", vec!["Mod+N"]),
+        ("newFolder", vec!["Mod+Shift+N"]),
+        ("newFromTemplate", vec!["Alt+Insert"]),
         ("toggleProject", vec!["Mod+B"]),
         ("toggleAssistant", vec!["Mod+Alt+B"]),
         ("toggleTerminal", vec!["Mod+J"]),
@@ -516,7 +534,15 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         .collect::<Result<std::collections::HashSet<_>>>()?;
     let mut assigned = HashMap::new();
     for (command, mut defaults) in defaults {
-        if command == "toggleFiles" || command == "focusFiles" {
+        if matches!(
+            command,
+            "toggleFiles"
+                | "focusFiles"
+                | "splitEditorDown"
+                | "newFile"
+                | "newFolder"
+                | "newFromTemplate"
+        ) {
             defaults.retain(|shortcut| {
                 !claimed.contains(&shortcut_conflict_key(shortcut).expect("valid default shortcut"))
             });
@@ -558,15 +584,126 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
 /// Settings honoured only from the user's own settings file. A workspace
 /// `.span/settings.jsonc` arrives with the repository, so a cloned project
 /// must not be able to change these: `agents.delegation.enabled` lets an
-/// agent start other agents (ADR 0003). The key is dropped from workspace
-/// settings before merging; unknown sibling keys are still rejected.
+/// agent start other agents (ADR 0003), or run a saved process. These keys
+/// are dropped from workspace settings before merging; unknown sibling keys
+/// are still rejected.
 const USER_ONLY: &[&[&str]] = &[
     &["agents", "delegation", "enabled"],
+    &["agents", "runTools", "enabled"],
     // Starts agent processes when a folder opens (ADR 0009).
     &["agents", "warmStart"],
     // A cloned project must not make Span contact the network at launch.
     &["updates", "checkOnLaunch"],
 ];
+
+impl CoreWorkspace {
+    /// Run tools are an execution capability, so repository settings cannot
+    /// enable them for an agent. Read only the user's settings scope.
+    pub fn run_tools_enabled(&self) -> Result<bool> {
+        Ok(self
+            .get_settings_for_scope(SettingsScope::User)?
+            .agents
+            .run_tools
+            .enabled)
+    }
+
+    /// Change the explicit user-only opt-in without rewriting workspace
+    /// settings or dropping unrelated JSONC comments.
+    pub fn set_run_tools_enabled(&self, enabled: bool) -> Result<Settings> {
+        let text = self.get_settings_jsonc_for_scope(SettingsScope::User)?;
+        let patched = patch_nested_key(
+            &text,
+            &["agents", "runTools", "enabled"],
+            Value::Bool(enabled),
+        )?;
+        self.update_settings_jsonc_for_scope(SettingsScope::User, &patched)
+    }
+}
+
+/// Patch an explicit nested opt-in while retaining unrelated JSONC bytes, including comments.
+fn patch_nested_key(text: &str, path: &[&str], value: Value) -> Result<String> {
+    parse(text)?;
+    let Some((key, rest)) = path.split_first() else {
+        return Err(CoreError::Settings("Empty preference path".into()));
+    };
+    let mask = comment_mask(text);
+    let mut index = skip_space(&mask, 0) + 1;
+    let mut members = 0;
+    let mut matching = None;
+    loop {
+        index = skip_space(&mask, index);
+        if mask.get(index) == Some(&b'}') {
+            if let Some((value_start, end)) = matching {
+                let replacement = if rest.is_empty() {
+                    value.to_string()
+                } else {
+                    patch_nested_key(&text[value_start..end], rest, value)?
+                };
+                let mut patched = text.to_owned();
+                patched.replace_range(value_start..end, &replacement);
+                parse(&patched)?;
+                return Ok(patched);
+            }
+            let mut nested = value;
+            for segment in rest.iter().rev() {
+                let mut object = serde_json::Map::new();
+                object.insert((*segment).to_owned(), nested);
+                nested = Value::Object(object);
+            }
+            let member = format!(
+                "{}: {}",
+                serde_json::to_string(key)
+                    .map_err(|error| CoreError::Settings(error.to_string()))?,
+                nested
+            );
+            let previous = mask[..index]
+                .iter()
+                .rfind(|byte| !byte.is_ascii_whitespace());
+            let comma = if members > 0 && previous != Some(&b',') {
+                ","
+            } else {
+                ""
+            };
+            let mut patched = text.to_owned();
+            patched.insert_str(index, &format!("{comma}\n  {member}\n"));
+            parse(&patched)?;
+            return Ok(patched);
+        }
+        let start = index;
+        index = string_end(&mask, index);
+        let member_key: String = serde_json::from_slice(&mask[start..index])
+            .map_err(|error| CoreError::Settings(error.to_string()))?;
+        index = skip_space(&mask, index) + 1;
+        let value_start = skip_space(&mask, index);
+        index = value_start;
+        let mut depth = 0;
+        while index < mask.len() {
+            match mask[index] {
+                b'"' => {
+                    index = string_end(&mask, index);
+                    continue;
+                }
+                b'{' | b'[' => depth += 1,
+                b'}' if depth == 0 => break,
+                b'}' | b']' => depth -= 1,
+                b',' if depth == 0 => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        let mut end = index;
+        while end > value_start && mask[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        if member_key == *key {
+            matching = Some((value_start, end));
+        }
+        members += 1;
+        if mask.get(index) == Some(&b',') {
+            index += 1;
+        }
+    }
+}
 
 pub(crate) fn without_user_only(mut value: Value) -> Value {
     drop_user_only(&mut value);
@@ -1281,6 +1418,88 @@ mod word_wrap_shortcut_tests {
             .contains("conflicts"));
         settings.keybindings.insert("toggleWordWrap".into(), vec![]);
         settings.validate().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod run_opt_in_patch_tests {
+    use super::*;
+    #[test]
+    fn nested_user_opt_in_preserves_comments_and_sibling_preferences() {
+        let directory = tempfile::tempdir().unwrap();
+        let user = directory.path().join("user.jsonc");
+        let original = "{\n// root note\n\"agents\": { // agents note\n  \"delegation\": {\"enabled\": true},\n  \"runTools\": { /* private preference */ \"enabled\": false, },\n},\n\"fontSize\": 17, // font note\n\"futureUserKey\": {\"keep\": 7},\n}\n";
+        fs::write(&user, original).unwrap();
+        let workspace = CoreWorkspace::open(directory.path())
+            .unwrap()
+            .with_user_settings(Some(user.clone()));
+        workspace.set_run_tools_enabled(true).unwrap();
+        assert!(workspace.run_tools_enabled().unwrap());
+        assert!(
+            workspace
+                .get_settings_for_scope(SettingsScope::User)
+                .unwrap()
+                .agents
+                .delegation
+                .enabled
+        );
+        let saved = fs::read_to_string(&user).unwrap();
+        for note in [
+            "// root note",
+            "// agents note",
+            "/* private preference */",
+            "// font note",
+        ] {
+            assert!(saved.contains(note));
+        }
+        assert_eq!(
+            workspace
+                .get_settings_for_scope(SettingsScope::User)
+                .unwrap()
+                .font_size,
+            17
+        );
+        assert_eq!(parse(&saved).unwrap()["futureUserKey"]["keep"], 7);
+        workspace.set_run_tools_enabled(false).unwrap();
+        assert!(!workspace.run_tools_enabled().unwrap());
+    }
+    #[test]
+    fn nested_user_opt_in_creates_missing_objects_with_valid_commas() {
+        for text in [
+            "{}",
+            "{\"fontSize\":16}",
+            "{\"fontSize\":16,}",
+            "{\"agents\":{}}",
+        ] {
+            let patched =
+                patch_nested_key(text, &["agents", "runTools", "enabled"], Value::Bool(true))
+                    .unwrap();
+            assert!(
+                load_with_texts(&patched, "{}")
+                    .unwrap()
+                    .agents
+                    .run_tools
+                    .enabled
+            );
+        }
+    }
+    #[test]
+    fn opt_out_updates_the_effective_last_duplicate_in_jsonc() {
+        for text in [
+            r#"{"agents":{"runTools":{"enabled":false,"enabled":true}}}"#,
+            r#"{"agents":{"runTools":{"enabled":true}},"agents":{"runTools":{"enabled":true}}}"#,
+        ] {
+            let patched =
+                patch_nested_key(text, &["agents", "runTools", "enabled"], Value::Bool(false))
+                    .unwrap();
+            assert!(
+                !load_with_texts(&patched, "{}")
+                    .unwrap()
+                    .agents
+                    .run_tools
+                    .enabled
+            );
+        }
     }
 }
 

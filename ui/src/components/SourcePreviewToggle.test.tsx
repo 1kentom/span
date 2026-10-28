@@ -13,6 +13,8 @@ describe("icon-only source and preview modes", () => {
     try {
       const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
       expect(buttons.map(button => button.getAttribute("aria-label"))).toEqual(["Source", "Preview", "Source and preview"]);
+      expect(buttons.map(button => button.title)).toEqual(["Source", "Preview", "Source and preview"]);
+      expect(buttons.map(button => button.querySelector<HTMLElement>(".icon")?.style.maskImage)).toEqual(["source", "preview", "both"].map(mode => `url("/icons/markdown-view-${mode}.svg")`));
       expect(buttons.map(button => button.tabIndex)).toEqual([-1, 0, -1]);
       expect(buttons.every(button => button.textContent === "" && button.querySelector('[aria-hidden="true"].icon'))).toBe(true);
       buttons[0].click();

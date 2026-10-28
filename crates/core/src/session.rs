@@ -53,6 +53,9 @@ pub struct SessionState {
     pub active_group: u32,
     pub panels: SessionPanels,
     pub markdown_views: HashMap<String, MarkdownView>,
+    /// Two editor groups are stacked (one above the other) instead of side by side.
+    #[serde(default)]
+    pub split_vertical: bool,
 }
 
 pub struct SessionStore {
