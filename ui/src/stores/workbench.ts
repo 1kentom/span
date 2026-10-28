@@ -430,7 +430,6 @@ export function createWorkbench() {
         setBuffers(path, "savedRevision", Math.max(buffers[path].savedRevision, result.savedRevision));
       }
       if (!dirty(path)) enforceTabLimit();
-      refreshTree();
       if (isSettingsBuffer(path) || path === ".span/settings.jsonc") await refreshSettingsScope(settingsScope());
       return true;
     } catch (e) {
