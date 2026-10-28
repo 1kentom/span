@@ -6,7 +6,6 @@ import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
 import { shouldFocusDock } from "../../lib/agent-dock-focus";
-import { formatElapsed } from "../../lib/agent-feed";
 import { delegationLine } from "../../lib/agent-delegation";
 import { canCompact, type PermissionEvent } from "../../lib/agent-session";
 import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
@@ -14,6 +13,8 @@ import { isDesktop } from "../../lib/client";
 import { ContextBanner } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
+import { RunningStep } from "./RunningStep";
+import { RUN_TEXT } from "../../lib/agent-hint-text";
 import { ModelPopover } from "./ModelPopover";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
@@ -146,11 +147,19 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     input?.focus();
   };
 
+  /** Taller field, about 40 percent of the panel. Local view state only; Escape never touches it. */
+  const [expanded, setExpanded] = createSignal(false);
   createEffect(() => {
     a.prompt();
+    const tall = expanded();
     if (!input) return;
+    if (tall) {
+      const panel = input.closest<HTMLElement>(".agent-panel")?.clientHeight ?? 0;
+      input.style.height = `${Math.max(120, Math.round(panel * 0.4))}px`;
+      return;
+    }
     input.style.height = "auto";
-    input.style.height = `${Math.min(180, Math.max(61, input.scrollHeight))}px`;
+    input.style.height = `${Math.min(178, Math.max(60, input.scrollHeight))}px`;
   });
 
   return (
@@ -191,7 +200,10 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         />
       </Show>
       <Show when={a.running()}>
-        <ActivityBar label={a.state().stopRequested ? "Stopping" : "Working"} elapsed={formatElapsed(a.clock() - a.turnStart())} hint={a.state().stopRequested ? undefined : "Esc to stop"} />
+        <Show when={a.runningStep()}>
+          {(step) => <RunningStep title={step().title} command={step().command} elapsed={step().elapsed} lines={step().lines} hidden={step().hidden} full={step().full} still={step().still} />}
+        </Show>
+        <ActivityBar label={a.activity()} elapsed={a.turnElapsed()} hint={a.state().stopRequested ? undefined : "Esc to stop"} />
       </Show>
       <Show when={leadRequest()} keyed>
         {(request) => (
@@ -272,7 +284,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           </Show>
         )}
       </Show>
-      <div class="att-dropzone agent-composer">
+      <div class="att-dropzone agent-composer" classList={{ expanded: expanded() }}>
         <Show when={a.menu() && a.menu() !== "actions" && a.menu() !== "attach"}>
           <button class="agent-menu-dismiss" aria-label="Close agent menu" tabindex="-1" onClick={closeMenu} />
         </Show>
@@ -363,6 +375,19 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             {reportable().length === 1 ? `${reportable()[0].item.name} cannot be sent: ${reportable()[0].reason}` : `${reportable().length} attachments cannot be sent to ${props.label}.`} Remove{" "}
             {reportable().length === 1 ? "it" : "them"} to send.
           </p>
+        </Show>
+        <Show when={a.runHint()}>
+          <div class="agent-run-hint">
+            <span class="sb-flex">{RUN_TEXT.busy}</span>
+            <Show when={a.busyNotice()}>
+              <button type="button" class="sb-btn" disabled={!a.canSend()} onClick={() => void a.steer()}>
+                Steer
+              </button>
+              <button type="button" class="sb-btn" disabled={!a.canSend()} onClick={() => void a.send()}>
+                Queue
+              </button>
+            </Show>
+          </div>
         </Show>
         <label class="sb-visually-hidden" for="agent-prompt">
           Message to agent
@@ -459,6 +484,16 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               {a.state().turnUsage!.tokens.toLocaleString()} tokens last turn
             </span>
           </Show>
+          <button
+            type="button"
+            class="agent-tool-button agent-expand"
+            aria-pressed={expanded()}
+            aria-label={expanded() ? "Collapse composer" : "Expand composer"}
+            title={expanded() ? "Collapse composer" : "Expand composer"}
+            onClick={() => setExpanded(!expanded())}
+          >
+            <Icon name="Maximize4" size={14} />
+          </button>
           <button
             class="agent-send"
             aria-label={a.running() ? "Queue follow-up" : "Send prompt"}

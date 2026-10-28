@@ -69,7 +69,20 @@ export const commands = {
 	 *  cancelled first by the service.
 	 */
 	agentDeleteSession: (sessionId: string) => __TAURI_INVOKE<null>("agent_delete_session", { sessionId }),
+	/**
+	 *  Run a prompt in the active session and resolve when its turn ends. A
+	 *  session that already runs a turn refuses it with the typed
+	 *  `PromptError::Busy` (nothing is sent or queued), so the UI can offer
+	 *  steer or queue instead of showing an error.
+	 */
 	agentPrompt: (text: string, attachments: PromptAttachment_Deserialize[] | null) => __TAURI_INVOKE<null>("agent_prompt", { text, attachments }),
+	/**
+	 *  Runtime state of every session on the active connection: idle, running,
+	 *  waiting for an approval or an answer, queued follow-ups, when the current
+	 *  turn started and its current tool. `connectionId` is null without a
+	 *  connection. Changes arrive as `AgentSessionStatesChanged`.
+	 */
+	agentSessionStates: () => __TAURI_INVOKE<SessionStates_Serialize>("agent_session_states"),
 	/**
 	 *  Sign in with an advertised method, then create the session that was blocked.
 	 *  Returns the new session id, or the current one when a session already exists.
@@ -118,6 +131,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	agentSessionStatesChanged: makeEvent<AgentSessionStatesChanged_Serialize, AgentSessionStatesChanged_Deserialize>("agent-session-states-changed"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
 	startupRequestError: makeEvent<StartupRequestError, StartupRequestError>("startup-request-error"),
@@ -333,6 +347,31 @@ export type AgentPreset_Serialize = {
 	description: string,
 	/**  The executable must already be on the user's PATH. */
 	launch: AgentCommand_Serialize,
+};
+
+/**
+ *  The session states of one agent connection changed: a turn started or
+ *  ended, a request for the user was raised or answered, or a session was
+ *  added or removed. The UI shows these as they are and never infers them.
+ */
+export type AgentSessionStatesChanged = AgentSessionStatesChanged_Serialize | AgentSessionStatesChanged_Deserialize;
+
+/**
+ *  The session states of one agent connection changed: a turn started or
+ *  ended, a request for the user was raised or answered, or a session was
+ *  added or removed. The UI shows these as they are and never infers them.
+ */
+export type AgentSessionStatesChanged_Deserialize = {
+	states: SessionStates_Deserialize,
+};
+
+/**
+ *  The session states of one agent connection changed: a turn started or
+ *  ended, a request for the user was raised or answered, or a session was
+ *  added or removed. The UI shows these as they are and never infers them.
+ */
+export type AgentSessionStatesChanged_Serialize = {
+	states: SessionStates_Serialize,
 };
 
 /**  `agents.*` settings. */
@@ -822,6 +861,29 @@ export type PromptAttachment_Serialize =
 /**  Needs the agent's `embeddedContext` prompt capability. Give `text` or base64 `blob`. */
 { kind: "resource"; uri: string; mimeType: string | null; text: string | null; blob: string | null };
 
+/**  Why a user prompt did not start. */
+export type PromptError = PromptError_Serialize | PromptError_Deserialize;
+
+/**  Why a user prompt did not start. */
+export type PromptError_Deserialize = 
+/**
+ *  The session already runs a turn. Nothing was sent or queued. `state`
+ *  is the session's state at the time of the refusal, when known.
+ */
+{ kind: "busy"; message: string; state?: SessionRuntimeState_Deserialize | null } | 
+/**  Any other failure, with the message for the user. */
+{ kind: "failed"; message: string };
+
+/**  Why a user prompt did not start. */
+export type PromptError_Serialize = 
+/**
+ *  The session already runs a turn. Nothing was sent or queued. `state`
+ *  is the session's state at the time of the refusal, when known.
+ */
+{ kind: "busy"; message: string; state: SessionRuntimeState_Serialize | null } | 
+/**  Any other failure, with the message for the user. */
+{ kind: "failed"; message: string };
+
 export type ProposalHunk = {
 	id: string,
 	from: number,
@@ -905,6 +967,17 @@ export type SearchQuery_Serialize = {
 	maxResults: number,
 };
 
+/**  What a session is doing right now, as the user should see it. */
+export type SessionActivity = 
+/**  No turn in flight. */
+"idle" | 
+/**  A turn is in flight and nothing waits for the user. */
+"running" | 
+/**  A turn waits for the user to answer a permission request. */
+"waitingForApproval" | 
+/**  A turn waits for the user to answer an input request (elicitation). */
+"waitingForAnswer";
+
 export type SessionGroup = SessionGroup_Serialize | SessionGroup_Deserialize;
 
 export type SessionGroup_Deserialize = {
@@ -926,6 +999,13 @@ export type SessionKey = {
 	sessionId: string,
 };
 
+/**  Who started a session. */
+export type SessionOrigin = 
+/**  Created by the user through the editor. */
+"user" | 
+/**  Created by another agent's delegation. */
+"delegated";
+
 export type SessionPanels = SessionPanels_Serialize | SessionPanels_Deserialize;
 
 export type SessionPanels_Deserialize = {
@@ -946,6 +1026,46 @@ export type SessionPanels_Serialize = {
 	terminalCollapsed: boolean,
 };
 
+/**
+ *  Runtime state of one managed session: the source of truth the UI shows in
+ *  the session list and the activity bar.
+ */
+export type SessionRuntimeState = SessionRuntimeState_Serialize | SessionRuntimeState_Deserialize;
+
+/**
+ *  Runtime state of one managed session: the source of truth the UI shows in
+ *  the session list and the activity bar.
+ */
+export type SessionRuntimeState_Deserialize = {
+	connectionId: string,
+	sessionId: string,
+	origin: SessionOrigin,
+	state: SessionActivity,
+	/**  Follow-ups waiting behind the turn in flight. */
+	queued: number,
+	/**  Unix time in milliseconds when the current turn started. `None` while idle. */
+	startedAtMs?: number | null,
+	/**  Title of the newest tool call of the current turn that has not finished. */
+	currentTool?: string | null,
+};
+
+/**
+ *  Runtime state of one managed session: the source of truth the UI shows in
+ *  the session list and the activity bar.
+ */
+export type SessionRuntimeState_Serialize = {
+	connectionId: string,
+	sessionId: string,
+	origin: SessionOrigin,
+	state: SessionActivity,
+	/**  Follow-ups waiting behind the turn in flight. */
+	queued: number,
+	/**  Unix time in milliseconds when the current turn started. `None` while idle. */
+	startedAtMs: number | null,
+	/**  Title of the newest tool call of the current turn that has not finished. */
+	currentTool: string | null,
+};
+
 export type SessionState = SessionState_Serialize | SessionState_Deserialize;
 
 export type SessionState_Deserialize = {
@@ -962,6 +1082,36 @@ export type SessionState_Serialize = {
 	activeGroup: number,
 	panels: SessionPanels_Serialize,
 	markdownViews: { [key in string]: MarkdownView },
+};
+
+/**
+ *  Every session of one connection, sorted by session id. Published whenever
+ *  any of them changes (turn start, turn end, request raised or resolved, a
+ *  session added or removed). An ended connection is published once with no
+ *  sessions. `connection_id` is `None` when no agent is connected.
+ */
+export type SessionStates = SessionStates_Serialize | SessionStates_Deserialize;
+
+/**
+ *  Every session of one connection, sorted by session id. Published whenever
+ *  any of them changes (turn start, turn end, request raised or resolved, a
+ *  session added or removed). An ended connection is published once with no
+ *  sessions. `connection_id` is `None` when no agent is connected.
+ */
+export type SessionStates_Deserialize = {
+	connectionId?: string | null,
+	sessions: SessionRuntimeState_Deserialize[],
+};
+
+/**
+ *  Every session of one connection, sorted by session id. Published whenever
+ *  any of them changes (turn start, turn end, request raised or resolved, a
+ *  session added or removed). An ended connection is published once with no
+ *  sessions. `connection_id` is `None` when no agent is connected.
+ */
+export type SessionStates_Serialize = {
+	connectionId: string | null,
+	sessions: SessionRuntimeState_Serialize[],
 };
 
 /**  A past conversation the agent can restore. */

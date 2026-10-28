@@ -376,15 +376,26 @@ async fn closing_the_lead_closes_and_forgets_children() {
     let turn = tokio::spawn(async move { manager.prompt(&key, "wait".into(), vec![]).await });
     h.prompts_delivered("wait", &[&child]).await;
     h.manager.close(&root).await.expect("close lead");
-    h.next(|e| is_complete(e, &child, "cancelled")).await;
+    // The child's cancelled Complete and its session/close can arrive in
+    // either order under load, so wait for both.
+    let (mut completed, mut closed) = (false, false);
+    while !(completed && closed) {
+        let event = h
+            .next(|e| {
+                is_complete(e, &child, "cancelled")
+                    || (e.connection_id == worker
+                        && matches!(&e.event, AgentEvent::Log { direction, line } if direction == "Stdin" && line.contains("session/close")))
+            })
+            .await;
+        if matches!(event.event, AgentEvent::Complete { .. }) {
+            completed = true;
+        } else {
+            closed = true;
+        }
+    }
     turn.await.unwrap().expect("cancelled turn");
     assert!(h.manager.session(&root).is_none());
     assert!(h.manager.session(&child).is_none());
-    h.next(|e| {
-        e.connection_id == worker
-            && matches!(&e.event, AgentEvent::Log { direction, line } if direction == "Stdin" && line.contains("session/close"))
-    })
-    .await;
     h.manager.disconnect(&lead).unwrap();
     h.manager.disconnect(&worker).unwrap();
 }
@@ -576,4 +587,238 @@ async fn child_permission_carries_identity_and_only_the_user_can_answer_it() {
     .await;
     h.manager.disconnect(&lead).unwrap();
     h.manager.disconnect(&worker).unwrap();
+}
+
+// Runtime state of user sessions: what the UI shows in the session list and
+// the activity bar. The manager is the source of truth, so the UI never has to
+// infer whether a session it is not showing still runs.
+
+type States = mpsc::UnboundedReceiver<span_acp::SessionStates>;
+
+fn watch(manager: &SessionManager) -> (States, span_acp::Subscription) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let subscription = manager.watch_states(Arc::new(move |states| {
+        let _ = tx.send(states);
+    }));
+    (rx, subscription)
+}
+
+/// The next published state of `key` that satisfies `matches`.
+async fn state_where(
+    states: &mut States,
+    key: &SessionKey,
+    matches: impl Fn(&span_acp::SessionRuntimeState) -> bool,
+) -> span_acp::SessionRuntimeState {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let snapshot = states.recv().await.expect("state stream closed");
+            if snapshot.connection_id.as_deref() != Some(key.connection_id.as_str()) {
+                continue;
+            }
+            if let Some(found) = snapshot
+                .sessions
+                .into_iter()
+                .find(|s| s.session_id == key.session_id && matches(s))
+            {
+                return found;
+            }
+        }
+    })
+    .await
+    .expect("matching session state timed out")
+}
+
+#[tokio::test]
+async fn session_states_follow_turns_tools_and_requests() {
+    use span_acp::SessionActivity;
+    let mut h = harness();
+    let connection = h.connect(&["--rich"]).await;
+    let (mut states, _watch) = watch(&h.manager);
+    let key = h.root(&connection).await;
+    let idle = state_where(&mut states, &key, |_| true).await;
+    assert_eq!(idle.state, SessionActivity::Idle);
+    assert_eq!(idle.started_at_ms, None);
+
+    // The default fixture turn opens a tool call, then asks permission for it.
+    let done = h
+        .manager
+        .start_turn(&key, "edit".into(), vec![])
+        .expect("idle session starts");
+    let running = state_where(&mut states, &key, |s| s.state == SessionActivity::Running).await;
+    assert!(running.started_at_ms.is_some_and(|ms| ms > 0));
+    let asking = state_where(&mut states, &key, |s| {
+        s.state == SessionActivity::WaitingForApproval
+    })
+    .await;
+    assert_eq!(asking.current_tool.as_deref(), Some("Edit sample"));
+    assert_eq!(asking.started_at_ms, running.started_at_ms);
+    // The snapshot command agrees with the event.
+    let snapshot = h.manager.session_states(&connection);
+    assert_eq!(snapshot.connection_id.as_deref(), Some(connection.as_str()));
+    assert_eq!(
+        snapshot.sessions[0].state,
+        SessionActivity::WaitingForApproval
+    );
+    let request = h.manager.pending_requests()[0].request_id.clone();
+    h.manager
+        .respond_permission(&key, request, Some("no".into()))
+        .unwrap();
+    let ended = state_where(&mut states, &key, |s| s.state == SessionActivity::Idle).await;
+    assert_eq!(ended.current_tool, None);
+    assert_eq!(ended.started_at_ms, None);
+    done.await.unwrap().expect("rejected turn ends");
+
+    // An elicitation is a question for the user, not an approval.
+    let answer = h
+        .manager
+        .start_turn(&key, "elicit-form".into(), vec![])
+        .unwrap();
+    state_where(&mut states, &key, |s| {
+        s.state == SessionActivity::WaitingForAnswer
+    })
+    .await;
+    let request = h.manager.pending_requests()[0].request_id.clone();
+    h.manager
+        .respond_elicitation(&connection, request, "decline".into(), None)
+        .unwrap();
+    state_where(&mut states, &key, |s| s.state == SessionActivity::Idle).await;
+    answer.await.unwrap().expect("answered turn ends");
+
+    // Disconnecting publishes an empty list for the connection.
+    h.manager.disconnect(&connection).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = states.recv().await.expect("state stream closed");
+            if snapshot.connection_id.as_deref() == Some(connection.as_str())
+                && snapshot.sessions.is_empty()
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the ended connection was published empty");
+    let _ = h.events.try_recv();
+}
+
+#[tokio::test]
+async fn a_second_user_prompt_to_a_running_session_gets_a_typed_busy_error() {
+    use span_acp::{PromptError, SessionActivity};
+    let mut h = harness();
+    let connection = h.connect(&[]).await;
+    let key = h.root(&connection).await;
+    let (mut states, _watch) = watch(&h.manager);
+    let first = h.manager.start_turn(&key, "wait".into(), vec![]).unwrap();
+    h.prompts_delivered("wait", &[&key]).await;
+    match h.manager.start_turn(&key, "echo".into(), vec![]) {
+        Err(PromptError::Busy { message, state }) => {
+            assert_eq!(message, "A prompt is already running in this session");
+            let state = state.expect("the refusal carries the session state");
+            assert_eq!(state.state, SessionActivity::Running);
+            assert_eq!(state.queued, 0);
+        }
+        other => panic!("expected a typed busy error, got {other:?}"),
+    }
+    // Refused, not queued: the running turn is untouched.
+    let info = h.manager.session(&key).unwrap();
+    assert!(info.busy && info.queued == 0);
+    h.manager.cancel(&key).unwrap();
+    h.next(|e| is_complete(e, &key, "cancelled")).await;
+    first.await.unwrap().expect("cancelled turn ends");
+    state_where(&mut states, &key, |s| s.state == SessionActivity::Idle).await;
+    // An unknown session is a plain failure, not busy.
+    assert!(matches!(
+        h.manager.start_turn(
+            &SessionKey::new(connection.clone(), "nope"),
+            "echo".into(),
+            vec![]
+        ),
+        Err(PromptError::Failed { .. })
+    ));
+    h.manager.disconnect(&connection).unwrap();
+}
+
+#[tokio::test]
+async fn a_turn_the_agent_still_runs_outside_the_manager_counts_as_busy() {
+    use span_acp::PromptError;
+    let mut h = harness();
+    let connection = h.connect(&[]).await;
+    let key = h.root(&connection).await;
+    // A turn started on the service directly, as after a session was closed
+    // and loaded again while the agent kept working.
+    let service = h.manager.service(&connection).unwrap();
+    let stray = service
+        .start_prompt(key.session_id.clone(), "wait".into(), vec![])
+        .unwrap();
+    h.prompts_delivered("wait", &[&key]).await;
+    assert!(matches!(
+        h.manager.start_turn(&key, "echo".into(), vec![]),
+        Err(PromptError::Busy { .. })
+    ));
+    service.cancel(key.session_id.clone()).unwrap();
+    stray.await.unwrap().expect("cancelled");
+    h.manager.disconnect(&connection).unwrap();
+}
+
+#[tokio::test]
+async fn a_prompt_sent_as_soon_as_a_turn_completes_is_never_refused() {
+    let mut h = harness();
+    let connection = h.connect(&[]).await;
+    let key = h.root(&connection).await;
+    for round in 0..5 {
+        let first = h
+            .manager
+            .start_turn(&key, "stop:end_turn".into(), vec![])
+            .unwrap_or_else(|error| panic!("round {round}: {error:?}"));
+        // The UI sends its next prompt the moment it sees Complete.
+        h.next(|e| is_complete(e, &key, "end_turn")).await;
+        let second = h
+            .manager
+            .start_turn(&key, "echo".into(), vec![])
+            .unwrap_or_else(|error| {
+                panic!("round {round}: refused right after Complete: {error:?}")
+            });
+        first.await.unwrap().expect("first turn");
+        second.await.unwrap().expect("follow-up turn");
+        // Consume the follow-up's own Complete so the next round waits for its own.
+        h.next(|e| is_complete(e, &key, "end_turn")).await;
+    }
+    h.manager.disconnect(&connection).unwrap();
+}
+
+#[tokio::test]
+async fn closing_a_running_session_stops_its_turn_first() {
+    use span_acp::SessionActivity;
+    let mut h = harness();
+    let connection = h.connect(&["--close"]).await;
+    let key = h.root(&connection).await;
+    let (mut states, _watch) = watch(&h.manager);
+    let turn = h.manager.start_turn(&key, "wait".into(), vec![]).unwrap();
+    state_where(&mut states, &key, |s| s.state == SessionActivity::Running).await;
+    h.prompts_delivered("wait", &[&key]).await;
+    h.manager.close(&key).await.unwrap();
+    h.next(|e| is_complete(e, &key, "cancelled")).await;
+    turn.await.unwrap().expect("the turn ended as cancelled");
+    assert!(h.manager.session(&key).is_none());
+    assert!(h.manager.session_states(&connection).sessions.is_empty());
+    h.manager.disconnect(&connection).unwrap();
+}
+
+#[test]
+fn prompt_errors_serialise_as_a_tagged_union_the_ui_matches_on() {
+    let busy = span_acp::PromptError::Busy {
+        message: span_acp::PROMPT_ALREADY_RUNNING.into(),
+        state: None,
+    };
+    let json = serde_json::to_value(&busy).unwrap();
+    assert_eq!(json["kind"], "busy");
+    assert_eq!(
+        json["message"],
+        "A prompt is already running in this session"
+    );
+    let failed = serde_json::to_value(span_acp::PromptError::Failed {
+        message: "x".into(),
+    })
+    .unwrap();
+    assert_eq!(failed["kind"], "failed");
 }

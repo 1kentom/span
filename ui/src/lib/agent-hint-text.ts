@@ -26,3 +26,20 @@ export function splitCode(text: string): { text: string; code: boolean }[] {
   if (parts.length % 2 === 0) return [{ text, code: false }];
   return parts.map((part, index) => ({ text: part, code: index % 2 === 1 })).filter((part) => part.text !== "");
 }
+
+/** What the activity bar, the pinned running step and the session list say about a running turn. */
+export const RUN_TEXT = {
+  thinking: "Thinking",
+  running: "Running",
+  runningCommand: "Running command",
+  approval: "Waiting for your approval",
+  answer: "Waiting for your answer",
+  stopping: "Stopping",
+  idle: "Idle",
+  queued: "Queued",
+  /** Shown inline when Send is pressed, or text is typed, while a turn runs. */
+  busy: "A turn is running. Enter steers it, Tab queues, Esc stops",
+  stillRunning: "Still running, no new output for",
+  showFull: "Show full output",
+  hideFull: "Show less",
+} as const;

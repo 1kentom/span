@@ -131,5 +131,7 @@ export type SessionRow = {
   delta?: { add: number; del: number };
   /** True when the agent lacks session/load, so the row cannot be reopened. */
   locked?: boolean;
+  /** The session's state from the backend. Absent for a session Span does not hold, which then shows no state. */
+  status?: import("../../lib/agent-chats").RowStatus;
 };
 export type HistoryScope = "workspace" | "all";

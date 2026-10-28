@@ -105,6 +105,92 @@ pub const DEPTH_EXCEEDED: &str = "Delegation depth limit reached";
 /// process exited or its connection was disconnected).
 pub type SessionEndHook = Box<dyn FnOnce() + Send>;
 
+/// What a session is doing right now, as the user should see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionActivity {
+    /// No turn in flight.
+    Idle,
+    /// A turn is in flight and nothing waits for the user.
+    Running,
+    /// A turn waits for the user to answer a permission request.
+    WaitingForApproval,
+    /// A turn waits for the user to answer an input request (elicitation).
+    WaitingForAnswer,
+}
+
+/// Runtime state of one managed session: the source of truth the UI shows in
+/// the session list and the activity bar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRuntimeState {
+    pub connection_id: String,
+    pub session_id: String,
+    pub origin: SessionOrigin,
+    pub state: SessionActivity,
+    /// Follow-ups waiting behind the turn in flight.
+    pub queued: u32,
+    /// Unix time in milliseconds when the current turn started. `None` while idle.
+    pub started_at_ms: Option<u64>,
+    /// Title of the newest tool call of the current turn that has not finished.
+    pub current_tool: Option<String>,
+}
+
+/// Every session of one connection, sorted by session id. Published whenever
+/// any of them changes (turn start, turn end, request raised or resolved, a
+/// session added or removed). An ended connection is published once with no
+/// sessions. `connection_id` is `None` when no agent is connected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStates {
+    pub connection_id: Option<String>,
+    pub sessions: Vec<SessionRuntimeState>,
+}
+
+/// Receives [`SessionStates`] whenever a connection's session states change.
+pub type SessionStateSink = Arc<dyn Fn(SessionStates) + Send + Sync>;
+
+/// The agent's own wording when a session already runs a turn. Kept for the
+/// log; callers match the typed [`PromptError::Busy`], never this text.
+pub const PROMPT_ALREADY_RUNNING: &str = "A prompt is already running in this session";
+
+/// Why a user prompt did not start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PromptError {
+    /// The session already runs a turn. Nothing was sent or queued. `state`
+    /// is the session's state at the time of the refusal, when known.
+    Busy {
+        message: String,
+        state: Option<SessionRuntimeState>,
+    },
+    /// Any other failure, with the message for the user.
+    Failed { message: String },
+}
+
+impl PromptError {
+    pub fn message(&self) -> &str {
+        match self {
+            PromptError::Busy { message, .. } | PromptError::Failed { message } => message,
+        }
+    }
+}
+
+impl std::fmt::Display for PromptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+/// Tool calls remembered per running turn, for the current tool title.
+const TOOL_LIMIT: usize = 32;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 /// A permission or elicitation request waiting for the user.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +237,37 @@ struct Session {
     /// sent to the agent is refused, so the cancel cannot be lost to the
     /// gap between accepting a turn and writing its prompt.
     cancel_epoch: u64,
+    /// The turn in flight already reported its end (`Complete` or `Error`)
+    /// and only waits for the driver to collect it. A user prompt arriving
+    /// in this gap runs next instead of being refused as busy.
+    finished: bool,
+    /// When the turn in flight started.
+    started_at_ms: Option<u64>,
+    /// Unfinished tool calls of the turn in flight: id and title.
+    tools: Vec<(String, Option<String>)>,
+}
+
+impl Session {
+    fn new(parent: Option<SessionKey>, depth: u32, origin: SessionOrigin) -> Self {
+        Self {
+            parent,
+            depth,
+            origin,
+            busy: false,
+            queue: VecDeque::new(),
+            cancel_epoch: 0,
+            finished: false,
+            started_at_ms: None,
+            tools: Vec::new(),
+        }
+    }
+
+    /// Forget the per-turn state once no turn is in flight.
+    fn settle(&mut self) {
+        self.finished = false;
+        self.started_at_ms = None;
+        self.tools.clear();
+    }
 }
 
 #[derive(Default)]
@@ -169,6 +286,9 @@ struct State {
     end_hooks: HashMap<SessionKey, Vec<SessionEndHook>>,
     /// Hooks of sessions that were removed, run once the lock is released.
     ended: Vec<SessionEndHook>,
+    state_watchers: HashMap<u64, SessionStateSink>,
+    /// The states last published per connection, to publish only changes.
+    published: HashMap<String, SessionStates>,
 }
 
 impl State {
@@ -226,6 +346,55 @@ impl State {
         }
     }
 
+    fn runtime(&self, key: &SessionKey, session: &Session) -> SessionRuntimeState {
+        let waiting = |kind: PendingKind| {
+            self.pending.values().any(|request| {
+                request.kind == kind
+                    && request.connection_id == key.connection_id
+                    && request.session_id.as_deref() == Some(key.session_id.as_str())
+            })
+        };
+        let running = session.busy && !(session.finished && session.queue.is_empty());
+        let state = if waiting(PendingKind::Elicitation) {
+            SessionActivity::WaitingForAnswer
+        } else if waiting(PendingKind::Permission) {
+            SessionActivity::WaitingForApproval
+        } else if running {
+            SessionActivity::Running
+        } else {
+            SessionActivity::Idle
+        };
+        let active = state != SessionActivity::Idle;
+        SessionRuntimeState {
+            connection_id: key.connection_id.clone(),
+            session_id: key.session_id.clone(),
+            origin: session.origin,
+            state,
+            queued: session.queue.len() as u32,
+            started_at_ms: session.started_at_ms.filter(|_| active),
+            current_tool: session
+                .tools
+                .iter()
+                .rev()
+                .find_map(|(_, title)| title.clone())
+                .filter(|_| active),
+        }
+    }
+
+    fn states(&self, connection_id: &str) -> SessionStates {
+        let mut sessions: Vec<SessionRuntimeState> = self
+            .sessions
+            .iter()
+            .filter(|(key, _)| key.connection_id == connection_id)
+            .map(|(key, session)| self.runtime(key, session))
+            .collect();
+        sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        SessionStates {
+            connection_id: Some(connection_id.to_owned()),
+            sessions,
+        }
+    }
+
     /// Remove sessions from the manager. Returns their queued turns and the
     /// services to stop them on, deepest first.
     fn detach(&mut self, keys: &[SessionKey]) -> (Vec<Turn>, Vec<(SessionKey, AgentService)>) {
@@ -252,12 +421,26 @@ impl State {
 pub struct SessionManager {
     state: Arc<Mutex<State>>,
     emit: SessionEventSink,
+    /// Held while computing and delivering published states, so watchers see
+    /// them in the order they were computed.
+    publish_gate: Arc<Mutex<()>>,
 }
 
 impl Default for SessionManager {
     fn default() -> Self {
         Self::new(Arc::new(|_| {}))
     }
+}
+
+/// Every connection a set of session keys belongs to, without repeats.
+fn connections_of<'a>(keys: impl IntoIterator<Item = &'a SessionKey>) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for key in keys {
+        if !found.contains(&key.connection_id) {
+            found.push(key.connection_id.clone());
+        }
+    }
+    found
 }
 
 fn refuse(turns: Vec<Turn>, message: &str) {
@@ -306,6 +489,76 @@ impl SessionManager {
         Self {
             state: Arc::new(Mutex::new(State::default())),
             emit,
+            publish_gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    /// Publish the session states of `connection_id` to every watcher if
+    /// they changed since the last publication. Never called with the state
+    /// lock held.
+    fn publish(&self, connection_id: &str) {
+        let _gate = self
+            .publish_gate
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let (states, watchers) = {
+            let mut state = self.state();
+            let current = state.states(connection_id);
+            let gone = !state.connections.contains_key(connection_id);
+            let previous = state.published.get(connection_id);
+            let unchanged = match previous {
+                Some(previous) => *previous == current,
+                None => current.sessions.is_empty(),
+            };
+            if unchanged {
+                if gone {
+                    state.published.remove(connection_id);
+                }
+                return;
+            }
+            if gone {
+                state.published.remove(connection_id);
+            } else {
+                state
+                    .published
+                    .insert(connection_id.to_owned(), current.clone());
+            }
+            let watchers: Vec<SessionStateSink> = state.state_watchers.values().cloned().collect();
+            (current, watchers)
+        };
+        for watcher in watchers {
+            watcher(states.clone());
+        }
+    }
+
+    fn publish_all(&self, connections: &[String]) {
+        for connection in connections {
+            self.publish(connection);
+        }
+    }
+
+    /// The runtime state of every session on one connection.
+    pub fn session_states(&self, connection_id: &str) -> SessionStates {
+        self.state().states(connection_id)
+    }
+
+    /// The runtime state of one session.
+    pub fn session_state(&self, key: &SessionKey) -> Option<SessionRuntimeState> {
+        let state = self.state();
+        state.sessions.get(key).map(|s| state.runtime(key, s))
+    }
+
+    /// Receive [`SessionStates`] whenever a connection's session states
+    /// change, until the returned guard is dropped. Called on whichever
+    /// thread made the change; the sink must not call back into the manager.
+    pub fn watch_states(&self, sink: SessionStateSink) -> Subscription {
+        let mut state = self.state();
+        state.next_subscriber += 1;
+        let id = state.next_subscriber;
+        state.state_watchers.insert(id, sink);
+        Subscription {
+            id,
+            state: Arc::downgrade(&self.state),
         }
     }
 
@@ -370,6 +623,7 @@ impl SessionManager {
     fn connection_sink(&self, id: String, direct: Option<EventSink>) -> EventSink {
         let state: Weak<Mutex<State>> = Arc::downgrade(&self.state);
         let emit = self.emit.clone();
+        let publish_gate = self.publish_gate.clone();
         Arc::new(move |event: AgentEvent| {
             if let Some(direct) = &direct {
                 direct(event.clone());
@@ -380,8 +634,12 @@ impl SessionManager {
             let manager = SessionManager {
                 state,
                 emit: emit.clone(),
+                publish_gate: publish_gate.clone(),
             };
             let (agent_name, session_id) = manager.observe(&id, &event);
+            if session_id.is_some() {
+                manager.publish(&id);
+            }
             let gone =
                 matches!(&event, AgentEvent::Status { state, .. } if state == "disconnected");
             let tagged = SessionEvent {
@@ -471,12 +729,60 @@ impl SessionManager {
         if let Some((key, kinds)) = kinds {
             state.permission_kinds.insert(key, kinds);
         }
+        // Per-turn runtime state: the tool calls still open and whether the
+        // turn in flight already ended.
+        match event {
+            AgentEvent::Tool {
+                session_id: tool_session,
+                tool_call_id,
+                title,
+                status,
+                internal,
+                ..
+            } if *internal != Some(true) => {
+                let key = SessionKey::new(connection_id, tool_session.clone());
+                if let Some(session) = state.sessions.get_mut(&key).filter(|s| s.busy) {
+                    match status.as_deref() {
+                        Some("completed") | Some("failed") => {
+                            session.tools.retain(|(id, _)| id != tool_call_id)
+                        }
+                        _ => match session.tools.iter_mut().find(|(id, _)| id == tool_call_id) {
+                            Some(entry) => {
+                                if title.is_some() {
+                                    entry.1 = title.clone();
+                                }
+                            }
+                            None => {
+                                session.tools.push((tool_call_id.clone(), title.clone()));
+                                if session.tools.len() > TOOL_LIMIT {
+                                    session.tools.remove(0);
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+            AgentEvent::Complete {
+                session_id: ended, ..
+            }
+            | AgentEvent::Error {
+                session_id: Some(ended),
+                ..
+            } => {
+                let key = SessionKey::new(connection_id, ended.clone());
+                if let Some(session) = state.sessions.get_mut(&key).filter(|s| s.busy) {
+                    session.finished = true;
+                    session.tools.clear();
+                }
+            }
+            _ => {}
+        }
         (agent_name, session_id)
     }
 
     /// The process exited: its sessions and every child of them end.
     fn connection_exited(&self, connection_id: &str) {
-        let (turns, stops) = {
+        let ((turns, stops), touched) = {
             let mut state = self.state();
             let Some(connection) = state.connections.get_mut(connection_id) else {
                 return;
@@ -493,9 +799,11 @@ impl SessionManager {
                 .cloned()
                 .collect();
             let tree = state.tree(&roots);
-            state.detach(&tree)
+            let detached = state.detach(&tree);
+            (detached, connections_of(&tree))
         };
         self.run_end_hooks();
+        self.publish_all(&touched);
         refuse(turns, "The agent process exited before the turn started");
         for (key, service) in stops {
             if key.connection_id != connection_id {
@@ -508,7 +816,7 @@ impl SessionManager {
     /// on other connections, is cancelled and forgotten first. Returns the
     /// result of the process shutdown request.
     pub fn disconnect(&self, connection_id: &str) -> Result<(), String> {
-        let (connection, turns, stops) = {
+        let (connection, turns, stops, touched) = {
             let mut state = self.state();
             let roots: Vec<SessionKey> = state
                 .sessions
@@ -522,9 +830,19 @@ impl SessionManager {
             state
                 .permission_kinds
                 .retain(|(id, _), _| id != connection_id);
-            (state.connections.remove(connection_id), turns, stops)
+            let mut touched = connections_of(&tree);
+            if !touched.iter().any(|id| id == connection_id) {
+                touched.push(connection_id.to_owned());
+            }
+            (
+                state.connections.remove(connection_id),
+                turns,
+                stops,
+                touched,
+            )
         };
         self.run_end_hooks();
+        self.publish_all(&touched);
         let connection = connection.ok_or("Unknown connection")?;
         refuse(turns, "The agent was disconnected before the turn started");
         // Sessions on this connection end with the process; children elsewhere are stopped.
@@ -598,20 +916,15 @@ impl SessionManager {
                     .as_ref()
                     .is_none_or(|p| state.sessions.contains_key(p));
             if alive {
-                state.sessions.insert(
-                    key.clone(),
-                    Session {
-                        parent,
-                        depth,
-                        origin,
-                        busy: false,
-                        queue: VecDeque::new(),
-                        cancel_epoch: 0,
-                    },
-                );
+                state
+                    .sessions
+                    .insert(key.clone(), Session::new(parent, depth, origin));
             }
             alive
         };
+        if registered {
+            self.publish(connection_id);
+        }
         if registered && is_child {
             service.mark_delegated(&key.session_id);
         }
@@ -627,22 +940,21 @@ impl SessionManager {
     /// Track a root session that was created or restored directly on the
     /// connection's service.
     pub fn adopt(&self, key: SessionKey, origin: SessionOrigin) -> Result<(), String> {
-        let mut state = self.state();
-        if !state
-            .connections
-            .get(&key.connection_id)
-            .is_some_and(|c| c.open)
         {
-            return Err("Unknown or disconnected connection".into());
+            let mut state = self.state();
+            if !state
+                .connections
+                .get(&key.connection_id)
+                .is_some_and(|c| c.open)
+            {
+                return Err("Unknown or disconnected connection".into());
+            }
+            state
+                .sessions
+                .entry(key.clone())
+                .or_insert_with(|| Session::new(None, 0, origin));
         }
-        state.sessions.entry(key).or_insert(Session {
-            parent: None,
-            depth: 0,
-            origin,
-            busy: false,
-            queue: VecDeque::new(),
-            cancel_epoch: 0,
-        });
+        self.publish(&key.connection_id);
         Ok(())
     }
 
@@ -760,12 +1072,80 @@ impl SessionManager {
                 None
             } else {
                 session.busy = true;
+                session.started_at_ms = Some(now_ms());
                 Some(turn)
             }
         };
         if let Some(turn) = start {
             self.drive(key.clone(), turn);
         }
+        self.publish(&key.connection_id);
+        Ok(done)
+    }
+
+    /// Start a user prompt now. Unlike [`Self::enqueue`] a busy session
+    /// refuses it with [`PromptError::Busy`] instead of queueing it, so the
+    /// user decides whether to steer, queue or wait. A session also counts as
+    /// busy while its agent still runs a turn the manager did not start (for
+    /// example one that kept running after the session was closed and
+    /// loaded again). A prompt that arrives after the turn in flight reported
+    /// its end, but before the driver collected it, runs next.
+    pub fn start_turn(
+        &self,
+        key: &SessionKey,
+        text: String,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<oneshot::Receiver<Result<(), String>>, PromptError> {
+        let failed = |message: &str| PromptError::Failed {
+            message: message.to_owned(),
+        };
+        if text.trim().is_empty() && attachments.is_empty() {
+            return Err(failed("Prompt cannot be empty"));
+        }
+        let service = self
+            .service(&key.connection_id)
+            .ok_or_else(|| failed("Unknown or disconnected connection"))?;
+        // Read before the manager lock: the service has its own lock.
+        let agent_busy = service.is_running(&key.session_id);
+        let (reply, done) = oneshot::channel();
+        let start = {
+            let mut state = self.state();
+            let session = state
+                .sessions
+                .get_mut(key)
+                .ok_or_else(|| failed("Unknown session"))?;
+            let turn = Turn {
+                text,
+                attachments,
+                reply,
+                epoch: session.cancel_epoch,
+            };
+            if session.busy && session.finished && session.queue.is_empty() {
+                session.queue.push_back(turn);
+                None
+            } else if session.busy || agent_busy {
+                let current = state.sessions.get(key).map(|s| state.runtime(key, s));
+                let current = current.map(|mut runtime| {
+                    // A turn the manager did not start still runs.
+                    if runtime.state == SessionActivity::Idle {
+                        runtime.state = SessionActivity::Running;
+                    }
+                    runtime
+                });
+                return Err(PromptError::Busy {
+                    message: PROMPT_ALREADY_RUNNING.to_owned(),
+                    state: current,
+                });
+            } else {
+                session.busy = true;
+                session.started_at_ms = Some(now_ms());
+                Some(turn)
+            }
+        };
+        if let Some(turn) = start {
+            self.drive(key.clone(), turn);
+        }
+        self.publish(&key.connection_id);
         Ok(done)
     }
 
@@ -802,16 +1182,24 @@ impl SessionManager {
                         .and_then(|result| result),
                     Err(error) => Err(error),
                 };
+                manager.publish(&key.connection_id);
                 let _ = turn.reply.send(result);
-                let mut state = manager.state();
-                next = match state.sessions.get_mut(&key) {
-                    Some(session) => {
-                        let queued = session.queue.pop_front();
-                        session.busy = queued.is_some();
-                        queued
-                    }
-                    None => None,
-                };
+                {
+                    let mut state = manager.state();
+                    next = match state.sessions.get_mut(&key) {
+                        Some(session) => {
+                            let queued = session.queue.pop_front();
+                            session.busy = queued.is_some();
+                            session.settle();
+                            if queued.is_some() {
+                                session.started_at_ms = Some(now_ms());
+                            }
+                            queued
+                        }
+                        None => None,
+                    };
+                }
+                manager.publish(&key.connection_id);
             }
         });
     }
@@ -820,7 +1208,7 @@ impl SessionManager {
     /// their queued follow-ups. Each connection applies the existing five
     /// second Stop deadline. Sessions stay open.
     pub fn cancel(&self, key: &SessionKey) -> Result<(), String> {
-        let (turns, stops, root) = {
+        let (turns, stops, root, touched) = {
             let mut state = self.state();
             let root = state.service(&key.connection_id);
             let tree = state.tree(std::slice::from_ref(key));
@@ -839,8 +1227,9 @@ impl SessionManager {
                 session.cancel_epoch += 1;
                 turns.extend(session.queue.drain(..));
             }
-            (turns, stops, root)
+            (turns, stops, root, connections_of(&tree))
         };
+        self.publish_all(&touched);
         refuse(turns, "Cancelled before the turn started");
         for (service, session) in stops {
             let _ = service.cancel(session);
@@ -851,8 +1240,14 @@ impl SessionManager {
 
     /// Close a session (`session/close`). Children are cancelled first; once
     /// the agent confirms the close, they are closed and forgotten too. If
-    /// the close fails the children stay registered, cancelled.
+    /// the close fails the children stay registered, cancelled. A turn still
+    /// running in the session is stopped first (the usual Stop, with its
+    /// deadline), so closing never leaves work running that the manager no
+    /// longer tracks.
     pub async fn close(&self, key: &SessionKey) -> Result<(), String> {
+        if self.session(key).is_some_and(|s| s.busy) {
+            let _ = self.cancel(key);
+        }
         let service = self.end_children(key)?;
         service.close_session(key.session_id.clone()).await?;
         self.forget_tree(key).await;
@@ -883,15 +1278,16 @@ impl SessionManager {
     }
 
     async fn forget_tree(&self, key: &SessionKey) {
-        let (turns, stops) = {
+        let (turns, stops, touched) = {
             let mut state = self.state();
             let tree = state.tree(std::slice::from_ref(key));
             let (turns, mut stops) = state.detach(&tree);
             // The root itself was closed by the caller.
             stops.retain(|(child, _)| child != key);
-            (turns, stops)
+            (turns, stops, connections_of(&tree))
         };
         self.run_end_hooks();
+        self.publish_all(&touched);
         refuse(turns, "The session was closed before the turn started");
         for (child, service) in stops {
             let _ = service.cancel(child.session_id.clone());
@@ -1111,6 +1507,11 @@ impl Drop for Subscription {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
                 .subscribers
+                .remove(&self.id);
+            state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .state_watchers
                 .remove(&self.id);
         }
     }

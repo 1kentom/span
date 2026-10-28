@@ -519,9 +519,10 @@ describe("live announcements", () => {
     await tick();
     const bar = host.querySelector(".sb-activity")!;
     expect(bar).not.toBeNull();
-    expect(text(bar)).toMatch(/Working · 0s/);
+    // The bar names the phase (no tool yet, so the agent is thinking) and ticks a m:ss clock.
+    expect(text(bar)).toMatch(/Thinking · 0:00/);
     const live = [...host.querySelectorAll("[aria-live], [role=status], [role=alert]")];
-    for (const region of live) expect(text(region) ?? "", region.outerHTML).not.toMatch(/\d+s\b/);
+    for (const region of live) expect(text(region) ?? "", region.outerHTML).not.toMatch(/\d+s\b|\d+:\d\d/);
     expect(bar.closest("[aria-live], [role=status]")).toBeNull();
     const status = host.querySelector(".agent-run-status")!;
     expect(status.getAttribute("role")).toBe("status");

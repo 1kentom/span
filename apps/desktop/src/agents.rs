@@ -1,12 +1,39 @@
 use crate::DesktopState;
+use serde::Serialize;
 use span_acp::tools::{DelegationEventSink, DelegationStatus, ToolPolicy, ToolServerConfig};
 use span_acp::{
     AgentCommand, AgentEvent, AgentPreset, AgentService, AuthCredential, InstalledAgent,
-    PromptAttachment, RegistryAgent, SessionKey, SessionOrigin,
+    PromptAttachment, PromptError, RegistryAgent, SessionActivity, SessionKey, SessionOrigin,
+    SessionStates, PROMPT_ALREADY_RUNNING,
 };
 use span_core::{BufferSnapshot, CoreWorkspace};
+use specta::Type;
 use std::sync::{Arc, Mutex};
 use tauri::{ipc::Channel, Manager, State};
+use tauri_specta::Event;
+
+/// The session states of one agent connection changed: a turn started or
+/// ended, a request for the user was raised or answered, or a session was
+/// added or removed. The UI shows these as they are and never infers them.
+#[derive(Debug, Clone, Serialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionStatesChanged {
+    pub states: SessionStates,
+}
+
+/// Forward every session state change of the session manager to the UI for
+/// the life of the app.
+pub fn watch_session_states(app: &tauri::AppHandle) {
+    let state = app.state::<DesktopState>();
+    let handle = app.clone();
+    let subscription = state.sessions.watch_states(Arc::new(move |states| {
+        if let Err(error) = (AgentSessionStatesChanged { states }).emit(&handle) {
+            eprintln!("Could not report agent session states: {error}");
+        }
+    }));
+    // The watch lasts as long as the app: the manager lives in the app state.
+    std::mem::forget(subscription);
+}
 
 #[derive(Clone)]
 pub struct ActiveAgent {
@@ -318,13 +345,22 @@ pub async fn agent_resume_session(
     session_id: String,
 ) -> Result<String, String> {
     let agent = active(state.inner())?;
-    // ACP does not keep MCP servers across session/load, so with delegation
-    // on a fresh span-agents entry is offered in this load (ADR 0003).
-    let config = delegation_config(&app, state.inner(), &agent).await?;
-    state
-        .leads
-        .load_lead(&state.sessions, &agent.connection, &session_id, config)
-        .await?;
+    // A session Span holds that is still working (a turn in flight, queued
+    // follow-ups or a request waiting for the user) is shown as it is: a
+    // session/load would replay it over the live turn.
+    let live = state
+        .sessions
+        .session_state(&agent.key(&session_id))
+        .is_some_and(|s| s.state != SessionActivity::Idle || s.queued > 0);
+    if !live {
+        // ACP does not keep MCP servers across session/load, so with delegation
+        // on a fresh span-agents entry is offered in this load (ADR 0003).
+        let config = delegation_config(&app, state.inner(), &agent).await?;
+        state
+            .leads
+            .load_lead(&state.sessions, &agent.connection, &session_id, config)
+            .await?;
+    }
     switch_session(state.inner(), &agent.service, &session_id)?;
     Ok(session_id)
 }
@@ -355,18 +391,51 @@ pub async fn agent_delete_session(
     clear_if_active(state.inner(), &session_id)
 }
 
+/// Run a prompt in the active session and resolve when its turn ends. A
+/// session that already runs a turn refuses it with the typed
+/// `PromptError::Busy` (nothing is sent or queued), so the UI can offer
+/// steer or queue instead of showing an error.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_prompt(
     state: State<'_, DesktopState>,
     text: String,
     attachments: Option<Vec<PromptAttachment>>,
-) -> Result<(), String> {
-    let agent = active_session(state.inner())?;
-    agent
-        .service
-        .prompt(agent.session, text, attachments.unwrap_or_default())
-        .await
+) -> Result<(), PromptError> {
+    let agent = active_session(state.inner()).map_err(|message| PromptError::Failed { message })?;
+    let key = agent.key(&agent.session);
+    let done = state
+        .sessions
+        .start_turn(&key, text, attachments.unwrap_or_default())?;
+    match done.await {
+        Ok(Ok(())) => Ok(()),
+        // The agent itself still had a turn in flight (it started between
+        // the manager's check and the prompt reaching it).
+        Ok(Err(message)) if message == PROMPT_ALREADY_RUNNING => Err(PromptError::Busy {
+            message,
+            state: state.sessions.session_state(&key),
+        }),
+        Ok(Err(message)) => Err(PromptError::Failed { message }),
+        Err(_) => Err(PromptError::Failed {
+            message: "The session ended before the turn finished".into(),
+        }),
+    }
+}
+
+/// Runtime state of every session on the active connection: idle, running,
+/// waiting for an approval or an answer, queued follow-ups, when the current
+/// turn started and its current tool. `connectionId` is null without a
+/// connection. Changes arrive as `AgentSessionStatesChanged`.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_session_states(state: State<'_, DesktopState>) -> Result<SessionStates, String> {
+    Ok(match active(state.inner()) {
+        Ok(agent) => state.sessions.session_states(&agent.connection),
+        Err(_) => SessionStates {
+            connection_id: None,
+            sessions: Vec::new(),
+        },
+    })
 }
 
 /// Sign in with an advertised method, then create the session that was blocked.
