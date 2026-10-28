@@ -3,14 +3,21 @@ import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { DiffView } from "./WorkGroup";
 import type { Brand, PermissionChoice, PermissionDetails, QuestionAnswer, QuestionOption } from "./types";
-import { isTyping } from "./util";
+import { dockKey } from "./util";
 
-/** Registers a window key handler while `active` is true. */
-function useKeys(active: () => boolean, handler: (event: KeyboardEvent) => void) {
+/**
+ * Registers a key handler for one dock while `active` is true. It only sees keys pressed with focus inside the dock
+ * (see `dockKey`), never keys typed elsewhere. Capture phase, so the dock answers before the panel's Escape handler,
+ * which then sees the event as handled.
+ */
+function useDockKeys(dock: () => HTMLElement | undefined, active: () => boolean, handler: (event: KeyboardEvent) => void) {
   createEffect(() => {
     if (!active()) return;
-    window.addEventListener("keydown", handler);
-    onCleanup(() => window.removeEventListener("keydown", handler));
+    const listener = (event: KeyboardEvent) => {
+      if (dockKey(event, dock())) handler(event);
+    };
+    window.addEventListener("keydown", listener, true);
+    onCleanup(() => window.removeEventListener("keydown", listener, true));
   });
 }
 
@@ -30,10 +37,11 @@ type QuestionDockProps = {
 /** Form-mode elicitation: numbered options and optional free text. */
 export function QuestionDock(props: QuestionDockProps) {
   const [text, setText] = createSignal("");
-  useKeys(
+  let dock: HTMLElement | undefined;
+  useDockKeys(
+    () => dock,
     () => props.active !== false,
     (event) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event)) return;
       const option = /^[1-9]$/.test(event.key) ? props.options[Number(event.key) - 1] : undefined;
       if (option) {
         event.preventDefault();
@@ -50,7 +58,7 @@ export function QuestionDock(props: QuestionDockProps) {
     if (value) props.onAnswer({ text: value });
   };
   return (
-    <section class="sb-dock" role="group" aria-label="Question from the agent">
+    <section ref={dock} class="sb-dock" role="group" aria-label="Question from the agent" tabIndex={-1}>
       <div class="sb-dock-meta">
         <BrandIcon id={props.asker?.id} name={props.asker?.name} size={13} />
         <span>{props.asker?.label ?? props.asker?.name ?? "Agent"} is asking</span>
@@ -107,7 +115,8 @@ const SCOPE: Record<string, string> = { allow_always: "for this session" };
 const DOUBLE_APPROVAL = "This agent asks for permission here, then sends the write itself, so you may be asked a second time for the same edit.";
 
 /**
- * Permission request using the ACP option kinds. Y picks the first allow option, N the first reject.
+ * Permission request using the ACP option kinds. Y picks the first allow option, A the standing allow, N the first
+ * reject. Keys count only while focus is inside the dock.
  * `reject_always` is never drawn: the backend only forwards offered kinds and Span does not offer a standing reject.
  * An internal request (agent bookkeeping) starts collapsed to one row; the buttons stay so it can still be answered.
  */
@@ -115,17 +124,19 @@ export function PermissionDock(props: PermissionDockProps) {
   const sorted = () => props.options.filter((option) => option.kind !== "reject_always").sort((a, b) => rank(a.kind) - rank(b.kind));
   const allow = () => sorted().find((option) => option.kind.startsWith("allow"));
   const reject = () => sorted().find((option) => option.kind.startsWith("reject"));
-  const keyFor = (option: PermissionChoice) => (option === allow() ? "Y" : option === reject() ? "N" : "");
+  const always = () => sorted().find((option) => option.kind === "allow_always");
+  const keyFor = (option: PermissionChoice) => (option === allow() ? "Y" : option === reject() ? "N" : option === always() ? "A" : "");
   const internal = () => Boolean(props.details?.internal);
   const [open, setOpen] = createSignal(!props.details?.internal);
   const command = () => props.details?.command ?? props.command;
   const hasDetails = () => Boolean(command() || props.details?.locations.length || props.details?.diffs.length || props.details?.input || props.reason);
-  useKeys(
+  let dock: HTMLElement | undefined;
+  useDockKeys(
+    () => dock,
     () => props.active !== false && !props.busy,
     (event) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event)) return;
       const key = event.key.toLowerCase();
-      const option = key === "y" ? allow() : key === "n" ? reject() : undefined;
+      const option = key === "y" ? allow() : key === "n" ? reject() : key === "a" ? always() : undefined;
       if (option) {
         event.preventDefault();
         props.onChoose(option.optionId);
@@ -133,7 +144,7 @@ export function PermissionDock(props: PermissionDockProps) {
     },
   );
   return (
-    <section class="sb-dock" classList={{ internal: internal() }} role="group" aria-label={`${props.from ? `${props.from} asks permission` : "Permission requested"}: ${props.title}`}>
+    <section ref={dock} tabIndex={-1} class="sb-dock" classList={{ internal: internal() }} role="group" aria-label={`${props.from ? `${props.from} asks permission` : "Permission requested"}: ${props.title}`}>
       <div class="sb-dock-head">
         <span class="sb-dot warn" aria-hidden="true" />
         <span class="sb-dock-title" classList={{ muted: internal() }}>{props.title}</span>
@@ -220,10 +231,11 @@ type UrlDockProps = {
 
 /** Url-mode elicitation: send the user to the browser, never open it without a click or Enter. */
 export function UrlDock(props: UrlDockProps) {
-  useKeys(
+  let dock: HTMLElement | undefined;
+  useDockKeys(
+    () => dock,
     () => props.active !== false,
     (event) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event)) return;
       const target = event.target;
       if (event.key === "Enter" && !(target instanceof HTMLButtonElement)) {
         event.preventDefault();
@@ -235,7 +247,7 @@ export function UrlDock(props: UrlDockProps) {
     },
   );
   return (
-    <section class="sb-dock" role="group" aria-label={props.title}>
+    <section ref={dock} tabIndex={-1} class="sb-dock" role="group" aria-label={props.title}>
       <div class="sb-dock-head">
         <Icon name="Link2" size={13} class="sb-accent" />
         <span class="sb-dock-title">{props.title}</span>
@@ -263,12 +275,18 @@ export function UrlDock(props: UrlDockProps) {
   );
 }
 
-/** One line above the composer while the agent works: a shimmering label and a hint. */
-export function ActivityBar(props: { label: string; hint?: string }) {
+/**
+ * One line above the composer while the agent works: a shimmering label, the elapsed time and a hint.
+ * Deliberately not a live region: the timer changes every second. The composer announces start and stop once.
+ */
+export function ActivityBar(props: { label: string; elapsed?: string; hint?: string }) {
   return (
-    <div class="sb-activity" role="status" aria-live="polite">
+    <div class="sb-activity">
       <span class="sb-spinner" aria-hidden="true" />
-      <span class="sb-shimmer sb-ellipsis sb-flex">{props.label}</span>
+      <span class="sb-shimmer sb-ellipsis sb-flex">
+        {props.label}
+        <Show when={props.elapsed}> · {props.elapsed}</Show>
+      </span>
       <Show when={props.hint}><span class="sb-sub nowrap">{props.hint}</span></Show>
     </div>
   );

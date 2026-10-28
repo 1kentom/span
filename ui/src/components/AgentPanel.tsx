@@ -18,7 +18,8 @@ import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
 import { HistoryList } from "./agent/HistoryList";
 import { HintLine, SignIn } from "./agent/SignIn";
-import type { ActionView, HistoryScope, KeyHint } from "./agent/types";
+import type { ActionView, KeyHint } from "./agent/types";
+import { modalOpen } from "./agent/util";
 import "../styles/agent.css";
 
 const KEYS: KeyHint[] = [
@@ -30,7 +31,6 @@ const KEYS: KeyHint[] = [
 export function AgentPanel(props: AgentPanelProps) {
   const a = createAgentController(props);
   const [query, setQuery] = createSignal("");
-  const [scope, setScope] = createSignal<HistoryScope>("workspace");
   const [feedElement, setFeedElement] = createSignal<HTMLDivElement>();
   const agent = () => a.state().agent;
   const label = () => agent()?.title || agent()?.name || a.agentName();
@@ -111,13 +111,19 @@ export function AgentPanel(props: AgentPanelProps) {
     if (a.view() === "history") void a.loadSessions();
   };
 
+  let panel: HTMLElement | undefined;
   onMount(() => {
     const keyboard = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === ".") {
         event.preventDefault();
         a.focusPrompt();
       }
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.repeat) return;
+      // Escape belongs to whatever has focus. Only a key pressed inside this panel, outside a dock (docks answer
+      // Escape themselves) and with no modal open, closes the agent menu or stops the turn.
+      const target = event.target;
+      if (!panel || !(target instanceof Node) || !panel.contains(target) || modalOpen()) return;
+      if (target instanceof Element && target.closest(".sb-dock")) return;
       if (a.menu()) {
         event.preventDefault();
         a.setMenu(null);
@@ -151,6 +157,7 @@ export function AgentPanel(props: AgentPanelProps) {
 
   return (
     <section
+      ref={panel}
       class="agent-panel"
       aria-label="AI Assistant"
       onDragEnter={a.intake.onDragEnter}
@@ -253,7 +260,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 {a.sessionsError()}
               </p>
             </Show>
-            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} scope={scope()} onScope={setScope} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
+            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
               <p class="sb-fine agent-pad" role="status">
                 Loading chats…
               </p>

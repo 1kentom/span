@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { FileIcon, Icon } from "../Icon";
 import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } from "../attachments";
@@ -78,6 +78,24 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     return { ...details, doubleApproval: Boolean(a.state().agent?.features.doubleApproval) && edits };
   };
   const line = () => delegationLine(a.state().delegation, a.state().sessionId);
+  /** One dock instance per request: a new request id remounts the dock, so its open state starts fresh. */
+  const sameRequest = <T extends { event: { requestId: string } } | undefined>(previous: T, next: T) => previous?.event.requestId === next?.event.requestId;
+  const leadRequest = createMemo(() => a.permission(), undefined, { equals: sameRequest });
+  const childRequest = createMemo(() => (a.permission() ? undefined : a.childPermission()), undefined, { equals: sameRequest });
+  /** Read once by screen readers when a dock appears. The docks themselves stay out of any live region. */
+  const announcement = () => {
+    const lead = a.permission();
+    if (lead) return `Permission requested: ${lead.event.title}`;
+    const child = a.childPermission();
+    if (child) return `${child.agentName} asks permission: ${child.event.title}`;
+    const ask = a.elicitation();
+    if (ask) return ask.mode === "url" ? `The agent asks you to open a page: ${ask.message}` : `Question from the agent: ${ask.message}`;
+    return "";
+  };
+  /** Start and stop of a turn, announced once each. The elapsed timer is never announced. */
+  const [ran, setRan] = createSignal(false);
+  createEffect(on(a.running, (running) => running && setRan(true)));
+  const runStatus = () => (a.running() ? "Agent is working" : ran() ? "Agent finished" : "");
   const field = () => a.fields()[a.form()?.index ?? 0];
   const unavailable = isDesktop ? undefined : ATTACH_UNAVAILABLE;
   /** Only items with a real handler are offered. Folder, Earlier session and Paste screenshot have none (no folder picker, no session attach, no image clipboard command), so they are omitted rather than stubbed. */
@@ -119,6 +137,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
 
   return (
     <footer class="agent-footer">
+      <p class="sb-visually-hidden" aria-live="assertive" aria-atomic="true">{announcement()}</p>
+      <p class="sb-visually-hidden agent-run-status" role="status">{runStatus()}</p>
       <Show when={line()}>
         {(entry) => (
           <div class="agent-delegation-line" classList={{ warn: entry().tone === "warn" }} role="status">
@@ -142,7 +162,10 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
       <Show when={a.queue().length}>
         <QueuePanel
           items={a.queue().map((entry) => ({ id: entry.id, text: entry.text || `${entry.items.length} attachment${entry.items.length === 1 ? "" : "s"}` }))}
-          note={a.online() ? "Sent when the agent is idle" : "Sent when you're back online"}
+          note={a.queueHeld() ? undefined : a.online() ? "Sent when the agent is idle" : "Sent when you're back online"}
+          held={a.queueHeld()}
+          canSendAll={a.connected() && !a.running() && a.online()}
+          onSendAll={a.sendQueued}
           onEdit={a.editQueued}
           onRemove={a.removeQueued}
           onSendNow={a.sendQueuedNow}
@@ -150,29 +173,29 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         />
       </Show>
       <Show when={a.running()}>
-        <ActivityBar label={`${a.state().stopRequested ? "Stopping" : "Working"} · ${formatElapsed(a.clock() - a.turnStart())}`} hint={a.state().stopRequested ? undefined : "Esc to stop"} />
+        <ActivityBar label={a.state().stopRequested ? "Stopping" : "Working"} elapsed={formatElapsed(a.clock() - a.turnStart())} hint={a.state().stopRequested ? undefined : "Esc to stop"} />
       </Show>
-      <Show when={a.permission()}>
+      <Show when={leadRequest()} keyed>
         {(request) => (
           <PermissionDock
-            title={request().event.title}
+            title={request.event.title}
             brand={props.brand}
-            details={permissionView(request().event)}
-            options={request().event.options}
+            details={permissionView(request.event)}
+            options={request.event.options}
             busy={Boolean(a.pendingAction())}
-            onChoose={(optionId) => void a.answerPermission(request().event.requestId, optionId)}
+            onChoose={(optionId) => void a.answerPermission(request.event.requestId, optionId)}
           />
         )}
       </Show>
-      <Show when={!a.permission() && a.childPermission()}>
+      <Show when={childRequest()} keyed>
         {(request) => (
           <PermissionDock
-            title={request().event.title}
-            from={request().agentName}
-            details={permissionView(request().event)}
-            options={request().event.options}
+            title={request.event.title}
+            from={request.agentName}
+            details={permissionView(request.event)}
+            options={request.event.options}
             busy={Boolean(a.pendingAction())}
-            onChoose={(optionId) => void a.answerChildPermission(request(), optionId)}
+            onChoose={(optionId) => void a.answerChildPermission(request, optionId)}
           />
         )}
       </Show>

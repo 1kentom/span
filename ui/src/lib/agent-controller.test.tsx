@@ -447,3 +447,210 @@ describe("delegated child permissions", () => {
     expect(card?.kind === "delegation" && card.task.detail).toBe("No reply in 30 minutes");
   });
 });
+
+/** A prompt call the test settles by hand, standing in for the backend's session/prompt round trip. */
+function controllablePrompts() {
+  const calls: { message: string; resolve: () => void; reject: (cause: Error) => void }[] = [];
+  mocks.api.agentPrompt.mockImplementation(
+    (message: string) =>
+      new Promise<void>((resolve, reject) => {
+        calls.push({ message, resolve, reject });
+      }),
+  );
+  return calls;
+}
+const sent = () => mocks.api.agentPrompt.mock.calls.map((call) => call[0] as string);
+/** Reconnects through the real controller path, as the Reconnect button does. */
+function reconnectWith(a: AgentController) {
+  mocks.api.agentConnect.mockImplementationOnce(async () => {
+    mocks.emit({ kind: "ready", agentName: "a", agentTitle: "Agent", agentVersion: "1", features: features(), authMethods: [] }, { kind: "session", sessionId: "s2" });
+    return "s2";
+  });
+  a.reconnect();
+  return tick();
+}
+
+describe("steer recovery", () => {
+  it("normal path: sends the steer once after the cancelled turn completes, and never again", async () => {
+    const calls = controllablePrompts();
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("change course");
+    await a.steer();
+    await tick();
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "cancelled" });
+    calls[0].resolve();
+    await tick();
+    expect(sent()).toEqual(["first", "change course"]);
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "end_turn" });
+    calls[1].resolve();
+    await tick();
+    expect(sent()).toEqual(["first", "change course"]);
+    expect(a.prompt()).toBe("");
+  });
+
+  it("connection killed by the Stop deadline: the steer returns to the composer, not the cancelled turn's text, and never fires later", async () => {
+    const calls = controllablePrompts();
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("change course");
+    await a.steer();
+    await tick();
+    // The cancel was sent, but the agent never ended the turn, so the backend killed the connection.
+    mocks.emit({ kind: "status", state: "disconnected", message: "Agent stopped responding to cancel" });
+    calls[0].reject(new Error("The agent connection closed"));
+    await tick();
+    expect(a.prompt()).toBe("change course");
+    expect(a.queue()).toEqual([]);
+    expect(sent()).toEqual(["first"]);
+    await reconnectWith(a);
+    a.setPrompt("unrelated");
+    await a.send();
+    mocks.emit({ kind: "complete", sessionId: "s2", stopReason: "end_turn" });
+    calls[1].resolve();
+    await tick();
+    expect(sent()).toEqual(["first", "unrelated"]);
+  });
+
+  it("JSON-RPC error on the cancelled prompt: the steer is restored and a later unrelated turn does not send it", async () => {
+    const calls = controllablePrompts();
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("change course");
+    await a.steer();
+    await tick();
+    calls[0].reject(new Error("JSON-RPC error -32603: Internal error"));
+    await tick();
+    expect(a.running()).toBe(false);
+    expect(a.prompt()).toBe("change course");
+    expect(sent()).toEqual(["first"]);
+    a.setPrompt("next");
+    await a.send();
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "end_turn" });
+    calls[1].resolve();
+    await tick();
+    expect(sent()).toEqual(["first", "next"]);
+  });
+
+  it("an error event while steering puts the steer at the front of the queue when the composer holds a draft", async () => {
+    controllablePrompts();
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("queued");
+    await a.send();
+    a.setPrompt("change course");
+    await a.steer();
+    await tick();
+    a.setPrompt("my draft");
+    mocks.emit({ kind: "error", message: "session/prompt failed" });
+    await tick();
+    expect(a.prompt()).toBe("my draft");
+    expect(a.queue().map((entry) => entry.text)).toEqual(["change course", "queued"]);
+    expect(sent()).toEqual(["first"]);
+  });
+
+  it("a message sent after the steered turn ended but before the cancel resolved waits behind the steer", async () => {
+    const calls = controllablePrompts();
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    const cancel = deferred();
+    mocks.api.agentCancel.mockImplementationOnce(() => cancel.promise);
+    a.setPrompt("change course");
+    await a.steer();
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "end_turn" });
+    calls[0].resolve();
+    await tick();
+    a.setPrompt("other");
+    await a.send();
+    cancel.resolve();
+    await tick();
+    expect(sent()).toEqual(["first", "change course"]);
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "end_turn" });
+    calls[1].resolve();
+    await tick();
+    expect(sent()).toEqual(["first", "change course", "other"]);
+  });
+});
+
+describe("queued messages after errors and reconnects", () => {
+  it("does not auto-send after an error, keeps the queue visible and sends it on Send queued", async () => {
+    const calls = controllablePrompts();
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("second");
+    await a.send();
+    mocks.emit({ kind: "error", message: "rate limited" });
+    calls[0].reject(new Error("rate limited"));
+    await tick();
+    expect(a.running()).toBe(false);
+    expect(sent()).toEqual(["first"]);
+    expect(a.queue().map((entry) => entry.text)).toEqual(["second"]);
+    expect(a.queueHeld()).toBe(true);
+    a.sendQueued();
+    await tick();
+    expect(sent()).toEqual(["first", "second"]);
+    expect(a.queue()).toEqual([]);
+    expect(a.queueHeld()).toBe(false);
+  });
+
+  it("keeps queued messages across a reconnect and a new chat, held until the user sends them", async () => {
+    controllablePrompts();
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("second");
+    await a.send();
+    mocks.emit({ kind: "status", state: "disconnected", message: "exited" });
+    await tick();
+    await reconnectWith(a);
+    expect(a.connected()).toBe(true);
+    expect(a.queue().map((entry) => entry.text)).toEqual(["second"]);
+    await a.newChat();
+    expect(a.queue().map((entry) => entry.text)).toEqual(["second"]);
+    expect(a.queueHeld()).toBe(true);
+    expect(sent()).toEqual(["first"]);
+  });
+
+  it("separates new text from the attachments when an attachment-only queued message is edited", async () => {
+    controllablePrompts();
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    await a.intake.addFiles([file("notes.md", "text/markdown", "# hi")], "picked");
+    await a.send();
+    const entry = a.queue()[0];
+    expect(entry.text).toBe("");
+    a.editQueued(entry.id, "look at this");
+    expect(a.queue()[0].text).toBe("look at this");
+    expect(a.queue()[0].message).toBe(`look at this\n\n${entry.message}`);
+  });
+});
+
+describe("follow mode and delegated children", () => {
+  it("follows only tool calls of the current session, not a delegated child's", async () => {
+    const onOpenFile = vi.fn();
+    const a = await connected(features(), { onOpenFile });
+    a.toggleFollow();
+    mocks.emit({ ...tool("c1", [{ path: "/w/child.ts", line: 3 }]), sessionId: "child-1" } as AgentEvent);
+    expect(onOpenFile).not.toHaveBeenCalled();
+    mocks.emit(tool("l1", [{ path: "/w/lead.ts", line: 4 }]));
+    expect(onOpenFile).toHaveBeenCalledWith("lead.ts", 4);
+  });
+});
+
+describe("saving attachments with names other systems reject", () => {
+  it("sanitises every character core rejects, and shows the name the file was saved under", async () => {
+    mocks.api.saveAttachment.mockImplementation(async (_dir: string, name: string) => ({ path: `assets/${name}`, size: 2, renamed: false }));
+    const a = setup();
+    await a.intake.addFiles([file("a?b*c.png", "image/png", new Uint8Array([1, 2]))], "pasted");
+    await a.saveAttachment(a.attachments()[0]);
+    expect(mocks.api.saveAttachment).toHaveBeenLastCalledWith("assets", "a-b-c.png", expect.any(String));
+    expect(a.attachments()[0].name).toBe("a-b-c.png");
+  });
+});

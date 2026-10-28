@@ -15,11 +15,28 @@ export function useEscape(handler: () => void, active: () => boolean = () => tru
   });
 }
 
-/** True when the key event came from a text field the user is typing into. */
+/** True when the key event came from a text field, empty or not. An empty composer is still a place the user types. */
 export function isTyping(event: KeyboardEvent): boolean {
   const target = event.target;
-  if (target instanceof HTMLTextAreaElement) return target.value.length > 0;
-  return target instanceof HTMLInputElement || (target instanceof HTMLElement && target.isContentEditable);
+  return target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+}
+
+/** True while a modal dialog (for example the attachment viewer) is open over the page. */
+export const modalOpen = () => typeof document !== "undefined" && document.querySelector('[aria-modal="true"]') !== null;
+
+/**
+ * Whether a dock may act on this key. Only keys pressed with focus inside `dock` count, so typing in the composer,
+ * the editor or a dialog never answers a request. Repeats, IME composition, handled events, modifier combos (Shift is
+ * allowed for letters, so a capital Y still counts) and keys typed into a text field inside the dock are ignored.
+ */
+export function dockKey(event: KeyboardEvent, dock: HTMLElement | undefined): boolean {
+  if (!dock || event.defaultPrevented || event.repeat || event.isComposing) return false;
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (event.shiftKey && !/^[a-z]$/i.test(event.key)) return false;
+  const target = event.target;
+  if (!(target instanceof Node) || !dock.contains(target)) return false;
+  if (isTyping(event) || modalOpen()) return false;
+  return true;
 }
 
 /** Moves focus between the enabled buttons of a container with the arrow keys. */

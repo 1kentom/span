@@ -10,6 +10,14 @@ type QueuePanelProps = {
   onRemove: (id: string) => void;
   onSendNow: (id: string) => void;
   onClear: () => void;
+  /**
+   * The queue is not drained on its own: the last turn ended with an error, or the agent reconnected or a new chat
+   * started since the messages were queued. Shows a notice and, with `onSendAll`, a one-click Send queued.
+   */
+  held?: boolean;
+  /** Whether Send queued can run now (connected, idle, online). The button shows disabled otherwise. */
+  canSendAll?: boolean;
+  onSendAll?: () => void;
 };
 
 /** Follow-ups queued on the client while the agent works. */
@@ -30,8 +38,21 @@ export function QueuePanel(props: QueuePanelProps) {
       <div class="sb-queue-head">
         <span class="strong">{props.items.length} queued</span>
         <span class="sb-sub sb-ellipsis sb-flex">{props.note}</span>
+        <Show when={props.held && props.onSendAll}>
+          <button
+            class="sb-btn ghost accent"
+            aria-label={`Send ${props.items.length} queued message${props.items.length === 1 ? "" : "s"}`}
+            disabled={props.canSendAll === false}
+            onClick={() => props.onSendAll?.()}
+          >
+            Send queued
+          </button>
+        </Show>
         <button class="sb-btn ghost" onClick={props.onClear}>Clear</button>
       </div>
+      <Show when={props.held}>
+        <p class="sb-sub sb-queue-held" role="status">Not sent: the last turn ended with an error or the agent reconnected.</p>
+      </Show>
       <ol class="sb-queue">
         <For each={props.items}>
           {(item, index) => (

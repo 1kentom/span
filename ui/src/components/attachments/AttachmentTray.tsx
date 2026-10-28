@@ -32,8 +32,7 @@ export interface AttachmentTrayProps {
 }
 
 /**
- * Tile view of the pending attachments, shown above the prompt. This is a sibling of AttachmentChips rather
- * than an extension of it: the chip is a single 22px row, the tile has a thumbnail area, progress and a
+ * Tile view of the pending attachments, shown above the prompt. The tile has a thumbnail area, progress and a
  * state line. It reuses the chip helpers (block reason, icons, labels) so the rules stay in one place.
  */
 export function AttachmentTray(props: AttachmentTrayProps) {

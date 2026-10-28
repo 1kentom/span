@@ -136,6 +136,12 @@ describe("HistoryList", () => {
     search.dispatchEvent(new InputEvent("input", { bubbles: true }));
     expect(host.textContent).toContain("No sessions found.");
   });
+  it("hides the scope control when no unfiltered list exists, and shows every row it is given", () => {
+    const host = mount(() => <HistoryList rows={rows} now={noon} query="" onQuery={() => undefined} formatTime={() => "t"} onOpen={() => undefined} />);
+    expect(host.querySelector("[aria-label='Session scope']")).toBeNull();
+    expect(host.textContent).not.toContain("All folders");
+    expect(host.querySelectorAll(".sb-session")).toHaveLength(3);
+  });
   it("opens unlocked rows and blocks locked ones with the reason", () => {
     const { host, calls } = view();
     const buttons = host.querySelectorAll<HTMLButtonElement>(".sb-session-main");

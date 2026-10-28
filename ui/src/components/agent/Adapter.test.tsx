@@ -473,3 +473,77 @@ describe("Gemini legacy modes and models", () => {
     expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("model", "gemini-2.5-flash");
   });
 });
+
+describe("permission dock per request", () => {
+  const ask = (requestId: string, patch: Record<string, unknown> = {}): AgentEvent =>
+    ({ kind: "permission", sessionId: "s1", requestId, toolCallId: `t-${requestId}`, title: `Request ${requestId}`, options, toolKind: "execute", rawInput: { command: "pnpm publish" }, ...patch }) as AgentEvent;
+  it("starts each request with its own open state: a real request after an internal one shows its command", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "gemini", name: "Gemini" }} label="Gemini" />);
+    mocks.emit(ask("r1", { internal: true, title: "resolve-prompt-1" }), ask("r2"));
+    await tick();
+    expect(host.querySelector(".sb-dock.internal")).not.toBeNull();
+    expect(host.querySelector(".sb-dock-details")).toBeNull();
+    click(host.querySelector(".sb-dock .sb-actions button"));
+    await tick();
+    expect(mocks.api.agentPermission).toHaveBeenCalledWith("r1", "ao");
+    const dock = host.querySelector(".sb-dock")!;
+    expect(dock.getAttribute("aria-label")).toBe("Permission requested: Request r2");
+    expect(dock.classList.contains("internal")).toBe(false);
+    expect(text(dock.querySelector(".sb-dock-command"))).toContain("pnpm publish");
+  });
+});
+
+describe("live announcements", () => {
+  it("announces a new permission dock assertively with its title", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "gemini", name: "Gemini" }} label="Gemini" />);
+    const line = () => host.querySelector("[aria-live='assertive']");
+    expect(line()).not.toBeNull();
+    expect(text(line())).toBe("");
+    mocks.emit({ kind: "permission", sessionId: "s1", requestId: "r1", toolCallId: "t1", title: "Run pnpm publish", options } as AgentEvent);
+    await tick();
+    expect(line()!.classList.contains("sb-visually-hidden")).toBe(true);
+    expect(text(line())).toBe("Permission requested: Run pnpm publish");
+  });
+
+  it("announces a question dock assertively with its message", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "gemini", name: "Gemini" }} label="Gemini" />);
+    mocks.emit({ kind: "elicitation", requestId: "e1", sessionId: "s1", toolCallId: null, mode: "form", message: "Pick a database", schemaJson: null, url: null, elicitationId: null } as AgentEvent);
+    await tick();
+    expect(text(host.querySelector("[aria-live='assertive']"))).toBe("Question from the agent: Pick a database");
+  });
+
+  it("keeps the ticking timer out of every live region and announces only start and stop", async () => {
+    const { a, host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "gemini", name: "Gemini" }} label="Gemini" />);
+    a.setPrompt("go");
+    await a.send();
+    await tick();
+    const bar = host.querySelector(".sb-activity")!;
+    expect(bar).not.toBeNull();
+    expect(text(bar)).toMatch(/Working · 0s/);
+    const live = [...host.querySelectorAll("[aria-live], [role=status], [role=alert]")];
+    for (const region of live) expect(text(region) ?? "", region.outerHTML).not.toMatch(/\d+s\b/);
+    expect(bar.closest("[aria-live], [role=status]")).toBeNull();
+    const status = host.querySelector(".agent-run-status")!;
+    expect(status.getAttribute("role")).toBe("status");
+    expect(text(status)).toBe("Agent is working");
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "end_turn" } as AgentEvent);
+    await tick();
+    expect(text(status)).toBe("Agent finished");
+  });
+
+  it("marks the streaming message busy and does not make the feed a live region", async () => {
+    const { a, host } = await withAgent((agent) => <AgentFeed agent={agent} />);
+    a.setPrompt("go");
+    await a.send();
+    mocks.emit({ kind: "text", sessionId: "s1", text: "Hello" } as AgentEvent);
+    await tick();
+    const feed = host.querySelector(".agent-feed")!;
+    expect(feed.hasAttribute("aria-live")).toBe(false);
+    expect(feed.querySelector("[aria-live]")).toBeNull();
+    const message = host.querySelector(".agent-message.text")!;
+    expect(message.getAttribute("aria-busy")).toBe("true");
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "end_turn" } as AgentEvent);
+    await tick();
+    expect(message.getAttribute("aria-busy")).not.toBe("true");
+  });
+});

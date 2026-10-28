@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { FeedItem, ToolEvent } from "./agent-session";
-import { buildBlocks, buildPrompt, changedFiles, classifyFailure, coerceAnswer, configViews, diffLines, formFields, levelOf, slashGroups, splitCommandLine, stopView, toStep, workSummary } from "./agent-view";
+import type { FeedItem, PermissionEvent, ToolEvent } from "./agent-session";
+import { buildBlocks, buildPrompt, changedFiles, classifyFailure, coerceAnswer, configViews, diffLines, formFields, levelOf, permissionDetails, saveName, slashGroups, splitCommandLine, stopView, toStep, workSummary } from "./agent-view";
 import { createFileAttachment, createPastedText, createWorkspaceFile } from "./attachments";
 
 const tool = (id: string, patch: Partial<ToolEvent> = {}): ToolEvent => ({ kind: "tool", sessionId: "s", toolCallId: id, title: id, status: "completed", toolKind: "read", parentToolCallId: null, contentJson: "{}", ...patch });
@@ -173,7 +173,7 @@ describe("workspaceRelative and toolLocations", () => {
 });
 
 describe("toStep click targets", () => {
-  it("opens a located tool target at its line and a diff at its first changed line", () => {
+  it("opens a located tool target at its line, and a diff with unknown line context at the top of the file", () => {
     const open = (path: string, line?: number) => calls.push([path, line]);
     const calls: [string, number | undefined][] = [];
     const read = toStep(tool("r", { contentJson: JSON.stringify({ locations: [{ path: "/w/a.ts", line: 9 }] }) }), [], "/w", open);
@@ -183,6 +183,79 @@ describe("toStep click targets", () => {
     const edit = toStep(tool("e", { toolKind: "edit", contentJson: JSON.stringify({ content: [{ type: "diff", path: "/w/b.ts", oldText: "a\nb\nc", newText: "a\nB\nc" }] }) }), [], "/w", open);
     expect(edit.detail?.type === "diff" && edit.detail.onOpen).toBeTruthy();
     if (edit.detail?.type === "diff") edit.detail.onOpen!();
-    expect(calls.at(-1)).toEqual(["b.ts", 2]);
+    // oldText may be only the replaced snippet and no location gives a line, so the diff does not claim line 2.
+    expect(calls.at(-1)).toEqual(["b.ts", undefined]);
+  });
+});
+
+describe("diff line numbers only when the line context is known", () => {
+  const edit = (oldText: string | null, newText: string, locations?: { path: string; line?: number }[]) =>
+    tool("e", { toolKind: "edit", locations, diffs: [{ path: "/w/src/a.ts", resolved: true, change: oldText ? "modify" : "add", oldText, newText }] } as Partial<ToolEvent>);
+  it("hides gutter numbers and opens at the first location line when the old text may be only a snippet", () => {
+    const calls: [string, number | undefined][] = [];
+    const step = toStep(edit("const b = 1;\n", "const b = 2;\n", [{ path: "/w/src/a.ts", line: 40 }]), [], "/w", (path, line) => calls.push([path, line]));
+    expect(step.detail?.type).toBe("diff");
+    if (step.detail?.type !== "diff") return;
+    expect(step.detail.lines.length).toBeGreaterThan(0);
+    expect(step.detail.lines.every((line) => line.n === undefined)).toBe(true);
+    step.detail.onOpen!();
+    expect(calls).toEqual([["src/a.ts", 40]]);
+  });
+  it("opens a snippet diff without a line when no location line is known", () => {
+    const calls: [string, number | undefined][] = [];
+    const step = toStep(edit("x\n", "y\n"), [], "/w", (path, line) => calls.push([path, line]));
+    if (step.detail?.type !== "diff") throw new Error("no diff");
+    expect(step.detail.lines.every((line) => line.n === undefined)).toBe(true);
+    step.detail.onOpen!();
+    expect(calls).toEqual([["src/a.ts", undefined]]);
+  });
+  it("keeps numbers for a new file and when the location line matches the first changed line", () => {
+    const added = toStep(edit(null, "one\ntwo"), [], "/w", () => undefined);
+    if (added.detail?.type !== "diff") throw new Error("no diff");
+    expect(added.detail.lines.map((line) => line.n)).toEqual([1, 2]);
+    const matched = toStep(edit("a\nb\nc\n", "a\nB\nc\n", [{ path: "/w/src/a.ts", line: 2 }]), [], "/w", () => undefined);
+    if (matched.detail?.type !== "diff") throw new Error("no diff");
+    expect(matched.detail.lines.find((line) => line.kind === "add")?.n).toBe(2);
+  });
+  it("applies the same rule to permission previews", () => {
+    const event = { kind: "permission", sessionId: "s", requestId: "r", toolCallId: "t", title: "Edit", options: [], locations: [{ path: "/w/src/a.ts", line: 40 }], diffs: [{ path: "/w/src/a.ts", resolved: true, change: "modify", oldText: "b\n", newText: "B\n" }] } as unknown as PermissionEvent;
+    const calls: [string, number | undefined][] = [];
+    const details = permissionDetails(event, "/w", (path, line) => calls.push([path, line]));
+    expect(details.diffs[0].lines.every((line) => line.n === undefined)).toBe(true);
+    details.diffs[0].onOpen!();
+    expect(calls).toEqual([["/w/src/a.ts", 40]]);
+  });
+});
+
+describe("paths outside the workspace", () => {
+  it("renders step targets and diff headers outside the root as plain text, with no open action", () => {
+    const open = () => undefined;
+    expect(toStep(tool("r", { locations: [{ path: "/etc/passwd", line: 1 }] } as Partial<ToolEvent>), [], "/w", open).onOpen).toBeUndefined();
+    expect(toStep(tool("u", { locations: [{ path: "/w/../secret.txt" }] } as Partial<ToolEvent>), [], "/w", open).onOpen).toBeUndefined();
+    const diff = toStep(tool("e", { toolKind: "edit", diffs: [{ path: "/etc/hosts", resolved: true, change: "modify", oldText: "a", newText: "b" }] } as Partial<ToolEvent>), [], "/w", open);
+    expect(diff.detail?.type === "diff" && diff.detail.onOpen).toBeFalsy();
+    expect(toStep(tool("in", { locations: [{ path: "/w/a.ts" }] } as Partial<ToolEvent>), [], "/w", open).onOpen).toBeDefined();
+  });
+});
+
+describe("saveName", () => {
+  const named = (name: string) => saveName({ ...createPastedText("x"), name });
+  it("replaces every character core save_attachment rejects", () => {
+    expect(named("a?b.png")).toBe("a-b.png");
+    expect(named('<a>:b"c|d*e.txt')).toBe("-a--b-c-d-e.txt");
+    expect(named("tab\there.md")).toBe("tab-here.md");
+    expect(named("dir/sub\\x.md")).toBe("dir-sub-x.md");
+  });
+  it("drops trailing dots and spaces and avoids reserved Windows names and protected folders", () => {
+    expect(named("notes. ")).toBe("notes.txt");
+    expect(named("report.pdf. ")).toBe("report.pdf");
+    expect(named("CON.txt")).toBe("_CON.txt");
+    expect(named("com1.log")).toBe("_com1.log");
+    expect(named(".git")).toBe("_.git");
+    expect(named("...")).toBe("attachment.txt");
+  });
+  it("keeps ordinary names and adds .txt to pasted text without an extension", () => {
+    expect(named("shot.png")).toBe("shot.png");
+    expect(named("Pasted text, 31 lines")).toBe("Pasted text, 31 lines.txt");
   });
 });

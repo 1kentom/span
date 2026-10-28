@@ -225,6 +225,24 @@ const text = (value: unknown) => (typeof value === "string" ? value : undefined)
 
 type ToolDiffLike = { path: string; resolved?: boolean; change?: string; oldText?: string | null; newText: string };
 
+/**
+ * Lines of a tool diff, with file line numbers only when they can be trusted. Adapters often send just the replaced
+ * snippet as `oldText`, so numbers counted from it are not file lines. They are kept for a new file (the new text is
+ * the whole file) and when the agent's location line agrees with the first changed line; otherwise the gutter is left
+ * empty and the diff opens at the location line, or at the top of the file when there is none.
+ */
+function diffView(entry: ToolDiffLike, locationLine: number | undefined, limit?: number): { lines: DiffLine[]; openAt?: number } {
+  const lines = diffLines(entry.oldText ?? "", entry.newText, 2, limit);
+  const firstChanged = lines.find((line) => line.kind !== "ctx" && line.n !== undefined)?.n;
+  const known = !entry.oldText || (locationLine !== undefined && locationLine === firstChanged);
+  if (known) return { lines, openAt: firstChanged ?? locationLine };
+  return { lines: lines.map(({ n: _n, ...line }) => line), openAt: locationLine };
+}
+/** The line of the location that names `path`, or of the only location when the call has exactly one. */
+function lineFor(locations: readonly ToolLocation[], path: string): number | undefined {
+  return (locations.find((location) => location.path === path) ?? (locations.length === 1 ? locations[0] : undefined))?.line;
+}
+
 /** Diffs from a tool call's `content` blocks, for requests that carry no typed `diffs`. */
 function contentDiffs(content: unknown): ToolDiffLike[] {
   if (!Array.isArray(content)) return [];
@@ -285,20 +303,21 @@ export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: s
   };
   if (tool.internal) step.internal = true;
   if (hint && !pendingHint) step.note = hint;
-  const located = typedLocations(tool.locations ?? undefined, tool.contentJson)[0];
-  if (located && onOpen) step.onOpen = () => onOpen(located.path, located.line);
+  const allLocations = typedLocations(tool.locations ?? undefined, tool.contentJson);
+  const located = allLocations[0];
+  // A path outside the workspace is shown as plain text: no click target that would only be refused.
+  if (located && onOpen && workspaceRelative(root, located.path)) step.onOpen = () => onOpen(located.path, located.line);
   const diffs: ToolDiffLike[] = tool.diffs?.length ? [...tool.diffs] : contentDiffs(content);
   const diff = diffs[0];
   if (diff) {
     const path = relativeTo(root, diff.path);
     const all = diffs.map((entry) => diffLines(entry.oldText ?? "", entry.newText));
-    const diffed = all[0];
+    const view = diffView(diff, lineFor(allLocations, diff.path));
     step.delta = { add: all.flat().filter((line) => line.kind === "add").length, del: all.flat().filter((line) => line.kind === "del").length };
     if (diffs.length > 1) step.meta = `+${diffs.length - 1} more ${diffs.length === 2 ? "file" : "files"}`;
-    const firstChanged = diffed.find((line) => line.kind !== "ctx" && line.n !== undefined)?.n;
-    // An unresolved path is a bare name the agent sent, so it is shown but never opened.
-    const openable = diff.resolved !== false || tool.diffs === undefined || tool.diffs.length === 0;
-    step.detail = { type: "diff", path, lines: diffed, onOpen: onOpen && openable ? () => onOpen(path, firstChanged) : undefined };
+    // An unresolved path is a bare name the agent sent, so it is shown but never opened. Nor is one outside the workspace.
+    const openable = (diff.resolved !== false || tool.diffs === undefined || tool.diffs.length === 0) && Boolean(workspaceRelative(root, diff.path));
+    step.detail = { type: "diff", path, lines: view.lines, onOpen: onOpen && openable ? () => onOpen(path, view.openAt) : undefined };
   } else if (kind === "run") {
     const command = commandText(rawInput);
     const output: TermLine[] = [];
@@ -374,21 +393,21 @@ export function boundedInput(raw: unknown): string | undefined {
 export function permissionDetails(event: PermissionEvent, root?: string, onOpen?: (path: string, line?: number) => void, tool?: ToolEvent): PermissionDetails {
   const rawInput = event.rawInput ?? tool?.rawInput;
   const command = commandText(rawInput);
-  const locations: PermissionLocation[] = typedLocations(event.locations ?? tool?.locations ?? undefined, tool?.contentJson ?? "{}").map((location) => ({
+  const located = typedLocations(event.locations ?? tool?.locations ?? undefined, tool?.contentJson ?? "{}");
+  const locations: PermissionLocation[] = located.map((location) => ({
     label: relativeTo(root, location.path),
     line: location.line,
     onOpen: onOpen && workspaceRelative(root, location.path) ? () => onOpen(location.path, location.line) : undefined,
   }));
   const found: ToolDiffLike[] = event.diffs?.length ? [...event.diffs] : contentDiffs(event.content);
   const diffs: PermissionDiff[] = found.slice(0, PERMISSION_DIFFS).map((entry) => {
-    const lines = diffLines(entry.oldText ?? "", entry.newText, 2, 120);
-    const firstChanged = lines.find((line) => line.kind !== "ctx" && line.n !== undefined)?.n;
+    const view = diffView(entry, lineFor(located, entry.path), 120);
     return {
       path: relativeTo(root, entry.path),
       change: entry.change ?? (entry.oldText ? "modify" : "add"),
-      lines,
+      lines: view.lines,
       // A path that was not resolved is a bare name from the agent: shown, never opened.
-      onOpen: onOpen && entry.resolved !== false && workspaceRelative(root, entry.path) ? () => onOpen(entry.path, firstChanged) : undefined,
+      onOpen: onOpen && entry.resolved !== false && workspaceRelative(root, entry.path) ? () => onOpen(entry.path, view.openAt) : undefined,
     };
   });
   const target = command ?? (tool ? toolTarget({ ...tool, rawInput }) : toolTarget({ rawInput, locations: event.locations, contentJson: "{}" }));
@@ -605,6 +624,26 @@ export function buildPrompt(message: string, items: readonly Attachment[], caps:
   return { text: inline.length ? `${message}${message ? "\n\n" : ""}Attached:\n\n${inline.join("\n\n")}` : message, attachments, blocked };
 }
 
-/** Workspace-relative name for a saved attachment. Pasted text without an extension is saved as .txt. */
-export const saveName = (item: Attachment) => (/\.[A-Za-z0-9]+$/.test(item.name) ? item.name : `${item.name}.txt`).replace(/[\\/:]/g, "-");
+const RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const PROTECTED_NAME = /^(?:\.git|\.span|node_modules)$/i;
+const NAME_BYTES = 255;
+
+/**
+ * File name for saving an attachment into the workspace, made acceptable to core `save_attachment` (which rejects,
+ * and never fixes, a bad name): path separators, `< > : " | ? *` and control characters become `-`, trailing dots and
+ * spaces go, a reserved Windows device name or protected folder name gets a `_` prefix, and the name is kept under
+ * 255 bytes. Pasted text without an extension is saved as .txt. The saved name is what the attachment shows afterwards.
+ */
+export function saveName(item: Attachment): string {
+  let name = item.name.replace(/[\u0000-\u001f\u007f-\u009f/\\<>:"|?*]/g, "-").replace(/[. ]+$/, "");
+  if (!name) name = "attachment";
+  if (!/\.[A-Za-z0-9]+$/.test(name)) name = `${name}.txt`;
+  const dot = name.lastIndexOf(".");
+  let stem = dot > 0 ? name.slice(0, dot) : name;
+  const extension = dot > 0 ? name.slice(dot) : "";
+  if (RESERVED_NAME.test(stem.split(".")[0].trimEnd()) || PROTECTED_NAME.test(name)) stem = `_${stem}`;
+  const encoder = new TextEncoder();
+  while (stem.length > 1 && encoder.encode(stem + extension).length > NAME_BYTES) stem = stem.slice(0, -1);
+  return stem + extension;
+}
 

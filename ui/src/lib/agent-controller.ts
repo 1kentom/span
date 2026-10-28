@@ -42,7 +42,8 @@ export type View = "session" | "history" | "connect" | "logs";
 export type Menu = "model" | "agents" | "attach" | "actions" | null;
 export type Queued = { id: string; text: string; message: string; attachments: PromptAttachment[]; items: Attachment[] };
 type Launch = { command: AgentCommand; name: string; id?: string };
-type Steering = { entry: Queued; cancelled: boolean };
+/** A steer waiting for its turn to end. `turn` is the turn it interrupts; a steer never outlives that turn. */
+type Steering = { entry: Queued; cancelled: boolean; turn: number };
 type Connecting = { name: string; command: string; logBase: number; failed: boolean };
 
 export const ATTACH_UNAVAILABLE = "Attachments need the span desktop app, which sends them to a connected agent.";
@@ -80,6 +81,11 @@ export function createAgentController(props: AgentPanelProps) {
   const [sessionsBusy, setSessionsBusy] = createSignal(false);
   const [sessionsError, setSessionsError] = createSignal("");
   const [queue, setQueue] = createSignal<Queued[]>([]);
+  /**
+   * True when the queue must not drain on its own: the last turn ended with an error, the connection dropped, or a
+   * reconnect or chat switch happened since the messages were queued. The user sends it with Send queued.
+   */
+  const [queueHeld, setQueueHeld] = createSignal(false);
   const [attachments, setAttachments] = createSignal<Attachment[]>([]);
   const [viewing, setViewing] = createSignal<string>();
   const [online, setOnline] = createSignal(typeof navigator === "undefined" ? true : navigator.onLine !== false);
@@ -96,6 +102,8 @@ export function createAgentController(props: AgentPanelProps) {
   let historyIndex = -1;
   let priority: string | undefined;
   let steering: Steering | undefined;
+  /** Counts dispatched turns, so a steer can tell its own turn from a later one. */
+  let turnCounter = 0;
   const followed = new Set<string>();
   let disposed = false;
   let agentEpoch = 0;
@@ -171,16 +179,40 @@ export function createAgentController(props: AgentPanelProps) {
     queueMicrotask(() => input?.focus());
   };
 
+  /** Session-scoped UI state. Queued messages and a pending steer survive (see `releaseSteer` and `holdQueue`). */
   function resetSessionUi() {
     setSessions([]);
     setSessionsError("");
-    setQueue([]);
     setMenu(null);
     setPinned(true);
     setBannerDismissed(false);
     priority = undefined;
-    steering = undefined;
+    releaseSteer();
+    holdQueue();
     followed.clear();
+  }
+  /** Stops the queue from draining on its own, when there is anything in it. */
+  function holdQueue() {
+    if (queue().length) setQueueHeld(true);
+  }
+  /**
+   * The turn a steer was waiting on ended without the normal cancelled completion (prompt failure, an error event, a
+   * dropped connection, a reconnect). The steer text goes back to the composer when it is empty, otherwise to the
+   * front of the queue, and the steer is forgotten so it can never fire after some later, unrelated turn.
+   */
+  function releaseSteer() {
+    const pending = steering;
+    if (!pending) return;
+    steering = undefined;
+    const { entry } = pending;
+    if (!prompt().trim() && !attachments().length) {
+      setPrompt(entry.text);
+      if (entry.items.length) setAttachments(entry.items);
+    } else {
+      setQueue((previous) => [entry, ...previous]);
+      setQueueHeld(true);
+    }
+    patch({ stopRequested: false });
   }
 
   createEffect(
@@ -201,6 +233,10 @@ export function createAgentController(props: AgentPanelProps) {
           setContextPaths([]);
           setAttachments([]);
           setViewing(undefined);
+          // A different workspace: messages composed for the old one are dropped, not carried over.
+          steering = undefined;
+          setQueue([]);
+          setQueueHeld(false);
           resetSessionUi();
           setHiddenSelection(selectionKey());
         });
@@ -209,10 +245,17 @@ export function createAgentController(props: AgentPanelProps) {
   );
 
   function receive(event: AgentEvent) {
+    const session = state().sessionId;
     update((current) => reduceAgentEvent(current, event));
-    if (event.kind === "tool" && following()) followTool(event);
+    // Follow mode reveals the lead session's own work only. Delegated children run in other sessions.
+    if (event.kind === "tool" && following() && session && event.sessionId === session) followTool(event);
     if (event.kind === "delegation" && event.event.kind === "taskFinished") void refreshDelegation();
-    if (event.kind === "complete") queueMicrotask(() => (flushSteer(), drainQueue()));
+    if (event.kind === "complete" && (!session || event.sessionId === session)) queueMicrotask(() => (flushSteer(), drainQueue()));
+    if (event.kind === "error" || (event.kind === "status" && ["error", "disconnected"].includes(event.state))) {
+      // The turn ended abnormally: nothing queued or steered may go out on its own.
+      releaseSteer();
+      holdQueue();
+    }
     if (event.kind === "status" && event.state === "disconnected") setConnecting((current) => (current ? { ...current, failed: true } : current));
   }
 
@@ -421,6 +464,9 @@ export function createAgentController(props: AgentPanelProps) {
   }
   async function dispatch(entry: Queued, options: { steered?: boolean } = {}) {
     const current = guard(agentEpoch);
+    // A steer still waiting here belongs to an earlier turn; it must not fire after this one.
+    if (steering && !options.steered) releaseSteer();
+    const turn = ++turnCounter;
     update((previous) =>
       addFeedItem(
         { ...previous, running: true, stopRequested: false, status: "busy", statusMessage: "Agent is working", failure: undefined },
@@ -441,13 +487,20 @@ export function createAgentController(props: AgentPanelProps) {
         failure: { phase: "prompt", message: errorText(cause) },
         ...(previous.sessionId ? { status: "ready", statusMessage: "Prompt failed" } : {}),
       }));
+      holdQueue();
+      if (steering?.turn === turn) {
+        // This turn was being steered: the user wants the steer, not this turn's text, back.
+        releaseSteer();
+        return;
+      }
+      if (turn !== turnCounter) return;
       if (!prompt()) setPrompt(entry.text);
       if (!attachments().length && entry.items.length) setAttachments(entry.items);
     }
   }
   /** Sends plain prompt text, for Continue, agent slash commands and Compact. */
   const sendText = (text: string) => {
-    if (!connected() || running()) return;
+    if (!connected() || running() || steering) return;
     void dispatch({ id: `q-${++queueCounter}`, text, message: text, attachments: [], items: [] });
   };
   /** Enter while idle, and Tab or the send button while a turn runs: sends now, or queues behind the running turn. */
@@ -479,7 +532,8 @@ export function createAgentController(props: AgentPanelProps) {
       setAttachments([]);
       const entry: Queued = { id: `q-${++queueCounter}`, text, message: built.text, attachments: built.attachments, items };
       if (mode === "steer" && running() && online()) void startSteer(entry);
-      else if (running() || !online()) setQueue((previous) => [...previous, entry]);
+      // A steer waiting for its cancel to resolve goes first, so anything sent meanwhile queues behind it.
+      else if (running() || !online() || steering) setQueue((previous) => [...previous, entry]);
       else void dispatch(entry);
     } catch (cause) {
       if (current()) fail({ phase: "prompt", message: `Prompt failed: ${errorText(cause)}` });
@@ -494,13 +548,14 @@ export function createAgentController(props: AgentPanelProps) {
       setQueue((previous) => [...previous, entry]);
       return;
     }
-    const pending: Steering = { entry, cancelled: false };
+    const pending: Steering = { entry, cancelled: false, turn: turnCounter };
     steering = pending;
     patch({ stopRequested: true, statusMessage: "Steering the agent" });
     try {
       await api.agentCancel();
     } catch (cause) {
-      if (!current()) return;
+      // Released meanwhile (the turn errored or the connection dropped): the entry already went back to the user.
+      if (!current() || steering !== pending) return;
       steering = undefined;
       setQueue((previous) => [entry, ...previous]);
       patch({ stopRequested: false, statusMessage: "Agent is working", failure: { phase: "prompt", message: `Could not cancel the turn, so the message was queued: ${errorText(cause)}` } });
@@ -513,22 +568,32 @@ export function createAgentController(props: AgentPanelProps) {
   /** Sends the steer message once the cancel resolved and the cancelled turn ended. Called from both sides. */
   function flushSteer() {
     if (!steering?.cancelled || running()) return;
+    if (steering.turn !== turnCounter) {
+      // Another turn ran since this steer started, so its moment has passed.
+      releaseSteer();
+      return;
+    }
     const { entry } = steering;
     steering = undefined;
     void dispatch(entry, { steered: true });
   }
   /** Queued follow-ups go out together once the agent finishes, unless one was picked with Send now. */
-  function drainQueue() {
+  function drainQueue(options: { force?: boolean } = {}) {
     const waiting = queue();
-    if (!waiting.length || running() || !connected() || !online()) return;
+    if (!waiting.length || running() || !connected() || !online() || steering) return;
+    // A held queue goes out only on the user's word: Send queued, or Send now on one message (which sets `priority`).
+    if (queueHeld() && !options.force && !priority) return;
     const chosen = priority ? waiting.find((entry) => entry.id === priority) : undefined;
     priority = undefined;
     if (chosen) {
-      setQueue(waiting.filter((entry) => entry !== chosen));
+      const rest = waiting.filter((entry) => entry !== chosen);
+      setQueue(rest);
+      if (!rest.length) setQueueHeld(false);
       void dispatch(chosen);
       return;
     }
     setQueue([]);
+    setQueueHeld(false);
     void dispatch({
       id: `q-${++queueCounter}`,
       text: waiting.map((entry) => entry.text).join("\n\n"),
@@ -544,11 +609,26 @@ export function createAgentController(props: AgentPanelProps) {
       return;
     }
     priority = id;
-    drainQueue();
+    drainQueue({ force: true });
   }
+  /** Send queued: the user's explicit go-ahead for a held queue. */
+  const sendQueued = () => drainQueue({ force: true });
+  /** Replaces the typed part of a queued message. Text added to an attachment-only message gets a blank line before the attachments. */
   const editQueued = (id: string, text: string) =>
-    setQueue((previous) => previous.map((entry) => (entry.id === id ? { ...entry, text, message: text + entry.message.slice(entry.text.length) } : entry)));
-  const removeQueued = (id: string) => setQueue((previous) => previous.filter((entry) => entry.id !== id));
+    setQueue((previous) =>
+      previous.map((entry) => {
+        if (entry.id !== id) return entry;
+        const rest = entry.message.slice(entry.text.length);
+        const joiner = !entry.text && rest && !rest.startsWith("\n") ? "\n\n" : "";
+        return { ...entry, text, message: `${text}${joiner}${rest}` };
+      }),
+    );
+  const removeQueued = (id: string) =>
+    setQueue((previous) => {
+      const next = previous.filter((entry) => entry.id !== id);
+      if (!next.length) setQueueHeld(false);
+      return next;
+    });
 
   function recallPrompt(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
     const area = event.currentTarget;
@@ -596,8 +676,9 @@ export function createAgentController(props: AgentPanelProps) {
     setWorking(true);
     const previous = state();
     update((snapshot) => ({ ...resetConversation(snapshot), sessionId: undefined, failure: undefined }));
-    setQueue([]);
-    steering = undefined;
+    // Queued messages and a pending steer are kept for the new chat, but only go out when the user says so.
+    releaseSteer();
+    holdQueue();
     followed.clear();
     try {
       const id = await start();
@@ -903,6 +984,8 @@ export function createAgentController(props: AgentPanelProps) {
     sessionsBusy,
     sessionsError,
     queue,
+    queueHeld,
+    sendQueued,
     attachments,
     intake,
     viewing,
@@ -949,7 +1032,10 @@ export function createAgentController(props: AgentPanelProps) {
     sendQueuedNow,
     editQueued,
     removeQueued,
-    clearQueue: () => setQueue([]),
+    clearQueue: () => {
+      setQueue([]);
+      setQueueHeld(false);
+    },
     recallPrompt,
     setConfig,
     loadSessions,

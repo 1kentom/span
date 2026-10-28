@@ -17,12 +17,15 @@ type HintInput = {
  * - running: Enter steers, Tab queues (AgentComposer keydown), Escape stops the turn (AgentPanel keydown).
  * - question: digits answer a numbered option and Escape declines (QuestionDock), Enter opens the page and Escape
  *   declines for a URL request (UrlDock).
- * - permission: Y picks the first allow option and N the first reject option (PermissionDock), only when those exist.
+ * - permission: Y picks the first allow option, A the standing allow (when a one-time allow also exists, otherwise Y
+ *   already picks it) and N the first reject option (PermissionDock), only when those exist.
+ * Dock keys act only while focus is inside the dock, never while typing in the composer (see `dockKey`).
  */
 export function composerHints(input: HintInput): Record<ComposerHintMode, ComposerHint[]> {
   const options = input.permission ?? [];
   const permission: ComposerHint[] = [];
   if (options.some((option) => option.kind.startsWith("allow"))) permission.push({ keys: ["Y"], label: "Allow" });
+  if (options.some((option) => option.kind === "allow_once") && options.some((option) => option.kind === "allow_always")) permission.push({ keys: ["A"], label: "Always allow" });
   if (options.some((option) => option.kind.startsWith("reject") && option.kind !== "reject_always")) permission.push({ keys: ["N"], label: "Reject" });
   const question: ComposerHint[] = [];
   if (input.elicitation?.mode === "url") question.push({ keys: ["↵"], label: "Open browser" });

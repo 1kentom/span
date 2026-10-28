@@ -109,7 +109,7 @@ describe("QuestionDock", () => {
       <QuestionDock asker={{ id: "claude", name: "Claude" }} step="1 of 2" prompt="Which database?" allowText
         options={[{ id: "pg", label: "Postgres", description: "Server" }, { id: "sq", label: "SQLite" }]} onAnswer={(a) => answers.push(a)} />
     ));
-    key("2");
+    key("2", {}, host.querySelector(".sb-dock")!);
     host.querySelectorAll<HTMLButtonElement>(".sb-q-option")[0].click();
     const input = host.querySelector<HTMLInputElement>("input")!;
     input.value = "  DuckDB ";
@@ -120,8 +120,8 @@ describe("QuestionDock", () => {
   });
   it("ignores keys when not active", () => {
     const answers: unknown[] = [];
-    mount(() => <QuestionDock prompt="p" active={false} options={[{ id: "a", label: "A" }]} onAnswer={(a) => answers.push(a)} />);
-    key("1");
+    const host = mount(() => <QuestionDock prompt="p" active={false} options={[{ id: "a", label: "A" }]} onAnswer={(a) => answers.push(a)} />);
+    key("1", {}, host.querySelector(".sb-dock")!);
     expect(answers).toEqual([]);
   });
 });
@@ -133,21 +133,23 @@ describe("PermissionDock", () => {
     { optionId: "ao", name: "Allow once", kind: "allow_once" },
     { optionId: "ra", name: "Never", kind: "reject_always" },
   ];
-  it("orders by ACP kind, shows the command, maps Y and N, and never draws reject_always", () => {
+  it("orders by ACP kind, shows the command, maps Y, A and N, and never draws reject_always", () => {
     const chosen: string[] = [];
     const host = mount(() => <PermissionDock title="Run command" command="git push" reason="Publishes commits" options={opts} onChoose={(id) => chosen.push(id)} />);
-    expect([...host.querySelectorAll(".sb-actions button")].map((b) => b.textContent?.replace(/[YN]$/, ""))).toEqual(["Allow once", "Always allow", "Reject"]);
+    expect([...host.querySelectorAll(".sb-actions button")].map((b) => b.textContent?.replace(/[YAN]$/, ""))).toEqual(["Allow once", "Always allow", "Reject"]);
+    expect([...host.querySelectorAll(".sb-actions kbd")].map((k) => k.textContent)).toEqual(["Y", "A", "N"]);
     expect(host.querySelector(".sb-code")!.textContent).toContain("git push");
-    key("y");
-    key("N");
+    const dock = host.querySelector(".sb-dock")!;
+    key("y", {}, dock);
+    key("N", {}, dock);
     host.querySelectorAll<HTMLButtonElement>(".sb-actions button")[1].click();
     expect(chosen).toEqual(["ao", "r", "aa"]);
   });
   it("does nothing while busy or while typing", () => {
     const chosen: string[] = [];
     const [busy, setBusy] = createSignal(true);
-    mount(() => <PermissionDock title="t" options={opts} busy={busy()} onChoose={(id) => chosen.push(id)} />);
-    key("y");
+    const host = mount(() => <PermissionDock title="t" options={opts} busy={busy()} onChoose={(id) => chosen.push(id)} />);
+    key("y", {}, host.querySelector(".sb-dock")!);
     setBusy(false);
     const input = document.createElement("input");
     document.body.append(input);
@@ -156,8 +158,8 @@ describe("PermissionDock", () => {
   });
   it("falls back to allow_always when no allow_once is offered", () => {
     const chosen: string[] = [];
-    mount(() => <PermissionDock title="t" options={[opts[1], opts[0]]} onChoose={(id) => chosen.push(id)} />);
-    key("y");
+    const host = mount(() => <PermissionDock title="t" options={[opts[1], opts[0]]} onChoose={(id) => chosen.push(id)} />);
+    key("y", {}, host.querySelector(".sb-dock")!);
     expect(chosen).toEqual(["aa"]);
   });
 });
@@ -170,11 +172,12 @@ describe("UrlDock and ActivityBar", () => {
     const host = mount(() => <UrlDock title="Sign in on the web" href="https://example.com/device" code="ABCD-1234" onOpen={open} onCancel={cancel} onCopyCode={copy} />);
     expect(host.textContent).toContain("ABCD-1234");
     host.querySelector<HTMLButtonElement>(".sb-btn.primary")!.click();
-    key("Enter");
+    const dock = host.querySelector(".sb-dock")!;
+    key("Enter", {}, dock);
     expect(open).toHaveBeenCalledTimes(2);
     host.querySelector<HTMLButtonElement>("[aria-label='Copy code']")!.click();
     expect(copy).toHaveBeenCalledWith("ABCD-1234");
-    key("Escape");
+    key("Escape", {}, dock);
     expect(cancel).toHaveBeenCalledOnce();
   });
   it("does not double fire when Enter lands on the Cancel button", () => {
@@ -184,10 +187,10 @@ describe("UrlDock and ActivityBar", () => {
     key("Enter", {}, cancelButton);
     expect(open).not.toHaveBeenCalled();
   });
-  it("announces activity politely", () => {
-    const host = mount(() => <ActivityBar label="Reading files" hint="Esc to stop" />);
-    expect(host.querySelector("[role=status]")!.getAttribute("aria-live")).toBe("polite");
-    expect(host.textContent).toContain("Reading files");
+  it("shows the label and elapsed time outside any live region", () => {
+    const host = mount(() => <ActivityBar label="Working" elapsed="12s" hint="Esc to stop" />);
+    expect(host.querySelector("[role=status], [aria-live]")).toBeNull();
+    expect(text(host.querySelector(".sb-shimmer"))).toBe("Working · 12s");
   });
 });
 
@@ -224,6 +227,18 @@ describe("QueuePanel", () => {
     key("Enter", {}, input);
     expect(calls).toEqual(["rm:2", "now:1", "clear", "edit:1:first, revised"]);
     expect(host.querySelector("input")).toBeNull();
+  });
+  it("offers Send queued with a notice when the queue is held after an error", () => {
+    const onSendAll = vi.fn();
+    const host = mount(() => <QueuePanel items={items} held onSendAll={onSendAll} onEdit={() => {}} onRemove={() => {}} onSendNow={() => {}} onClear={() => {}} />);
+    expect(text(host.querySelector(".sb-queue-held"))).toBe("Not sent: the last turn ended with an error or the agent reconnected.");
+    host.querySelector<HTMLButtonElement>("[aria-label='Send 2 queued messages']")!.click();
+    expect(onSendAll).toHaveBeenCalledOnce();
+  });
+  it("shows no Send queued button while the queue drains on its own", () => {
+    const host = mount(() => <QueuePanel items={items} onSendAll={() => {}} onEdit={() => {}} onRemove={() => {}} onSendNow={() => {}} onClear={() => {}} />);
+    expect(host.querySelector(".sb-queue-held")).toBeNull();
+    expect(host.querySelector("[aria-label='Send 2 queued messages']")).toBeNull();
   });
   it("cancels an edit with Escape without saving", () => {
     const onEdit = vi.fn();

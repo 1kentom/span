@@ -1,17 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'solid-js/web';
-import { createSignal } from 'solid-js';
-import { AttachmentChips, AttachmentDropZone, AttachmentPickerButton, MessageAttachments, createAttachmentIntake, type Intake } from './index';
+import { For, Show, createSignal } from 'solid-js';
+import { AttachmentNotices, MessageAttachments, createAttachmentIntake, type Intake } from './index';
 import { MAX_IMAGE_BYTES } from '../../lib/asset-preview';
-import { createFileAttachment, createPastedText, type Attachment } from '../../lib/attachments';
+import { createFileAttachment, type Attachment } from '../../lib/attachments';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); vi.restoreAllMocks(); });
 const settle = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); await new Promise(resolve => setTimeout(resolve, 0)); };
 const mount = (view: () => any) => { const root = document.createElement('div'); document.body.append(root); cleanup.push(render(view, root)); return root; };
-const key = (element: Element, value: string) => element.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true }));
-const png = (fill = 1) => createFileAttachment({ name: 'shot.png', mime: 'image/png', bytes: new Uint8Array(12).fill(fill), source: 'picked' });
 const textFile = () => createFileAttachment({ name: 'a.ts', mime: '', bytes: new TextEncoder().encode('one\ntwo\nthree'), source: 'dropped' });
 function event(type: string, extra: Record<string, unknown>) {
   const e = new Event(type, { bubbles: true, cancelable: true });
@@ -24,16 +22,19 @@ const paste = (target: Element, data: { files?: File[]; text?: string }) => {
 };
 const transfer = (files: File[] = [], types = ['Files']) => ({ files, types, dropEffect: 'none' });
 
+/** The intake wired the way the agent composer wires it: drag handlers on a wrapper, paste on the prompt, a file input and the notices. */
 function Harness(props: { unavailable?: string; capture?: (intake: Intake, items: () => Attachment[]) => void }) {
   const [items, setItems] = createSignal<Attachment[]>([]);
   const intake = createAttachmentIntake({ items, onAdd: added => setItems(previous => [...previous, ...added]), unavailable: () => props.unavailable });
   props.capture?.(intake, items);
-  return <AttachmentDropZone intake={intake} unavailable={props.unavailable}>
+  return <div class="att-dropzone" classList={{ 'att-dragging': intake.dragging() }} onDragEnter={intake.onDragEnter} onDragOver={intake.onDragOver} onDragLeave={intake.onDragLeave} onDrop={intake.onDrop}>
     <textarea aria-label="Prompt" onPaste={intake.onPaste} />
-    <AttachmentPickerButton intake={intake} unavailable={props.unavailable} />
+    <input type="file" multiple onChange={event => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; void intake.addFiles(files, 'picked'); }} />
     <span data-testid="count">{items().length}</span>
-    <AttachmentChips items={items()} onOpen={() => undefined} onRemove={item => setItems(previous => previous.filter(other => other.id !== item.id))} />
-  </AttachmentDropZone>;
+    <ul><For each={items()}>{item => <li class="att-chip"><span class="att-chip-name">{item.name}</span></li>}</For></ul>
+    <Show when={intake.dragging()}><div class="att-drop-overlay">{props.unavailable ?? 'Drop files to attach'}</div></Show>
+    <AttachmentNotices intake={intake} />
+  </div>;
 }
 
 describe('paste intake', () => {
@@ -63,7 +64,7 @@ describe('paste intake', () => {
   });
 });
 
-describe('drop zone and picker', () => {
+describe('drop and file input intake', () => {
   it('shows a drop state while files are dragged over and clears it on leave', () => {
     const root = mount(() => <Harness />);
     const zone = root.querySelector('.att-dropzone')!;
@@ -109,12 +110,9 @@ describe('drop zone and picker', () => {
     await settle();
     expect(root.querySelector('.att-chip-name')?.textContent).toBe('b.txt');
   });
-  it('is honestly unavailable in browser preview: disabled picker, refused drop and paste', async () => {
+  it('is honestly unavailable in browser preview: refused drop and paste', async () => {
     const reason = 'Attachments need the desktop app.';
     const root = mount(() => <Harness unavailable={reason} />);
-    const picker = root.querySelector<HTMLButtonElement>('.att-picker')!;
-    expect(picker.disabled).toBe(true);
-    expect(picker.getAttribute('aria-label')).toContain(reason);
     const zone = root.querySelector('.att-dropzone')!;
     zone.dispatchEvent(event('dragenter', { dataTransfer: transfer() }));
     expect(root.querySelector('.att-drop-overlay')?.textContent).toBe(reason);
@@ -126,36 +124,7 @@ describe('drop zone and picker', () => {
   });
 });
 
-describe('chips', () => {
-  it('opens on click, removes with the keyboard and moves focus to the next chip', async () => {
-    const open = vi.fn(); const items = [png(1), png(2), png(3)];
-    const root = mount(() => { const [list, setList] = createSignal<Attachment[]>(items); return <AttachmentChips items={list()} onOpen={open} onRemove={item => setList(previous => previous.filter(other => other.id !== item.id))} />; });
-    const opens = () => root.querySelectorAll<HTMLButtonElement>('.att-chip-open');
-    opens()[1].click(); expect(open).toHaveBeenCalledWith(items[1]);
-    opens()[1].focus(); key(opens()[1], 'Delete'); await settle();
-    expect(opens()).toHaveLength(2); expect(document.activeElement).toBe(opens()[1]);
-    key(opens()[1], 'Backspace'); await settle();
-    expect(opens()).toHaveLength(1); expect(document.activeElement).toBe(opens()[0]);
-  });
-  it('calls onEmpty after the last chip is removed and names every control', async () => {
-    const empty = vi.fn();
-    const root = mount(() => { const [list, setList] = createSignal<Attachment[]>([createPastedText('a\n'.repeat(20))]); return <AttachmentChips items={list()} onOpen={() => undefined} onRemove={() => setList([])} onEmpty={empty} />; });
-    expect(root.querySelector('ul')?.getAttribute('aria-label')).toBe('Attachments, 1');
-    const remove = root.querySelector<HTMLButtonElement>('.att-chip-remove')!;
-    expect(remove.getAttribute('aria-label')).toBe('Remove Pasted text, 21 lines');
-    expect(root.querySelector('.att-chip-open')!.getAttribute('aria-label')).toMatch(/^Pasted text, 21 lines, Pasted text, .*Open preview$/);
-    remove.click(); await settle();
-    expect(empty).toHaveBeenCalledOnce();
-  });
-  it('disables chips with a reason when the agent lacks the capability, and keeps them removable', () => {
-    const root = mount(() => <AttachmentChips items={[png(), createPastedText('x\n'.repeat(20))]} capabilities={{ image: false, audio: false, embeddedContext: false }} onOpen={() => undefined} onRemove={() => undefined} />);
-    const chips = root.querySelectorAll('.att-chip');
-    expect(chips[0].classList.contains('att-chip-disabled')).toBe(true);
-    expect(chips[0].getAttribute('title')).toBe('This agent does not accept images.');
-    expect(chips[0].querySelector('.att-chip-open')!.getAttribute('aria-label')).toContain('unavailable, This agent does not accept images.');
-    expect(chips[1].classList.contains('att-chip-disabled')).toBe(false);
-    expect(chips[0].querySelector('.att-chip-remove')).not.toBeNull();
-  });
+describe('message chips', () => {
   it('renders read-only message chips that open the viewer and cannot be removed', () => {
     const open = vi.fn(); const item = textFile();
     const root = mount(() => <MessageAttachments items={[item]} onOpen={open} />);

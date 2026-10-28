@@ -19,7 +19,7 @@ Light and Purple only override what differs from Dark. Dark values below are the
 | Text primary | #e0e1e4 | `--text` | #e0e1e4 | exact |
 | Text secondary | #c4c5c8 | `--text` | #e0e1e4 | no token, slightly dimmer in the design |
 | Text muted | #898e94 | `--dim` | #898e94 | exact |
-| Text dim | #6e747b | `--faint` | #6e747b | exact |
+| Text dim | #6e747b | `--faint` | #6e747b | exact; the sidebar uses `--dim` for meta text instead, see Contrast below |
 | Accent | #726cf9 | `--accent` | #726cf9 | exact; not overridden in Light or Purple |
 
 ## Roles with no theme-level token
@@ -27,9 +27,7 @@ Light and Purple only override what differs from Dark. Dark values below are the
 | Design role | Design value | Status |
 | --- | --- | --- |
 | Accent light | #a09bff | No token. `agent.css` derives `--agent-accent-fg` with `color-mix` from `--accent`, which is the nearest equivalent. |
-| Green | #70bd8d | No theme token. `agent.css` has agent-scoped `--agent-success` and `--agent-success-surface` (different values). |
-| Red | #d26979 | No theme token. `agent.css` has agent-scoped `--agent-error`, `--agent-error-surface`, `--agent-error-border`. |
-| Amber | #d4ae67 | No theme token. `agent.css` has agent-scoped `--agent-warning`. Not added here because the brief limited new tokens to the surfaces and diff roles. |
+| Green, Red, Amber | #70bd8d, #d26979, #d4ae67 | Now theme tokens `--success`, `--error`, `--warning`; see New tokens. |
 | Text secondary, card | see above | Mapped to the nearest token, not exact. |
 
 ## New tokens (added to all three themes)
@@ -47,12 +45,39 @@ Light and Purple only override what differs from Dark. Dark values below are the
 | Red surface | `--redSurface` | #2a1c20 | #fdecef | #2d1d2c |
 | Red border | `--redBorder` | #5a3039 | #efb9c2 | #5c3040 |
 | Accent-tinted dock background | `--accentDock` | #1e1d2e | #efeefe | #1d1b3a |
+| Success text and icons | `--success` | #70bd8d | #277946 | #70bd8d |
+| Warning text and icons | `--warning` | #d4ae67 | #996317 | #d4ae67 |
+| Error text and icons | `--error` | #d26979 | #b7314c | #d26979 |
+| Fill of text-bearing accent buttons | `--accentFill` | #5f58f0 | #5f58f0 | #5f58f0 |
+| Hover of that fill | `--accentFillHover` | #544ddc | #544ddc | #544ddc |
+| Text and icons on an accent fill | `--onAccent` | #fff | #fff | #fff |
+
+`agent-sidebar.css` maps these to `--sb-success`, `--sb-warning`, `--sb-error`, `--sb-accent-fill`, `--sb-accent-fill-hover` and `--sb-on-accent`. The sidebar style sheets (`agent-sidebar.css`, `agent.css`) contain no hex literals; a test in `ui/src/lib/agent-sidebar-assets.test.ts` enforces that. The documented image-background exceptions in `viewer.css` (`--vw-image-light`, `--vw-image-dark`) are unchanged.
 
 Provenance of the values:
 
 - Dark diff, amber surface, amber border and dock values are copied from the design file (#1c2a21, #a3cbb0, #4f7a5c, #2e2024, #d3a0a7, #8a5560, #221f19, #4d4330, #1e1d2e).
 - Dark red surface and red border are not in the design as a surface; they are chosen to sit between the diff removed background and the panel. Treat as proposed.
-- Light and Purple values are chosen, not supplied by the design, and have not been visually reviewed in the running app. Light values were picked for readable contrast on the Light panel (#fff); contrast ratios were not measured.
+- Light and Purple values are chosen, not supplied by the design, and have not been visually reviewed in the running app. Light values were picked for readable contrast on the Light panel (#fff).
+- The status colours were previously literals in `agent-sidebar.css`, with Light overrides; they moved into the themes unchanged. Purple uses the Dark values.
+
+## Contrast
+
+WCAG 2.x ratios, measured from the token values (the same formula runs in `agent-sidebar-assets.test.ts`, which requires 4.5:1). The app-wide `--accent` (#726cf9) is unchanged.
+
+| Pair | Dark | Light | Purple |
+| --- | --- | --- | --- |
+| #fff on `--accent` (old filled button) | 4.02 | 4.02 | 4.02 |
+| `--onAccent` on `--accentFill` (filled button now) | 5.07 | 5.07 | 5.07 |
+| `--faint` on `--island` (old meta text) | 3.73 | 4.03 | 4.36 |
+| `--dim` on `--island` (meta text now) | 5.33 | 6.07 | 6.92 |
+| `--dim` on `--popup` | 4.93 | 6.07 | 6.36 |
+| `--dim` on `--accentDock` | 5.01 | 5.29 | 6.50 |
+| `--success` on `--island` | 7.83 | 5.37 | 7.83 |
+| `--warning` on `--island` | 8.42 | 5.06 | 8.42 |
+| `--error` on `--island` | 5.06 | 5.90 | 5.06 |
+
+`--sb-faint` now points at `--dim`, so sidebar meta text no longer has a separate dimmer step. The icon-only send button keeps `--accent` (4.02, above the 3:1 needed for non-text). Attachment styles outside the sidebar (`attachments.css`) still use `--faint` directly and were not changed.
 
 ## Icons
 

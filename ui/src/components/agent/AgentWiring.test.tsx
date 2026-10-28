@@ -246,3 +246,22 @@ describe("delegation in the sidebar", () => {
     expect(text(host.querySelector(".sb-delegation-status"))).toBe("Failed");
   });
 });
+
+describe("queued messages after an error", () => {
+  it("shows the held queue with a one-click Send queued that sends it", async () => {
+    const { a, host } = await composer();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("second");
+    await a.send();
+    mocks.emit({ kind: "error", message: "rate limited" });
+    await tick();
+    expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(1);
+    const button = host.querySelector<HTMLButtonElement>("[aria-label='Send 1 queued message']")!;
+    expect(button).not.toBeNull();
+    button.click();
+    await tick();
+    expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(2);
+    expect(mocks.api.agentPrompt).toHaveBeenLastCalledWith("second", []);
+  });
+});

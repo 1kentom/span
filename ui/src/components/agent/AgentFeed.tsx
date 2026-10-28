@@ -29,7 +29,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
         </div>
       </Match>
       <Match when={item().kind === "text" || item().kind === "thought"}>
-        <div class={`agent-message ${item().kind}`}>
+        <div class={`agent-message ${item().kind}`} aria-busy={a.running() && props.last() ? "true" : undefined}>
           <Show when={item().kind === "thought"}>
             <div class="agent-message-label">Thinking</div>
           </Show>
@@ -166,7 +166,9 @@ export function AgentFeed(props: { agent: AgentController; ref?: (element: HTMLD
   const keys = createMemo(() => blocks().map((block) => block.key), [], { equals: sameKeys });
   const lastKey = () => keys()[keys().length - 1];
   return (
-    <div class="agent-feed" ref={props.ref} aria-live="polite" aria-relevant="additions text">
+    // Not a live region: streaming markdown re-renders constantly. The composer announces turn start and end and new
+    // requests; the streaming message is aria-busy until the turn completes.
+    <div class="agent-feed" ref={props.ref}>
       <For each={keys()}>
         {(key) => {
           const block = () => byKey().get(key);

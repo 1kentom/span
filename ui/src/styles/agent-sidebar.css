@@ -3,7 +3,8 @@
   --sb-fg: var(--text);
   --sb-strong: var(--strong);
   --sb-dim: var(--dim);
-  --sb-faint: var(--faint);
+  /* Meta text (sub lines, eyebrows, hints). --faint is under 4.5:1 on the panel in every theme, so --dim is used. */
+  --sb-faint: var(--dim);
   --sb-surface: var(--island);
   --sb-raised: color-mix(in srgb, var(--pill) 45%, var(--island));
   --sb-control: var(--pill);
@@ -17,20 +18,19 @@
   --sb-accent-fg: color-mix(in srgb, var(--accent) 80%, var(--text));
   --sb-accent-surface: color-mix(in srgb, var(--accent) 14%, var(--island));
   --sb-accent-border: color-mix(in srgb, var(--accent) 45%, var(--border));
-  --sb-success: #70bd8d;
-  --sb-warning: #d4ae67;
-  --sb-error: #d26979;
+  /* Filled accent buttons that carry text use the darker fill so the label reaches 4.5:1. */
+  --sb-accent-fill: var(--accentFill);
+  --sb-accent-fill-hover: var(--accentFillHover);
+  --sb-on-accent: var(--onAccent);
+  --sb-success: var(--success);
+  --sb-warning: var(--warning);
+  --sb-error: var(--error);
   --sb-warn-surface: color-mix(in srgb, var(--sb-warning) 10%, var(--island));
   --sb-warn-border: color-mix(in srgb, var(--sb-warning) 35%, var(--border));
   --sb-error-surface: color-mix(in srgb, var(--sb-error) 10%, var(--island));
   --sb-error-border: color-mix(in srgb, var(--sb-error) 35%, var(--border));
   --sb-add-bg: color-mix(in srgb, var(--sb-success) 14%, var(--island));
   --sb-del-bg: color-mix(in srgb, var(--sb-error) 14%, var(--island));
-}
-.ide.theme-light {
-  --sb-success: #277946;
-  --sb-warning: #996317;
-  --sb-error: #b7314c;
 }
 .ide.theme-light,
 .ide.theme-purple {
@@ -81,8 +81,8 @@
   color: var(--sb-fg); font: 500 12px/1 Inter, system-ui, sans-serif; white-space: nowrap; cursor: pointer;
 }
 .sb-btn:hover:not(:disabled) { background: var(--sb-hover); }
-.sb-btn.primary { background: var(--sb-accent); border-color: var(--sb-accent); color: #fff; }
-.sb-btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--sb-accent) 85%, #fff); }
+.sb-btn.primary { background: var(--sb-accent-fill); border-color: var(--sb-accent-fill); color: var(--sb-on-accent); }
+.sb-btn.primary:hover:not(:disabled) { background: var(--sb-accent-fill-hover); border-color: var(--sb-accent-fill-hover); }
 .sb-btn.danger { color: var(--sb-error); }
 .sb-btn.ghost { height: 22px; padding: 0 7px; border-color: transparent; background: transparent; font-weight: 400; font-size: 11.5px; color: var(--sb-dim); }
 .sb-btn.ghost.accent { color: var(--sb-accent-fg); }
@@ -197,7 +197,7 @@
   display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 9px 12px; border: 1px solid var(--sb-control-border);
   border-radius: 7px; background: var(--sb-menu); color: var(--sb-fg); text-align: left; cursor: pointer;
 }
-.sb-method.primary { background: var(--sb-accent); border-color: var(--sb-accent); color: #fff; }
+.sb-method.primary { background: var(--sb-accent-fill); border-color: var(--sb-accent-fill); color: var(--sb-on-accent); }
 .sb-method-name { font-size: 12.5px; font-weight: 500; }
 .sb-method-desc { font-size: 11.5px; opacity: 0.85; }
 .sb-method:disabled { opacity: 0.5; cursor: default; }
@@ -261,6 +261,7 @@
 .sb-plan-glyph { display: flex; width: 13px; justify-content: center; flex: none; }
 .sb-queue-head { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 6px 0 10px; font-size: 11.5px; }
 .sb-queue { margin: 0; padding: 0 0 4px; list-style: none; }
+.sb-queue-held { margin: 0; padding: 0 10px 4px; }
 .sb-queue-row { display: flex; align-items: center; gap: 6px; min-height: 28px; margin: 0 4px; padding: 0 6px 0 4px; border-radius: 5px; font-size: 12px; color: var(--sb-fg); }
 .sb-queue-row .sb-mono { font-size: 10.5px; flex: none; }
 

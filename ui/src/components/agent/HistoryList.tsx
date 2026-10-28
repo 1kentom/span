@@ -28,8 +28,12 @@ type HistoryListProps = {
   rows: SessionRow[];
   query: string;
   onQuery: (query: string) => void;
-  scope: HistoryScope;
-  onScope: (scope: HistoryScope) => void;
+  /**
+   * Scope filter. The control appears only when `onScope` is given, which a caller should do only when it really has
+   * sessions from other folders to show. Without it every row given is shown.
+   */
+  scope?: HistoryScope;
+  onScope?: (scope: HistoryScope) => void;
   /** Epoch milliseconds used for grouping. Defaults to now. */
   now?: number;
   formatTime?: (row: SessionRow) => string;
@@ -55,7 +59,7 @@ export function HistoryList(props: HistoryListProps) {
     const query = props.query.trim().toLowerCase();
     return props.rows.filter(
       (row) =>
-        (props.scope === "all" || row.inWorkspace) &&
+        (!props.onScope || props.scope === "all" || row.inWorkspace) &&
         (!query || row.title.toLowerCase().includes(query) || row.models?.some((model) => model.toLowerCase().includes(query))),
     );
   });
@@ -79,13 +83,15 @@ export function HistoryList(props: HistoryListProps) {
           <Icon name="SearchNormal1" size={13} />
           <input type="search" aria-label="Search sessions" placeholder="Search sessions" value={props.query} onInput={(event) => props.onQuery(event.currentTarget.value)} />
         </label>
-        <div class="sb-seg" role="group" aria-label="Session scope">
-          <For each={scopes}>
-            {(scope) => (
-              <button class="sb-pill" classList={{ on: props.scope === scope.id }} aria-pressed={props.scope === scope.id} onClick={() => props.onScope(scope.id)}>{scope.label}</button>
-            )}
-          </For>
-        </div>
+        <Show when={props.onScope}>
+          <div class="sb-seg" role="group" aria-label="Session scope">
+            <For each={scopes}>
+              {(scope) => (
+                <button class="sb-pill" classList={{ on: props.scope === scope.id }} aria-pressed={props.scope === scope.id} onClick={() => props.onScope?.(scope.id)}>{scope.label}</button>
+              )}
+            </For>
+          </div>
+        </Show>
       </div>
       <Show when={groups().length} fallback={<p class="sb-sub pad" role="status">No sessions found.</p>}>
         <For each={groups()}>

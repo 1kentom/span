@@ -65,6 +65,8 @@ describe("PermissionDock for a delegated agent", () => {
     expect(text(host.querySelector(".sb-dock-from"))).toBe("Codex (delegated agent) asks to run this");
     expect(choose).not.toHaveBeenCalled();
     key("y");
+    expect(choose).not.toHaveBeenCalled();
+    key("y", {}, host.querySelector(".sb-dock")!);
     expect(choose).toHaveBeenCalledWith("ok");
   });
   it("keeps the plain label for the lead's own request", () => {
