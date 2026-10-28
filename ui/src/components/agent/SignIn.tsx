@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
+import { Icon } from "../Icon";
 import { BrandIcon } from "../BrandIcon";
 import { splitCode } from "../../lib/agent-hint-text";
 import { AuthForm } from "./AuthForm";
@@ -14,6 +15,8 @@ type SignInProps = Brand & {
   secondary?: boolean;
   busy?: boolean;
   onPick: (methodId: string) => void;
+  /** Reconnects once the user has signed in elsewhere, for agents that sign in from a terminal. */
+  onRetry?: () => void;
   /** Called with a typed secret for methods that ask for an API key or a gateway. */
   onSubmit?: (methodId: string, secret: AuthSecret) => void;
 };
@@ -21,6 +24,36 @@ type SignInProps = Brand & {
 /** Text with `code` spans for the parts the hint table put in backticks. */
 export function HintLine(props: { text: string }) {
   return <For each={splitCode(props.text)}>{(part) => (part.code ? <code class="sb-mono">{part.text}</code> : <>{part.text}</>)}</For>;
+}
+
+/** The command a terminal sign-in asks for: the first `code` span of the hint, if any. */
+export function terminalCommand(hint: string | undefined): string | undefined {
+  return hint ? splitCode(hint).find((part) => part.code)?.text : undefined;
+}
+
+/** A terminal sign-in the app cannot run for the user: the exact command, a copy button, and a retry for afterwards. */
+function TerminalLogin(props: { command: string; onRetry?: () => void }) {
+  const [copied, setCopied] = createSignal(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(props.command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* the command stays selectable */ }
+  };
+  return (
+    <div class="sb-terminal-login">
+      <div class="sb-terminal-command">
+        <code class="sb-mono">{props.command}</code>
+        <button type="button" class="sb-icon-btn" aria-label={copied() ? "Copied" : "Copy command"} title={copied() ? "Copied" : "Copy command"} onClick={() => void copy()}>
+          <Icon name="Copy" size={12} />
+        </button>
+      </div>
+      <Show when={props.onRetry}>
+        <button type="button" class="sb-btn primary" onClick={() => props.onRetry?.()}>I have signed in, retry</button>
+      </Show>
+    </div>
+  );
 }
 
 /** Authentication methods the agent advertised. The first one is the primary action. */
@@ -34,6 +67,7 @@ export function SignIn(props: SignInProps) {
         <Show when={props.text}><p class="sb-lede">{props.text}</p></Show>
         <Show when={props.hint}><p class="sb-lede sb-auth-hint" role="note"><HintLine text={props.hint!} /></p></Show>
       </header>
+      <Show when={terminalCommand(props.hint)}>{(command) => <TerminalLogin command={command()} onRetry={props.onRetry} />}</Show>
       <div class="sb-methods">
         <For each={props.methods}>
           {(method, index) => (

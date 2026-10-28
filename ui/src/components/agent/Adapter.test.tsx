@@ -312,8 +312,10 @@ describe("sign-in forms and secrets", () => {
     await tick();
     click(host.querySelector("[aria-label='Connect opencode']"));
     await tick();
-    expect(host.querySelectorAll("code")).toHaveLength(1);
     expect(text(host.querySelector(".sb-auth-hint"))).toBe("Run opencode auth login in a terminal, then retry");
+    expect(text(host.querySelector(".sb-terminal-command"))).toBe("opencode auth login");
+    expect(host.querySelector("[aria-label='Copy command']")).not.toBeNull();
+    expect(text(host.querySelector(".sb-terminal-login .sb-btn.primary"))).toBe("I have signed in, retry");
     expect(text(host)).not.toContain("needs a terminal sign-in");
   });
   it("authenticateWith passes the credential straight through and leaves it nowhere in state", async () => {
@@ -748,4 +750,13 @@ describe("live agent run findings in the panel", () => {
       expect(chip.getAttribute("title")).toBeNull();
     });
   }
+});
+
+describe("terminal sign-in", () => {
+  it("pulls the command out of the hint", async () => {
+    const { terminalCommand } = await import("./SignIn");
+    expect(terminalCommand("Run `opencode auth login` in a terminal, then retry")).toBe("opencode auth login");
+    expect(terminalCommand("Sign in with your browser")).toBeUndefined();
+    expect(terminalCommand(undefined)).toBeUndefined();
+  });
 });

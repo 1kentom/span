@@ -383,6 +383,7 @@ export function AgentPanel(props: AgentPanelProps) {
                   .map((method) => ({ id: method.id, name: method.name, description: method.description ?? undefined, input: method.input ?? undefined }))}
                 busy={a.pendingAction() === "auth"}
                 onPick={(id) => void a.authenticate(id)}
+                onRetry={a.reconnect}
                 onSubmit={(id, secret) => void a.authenticateWith(id, secret)}
               />
               <Show when={unsupportedAuth().length}>
