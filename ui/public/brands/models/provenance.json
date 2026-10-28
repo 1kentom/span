@@ -1,0 +1,77 @@
+{
+  "retrieved": "2026-10-28",
+  "source": {
+    "project": "taifa-ai",
+    "commit": "aa91f97845a786a427367aadf00b2eacc7aa89a1",
+    "glyphs": "frontend/src/lib/glyphs.ts",
+    "glyphsSha256": "11f35d5b533af16c9598ffa2109a66dd6eb0e7335b520c79c0d55588b3e7623d",
+    "rasters": "frontend/static/model-icons/"
+  },
+  "license": "The source project ships no licence file. Each mark belongs to its vendor, who retains trademark rights and any brand restrictions. The span project MIT licence does not cover these marks and does not establish separate rights to redistribute them.",
+  "assets": [
+    {
+      "key": "cohere",
+      "vendor": "Cohere",
+      "file": "cohere.svg",
+      "source": "frontend/src/lib/glyphs.ts lines 65-69, COHERE_GLYPH string literal, with an xmlns attribute added",
+      "colour": "brand",
+      "sha256": "e170926656eac1b0d7ba60c51b8fe4e68ab51d0a4109c7c2126ec0ba91b92da1"
+    },
+    {
+      "key": "poolside",
+      "vendor": "Poolside",
+      "file": "poolside.svg",
+      "source": "frontend/src/lib/glyphs.ts lines 99-101, POOLSIDE_GLYPH string literal, with an xmlns attribute added",
+      "colour": "brand",
+      "sha256": "d240d535cd3eeee92f2c79ca9a7bc03ecd9cd8986dd9cb396ab69beee4b6f39f"
+    },
+    {
+      "key": "granite",
+      "vendor": "IBM Granite",
+      "file": "granite.svg",
+      "source": "frontend/src/lib/glyphs.ts line 124, GRANITE_GLYPH template literal, with an xmlns attribute added",
+      "colour": "currentColor",
+      "sha256": "f81ff5dd2710cf99a333ff8a8a1d5d5adf83a1194ab180877baca9d8ba038033"
+    },
+    {
+      "key": "amazon-nova",
+      "vendor": "Amazon Nova",
+      "file": "amazon-nova.png",
+      "source": "frontend/static/model-icons/amazon-nova.png, copied byte for byte",
+      "colour": "brand",
+      "sha256": "c652f8e4c38bc21fcf42d9af3578e4fed356f93f9c4df6d5dd8afd74d5d079c5"
+    },
+    {
+      "key": "groq",
+      "vendor": "Groq",
+      "file": "groq.png",
+      "source": "frontend/static/model-icons/groq.png, copied byte for byte",
+      "colour": "brand",
+      "sha256": "cfd5bbe3d12ba5a024c3728c4d10db297e498614775cec29911a32f5ff530ea5"
+    },
+    {
+      "key": "dots-studio",
+      "vendor": "Dots Studio",
+      "file": "dots-studio.png",
+      "source": "frontend/static/model-icons/dots-studio.png, copied byte for byte",
+      "colour": "brand",
+      "sha256": "cd1e884460c4298ecc05516dfef996bc3627d637b95cc97db8898fb4cb06e5ac"
+    },
+    {
+      "key": "inclusionai",
+      "vendor": "InclusionAI",
+      "file": "inclusionai.png",
+      "source": "frontend/static/model-icons/inclusionai.png, copied byte for byte",
+      "colour": "brand",
+      "sha256": "ec5a076970a6d263487cd262020e9317da7cec3bcd4cd76654bb71cdf1f55b26"
+    },
+    {
+      "key": "nex-agi",
+      "vendor": "Nex AGI",
+      "file": "nex-agi.png",
+      "source": "frontend/static/model-icons/nex-agi.png, copied byte for byte",
+      "colour": "brand",
+      "sha256": "1e2737885b26c420ee879c15dbb1f97f6a5ddffe7114ab9ce9fc01d02124ceb8"
+    }
+  ]
+}
