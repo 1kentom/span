@@ -273,6 +273,18 @@
           }
         }
       }
+    },
+    "updates": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": false,
+      "properties": {
+        "checkOnLaunch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Check once per launch whether a newer Span release or agent version exists. Check-only: nothing is downloaded or installed, and the request is a plain GET with no identifiers. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+        }
+      }
     }
   },
   "description": "Span supports the documented built-in settings and selected VS Code keys. Other keys are preserved in JSONC but have no effect."

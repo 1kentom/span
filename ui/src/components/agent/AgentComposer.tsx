@@ -11,6 +11,7 @@ import { delegationLine } from "../../lib/agent-delegation";
 import { canCompact, type PermissionEvent } from "../../lib/agent-session";
 import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { isDesktop } from "../../lib/client";
+import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } from "../../lib/updates";
 import { ContextBanner } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
@@ -18,6 +19,7 @@ import { ModelPopover } from "./ModelPopover";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
 import { SlashPopover } from "./SlashPopover";
+import { UpdateBadge } from "./UpdateBadge";
 import { UsageRing } from "./UsageRing";
 import type { Brand, PlanItem, SlashItem } from "./types";
 import { percent } from "./util";
@@ -302,10 +304,18 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
                       <span class="sb-option-text">
                         <span class="sb-option-name">{a.registryName(entry.id) || entry.id}</span>
                         <span class="sb-sub">{entry.version}</span>
+                        <UpdateBadge update={agentUpdates()?.find((update) => update.id === entry.id)} />
                       </span>
                     </button>
                   )}
                 </For>
+                <button class="sb-option" disabled={agentUpdatesBusy()} onClick={() => void checkAgentUpdates(true)}>
+                  <Icon name="Refresh2" size={15} />
+                  <span class="sb-option-text">
+                    <span class="sb-option-name">{agentUpdatesBusy() ? "Checking for updates…" : "Check for updates"}</span>
+                    <Show when={agentUpdateError()}><span class="sb-sub" role="alert">{agentUpdateError()}</span></Show>
+                  </span>
+                </button>
                 <div class="sb-rule-h" />
                 <button
                   class="sb-option"

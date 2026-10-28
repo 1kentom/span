@@ -823,3 +823,60 @@ fn agent_delegation_is_off_by_default_and_honoured_only_from_user_settings() {
         false
     );
 }
+
+#[test]
+fn update_check_on_launch_is_off_by_default_and_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(!Settings::default().updates.check_on_launch);
+    assert!(!workspace.get_settings().unwrap().updates.check_on_launch);
+
+    // A workspace file cannot switch it on, through JSONC or a hand edit.
+    let merged = workspace
+        .update_settings_jsonc("{ \"updates\": { \"checkOnLaunch\": true } }")
+        .unwrap();
+    assert!(!merged.updates.check_on_launch);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"updates\": { \"checkOnLaunch\": true }, \"fontSize\": 15 }",
+    )
+    .unwrap();
+    let read = workspace.get_settings().unwrap();
+    assert!(!read.updates.check_on_launch);
+    assert_eq!(read.font_size, 15);
+
+    // The user's own file can, and a workspace false does not override it.
+    fs::write(&user, "{ \"updates\": { \"checkOnLaunch\": true } }").unwrap();
+    assert!(workspace.get_settings().unwrap().updates.check_on_launch);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"updates\": { \"checkOnLaunch\": false } }",
+    )
+    .unwrap();
+    assert!(workspace.get_settings().unwrap().updates.check_on_launch);
+
+    // Typed saves leave the user-only key out of the workspace file.
+    let typed = workspace.get_settings().unwrap();
+    workspace.update_settings(typed).unwrap();
+    let written = fs::read_to_string(directory.path().join(".span/settings.jsonc")).unwrap();
+    assert!(!written.contains("checkOnLaunch"), "{written}");
+
+    // Unknown sibling keys are still rejected and an older literal keeps the default.
+    assert!(workspace
+        .update_settings_jsonc("{ \"updates\": { \"auto\": true } }")
+        .is_err());
+    let legacy: Settings = serde_json::from_value(serde_json::json!({ "fontSize": 14 })).unwrap();
+    assert!(!legacy.updates.check_on_launch);
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    let key = &schema["properties"]["updates"]["properties"]["checkOnLaunch"];
+    assert_eq!(key["default"], false);
+    assert!(key["description"]
+        .as_str()
+        .unwrap()
+        .contains("user settings"));
+}

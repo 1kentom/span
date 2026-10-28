@@ -621,6 +621,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_installed,
             agents::agent_install,
             agents::agent_remove,
+            agents::agent_update_status,
+            agents::app_update_check,
             agents::agent_connect,
             agents::agent_new_session,
             agents::agent_list_sessions,

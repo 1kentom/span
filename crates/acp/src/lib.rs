@@ -10,6 +10,7 @@ mod registry;
 mod service;
 pub mod tools;
 mod types;
+pub mod update;
 pub use adapter::agent_presets;
 pub use managed::remove_installed_agent;
 pub use manager::{

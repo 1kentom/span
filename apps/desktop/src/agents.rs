@@ -203,6 +203,22 @@ pub async fn agent_installed(app: tauri::AppHandle) -> Result<Vec<InstalledAgent
         .map_err(|error| format!("Installed agent task failed: {error}"))?
 }
 
+/// Check-only: compares installed agents with the ACP registry and reads
+/// local versions through the tool probe. Nothing is installed or run to
+/// update (ADR 0004).
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_update_status(
+    app: tauri::AppHandle,
+) -> Result<Vec<span_acp::update::AgentUpdate>, String> {
+    let directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("agents");
+    span_acp::update::agent_update_status(&directory).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_install(app: tauri::AppHandle, id: String) -> Result<InstalledAgent, String> {
@@ -574,6 +590,15 @@ pub async fn agent_child_permission(
     state
         .sessions
         .respond_permission(&key, request_id, option_id)
+}
+
+/// Check-only: reads the public GitHub release list for this build's channel.
+/// Opening the release page is a separate, user-initiated `open_external`.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_update_check(app: tauri::AppHandle) -> span_acp::update::AppUpdate {
+    let version = app.package_info().version.to_string();
+    span_acp::update::check_app_update(&version, cfg!(debug_assertions)).await
 }
 
 #[cfg(test)]
