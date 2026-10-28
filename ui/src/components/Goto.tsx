@@ -1,20 +1,20 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, createUniqueId, onCleanup } from "solid-js";
 import type { FileEntry, SearchMatch, Workspace } from "../bindings";
 import { LanguageSupport } from "@codemirror/language";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { loadLanguage } from "../editor/languages";
 import { actionDefinitions, shortcutLabel, type ActionHandlers, type ResolvedKeybindings } from "../lib/commands";
-import { fileName, fileResults, parentPath } from "../lib/navigation";
+import { fileName, fileResults, parentPath, parseFileQuery, relativePath } from "../lib/navigation";
 import { Modal } from "./Modal";
 import Icon, { FileIcon } from "./Icon";
 import "../styles/navigation.css";
 
 export type GotoProps = {
-  files: FileEntry[]; workspace?: Workspace | null; recentPaths?: readonly string[];
+  files: FileEntry[]; workspace?: Workspace | null; recentPaths?: readonly string[]; activePath?: string;
   handlers?: ActionHandlers; bindings?: ResolvedKeybindings;
   onPreview?: (path: string) => Promise<string>;
   onSearch?: (query: string) => Promise<SearchMatch[]>;
-  onOpen: (path: string, line?: number) => void; onClose: () => void; onOpenFolder: () => void;
+  onOpen: (path: string, line?: number, column?: number) => void; onClose: () => void; onOpenFolder: () => void;
 };
 type Mode = "Goto" | "Actions" | "Tools" | "Text Search";
 type Result = { id: string; label: string; detail: string; path?: string; line?: number; shortcut?: string; run: () => void };
@@ -24,6 +24,7 @@ const binaryFile = /\.(?:png|jpe?g|gif|webp|avif|ico|pdf|woff2?|ttf|otf|zip|gz|t
 
 export function Goto(props: GotoProps) {
   let input!: HTMLInputElement; let list!: HTMLDivElement;
+  const instanceId = createUniqueId();
   const [mode, setMode] = createSignal<Mode>("Goto");
   const [query, setQuery] = createSignal(""); const [selected, setSelected] = createSignal(0);
   const [matches, setMatches] = createSignal<SearchMatch[]>([]);
@@ -31,16 +32,37 @@ export function Goto(props: GotoProps) {
   const [preview, setPreview] = createSignal(""); const [previewState, setPreviewState] = createSignal("");
   const [highlighted, setHighlighted] = createSignal<{ from: number; to: number; class: string }[]>([]);
   let previewGeneration = 0; let searchGeneration = 0; let highlightGeneration = 0;
-  const files = createMemo(() => fileResults(props.files, query(), props.recentPaths));
+  const fileQuery = createMemo(() => parseFileQuery(query(), props.files, props.workspace?.root));
+  const files = createMemo(() => {
+    const parsed = fileQuery();
+    if (parsed.suffix && !parsed.filter && props.activePath && !parsed.invalidPosition) return props.files.filter(file => !file.isDir && relativePath(file.path, props.workspace?.root) === relativePath(props.activePath!, props.workspace?.root));
+    return fileResults(props.files, query(), props.recentPaths, props.workspace?.root);
+  });
   const recentCount = createMemo(() => !query().trim() ? files().filter(file => props.recentPaths?.includes(file.path)).length : 0);
   const results = createMemo<Result[]>(() => {
     const term = query().trim().toLowerCase();
-    if (mode() === "Goto") return files().map(file => ({ id: file.path, label: file.name, detail: parentPath(file.path) || props.workspace?.name || "", path: file.path, run: () => props.onOpen(file.path, Number(query().match(/:(\d+)$/)?.[1]) || undefined) }));
+    if (mode() === "Goto") return files().map(file => ({ id: file.path, label: file.name, detail: parentPath(relativePath(file.path, props.workspace?.root)) || props.workspace?.name || "", path: file.path, line: fileQuery().line, run: () => { const position = fileQuery(); if (position.column !== undefined) props.onOpen(file.path, position.line, position.column); else props.onOpen(file.path, position.line); } }));
     if (mode() === "Text Search") return matches().map((match, index) => ({ id: `${match.path}:${match.line}:${index}`, label: `${fileName(match.path)}:${match.line}`, detail: match.text.trim(), path: match.path, line: match.line, run: () => props.onOpen(match.path, match.line) }));
     return actionDefinitions.filter(action => props.handlers?.[action.id] && (!term || `${action.label} ${action.category}`.toLowerCase().includes(term)) && (mode() !== "Tools" || ["settings", "openFolder", "toggleProject", "toggleAssistant", "toggleTerminal", "splitEditor"].includes(action.id))).map(action => ({ id: action.id, label: action.label, detail: action.category, shortcut: props.bindings ? shortcutLabel(action.id, props.bindings) : "", run: () => props.handlers?.[action.id]?.() }));
   });
   const current = createMemo(() => results()[Math.min(selected(), results().length - 1)]);
+  const previewPath = createMemo(() => current()?.path);
+  const optionId = (item: Result) => `${instanceId}-result-${encodeURIComponent(item.id)}`;
   const open = (result?: Result) => { if (result) { props.onClose(); result.run(); } };
+  function completeFile() {
+    const candidate = current() || results()[0];
+    if (!candidate?.path) return false;
+    const completion = relativePath(candidate.path, props.workspace?.root) + fileQuery().suffix;
+    setQuery(completion); setSelected(Math.max(0, results().findIndex(item => item.id === candidate.id)));
+    input.value = completion; input.focus(); input.setSelectionRange(completion.length, completion.length); return true;
+  }
+  function updateQuery(value: string) {
+    const previous = mode() === "Goto" ? fileQuery().filter : query();
+    const selectedId = current()?.id;
+    setQuery(value);
+    if (mode() !== "Goto" || fileQuery().filter !== previous) setSelected(0);
+    else setSelected(Math.max(0, results().findIndex(item => item.id === selectedId)));
+  }
   function switchMode(next: Mode) { setMode(next); setSelected(0); input?.focus(); }
   createEffect(() => {
     const term = query().trim(); const active = mode() === "Text Search"; const request = ++searchGeneration;
@@ -53,11 +75,11 @@ export function Goto(props: GotoProps) {
     onCleanup(() => clearTimeout(timer));
   });
   createEffect(() => {
-    const item = current(); const request = ++previewGeneration;
+    const path = previewPath(); const request = ++previewGeneration;
     setPreview(""); setPreviewState("");
-    if (!item?.path || !props.onPreview) return;
-    if (binaryFile.test(item.path)) { setPreviewState("Preview is unavailable for this file type"); return; }
-    const path = item.path; setPreviewState("Loading preview…");
+    if (!path || !props.onPreview) return;
+    if (binaryFile.test(path)) { setPreviewState("Preview is unavailable for this file type"); return; }
+    setPreviewState("Loading preview…");
     const timer = setTimeout(() => {
       void props.onPreview!(path).then(text => {
         if (request !== previewGeneration) return;
@@ -67,9 +89,12 @@ export function Goto(props: GotoProps) {
     }, 100);
     onCleanup(() => clearTimeout(timer));
   });
-  createEffect(() => { const index = selected(); queueMicrotask(() => list?.querySelector<HTMLElement>(`[data-index="${index}"]`)?.scrollIntoView?.({ block: "nearest" })); });
   createEffect(() => {
-    const text = preview(); const path = current()?.path; const request = ++highlightGeneration;
+    const item = current();
+    if (item) queueMicrotask(() => list?.querySelector<HTMLElement>(`[id="${optionId(item)}"]`)?.scrollIntoView?.({ block: "nearest" }));
+  });
+  createEffect(() => {
+    const text = preview(); const path = previewPath(); const request = ++highlightGeneration;
     setHighlighted([]);
     if (!text || !path) return;
     void loadLanguage("", path).then(support => {
@@ -96,21 +121,22 @@ export function Goto(props: GotoProps) {
       return { tokens, number: index + 1 };
     }).slice(start, start + 7);
   });
-  const emptyText = () => mode() === "Goto" ? props.files.length ? "No matching files" : "Open a folder to find files" : mode() === "Text Search" ? !props.onSearch ? "Open a workspace to search its text" : !query().trim() ? "Type text to search your workspace" : searching() ? "Searching…" : searchError() ? "Could not search workspace" : "No matching text" : "No matching actions";
+  const emptyText = () => mode() === "Goto" ? fileQuery().invalidPosition ? "Use a positive line and column number" : props.files.length ? "No matching files" : "Open a folder to find files" : mode() === "Text Search" ? !props.onSearch ? "Open a workspace to search its text" : !query().trim() ? "Type text to search your workspace" : searching() ? "Searching…" : searchError() ? "Could not search workspace" : "No matching text" : "No matching actions";
   return <Modal label="Goto" class="goto-modal" onClose={props.onClose}>
     <div class="goto-tabs" role="tablist" aria-label="Goto modes"><For each={modes}>{item => <button role="tab" aria-selected={mode() === item} aria-controls="goto-panel" tabIndex={mode() === item ? 0 : -1} onClick={() => switchMode(item)} onKeyDown={event => { if (["ArrowRight", "ArrowLeft"].includes(event.key)) { event.preventDefault(); switchMode(modes[(modes.indexOf(item) + (event.key === "ArrowRight" ? 1 : -1) + modes.length) % modes.length]); } }}>{item}</button>}</For></div>
-    <div class="goto-input"><Icon name="SearchNormal1" size={17} /><input ref={input} autofocus role="combobox" aria-label={mode() === "Goto" ? "Find a file" : mode() === "Text Search" ? "Search workspace text" : "Search actions"} aria-controls="goto-results" aria-activedescendant={current() ? `goto-result-${Math.min(selected(), results().length - 1)}` : undefined} aria-expanded="true" placeholder={mode() === "Goto" ? "Search files by name" : mode() === "Text Search" ? "Search text in files" : "Search actions"} value={query()} onInput={event => { setQuery(event.currentTarget.value); setSelected(0); }} onKeyDown={event => {
+    <div class="goto-input"><Icon name="SearchNormal1" size={17} /><input ref={input} autofocus role="combobox" aria-label={mode() === "Goto" ? "Find a file" : mode() === "Text Search" ? "Search workspace text" : "Search actions"} aria-controls="goto-results" aria-activedescendant={current() ? optionId(current()!) : undefined} aria-expanded="true" placeholder={mode() === "Goto" ? "Search files by name" : mode() === "Text Search" ? "Search text in files" : "Search actions"} value={query()} onInput={event => updateQuery(event.currentTarget.value)} onKeyDown={event => {
       if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && (event.key.startsWith("Arrow") || event.ctrlKey || event.metaKey)) {
         event.preventDefault(); const count = results().length;
         setSelected(index => !count ? 0 : event.key === "Home" ? 0 : event.key === "End" ? count - 1 : (Math.min(index, count - 1) + (event.key === "ArrowDown" ? 1 : -1) + count) % count);
       } else if (event.key === "Enter") { event.preventDefault(); open(current()); }
+      else if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && mode() === "Goto") { if (completeFile()) event.preventDefault(); }
       else if (event.key === "Tab" && event.ctrlKey) { event.preventDefault(); switchMode(modes[(modes.indexOf(mode()) + (event.shiftKey ? -1 : 1) + modes.length) % modes.length]); }
     }} autocomplete="off" spellcheck={false} /><kbd>esc</kbd></div>
     <div id="goto-panel" class="goto-panel" role="tabpanel" aria-label={mode()}>
-    <Show when={mode() === "Goto"}><div class="goto-filters"><span class="goto-chip">Files</span><span>Type :line to jump to a line</span></div></Show>
+    <Show when={mode() === "Goto"}><div class="goto-filters"><span class="goto-chip">Files</span><span>Tab completes the path · :line:column jumps to a position</span></div></Show>
     <div class="goto-section">{mode() === "Goto" ? query().trim() ? "Files" : recentCount() ? "Recent files" : "Workspace files" : mode() === "Text Search" ? "Text matches" : mode()}</div>
-    <div ref={list} id="goto-results" class="goto-results" role="listbox" aria-label={mode()}><For each={results()}>{(item, index) => <><Show when={mode() === "Goto" && recentCount() > 0 && index() === recentCount()}><div class="goto-section">Workspace files</div></Show><button id={`goto-result-${index()}`} data-index={index()} class={`goto-result ${current()?.id === item.id ? "selected" : ""}`} role="option" aria-selected={current()?.id === item.id} tabIndex={-1} onMouseMove={() => setSelected(index())} onClick={() => open(item)}><Show when={item.path} fallback={<Icon name="Command" size={15} />}><FileIcon path={item.path!} /></Show><span class="goto-name">{item.label}</span><span class="goto-detail">{item.detail}</span><Show when={item.shortcut}><kbd>{item.shortcut}</kbd></Show></button></>}</For><Show when={!results().length}><div class="goto-empty" role="status">{emptyText()}</div></Show></div>
-    <Show when={current()?.path && props.onPreview}><div class="goto-preview" aria-label="File preview"><div class="goto-preview-path">{current()?.path}</div><Show when={preview()} fallback={<div class="goto-preview-message" role="status">{previewState()}</div>}><For each={previewLines()}>{line => <div class="goto-preview-line"><span>{line.number}</span><code><For each={line.tokens}>{token => <span class={token.class}>{token.text}</span>}</For></code></div>}</For></Show></div></Show>
+    <div ref={list} id="goto-results" class="goto-results" role="listbox" aria-label={mode()}><For each={results()}>{(item, index) => <><Show when={mode() === "Goto" && recentCount() > 0 && index() === recentCount()}><div class="goto-section">Workspace files</div></Show><button id={optionId(item)} data-index={index()} class={`goto-result ${current()?.id === item.id ? "selected" : ""}`} role="option" aria-selected={current()?.id === item.id} tabIndex={-1} onMouseMove={() => setSelected(index())} onClick={() => open(item)}><Show when={item.path} fallback={<Icon name="Command" size={15} />}><FileIcon path={item.path!} /></Show><span class="goto-name">{item.label}</span><span class="goto-detail">{item.detail}</span><Show when={item.shortcut}><kbd>{item.shortcut}</kbd></Show></button></>}</For><Show when={!results().length}><div class="goto-empty" role="status">{emptyText()}</div></Show></div>
+    <Show when={(mode() === "Goto" || mode() === "Text Search") && props.onPreview}><div class="goto-preview" aria-label="File preview"><div class="goto-preview-path">{current()?.path || "File preview"}</div><Show when={preview()} fallback={<div class="goto-preview-message" role="status">{current()?.path ? previewState() : "Select a file to preview"}</div>}><For each={previewLines()}>{line => <div class="goto-preview-line"><span>{line.number}</span><code><For each={line.tokens}>{token => <span class={token.class}>{token.text}</span>}</For></code></div>}</For></Show></div></Show>
     <div class="goto-footer"><span>↑↓ select · Enter open · Ctrl+Tab switch mode</span><button onClick={() => { props.onClose(); props.onOpenFolder(); }}>Open folder…</button></div>
     </div>
   </Modal>;

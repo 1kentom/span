@@ -3,11 +3,12 @@ import { Annotation, Compartment, EditorState, Prec, StateEffect, StateField, Te
 import { Decoration, EditorView, ViewPlugin, WidgetType, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection, crosshairCursor, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, foldService, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from "@codemirror/commands";
-import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import type { BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEdit } from "../bindings";
 import { loadLanguage, resolveLanguageId } from "../editor/languages";
+import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/search-panel";
 import "../styles/editor.css";
 
 export interface EditorEdit {
@@ -30,6 +31,7 @@ export interface EditorCommands {
   cut: () => Promise<void>;
   paste: () => Promise<void>;
   selectAll: () => void;
+  expandAbbreviation: () => void;
 }
 
 export interface ClipboardPort { readText: () => Promise<string>; writeText: (text: string) => Promise<void> }
@@ -54,6 +56,7 @@ export interface EditorProps {
   syntax?: SyntaxSnapshot;
   theme?: "dark" | "light" | "purple";
   active?: boolean;
+  readOnly?: boolean;
   autofocus?: boolean;
   revealLine?: number;
   revealColumn?: number;
@@ -332,6 +335,7 @@ export default function Editor(props: EditorProps) {
   const language = new Compartment();
   const appearance = new Compartment();
   const preferences = new Compartment();
+  const editability = new Compartment();
   function configureLanguage(hint: string, path: string) {
     if (props.active === false) return;
     const key = `${hint}:${path}`;
@@ -349,11 +353,15 @@ export default function Editor(props: EditorProps) {
     find: () => { if (view && props.active !== false) openSearchPanel(view); },
     replace: () => {
       if (!view || props.active === false) return;
-      openSearchPanel(view);
-      queueMicrotask(() => { if (props.active !== false) view?.dom.querySelector<HTMLInputElement>('.cm-search input[name="replace"]')?.focus(); });
+      openEditorReplacePanel(view);
     },
     goToLine: () => { if (view && props.active !== false) gotoLine(view); },
     format: () => { if (view && props.active !== false) props.onFormat?.(); },
+    expandAbbreviation: () => {
+      const target = view;
+      if (!target || props.active === false) return;
+      void import("../editor/emmet").then(({ expandEmmet }) => { if (view === target && props.active !== false) expandEmmet(target); });
+    },
     copy: () => clipboardAction("copy"),
     cut: () => clipboardAction("cut"),
     paste: () => clipboardAction("paste"),
@@ -398,13 +406,14 @@ export default function Editor(props: EditorProps) {
     return [
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(),
       props.onUndo ? [] : history(), rectangularSelection(), crosshairCursor(), indentOnInput(), bracketMatching(),
-      closeBrackets(), foldGutter({ markerDOM: (open) => {
+      closeBrackets(), autocompletion({ maxRenderedOptions: 30 }), foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
         const marker = document.createElement("span");
         marker.className = `cm-fold-chevron ${open ? "is-open" : ""}`;
         marker.setAttribute("aria-hidden", "true");
         return marker;
       } }),
-      search({ top: true }), highlightSelectionMatches(), indentGuides, syntaxState, proposalState,
+      search({ top: true, createPanel: createEditorSearchPanel }), highlightSelectionMatches(), indentGuides, syntaxState, proposalState,
+      editability.of([EditorState.readOnly.of(Boolean(props.readOnly)), EditorView.editable.of(!props.readOnly)]),
       EditorState.allowMultipleSelections.of(true),
       preferences.of(preferenceExtensions(props.tabSize ?? 2, props.wordWrap ?? false)),
       language.of([]),
@@ -421,16 +430,18 @@ export default function Editor(props: EditorProps) {
         if (event.inputType === "historyRedo" && props.onRedo) { event.preventDefault(); props.onRedo(); return true; }
         return false;
       } })),
-      EditorView.contentAttributes.of({ "aria-label": `Edit ${props.buffer.path.split(/[\\/]/).pop() ?? "document"}`, "aria-multiline": "true", spellcheck: "false", autocapitalize: "off", autocorrect: "off" }),
+      EditorView.contentAttributes.of({ "aria-label": props.buffer.path === "settings://user" ? "Edit User settings (JSONC)" : props.buffer.path === "settings://workspace" ? "Edit Workspace settings (JSONC)" : `Edit ${props.buffer.path.split(/[\\/]/).pop() ?? "document"}`, "aria-multiline": "true", spellcheck: "false", autocapitalize: "off", autocorrect: "off" }),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           appliedSyntax = undefined;
           if (props.proposal) setProposalChanged(true);
           for (const transaction of update.transactions) {
             if (transaction.docChanged && !transaction.annotation(remoteEdit)) {
+              if (transaction.isUserEvent("input.emmet")) historyOrigin = {};
               const previousDocument = sharedDocument ?? transaction.startState.doc;
               sharedDocument = transaction.newDoc;
               props.onEdit({ baseRevision: props.buffer.revision, changes: transactionEdits(transaction.changes), document: transaction.newDoc, previousDocument, changeSet: transaction.changes, historyOrigin });
+              if (transaction.isUserEvent("input.emmet")) historyOrigin = {};
             }
           }
         }
@@ -462,6 +473,7 @@ export default function Editor(props: EditorProps) {
     const tabSize = props.tabSize ?? 2;
     const wordWrap = props.wordWrap ?? false;
     const active = props.active !== false;
+    const readOnly = Boolean(props.readOnly);
     const font = `${props.fontFamily}:${props.fontSize}`;
     const generation = ++syncGeneration;
     // Store acknowledgments can arrive inside the update listener. Defer their
@@ -491,8 +503,9 @@ export default function Editor(props: EditorProps) {
         effects.push(appearance.reconfigure(EditorView.theme({}, { dark: theme !== "light" })));
       }
       if (view.state.tabSize !== tabSize || view.lineWrapping !== wordWrap) effects.push(preferences.reconfigure(preferenceExtensions(tabSize, wordWrap)));
+      if (view.state.readOnly !== readOnly) effects.push(editability.reconfigure([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]));
       const languageId = resolveLanguageId(snapshot.language, snapshot.path);
-      const validSyntax = syntax?.revision === snapshot.revision && languageId !== "markdown" && languageId !== "dotenv" && syntax.language !== "text" ? syntax : undefined;
+      const validSyntax = syntax?.revision === snapshot.revision && !["markdown", "dotenv", "jsonc"].includes(languageId) && syntax.language !== "text" ? syntax : undefined;
       if (appliedSyntax !== validSyntax || change) {
         appliedSyntax = validSyntax;
         effects.push(setSyntax.of(validSyntax));

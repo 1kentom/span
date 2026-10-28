@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import { createSignal } from "solid-js";
 import { Text } from "@codemirror/state";
-import { MarkdownPreview, markdownDestination, parseMarkdown, renderMarkdownBlock } from "./MarkdownPreview";
+import { MarkdownPreview, markdownDestination, parseMarkdown, renderMarkdownBlock, type MarkdownRunRequest } from "./MarkdownPreview";
 
 const context = { documentPath: "/workspace/docs/guide.md", workspaceRoot: "/workspace" };
 function renderMarkdown(text: string) {
@@ -175,5 +175,57 @@ describe("preview lifecycle and local assets", () => {
       expect(host.querySelector("img,[src]")).toBeNull();
       expect(host.textContent).toContain("Local image unavailable or unsupported");
     }
+  });
+});
+
+describe("code fence actions", () => {
+  it("labels supported and detected fences while leaving unknown declarations plain", () => {
+    const root = renderMarkdown("```bash\nnpm run dev\n```\n\n```\npnpm install\n```\n\n```unknown\nnpm run dev\n```");
+    expect([...root.querySelectorAll(".markdown-code-language")].map(element => element.textContent)).toEqual(["Bash", "Shell (detected)", "Plain text"]);
+    expect([...root.querySelectorAll<HTMLButtonElement>("[data-markdown-run]")].every(button => button.disabled)).toBe(true);
+    expect(root.querySelector<HTMLButtonElement>("[data-markdown-copy]")?.getAttribute("aria-label")).toBe("Copy code");
+  });
+
+  it("highlights an npm command in declared and conservatively detected shell fences", async () => {
+    const host = document.createElement("div"); document.body.append(host);
+    cleanup.push(render(() => <MarkdownPreview text={"```bash\nnpm run dev\n```\n\n```\npnpm install\n```"} {...context} />, host));
+    await vi.waitFor(() => expect([...host.querySelectorAll('code[data-language="shell"] .tok-variableName')].map(element => element.textContent)).toEqual(["npm", "pnpm"]));
+  });
+
+  it("copies exact fence text only after an explicit user click", async () => {
+    const writeText = vi.fn(async () => {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const host = document.createElement("div"); document.body.append(host);
+    const code = '<script>alert("x")</script>\n';
+    cleanup.push(render(() => <MarkdownPreview text={`\`\`\`html\n${code}\`\`\``} {...context} />, host));
+    expect(writeText).not.toHaveBeenCalled();
+    host.querySelector<HTMLButtonElement>("[data-markdown-copy]")!.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(code);
+    expect(host.querySelector(".markdown-code-status")?.textContent).toBe("Copied");
+    expect(host.querySelector("script")).toBeNull();
+  });
+
+  it("sends only explicit clicked shell commands to a real supplied terminal callback", async () => {
+    const onRunCode = vi.fn(async (_request: MarkdownRunRequest) => {});
+    const host = document.createElement("div"); document.body.append(host);
+    cleanup.push(render(() => <MarkdownPreview text={"```console\n$ npm run dev\nListening on port 3000\n```"} {...context} onRunCode={onRunCode} />, host));
+    expect(onRunCode).not.toHaveBeenCalled();
+    const button = host.querySelector<HTMLButtonElement>("[data-markdown-run]")!;
+    expect(button.disabled).toBe(false);
+    button.click(); await Promise.resolve(); await Promise.resolve();
+    expect(onRunCode).toHaveBeenCalledExactlyOnceWith({ code: "npm run dev", language: "console", documentPath: context.documentPath, workspaceRoot: context.workspaceRoot, sourceLine: 2, action: "run", detected: false, omittedOutput: true });
+  });
+
+  it("stages inferred shell snippets for review and never runs declared JavaScript", async () => {
+    const onRunCode = vi.fn(async (_request: MarkdownRunRequest) => {});
+    const host = document.createElement("div"); document.body.append(host);
+    cleanup.push(render(() => <MarkdownPreview text={"```\nnpm run dev\n```\n\n```javascript\nnpm run dev\n```"} {...context} onRunCode={onRunCode} />, host));
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>("[data-markdown-run]")];
+    expect(buttons[0].title).toContain("for review");
+    expect(buttons[1].disabled).toBe(true);
+    buttons[0].click(); await Promise.resolve(); await Promise.resolve();
+    expect(onRunCode.mock.calls[0][0]).toMatchObject({ code: "npm run dev", action: "send", detected: true });
+    buttons[1].click(); expect(onRunCode).toHaveBeenCalledTimes(1);
   });
 });

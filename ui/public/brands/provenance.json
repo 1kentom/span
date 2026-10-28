@@ -530,6 +530,55 @@
           "sha256": "1b156eb915f7e74443f3fc491334f1896b6650e8fb597e2f2cb71c0ff7dd1cb0"
         }
       }
+    },
+    {
+      "key": "grok",
+      "registry": {
+        "id": 133,
+        "title": "Grok",
+        "category": "AI",
+        "route": {
+          "light": "https://svgl.app/library/grok-light.svg",
+          "dark": "https://svgl.app/library/grok-dark.svg"
+        },
+        "wordmark": {
+          "light": "https://svgl.app/library/grok-wordmark-light.svg",
+          "dark": "https://svgl.app/library/grok-wordmark-dark.svg"
+        },
+        "url": "https://grok.com/"
+      },
+      "files": {
+        "light": {
+          "file": "grok-light.svg",
+          "source": "https://svgl.app/library/grok-light.svg",
+          "sha256": "a127a7cd42b0450f7d3827a331b0730aab49fd99c3fe920d172475b9ffc83992"
+        },
+        "dark": {
+          "file": "grok-dark.svg",
+          "source": "https://svgl.app/library/grok-dark.svg",
+          "sha256": "b20648e2f111d7fbc91f58b22d1e76e9885b68a163cb5a1010f7f11bf5840491"
+        }
+      }
+    },
+    {
+      "key": "glm",
+      "registry": {
+        "id": "glm-acp-agent",
+        "title": "Z.ai",
+        "repository": "https://github.com/stefandevo/glm-acp-agent"
+      },
+      "files": {
+        "light": {
+          "file": "glm.svg",
+          "source": "https://cdn.agentclientprotocol.com/registry/v1/latest/glm-acp-agent.svg",
+          "sha256": "92d58de607569cad5df45504b45e31602d35eee953c48002623d1fdc6023c56c"
+        },
+        "dark": {
+          "file": "glm.svg",
+          "source": "https://cdn.agentclientprotocol.com/registry/v1/latest/glm-acp-agent.svg",
+          "sha256": "92d58de607569cad5df45504b45e31602d35eee953c48002623d1fdc6023c56c"
+        }
+      }
     }
   ]
 }

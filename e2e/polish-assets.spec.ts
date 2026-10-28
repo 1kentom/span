@@ -24,7 +24,7 @@ test("Markdown defaults to preview, keeps Source and Both editable, and gates re
   const preview = page.getByRole("region", { name: "Markdown preview", exact: true });
   await expect(preview).toContainText("browser preview workspace");
   await expect(page.getByRole("textbox", { name: "Edit README.md", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Both", exact: true }).click();
+  await page.getByRole("radio", { name: "Source and preview", exact: true }).click();
   const editor = page.getByRole("textbox", { name: "Edit README.md", exact: true });
   await expect(editor).toBeVisible();
   await expect(preview).toBeVisible();
@@ -44,7 +44,7 @@ test("Markdown defaults to preview, keeps Source and Both editable, and gates re
   const image = preview.locator('img[alt="Remote sample"]');
   await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(8);
   expect(remoteRequests).toBe(1);
-  await page.getByRole("button", { name: "Source", exact: true }).click();
+  await page.getByRole("radio", { name: "Source", exact: true }).click();
   await expect(preview).toBeHidden();
   await expect(editor).toContainText("Preview safety");
 });

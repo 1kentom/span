@@ -7,7 +7,7 @@ Rust owns workspace paths, disk access, buffer revisions, settings, syntax, and 
 The compatible contract stack is `specta = 2.0.0-rc.26`, `tauri-specta = 2.0.0-rc.26`, and `specta-typescript = 0.0.13`. Payloads derive serde serialization and `specta::Type`. Regenerate `ui/src/bindings.ts` after changing registered commands or payload types:
 
 ```sh
-cargo run -p span-desktop --bin export-bindings
+cargo run --release -p span-desktop --features dev-tools --bin export-bindings
 ```
 
 `ui/src/lib/client.ts` is the frontend adapter. Native calls use generated commands; the browser branch exposes the explicit in-memory preview and rejects native saving and agent connections.

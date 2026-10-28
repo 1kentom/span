@@ -5,6 +5,19 @@ edition.workspace = true
 license.workspace = true
 build = "build.rs"
 default-run = "span-desktop"
+autobins = false
+
+[features]
+dev-tools = []
+
+[[bin]]
+name = "span-desktop"
+path = "src/main.rs"
+
+[[bin]]
+name = "export-bindings"
+path = "tools/export-bindings.rs"
+required-features = ["dev-tools"]
 
 [lib]
 name = "span_desktop_lib"

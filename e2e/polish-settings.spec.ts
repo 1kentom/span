@@ -1,48 +1,77 @@
 import { expect, test } from "@playwright/test";
 import { modifier, openSettings, ready } from "./helpers";
 
-test("Settings is a full tab and preserves a dirty JSONC draft through tab changes and close review", async ({ page }) => {
+test("Settings JSONC is a normal editor tab and retains invalid drafts through close review", async ({ page }) => {
   await ready(page);
   await openSettings(page);
   await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "JSONC", exact: true }).click();
-  const draft = page.getByRole("textbox", { name: "Settings JSONC", exact: true });
+  const draft = page.getByRole("textbox", { name: "Edit Workspace settings (JSONC)", exact: true });
   const invalid = "// keep this unsaved draft\n{ invalid";
-  await draft.fill(invalid);
+  await draft.focus(); await draft.press(`${modifier}+a`); await page.keyboard.insertText(invalid);
   await page.getByRole("tab", { name: "rpc-node.ts", exact: true }).click();
-  await page.getByRole("tab", { name: "Settings", exact: true }).click();
-  await expect(draft).toHaveValue(invalid);
+  await page.getByRole("tab", { name: "Workspace settings.jsonc", exact: true }).click();
+  await expect(draft).toContainText("keep this unsaved draft");
   await draft.press(`${modifier}+w`);
-  const review = page.getByRole("dialog", { name: "Unsaved settings", exact: true });
+  const review = page.getByRole("dialog", { name: "Unsaved changes", exact: true });
   await expect(review).toBeVisible();
   await review.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(draft).toHaveValue(invalid);
-  await page.getByRole("button", { name: "Save settings", exact: true }).click();
-  await expect(page.locator(".settings-page").getByRole("alert")).toBeVisible();
-  await expect(draft).toHaveValue(invalid);
+  await expect(draft).toContainText("keep this unsaved draft");
+  await draft.focus(); await draft.press(`${modifier}+s`);
+  await expect(page.getByRole("alert")).toContainText("Invalid settings JSONC");
+  await expect(draft).toContainText("keep this unsaved draft");
   await draft.press(`${modifier}+w`);
   await review.getByRole("button", { name: "Discard changes", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "Settings", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Workspace settings.jsonc", exact: true })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "rpc-node.ts", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "rpc-node.ts", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true })).toBeVisible();
-  await expect(page).toHaveURL(/127\.0\.0\.1:1420/);
+  await expect(page).toHaveURL(new URL("/", test.info().project.use.baseURL).href);
 });
 
-test("a Settings draft survives collapsing its split group and reopening the tab", async ({ page }) => {
+test("a dirty settings source survives moving out of a split and closing its former group", async ({ page }) => {
   await ready(page);
   await page.getByRole("button", { name: "Split editor", exact: true }).click();
   await openSettings(page);
   await page.getByRole("button", { name: "JSONC", exact: true }).click();
-  const draft = page.getByRole("textbox", { name: "Settings JSONC", exact: true });
+  const draft = page.getByRole("textbox", { name: "Edit Workspace settings (JSONC)", exact: true });
   const value = "// split draft must survive\n{";
-  await draft.fill(value);
-  await page.getByRole("region", { name: "Editor group 1", exact: true }).getByRole("button", { name: "Split editor", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Editor group 2", exact: true })).toHaveCount(0);
-  await openSettings(page);
-  await expect(draft).toHaveValue(value);
+  await draft.focus(); await draft.press(`${modifier}+a`); await page.keyboard.insertText(value);
+  await page.getByRole("button", { name: "Close editor group 2", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Unsaved changes", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  const first = page.getByRole("region", { name: "Editor group 1", exact: true });
+  const second = page.getByRole("region", { name: "Editor group 2", exact: true });
+  await second.getByRole("tab", { name: "Workspace settings.jsonc", exact: true }).locator("..").dragTo(first.locator(".editor-documents"));
+  await page.getByRole("button", { name: "Close editor group 2", exact: true }).click();
+  await expect(second).toHaveCount(0);
+  await expect(draft).toContainText("split draft must survive");
   await draft.press(`${modifier}+w`);
-  await expect(page.getByRole("dialog", { name: "Unsaved settings", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Unsaved changes", exact: true })).toBeVisible();
+});
+
+test("User and Workspace source settings inherit, override and reset independently", async ({ page }) => {
+  await ready(page); await openSettings(page);
+  const scope = page.getByRole("group", { name: "Settings scope", exact: true });
+  await scope.getByRole("button", { name: "User", exact: true }).click();
+  await page.getByRole("button", { name: "Open settings JSONC", exact: true }).click();
+  const user = page.getByRole("textbox", { name: "Edit User settings (JSONC)", exact: true });
+  await user.focus(); await user.press(`${modifier}+a`);
+  await page.keyboard.insertText('// user comment\n{"editor.fontSize":17,"future.setting":"retained",}');
+  await user.press(`${modifier}+s`);
+  await expect(page.getByRole("button", { name: "Close User settings.jsonc", exact: true })).toHaveAttribute("title", "Close file");
+  await page.getByRole("tab", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Editor", exact: true }).click();
+  const font = page.getByRole("spinbutton", { name: "Editor font size", exact: true });
+  await expect(font).toHaveValue("17");
+  await scope.getByRole("button", { name: "Workspace", exact: true }).click();
+  await expect(font).toHaveValue("17"); await font.fill("21"); await font.press("Tab");
+  await expect(font).toHaveValue("21");
+  await scope.getByRole("button", { name: "User", exact: true }).click(); await expect(font).toHaveValue("17");
+  await scope.getByRole("button", { name: "Workspace", exact: true }).click(); await expect(font).toHaveValue("21");
+  await page.getByRole("button", { name: "Reset editor font size override", exact: true }).click(); await expect(font).toHaveValue("17");
+  await page.getByRole("tab", { name: "User settings.jsonc", exact: true }).click();
+  await expect(user).toContainText("user comment"); await expect(user).toContainText("future.setting");
 });
 
 test("keyboard shortcut recording detects conflicts and a saved rebind controls the panel", async ({ page }) => {

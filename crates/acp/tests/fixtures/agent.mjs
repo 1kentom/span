@@ -6,6 +6,7 @@ let sequence = 100;
 let sessions = 0;
 let activePrompt;
 let ignoreCancel = false;
+const modelConfig = value => [{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: value, options: [{ value: 'fast', name: 'Fast' }, { value: 'deep', name: 'Deep' }] }];
 const callbacks = new Map();
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const result = (id, value) => send({ id, result: value });
@@ -57,9 +58,12 @@ input.on('line', line => {
     const agentCapabilities = process.argv.includes('--resume') ? { loadSession: true, sessionCapabilities: { list: {} } } : {};
     result(message.id, { protocolVersion: 1, agentCapabilities, agentInfo: { name: 'span-test-peer', version: '1.0.0' } });
   } else if (message.method === 'session/new') {
+    if (process.argv.includes('--missing-session')) { send({ id: message.id, error: { code: -32601, message: 'Method not found: session/new' } }); return; }
     if (process.argv.includes('--hang-session')) return;
     cwd = message.params.cwd;
-    result(message.id, { sessionId: `fixture-${++sessions}` });
+    result(message.id, { sessionId: `fixture-${++sessions}`, ...(process.argv.includes('--config') ? { configOptions: modelConfig('fast') } : {}) });
+  } else if (message.method === 'session/set_config_option') {
+    result(message.id, { configOptions: modelConfig(message.params.value) });
   } else if (message.method === 'session/list') {
     result(message.id, { sessions: [{ sessionId: 'old-1', cwd, title: 'Earlier chat', updatedAt: '2026-10-28T09:00:00Z' }] });
   } else if (message.method === 'session/load') {
@@ -69,6 +73,7 @@ input.on('line', line => {
     update(sessionId, { sessionUpdate: 'tool_call', toolCallId: 'sub-1', title: 'Read file', kind: 'read', status: 'completed', _meta: { claudeCode: { parentToolUseId: 'task-1' } } });
     result(message.id, {});
   } else if (message.method === 'session/prompt') {
+    if (process.argv.includes('--missing-prompt')) { send({ id: message.id, error: { code: -32601, message: 'Method not found: session/prompt' } }); return; }
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {
     if (activePrompt !== undefined && !ignoreCancel) result(activePrompt, { stopReason: 'cancelled' });
