@@ -1,7 +1,7 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
-import { rowMeta } from "../lib/agent-chats";
+import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
 import { isNearBottom, relativeTime } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
 import type { AgentHint } from "../bindings";
@@ -97,7 +97,13 @@ export function AgentPanel(props: AgentPanelProps) {
     const open = props.onOpenAttachment;
     a.setAttachmentOpener(open ? (item) => open(attachmentTabView(item)) : undefined);
   });
-  const title = () => (a.view() === "history" ? "Earlier sessions" : a.state().sessionTitle || (a.connected() || a.connecting() || a.state().auth ? label() : "AI Assistant"));
+  const title = () => (a.view() === "history" ? "Earlier sessions" : a.currentTitle() || (a.connected() || a.connecting() || a.state().auth ? label() : "AI Assistant"));
+  /** Other providers of the open chat's thread (it switched agent), stacked after the connected agent's mark. */
+  const crew = createMemo(() => {
+    const id = a.state().sessionId;
+    const own = brand().id ?? brand().name;
+    return id ? threadRowMeta(a.threadFor(id)).agents.filter((entry) => entry.id !== own) : [];
+  });
   /** The clock button lists sessions and, pressed while History shows, goes back to the chat. */
   const canHistory = () => a.connected() && a.state().canList;
   const busyOverlay = () => a.connected() || a.feed().length > 0;
@@ -140,27 +146,39 @@ export function AgentPanel(props: AgentPanelProps) {
     });
     return actions;
   });
-  const sessionRows = createMemo(() =>
-    a.sessions().map((session) => {
-      const stored = rowMeta(a.sessionMetaOf(session.sessionId));
-      return {
-        id: session.sessionId,
-        brand: brand(),
-        title: stored.title || session.title || "Untitled chat",
-        // The connected agent listed the session, so it is the one agent known even without stored metadata.
-        agents: stored.agents.length ? stored.agents : hasAgent() ? [{ id: brand().id ?? brand().name, name: brand().name }] : [],
-        models: stored.models,
-        files: stored.files,
-        delta: stored.delta,
-        updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
-        inWorkspace: true,
-        current: session.sessionId === a.state().sessionId,
-        // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
-        locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
-        status: a.rowStatus(session.sessionId),
-      };
-    }),
-  );
+  /**
+   * One row per chat thread (ADR 0005, thread links): a chat that switched agent shows every provider and model it used
+   * under one title, and its earlier segment is not listed again when the continuation is listed too.
+   */
+  const sessionRows = createMemo(() => {
+    const listed = a.sessions();
+    const shown = new Set(visibleThreadRows(listed.map((session) => session.sessionId), a.sessionMeta(), a.agentId()));
+    return listed
+      .filter((session) => shown.has(session.sessionId))
+      .map((session) => {
+        const stored = threadRowMeta(a.threadFor(session.sessionId));
+        const inWorkspace = sameFolder(session.cwd, props.workspacePath);
+        return {
+          id: session.sessionId,
+          brand: brand(),
+          title: stored.title || listedTitle(session.title) || "Untitled chat",
+          // The connected agent listed the session, so it is the one agent known even without stored metadata.
+          agents: stored.agents.length ? stored.agents : hasAgent() ? [{ id: brand().id ?? brand().name, name: brand().name }] : [],
+          models: stored.models,
+          files: stored.files,
+          delta: stored.delta,
+          noChanges: stored.noChanges,
+          archived: stored.archived,
+          updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
+          inWorkspace,
+          ...(inWorkspace ? {} : { folder: session.cwd ?? undefined }),
+          current: session.sessionId === a.state().sessionId,
+          // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
+          locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
+          status: a.rowStatus(session.sessionId),
+        };
+      });
+  });
   const recents = createMemo(() =>
     a.state().canLoad
       ? a
@@ -255,7 +273,10 @@ export function AgentPanel(props: AgentPanelProps) {
       <p class="sb-visually-hidden" aria-live="polite" aria-atomic="true">{a.attentionAnnouncement()}</p>
       <header class="agent-header">
         <Show when={hasAgent()} fallback={<span class="agent-logo" aria-hidden="true" />}>
-          <BrandIcon id={brand().id} name={brand().name} size={15} />
+          <span class="agent-crew" title={crew().length ? [brand().name, ...crew().map((entry) => entry.name)].join(", ") : undefined}>
+            <BrandIcon id={brand().id} name={brand().name} size={15} />
+            <For each={crew()}>{(entry) => <BrandIcon id={entry.id} name={entry.name} size={15} />}</For>
+          </span>
         </Show>
         <span class="agent-title" title={title()}>
           {title()}
@@ -358,7 +379,21 @@ export function AgentPanel(props: AgentPanelProps) {
                 {a.sessionsError()}
               </p>
             </Show>
-            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} onOpen={(id) => void a.resumeChat(id)} onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
+            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList
+                  rows={sessionRows()}
+                  query={query()}
+                  onQuery={setQuery}
+                  scope={a.sessionScope()}
+                  onScope={a.setSessionScope}
+                  onOpen={(id) => void a.resumeChat(id)}
+                  onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined}
+                  onFork={a.canFork() && a.state().canLoad ? (id) => void a.forkChat(id) : undefined}
+                  onExport={a.canExport() ? (id) => void a.exportChat(id) : undefined}
+                  onCopyId={(id) => void api.writeClipboard(id)}
+                  onArchive={a.canArchive() ? (id, archived) => void a.archiveChat(id, archived) : undefined}
+                  onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined}
+                  onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined}
+                />}>
               <p class="sb-fine agent-pad" role="status">
                 Loading chats…
               </p>

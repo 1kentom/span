@@ -1,4 +1,5 @@
-import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup, type JSX } from "solid-js";
+import { folderName } from "../../lib/session-threads";
 import { RUN_TEXT } from "../../lib/agent-hint-text";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
@@ -54,11 +55,15 @@ function highlight(text: string, query: string): JSX.Element {
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
-/** "3 agents · 2 files" from what the row's metadata knows. One agent is already shown by its avatar. */
+/**
+ * "3 agents · 2 files" from what the row's metadata knows. One agent is already shown by its avatar. "No changes" only
+ * when Span tracked every change of the chat, since zero counters otherwise mean unknown.
+ */
 function metaLine(row: SessionRow): string {
   const parts: string[] = [];
   if ((row.agents?.length ?? 0) > 1) parts.push(plural(row.agents!.length, "agent"));
   if (row.files) parts.push(plural(row.files, "file"));
+  else if (row.noChanges && !row.delta) parts.push("No changes");
   return parts.join(" · ");
 }
 
@@ -82,7 +87,13 @@ type HistoryListProps = {
   onOpen: (id: string) => void;
   /** Menu entries appear only for the callbacks the app supplies. Rename is also F2 on a focused row. */
   onRename?: (id: string, title: string) => void;
+  /** Fork session: a new session that starts with this chat as context. */
+  onFork?: (id: string) => void;
+  /** Export as Markdown. */
+  onExport?: (id: string) => void;
   onCopyId?: (id: string) => void;
+  /** Archive (true) or restore (false). Archived rows show only under the Archived filter. */
+  onArchive?: (id: string, archived: boolean) => void;
   /** Delete appears only when supplied, and is also Backspace or Delete on a focused row. The row asks before calling it. */
   onDelete?: (id: string) => void;
   /** Close appears only when supplied, and only on the current session. */
@@ -100,7 +111,9 @@ export function HistoryList(props: HistoryListProps) {
   const [confirming, setConfirming] = createSignal<string>();
   const [agentFilter, setAgentFilter] = createSignal<string>();
   const [agentMenu, setAgentMenu] = createSignal(false);
-  const inScope = createMemo(() => props.rows.filter((row) => !props.onScope || props.scope === "all" || row.inWorkspace));
+  const [showArchived, setShowArchived] = createSignal(false);
+  const hasArchived = createMemo(() => props.rows.some((row) => row.archived));
+  const inScope = createMemo(() => props.rows.filter((row) => (!props.onScope || props.scope === "all" || row.inWorkspace) && Boolean(row.archived) === showArchived()));
   /** The agents present in the rows, in order of first appearance among the newest rows. */
   const agentsPresent = createMemo(() => {
     const found = new Map<string, string>();
@@ -125,7 +138,9 @@ export function HistoryList(props: HistoryListProps) {
   const time = (row: SessionRow) => (props.formatTime ? props.formatTime(row) : historyTime(row.updatedAt, now()));
   /** Where focus goes back to when the menu is dismissed with Escape. */
   let menuReturn: HTMLElement | undefined;
-  const hasMenu = (row: SessionRow) => Boolean(props.onRename || props.onCopyId || props.onDelete || (props.onClose && row.current));
+  /** A row from another folder belongs to that folder's store and agent cwd: only its id can be copied here. */
+  const here = (row: SessionRow) => !row.folder;
+  const hasMenu = (row: SessionRow) => Boolean(props.onCopyId || (here(row) && (props.onRename || props.onFork || props.onExport || props.onArchive || props.onDelete || (props.onClose && row.current))));
   const openMenu = (row: SessionRow, from?: HTMLElement) => {
     if (!hasMenu(row)) return;
     menuReturn = from;
@@ -151,25 +166,39 @@ export function HistoryList(props: HistoryListProps) {
     if (isMenuKey(event)) {
       event.preventDefault();
       openMenu(row, event.currentTarget);
-    } else if (event.key === "F2" && props.onRename) {
+    } else if (event.key === "F2" && props.onRename && here(row)) {
       event.preventDefault();
       startRename(row);
-    } else if ((event.key === "Backspace" || event.key === "Delete") && props.onDelete) {
+    } else if ((event.key === "Backspace" || event.key === "Delete") && props.onDelete && here(row)) {
       event.preventDefault();
       setConfirming(row.id);
     }
   };
   /** Clicks on the row's own controls (actions button, menu, confirm, rename field) do not open it. */
+  let pendingOpen: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(pendingOpen));
   const openFromRow = (row: SessionRow, event: MouseEvent) => {
-    if (row.locked || renaming() === row.id || confirming() === row.id) return;
+    if (row.locked || !here(row) || renaming() === row.id || confirming() === row.id) return;
     if (event.target instanceof Element && event.target.closest(".row-menu, .sb-menu, .sb-confirm, input")) return;
+    clearTimeout(pendingOpen);
+    // A mouse click on the title waits a moment, so a double click there renames instead of opening the chat.
+    if (event.detail >= 1 && props.onRename && event.target instanceof Element && event.target.closest(".sb-session-title")) {
+      if (event.detail === 1) pendingOpen = setTimeout(() => props.onOpen(row.id), 250);
+      return;
+    }
     props.onOpen(row.id);
+  };
+  const renameFromTitle = (row: SessionRow, event: MouseEvent) => {
+    if (!props.onRename || !here(row) || renaming() === row.id) return;
+    clearTimeout(pendingOpen);
+    event.preventDefault();
+    startRename(row);
   };
   const scopes: { id: HistoryScope; label: string }[] = [
     { id: "workspace", label: "This workspace" },
     { id: "all", label: "All folders" },
   ];
-  const empty = () => (props.query.trim() ? `No sessions match “${props.query.trim()}”.` : "No earlier sessions in this workspace yet.");
+  const empty = () => (props.query.trim() ? `No sessions match “${props.query.trim()}”.` : showArchived() ? "No archived sessions." : "No earlier sessions in this workspace yet.");
   return (
     <section class="sb-history" aria-label="Earlier sessions">
       <div class="sb-history-tools">
@@ -177,7 +206,7 @@ export function HistoryList(props: HistoryListProps) {
           <Icon name="SearchNormal1" size={13} />
           <input type="search" aria-label="Search sessions" placeholder="Search sessions" value={props.query} onInput={(event) => props.onQuery(event.currentTarget.value)} />
         </label>
-        <Show when={props.onScope || agentsPresent().length > 1}>
+        <Show when={props.onScope || agentsPresent().length > 1 || hasArchived() || showArchived()}>
           <div class="sb-history-filters">
             <Show when={props.onScope}>
               <div class="sb-seg" role="group" aria-label="Session scope">
@@ -191,6 +220,11 @@ export function HistoryList(props: HistoryListProps) {
               </div>
             </Show>
             <span class="sb-flex" />
+            <Show when={hasArchived() || showArchived()}>
+              <button class="sb-pill" classList={{ on: showArchived() }} aria-pressed={showArchived()} title={showArchived() ? "Show current sessions" : "Show archived sessions"} onClick={() => setShowArchived(!showArchived())}>
+                Archived
+              </button>
+            </Show>
             <Show when={agentsPresent().length > 1}>
               <div class="sb-agent-filter-wrap">
                 <button class="sb-pill sb-agent-filter" classList={{ on: Boolean(activeAgent()) }} aria-haspopup="menu" aria-expanded={agentMenu()} onClick={() => setAgentMenu(!agentMenu())}>
@@ -236,7 +270,7 @@ export function HistoryList(props: HistoryListProps) {
                 {(row) => (
                   <div
                     class="sb-session"
-                    classList={{ locked: row.locked, live: Boolean(row.status && row.status.kind !== "idle"), attention: Boolean(row.status?.attention), open: menu() === row.id }}
+                    classList={{ locked: row.locked || !here(row), live: Boolean(row.status && row.status.kind !== "idle"), attention: Boolean(row.status?.attention), open: menu() === row.id }}
                     onClick={(event) => openFromRow(row, event)}
                     onContextMenu={(event) => {
                       if (renaming() === row.id || !hasMenu(row)) return;
@@ -255,13 +289,13 @@ export function HistoryList(props: HistoryListProps) {
                         fallback={
                           <button
                             class="sb-session-main"
-                            disabled={row.locked}
-                            aria-disabled={row.locked}
+                            disabled={row.locked || !here(row)}
+                            aria-disabled={row.locked || !here(row)}
                             aria-label={row.status && showsState(row) ? `${row.title}, ${row.status.label}` : undefined}
-                            aria-keyshortcuts={[props.onRename ? "F2" : "", props.onDelete ? "Backspace" : ""].filter(Boolean).join(" ") || undefined}
+                            aria-keyshortcuts={here(row) ? [props.onRename ? "F2" : "", props.onDelete ? "Backspace" : ""].filter(Boolean).join(" ") || undefined : undefined}
                             onKeyDown={(event) => rowKeys(row, event)}
                           >
-                            <span class="sb-session-title">
+                            <span class="sb-session-title" title={props.onRename && here(row) ? "Double-click to rename" : undefined} onDblClick={(event) => renameFromTitle(row, event)}>
                               <span class="sb-ellipsis">{highlight(row.title, props.query)}</span>
                               <Show when={row.current}>
                                 <span class="sb-tag">Current</span>
@@ -297,7 +331,10 @@ export function HistoryList(props: HistoryListProps) {
                                 </Show>
                               </span>
                             </Show>
-                            <Show when={row.locked}>
+                            <Show when={row.folder}>
+                              {(folder) => <span class="sb-session-note">In {folderName(folder())}. Open that folder to resume it.</span>}
+                            </Show>
+                            <Show when={row.locked && here(row)}>
                               <span class="sb-session-note">Read-only. This agent doesn't support session/load.</span>
                             </Show>
                           </button>
@@ -356,11 +393,23 @@ export function HistoryList(props: HistoryListProps) {
                     </Show>
                     <Show when={menu() === row.id}>
                       <div class="sb-menu sb-row-menu" role="menu" aria-label="Session actions" onKeyDown={(event) => arrowFocus(event, event.currentTarget, "[role='menuitem']")} ref={(el) => queueMicrotask(() => el.querySelector<HTMLElement>("[role='menuitem']")?.focus())}>
-                        <Show when={props.onRename}>
+                        <Show when={props.onRename && here(row)}>
                           <button class="sb-menu-item" role="menuitem" onClick={() => startRename(row)}>
                             <Icon name="ActionRename" size={12} />
                             <span class="sb-menu-label">Rename</span>
                             <span class="sb-menu-key">F2</span>
+                          </button>
+                        </Show>
+                        <Show when={props.onFork && here(row) && !row.locked}>
+                          <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onFork?.(row.id); }}>
+                            <Icon name="Hierarchy" size={12} />
+                            <span class="sb-menu-label">Fork session</span>
+                          </button>
+                        </Show>
+                        <Show when={props.onExport && here(row) && (!row.locked || row.current)}>
+                          <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onExport?.(row.id); }}>
+                            <Icon name="DocumentText" size={12} />
+                            <span class="sb-menu-label">Export as Markdown</span>
                           </button>
                         </Show>
                         <Show when={props.onCopyId}>
@@ -369,14 +418,20 @@ export function HistoryList(props: HistoryListProps) {
                             <span class="sb-menu-label">Copy session ID</span>
                           </button>
                         </Show>
-                        <Show when={(props.onClose && row.current) || props.onDelete}>
-                          <Show when={props.onRename || props.onCopyId}>
+                        <Show when={here(row) && ((props.onClose && row.current) || props.onArchive || props.onDelete)}>
+                          <Show when={props.onRename || props.onFork || props.onExport || props.onCopyId}>
                             <div class="sb-menu-sep" role="separator" />
                           </Show>
                           <Show when={props.onClose && row.current}>
                             <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onClose?.(row.id); }}>
                               <Icon name="CloseCircle" size={12} />
                               <span class="sb-menu-label">Close session</span>
+                            </button>
+                          </Show>
+                          <Show when={props.onArchive}>
+                            <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onArchive?.(row.id, !row.archived); }}>
+                              <Icon name="Clock" size={12} />
+                              <span class="sb-menu-label">{row.archived ? "Restore" : "Archive"}</span>
                             </button>
                           </Show>
                           <Show when={props.onDelete}>

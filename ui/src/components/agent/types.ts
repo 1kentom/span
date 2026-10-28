@@ -133,6 +133,12 @@ export type SessionRow = {
   files?: number;
   /** Lines added and removed, from stored metadata. Absent means unknown and shows nothing. */
   delta?: { add: number; del: number };
+  /** Span tracked every change of the chat and there were none: shows "No changes". */
+  noChanges?: boolean;
+  /** Archived in Span's metadata: listed only under the Archived filter. */
+  archived?: boolean;
+  /** The session's folder when it is not this workspace ("All folders" scope). Such a row cannot be opened here. */
+  folder?: string;
   /** True when the agent lacks session/load, so the row cannot be reopened. */
   locked?: boolean;
   /** The session's state from the backend. Absent for a session Span does not hold, which then shows no state. */

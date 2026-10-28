@@ -360,6 +360,9 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-session.locked { cursor: default; }
 .sb-avatars { display: flex; flex: none; width: 30px; padding-top: 2px; }
 .sb-avatars .brand-icon { margin-right: -5px; border-radius: 50%; background: var(--sb-surface); box-shadow: 0 0 0 2px var(--sb-surface); overflow: hidden; }
+/* The open chat's other providers after an agent switch, stacked after the connected agent's mark (design header crew). */
+.agent-crew { display: flex; flex: none; align-items: center; }
+.agent-crew .brand-icon + .brand-icon { margin-left: -4px; border-radius: 50%; background: var(--island); box-shadow: 0 0 0 2px var(--island); overflow: hidden; }
 .sb-session-body { display: flex; flex: 1; min-width: 0; }
 .sb-session-main { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--sb-fg); text-align: left; font: inherit; cursor: inherit; }
 .sb-session.locked .sb-session-main { opacity: 1; }

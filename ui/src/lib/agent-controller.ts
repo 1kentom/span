@@ -2,10 +2,11 @@ import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount }
 import type { AgentCommand, AgentEvent, ConfigOption, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionMetaList, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
+import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
 import { childPermissions, isFinished, type ChildPermission } from "./agent-delegation";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
-import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
+import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { RUN_TEXT } from "./agent-hint-text";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
 
@@ -74,7 +75,7 @@ type Connecting = { name: string; command: string; logBase: number; failed: bool
  * An agent switch in the open chat. `text` is the carried context, sent once ahead of the first prompt of the session
  * named by `sessionId`; `sessionId` is set when the new session is ready.
  */
-type Handoff = { from: string; to: string; text?: string; sessionId?: string; /** Shown on the context card instead of the switch note. */ note?: string };
+type Handoff = { from: string; to: string; text?: string; sessionId?: string; /** Shown on the context card instead of the switch note. */ note?: string; /** The session the chat leaves, linked from the new one so History shows one thread. */ link?: { agentId: string; sessionId: string; name: string; title?: string } };
 /**
  * A user message picked with Edit or Restore. Edit puts its text in the composer (the previous draft is kept in
  * `draft`) and the next send starts a new session from there; both show the files changed since that message.
@@ -124,6 +125,10 @@ export function createAgentController(props: AgentPanelProps) {
   const [sessionsError, setSessionsError] = createSignal("");
   /** Span's stored metadata for the workspace's sessions (ADR 0005). Empty when none is stored or it cannot be read. */
   const [sessionMeta, setSessionMeta] = createSignal<SessionMeta[]>([]);
+  /** Delegated child session id to its lead session id, so a child's model is recorded on the lead as a subagent. */
+  const delegatedChildren = new Map<string, string>();
+  /** Accepted edit totals per session in this run, added to what the store had when counting began. */
+  const changeTotals = new Map<string, { paths: Set<string>; add: number; del: number; base: { files: number; add: number; del: number } }>();
   const [queue, setQueue] = createSignal<Queued[]>([]);
   /**
    * True when the queue must not drain on its own: the last turn ended with an error, the connection dropped, or a
@@ -439,6 +444,17 @@ export function createAgentController(props: AgentPanelProps) {
     if (event.kind === "delegation" && event.event.kind === "delegated") {
       const lead = delegationMetaPatch(agentId(), event.event.lead.sessionId, event.event.agentName);
       if (lead) void recordSessionMeta(lead);
+      delegatedChildren.set(event.event.child.sessionId, event.event.lead.sessionId);
+      if (delegatedChildren.size > 200) delegatedChildren.delete(delegatedChildren.keys().next().value!);
+    }
+    if (event.kind === "config" && delegatedChildren.has(event.sessionId)) {
+      const child = subagentModelPatch(agentId(), delegatedChildren.get(event.sessionId)!, event.options);
+      if (child) void recordSessionMeta(child);
+    }
+    if (event.kind === "complete" && session && event.sessionId === session) {
+      const agent = agentId();
+      // Zero counters mean "no changes" only while every change in the feed went through review (ADR 0005).
+      if (agent) void recordSessionMeta({ agentId: agent, sessionId: session, stopReasonLast: event.stopReason, changesTracked: !hasUntrackedEdits(state().feed, props.workspacePath) });
     }
     if (event.kind === "complete" && (!session || event.sessionId === session)) queueMicrotask(() => (flushSteer(), drainQueue()));
     if (event.kind === "error" || (event.kind === "status" && ["error", "disconnected"].includes(event.state))) {
@@ -657,7 +673,10 @@ export function createAgentController(props: AgentPanelProps) {
     const cwd = props.workspacePath;
     const hadSession = Boolean(sessionId());
     const carry = Boolean(options.switching && state().feed.length && (id !== agentId() || name !== agentName()));
-    handoff = carry ? { from: agentLabel(), to: name, text: buildHandoff(state().feed, { from: agentLabel(), root: cwd }) } : undefined;
+    const leaving = sessionId();
+    const leavingAgent = agentId();
+    const link = carry && leaving && leavingAgent ? { agentId: leavingAgent, sessionId: leaving, name: agentLabel(), title: currentTitle() } : undefined;
+    handoff = carry ? { from: agentLabel(), to: name, text: buildHandoff(state().feed, { from: agentLabel(), root: cwd }), link } : undefined;
     setRefused(undefined);
     batch(() => {
       setWorking(true);
@@ -722,6 +741,7 @@ export function createAgentController(props: AgentPanelProps) {
     const pending = handoff;
     if (!pending || pending.sessionId) return;
     update((previous) => addFeedItem(previous, { kind: "handoff", from: pending.from, to: pending.to, carried: Boolean(pending.text) }));
+    if (pending.link) linkThread(id, pending.link);
     handoff = pending.text ? { ...pending, sessionId: id } : undefined;
   }
   const connectInstalled = (id: string) => {
@@ -1213,6 +1233,13 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setPendingAction("");
     }
   }
+  /** History scope: this workspace (the agent lists sessions of the folder) or every folder the agent knows. */
+  const [sessionScope, setSessionScopeSignal] = createSignal<"workspace" | "all">("workspace");
+  const setSessionScope = (scope: "workspace" | "all") => {
+    if (scope === sessionScope()) return;
+    setSessionScopeSignal(scope);
+    void loadSessions();
+  };
   async function loadSessions() {
     if (!state().canList || sessionsBusy()) return;
     const current = guard(agentEpoch);
@@ -1220,7 +1247,7 @@ export function createAgentController(props: AgentPanelProps) {
     setSessionsError("");
     void loadSessionMeta();
     try {
-      const found = await api.agentListSessions();
+      const found = sessionScope() === "all" ? await api.agentListAllSessions() : await api.agentListSessions();
       if (current()) setSessions(found);
     } catch (cause) {
       if (current()) setSessionsError(errorText(cause));
@@ -1257,19 +1284,128 @@ export function createAgentController(props: AgentPanelProps) {
     const agent = agentId();
     return agent ? sessionMeta().find((entry) => entry.agentId === agent && entry.sessionId === sessionId) : undefined;
   };
+  /** Every stored segment of the chat thread that holds one of the connected agent's sessions (ADR 0005, thread links). */
+  const threadFor = (sessionId: string) => threadOf(sessionMeta(), agentId(), sessionId);
+  /** The open chat's title: the thread's user title, else the title it had when it switched agent, else the agent's. */
+  const currentTitle = () => {
+    const id = sessionId();
+    return (id ? threadRowMeta(threadFor(id)).title : undefined) ?? listedTitle(state().sessionTitle) ?? (id ? listedTitle(sessions().find((entry) => entry.sessionId === id)?.title) : undefined);
+  };
+  const keepSaved = (saved: SessionMeta) => setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
+  /** The store keys a thread action writes: every stored segment, and the row's own session first (it may have no metadata yet). */
+  function threadKeys(id: string): { agentId: string; sessionId: string }[] {
+    const agent = agentId();
+    const keys = agent ? [{ agentId: agent, sessionId: id }] : [];
+    for (const segment of threadFor(id).segments) if (!keys.some((entry) => entry.agentId === segment.agentId && entry.sessionId === segment.sessionId) && segment.sessionId !== id) keys.push({ agentId: segment.agentId, sessionId: segment.sessionId });
+    return keys;
+  }
+  /**
+   * Links the session a switch started to the one it left, so History shows one row for the chat with every provider.
+   * The earlier segment is recorded too, so its provider shows even when it never finished a turn.
+   */
+  function linkThread(id: string, link: NonNullable<Handoff["link"]>) {
+    const agent = agentId();
+    if (!agent || (agent === link.agentId && id === link.sessionId)) return;
+    void recordSessionMeta({ agentId: link.agentId, sessionId: link.sessionId, connectionName: link.name });
+    void recordSessionMeta({ agentId: agent, sessionId: id, connectionName: agentLabel(), continues: { agentId: link.agentId, sessionId: link.sessionId, title: link.title ?? null } });
+  }
   /** Renaming stores a title in Span's metadata, which needs the desktop app and a known agent catalog id. */
   const canRename = () => isDesktop && Boolean(agentId());
+  /** Renames the whole thread: every segment gets the title, so whichever segment is listed shows it. */
   async function renameChat(id: string, title: string) {
-    const agent = agentId();
-    if (!canRename() || !agent) return;
+    if (!canRename()) return;
     const current = guard(agentEpoch);
     setSessionsError("");
     try {
-      const saved = await sessionMetaSetTitle(agent, id, title);
-      if (current()) setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
+      for (const entry of threadKeys(id)) {
+        const saved = await sessionMetaSetTitle(entry.agentId, entry.sessionId, title);
+        if (current()) keepSaved(saved);
+      }
     } catch (cause) {
       if (current()) setSessionsError(`Could not rename that chat: ${errorText(cause)}`);
     }
+  }
+  /** Archive hides a thread from History until it is restored from the Archived filter. Only Span's metadata changes. */
+  const canArchive = canRename;
+  async function archiveChat(id: string, archived: boolean) {
+    if (!canArchive()) return;
+    const current = guard(agentEpoch);
+    setSessionsError("");
+    try {
+      for (const entry of threadKeys(id)) {
+        const saved = await sessionMetaSetArchived(entry.agentId, entry.sessionId, archived);
+        if (current()) keepSaved(saved);
+      }
+    } catch (cause) {
+      if (current()) setSessionsError(`Could not ${archived ? "archive" : "restore"} that chat: ${errorText(cause)}`);
+    }
+  }
+  /**
+   * Export as Markdown writes the chat into the workspace as a new file (never overwriting) and opens it. Only a chat
+   * Span shows can be exported, so another row is resumed first.
+   */
+  const canExport = () => isDesktop && Boolean(props.workspacePath);
+  async function exportChat(id: string) {
+    if (!canExport()) return;
+    if (id !== sessionId()) await resumeChat(id);
+    if (id !== sessionId() || disposed) return;
+    setSessionsError("");
+    try {
+      const title = currentTitle() ?? "Chat";
+      const markdown = await sessionExportMarkdown(exportTranscript(title, state().feed));
+      const saved = await api.saveAttachment("", exportFileName(title), bytesToBase64(new TextEncoder().encode(markdown)));
+      props.onFilesChanged?.();
+      props.onOpenFile?.(saved.path);
+    } catch (cause) {
+      if (!disposed) setSessionsError(`Could not export that chat: ${errorText(cause)}`);
+    }
+  }
+  /** Fork session: a new session that starts with the whole chat as carried context, like Fork on the last message. */
+  const canFork = () => isDesktop && connected();
+  async function forkChat(id: string) {
+    if (!canFork()) return;
+    if (id !== sessionId()) await resumeChat(id);
+    if (id !== sessionId() || disposed) return;
+    const last = [...feed()].reverse().find((item) => item.kind === "user");
+    if (!last) return setSessionsError("Nothing to fork yet: this chat has no messages.");
+    const reason = branchBlock();
+    if (reason) return setSessionsError(`Could not fork that chat: ${reason}`);
+    const title = currentTitle();
+    await branchFrom(last.id, "fork");
+    const agent = agentId();
+    const forked = sessionId();
+    if (agent && forked && forked !== id && title) {
+      try {
+        keepSaved(await sessionMetaSetTitle(agent, forked, `Fork of ${title}`));
+      } catch {
+        // The fork works without a stored title; History then shows the agent's.
+      }
+    }
+  }
+  /**
+   * Accepted edits add to the session's file counters (ADR 0005, step 4): distinct paths and changed lines of the
+   * accepted hunks, on top of what the store already had for the session.
+   */
+  function countAccepted(proposal: EditProposal, hunkIds?: readonly string[]) {
+    const agent = agentId();
+    const session = sessionId();
+    if (!agent || !session) return;
+    let totals = changeTotals.get(session);
+    if (!totals) {
+      const stored = sessionMetaOf(session);
+      totals = { paths: new Set(), add: 0, del: 0, base: { files: stored?.filesChanged ?? 0, add: stored?.linesAdded ?? 0, del: stored?.linesRemoved ?? 0 } };
+      changeTotals.set(session, totals);
+    }
+    let changed = false;
+    for (const hunk of proposal.hunks) {
+      if (hunkIds && !hunkIds.includes(hunk.id)) continue;
+      const delta = hunkLineDelta(hunk.before, hunk.after);
+      totals.add += delta.add;
+      totals.del += delta.del;
+      changed ||= delta.add > 0 || delta.del > 0;
+    }
+    if (changed) totals.paths.add(proposal.path);
+    void recordSessionMeta({ agentId: agent, sessionId: session, filesChanged: totals.base.files + totals.paths.size, linesAdded: totals.base.add + totals.add, linesRemoved: totals.base.del + totals.del });
   }
   /** The open chat as a snapshot: its conversation, draft, attachments, queue and where it was scrolled. */
   function snapshotOpen(): ChatSnapshot {
@@ -1537,6 +1673,7 @@ export function createAgentController(props: AgentPanelProps) {
       if (!current()) return;
       update((previous) => resolveProposal(previous, proposal.id, accept));
       if (accept) props.onBufferChanged?.(buffer.path, buffer);
+      if (accept) countAccepted(proposal);
     } catch (cause) {
       if (current()) fail({ phase: "prompt", message: `Edit review failed, the editor buffer may have changed: ${errorText(cause)}` });
     } finally {
@@ -1560,6 +1697,7 @@ export function createAgentController(props: AgentPanelProps) {
       const accepted = acceptedHunkIds.length > 0;
       update((previous) => resolveProposal(previous, proposal.id, accepted));
       if (accepted) props.onBufferChanged?.(buffer.path, buffer);
+      if (accepted) countAccepted(proposal, acceptedHunkIds);
     } catch (cause) {
       if (current()) fail({ phase: "prompt", message: `Hunk review failed, the editor buffer may have changed: ${errorText(cause)}` });
     } finally {
@@ -1827,8 +1965,19 @@ export function createAgentController(props: AgentPanelProps) {
     deleteChat,
     closeChat,
     sessionMetaOf,
+    sessionMeta,
+    threadFor,
+    currentTitle,
     canRename,
     renameChat,
+    canArchive,
+    archiveChat,
+    canExport,
+    exportChat,
+    canFork,
+    forkChat,
+    sessionScope,
+    setSessionScope,
     showSelection,
     turnStart,
     clock,

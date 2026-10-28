@@ -18,6 +18,10 @@ const mocks = vi.hoisted(() => {
       agentCancel: vi.fn(async () => undefined),
       agentDisconnect: vi.fn(async () => undefined),
       agentListSessions: vi.fn(async () => [{ sessionId: "s0", title: "Earlier chat", updatedAt: null }]),
+      agentListAllSessions: vi.fn(async () => [
+        { sessionId: "s0", title: "Earlier chat", updatedAt: null, cwd: "/w" },
+        { sessionId: "x9", title: "Elsewhere chat", updatedAt: null, cwd: "/other/repo" },
+      ]),
       agentElicitation: vi.fn(async () => undefined),
       writeClipboard: vi.fn(async () => undefined),
     },
@@ -98,13 +102,22 @@ describe("Escape stops the turn only from inside the agent panel", () => {
 });
 
 describe("history scope", () => {
-  it("offers no folder scope toggle while the list is always filtered to this workspace", async () => {
+  it("lists this workspace first and every folder on All folders, keeping other folders read-only", async () => {
     const { host } = await runningPanel();
     host.querySelector<HTMLButtonElement>("[aria-label='Earlier sessions']")!.click();
     await tick();
     await tick();
     expect(text(host.querySelector(".sb-history"))).toContain("Earlier chat");
-    expect(host.querySelector("[aria-label='Session scope']")).toBeNull();
-    expect(host.textContent).not.toContain("All folders");
+    const chips = [...host.querySelectorAll<HTMLButtonElement>("[aria-label='Session scope'] .sb-pill")];
+    expect(chips.map((chip) => [text(chip), chip.getAttribute("aria-pressed")])).toEqual([
+      ["This workspace", "true"],
+      ["All folders", "false"],
+    ]);
+    expect(mocks.api.agentListAllSessions).not.toHaveBeenCalled();
+    chips[1].click();
+    await tick();
+    await tick();
+    expect(mocks.api.agentListAllSessions).toHaveBeenCalledTimes(1);
+    expect(text(host.querySelector(".sb-history"))).toContain("In repo. Open that folder to resume it.");
   });
 });

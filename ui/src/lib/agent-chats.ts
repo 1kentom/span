@@ -186,6 +186,17 @@ export function turnMetaPatch(input: { agentId: string | undefined; sessionId: s
   };
 }
 
+/**
+ * The metadata patch for a delegated child's model, recorded on the lead session as a subagent use (shown as
+ * `model · subagent`). Zero turns: the child's turns are not the lead's. Undefined without a model option.
+ */
+export function subagentModelPatch(agentId: string | undefined, leadSessionId: string, config: readonly ConfigOption[]): SessionMetaPatch | undefined {
+  const model = config.find((option) => option.category === "model");
+  const name = model ? choiceName(model) : "";
+  if (!agentId || !leadSessionId || !name) return undefined;
+  return { agentId, sessionId: leadSessionId, models: [{ name, turns: 0, subagent: true }] };
+}
+
 /** The metadata patch naming an agent the lead session delegated to (ADR 0005 section 5, step 5). */
 export function delegationMetaPatch(agentId: string | undefined, leadSessionId: string, agentName: string): SessionMetaPatch | undefined {
   if (!agentId || !leadSessionId || !agentName.trim()) return undefined;

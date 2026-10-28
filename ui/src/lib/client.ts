@@ -510,6 +510,11 @@ export const api = {
     if (!isDesktop) nativeRequired('Listing earlier chats');
     return commands.agentListSessions();
   },
+  /** Sessions from every folder the agent knows, for the History "All folders" scope. */
+  async agentListAllSessions(): Promise<SessionSummary[]> {
+    if (!isDesktop) nativeRequired('Listing earlier chats');
+    return commands.agentListAllSessions();
+  },
   async agentResumeSession(sessionId: string): Promise<string> {
     if (!isDesktop) nativeRequired('Resuming a chat');
     return commands.agentResumeSession(sessionId);
