@@ -11,10 +11,12 @@ mod cli;
 mod menu;
 mod services;
 mod startup;
+mod terminals;
 
 /// The authoritative workspace is only accessed by blocking workers.
 #[derive(Clone, Default)]
 pub struct DesktopState {
+    pub terminals: terminals::TerminalState,
     pub workspace: Arc<Mutex<Option<Arc<Mutex<CoreWorkspace>>>>>,
     pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
     pub user_settings: Arc<Mutex<Option<CoreWorkspace>>>,
@@ -98,6 +100,10 @@ async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
     agents::disconnect_and_wait(&state).await?;
+    state
+        .terminals
+        .replace_workspace(std::path::Path::new(&workspace.workspace().root))
+        .await?;
     let worker_state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let result = workspace.workspace();
@@ -589,6 +595,14 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             startup::enqueue_dropped_paths,
             services::open_external,
             services::read_image,
+            terminals::terminal_create,
+            terminals::terminal_write,
+            terminals::terminal_resize,
+            terminals::terminal_interrupt,
+            terminals::terminal_close,
+            terminals::terminal_list,
+            terminals::terminal_scrollback,
+            terminals::terminal_acknowledge,
             menu::sync_native_menu,
             syntax,
             agents::agent_registry,
@@ -669,6 +683,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app.state::<DesktopState>();
+            // Final exit runs after the frontend's unsaved-buffer close review.
+            // Wait for PTY process groups to terminate before the runtime disappears.
+            if let Err(error) = tauri::async_runtime::block_on(state.terminals.shutdown()) {
+                eprintln!("Could not close interactive terminals: {error}");
+            }
             let _ = agents::disconnect(&state);
             if let Ok(searches) = state.searches.lock() {
                 for cancellation in searches.values() {

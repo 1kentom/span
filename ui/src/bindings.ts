@@ -47,6 +47,14 @@ export const commands = {
 	enqueueDroppedPaths: (paths: string[], cwd: string | null) => __TAURI_INVOKE<null>("enqueue_dropped_paths", { paths, cwd }),
 	openExternal: (url: string) => __TAURI_INVOKE<null>("open_external", { url }),
 	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
+	terminalCreate: (cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent_Deserialize>) => __TAURI_INVOKE<TerminalInfo_Serialize>("terminal_create", { cwd, cols, rows, onEvent }),
+	terminalWrite: (id: string, data: number[]) => __TAURI_INVOKE<null>("terminal_write", { id, data }),
+	terminalResize: (id: string, cols: number, rows: number) => __TAURI_INVOKE<null>("terminal_resize", { id, cols, rows }),
+	terminalInterrupt: (id: string) => __TAURI_INVOKE<null>("terminal_interrupt", { id }),
+	terminalClose: (id: string) => __TAURI_INVOKE<null>("terminal_close", { id }),
+	terminalList: () => __TAURI_INVOKE<TerminalInfo_Serialize[]>("terminal_list"),
+	terminalScrollback: (id: string) => __TAURI_INVOKE<number[]>("terminal_scrollback", { id }),
+	terminalAcknowledge: (id: string, sequence: number) => __TAURI_INVOKE<null>("terminal_acknowledge", { id, sequence }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
 	syntax: (path: string) => __TAURI_INVOKE<SyntaxSnapshot>("syntax", { path }),
 	agentRegistry: () => __TAURI_INVOKE<RegistryAgent_Serialize[]>("agent_registry"),
@@ -494,6 +502,36 @@ export type SyntaxSnapshot = {
 	indentGuides: IndentGuide[],
 	/**  True when output limits or the query time budget were reached. */
 	truncated: boolean,
+};
+
+export type TerminalEvent = TerminalEvent_Serialize | TerminalEvent_Deserialize;
+
+export type TerminalEvent_Deserialize = { kind: "output"; id: string; data: number[]; sequence: number } | { kind: "exit"; id: string; code?: number | null } | { kind: "error"; id: string; message: string };
+
+export type TerminalEvent_Serialize = { kind: "output"; id: string; data: number[]; sequence: number } | { kind: "exit"; id: string; code: number | null } | { kind: "error"; id: string; message: string };
+
+export type TerminalInfo = TerminalInfo_Serialize | TerminalInfo_Deserialize;
+
+export type TerminalInfo_Deserialize = {
+	id: string,
+	cwd: string,
+	shell: string,
+	cols: number,
+	rows: number,
+	processId?: number | null,
+	exitCode?: number | null,
+	exited: boolean,
+};
+
+export type TerminalInfo_Serialize = {
+	id: string,
+	cwd: string,
+	shell: string,
+	cols: number,
+	rows: number,
+	processId: number | null,
+	exitCode: number | null,
+	exited: boolean,
 };
 
 /**  Offsets are UTF-16 code units in the pre-transaction document, as in CodeMirror. */
