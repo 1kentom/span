@@ -329,8 +329,11 @@
   border: 1px solid var(--sb-accent-border);
   border-bottom: 0;
 }
+/* The activity bar is a compact tab on the prompt box: a little narrower and a smaller radius than the card it sits on. */
 .agent-footer > .sb-activity {
-  padding-inline: 16px;
+  margin-inline: 14px;
+  padding-inline: 14px;
+  border-radius: 12px 12px 0 0;
   border-color: var(--sb-border);
   background: var(--sb-raised);
 }
