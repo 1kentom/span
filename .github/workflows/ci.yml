@@ -121,7 +121,7 @@ jobs:
         with:
           shared-key: clippy
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/fast-gate' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
           packages: ${{ env.WEBVIEW_APT }}
@@ -147,7 +147,7 @@ jobs:
         with:
           shared-key: test
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/fast-gate' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
           packages: ${{ env.WEBVIEW_APT }}
@@ -241,7 +241,7 @@ jobs:
         with:
           shared-key: desktop
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/fast-gate' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux webview dependencies
         run: sudo apt-get update && sudo apt-get install -y ${{ env.WEBVIEW_APT }} build-essential curl wget file
       - run: pnpm install --frozen-lockfile
@@ -275,7 +275,7 @@ jobs:
         with:
           shared-key: full
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/fast-gate' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -323,7 +323,7 @@ jobs:
         with:
           shared-key: lsp
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/fast-gate' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Cache downloaded language servers
         uses: actions/cache@v4
         with:
