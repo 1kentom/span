@@ -108,6 +108,19 @@ describe("ModelPopover", () => {
     key("ArrowDown", {}, first);
     expect(document.activeElement).toBe(second);
   });
+
+  it("keeps keyboard focus and the rows when a config update delivers new option objects", () => {
+    const fresh = (current: string) => options.map((option) => ({ ...option, choices: option.choices.map((choice) => ({ ...choice })), currentValue: option.id === "mode" ? current : option.currentValue }));
+    const [list, setList] = createSignal(fresh("ask"));
+    const host = mount(() => <ModelPopover agentName="A" options={list()} onSelect={() => {}} onClose={() => {}} />);
+    const plan = [...host.querySelectorAll<HTMLButtonElement>("button[role=radio]")].find((b) => b.textContent?.includes("Plan"))!;
+    plan.focus();
+    setList(fresh("plan"));
+    const after = [...host.querySelectorAll<HTMLButtonElement>("button[role=radio]")].find((b) => b.textContent?.includes("Plan"))!;
+    expect(after).toBe(plan);
+    expect(document.activeElement).toBe(plan);
+    expect(plan.getAttribute("aria-checked")).toBe("true");
+  });
 });
 
 describe("SlashPopover", () => {

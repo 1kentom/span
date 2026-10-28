@@ -64,34 +64,43 @@ export function ModelPopover(props: ModelPopoverProps) {
   });
   return (
     <div class="sb-popover" role="dialog" aria-label={`${props.agentName} options`} ref={root} onKeyDown={(event) => arrowFocus(event, root, "button:not(:disabled)")}>
-      <For each={props.options}>
-        {(option, index) => (
+      {/* Keyed by option id and choice value, not object identity: a config
+          update delivers new option objects, and rebuilding the rows would
+          drop keyboard focus from the control the user is on. */}
+      <For each={props.options.map((option) => option.id)}>
+        {(optionId, index) => {
+          // The last seen option stays readable while a removed row is disposed.
+          let last = props.options.find((candidate) => candidate.id === optionId)!;
+          const option = () => (last = props.options.find((candidate) => candidate.id === optionId) ?? last);
+          return (
           <>
             <Show when={index() > 0}><div class="sb-rule-h" /></Show>
             <Show
-              when={option.category === "thought_level"}
+              when={option().category === "thought_level"}
               fallback={
-                <div role="radiogroup" aria-label={option.name}>
-                  <div class="sb-eyebrow">{option.category === "model" ? `${option.name} · ${props.agentName}` : option.name}</div>
-                  <For each={option.choices}>
-                    {(choice) => {
-                      const current = () => choice.value === option.currentValue;
-                      const traits = () => modelTraits(choice, { fastOn: current() && fastOn() });
+                <div role="radiogroup" aria-label={option().name}>
+                  <div class="sb-eyebrow">{option().category === "model" ? `${option().name} · ${props.agentName}` : option().name}</div>
+                  <For each={option().choices.map((choice) => choice.value)}>
+                    {(choiceValue) => {
+                      let lastChoice = option().choices.find((candidate) => candidate.value === choiceValue)!;
+                      const choice = () => (lastChoice = option().choices.find((candidate) => candidate.value === choiceValue) ?? lastChoice);
+                      const current = () => choiceValue === option().currentValue;
+                      const traits = () => modelTraits(choice(), { fastOn: current() && fastOn() });
                       return (
                       <button
                         class="sb-option"
                         role="radio"
-                        aria-checked={choice.value === option.currentValue}
+                        aria-checked={choiceValue === option().currentValue}
                         disabled={props.busy}
-                        onClick={() => props.onSelect(option.id, choice.value)}
+                        onClick={() => props.onSelect(option().id, choiceValue)}
                       >
-                        <Show when={option.category === "model"}><ModelIcon id={brand().id} name={brand().name} traits={traits()} /></Show>
+                        <Show when={option().category === "model"}><ModelIcon id={brand().id} name={brand().name} traits={traits()} /></Show>
                         <span class="sb-option-text">
                           <span class="sb-option-line">
-                            <span class="sb-option-name">{choice.name}</span>
-                            <Show when={option.category === "model" ? chipTrait(traits(), choice.name) : undefined}>{(trait) => <TraitChip trait={trait()} />}</Show>
+                            <span class="sb-option-name">{choice().name}</span>
+                            <Show when={option().category === "model" ? chipTrait(traits(), choice().name) : undefined}>{(trait) => <TraitChip trait={trait()} />}</Show>
                           </span>
-                          <Show when={choice.description}><span class="sb-sub wrap">{choice.description}</span></Show>
+                          <Show when={choice().description}><span class="sb-sub wrap">{choice().description}</span></Show>
                         </span>
                         <Show when={current()}><Icon name="TickCircle" size={14} class="sb-accent" /></Show>
                       </button>
@@ -102,18 +111,19 @@ export function ModelPopover(props: ModelPopoverProps) {
               }
             >
               <EffortSlider
-                label={option.name}
-                options={option.choices}
-                value={option.currentValue}
-                defaultValue={defaultLevel(option.choices)}
+                label={option().name}
+                options={option().choices}
+                value={option().currentValue}
+                defaultValue={defaultLevel(option().choices)}
                 disabled={props.busy}
                 modelName={modelNameOf(props.options)}
                 onModelClick={() => focusModelRow(root, props.options)}
-                onChange={(value) => props.onSelect(option.id, value)}
+                onChange={(value) => props.onSelect(option().id, value)}
               />
             </Show>
           </>
-        )}
+          );
+        }}
       </For>
       <Show when={props.agents?.length}>
         <div class="sb-rule-h" />
