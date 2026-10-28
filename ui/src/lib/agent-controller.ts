@@ -4,7 +4,9 @@ import { createAttachmentIntake, type AttachmentTabView } from "../components/at
 import type { AuthSecret, Phase } from "../components/agent/types";
 import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
 import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
-import { childPermissions, isFinished, type ChildPermission } from "./agent-delegation";
+import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
+import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
+import { liveAgentsOf, type LiveState } from "./live-agents";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { RUN_TEXT } from "./agent-hint-text";
@@ -55,6 +57,8 @@ export type AgentPanelProps = {
   delegationEnabled?: boolean;
   /** Writes `agents.delegation.enabled` to the user settings file. Without it the switch is read-only. */
   onDelegationChange?: (enabled: boolean) => void;
+  /** The merged `agents.healthCheck` (ADR 0010). Unset means the default, which is on; off hides every health dot. */
+  healthCheck?: boolean;
   /** Called after the panel writes a file into the workspace, so the explorer can refresh. */
   onFilesChanged?: () => void;
   onProposalsChange?: (proposals: EditProposal[]) => void;
@@ -217,6 +221,7 @@ export function createAgentController(props: AgentPanelProps) {
   let installedMutationGeneration = 0;
   let unsubscribe: (() => void) | undefined;
   let unsubscribeStates: (() => void) | undefined;
+  let unsubscribeHealth: (() => void) | undefined;
   let input: HTMLTextAreaElement | undefined;
 
   const selectionKey = createMemo(() => `${props.selectionContext?.path}:${props.selectionContext?.text}`);
@@ -579,6 +584,7 @@ export function createAgentController(props: AgentPanelProps) {
         .catch(() => undefined);
       void loadAgents().then(() => {
         warmStart();
+        startHealth();
         return restoreLastSession();
       });
     }
@@ -598,6 +604,7 @@ export function createAgentController(props: AgentPanelProps) {
     disposed = true;
     unsubscribe?.();
     unsubscribeStates?.();
+    unsubscribeHealth?.();
   });
 
   const guard = (epoch: number) => () => !disposed && epoch === agentEpoch;
@@ -647,6 +654,36 @@ export function createAgentController(props: AgentPanelProps) {
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
     else setTimeout(run, 0);
   }
+  /**
+   * Agent health check (ADR 0010): once the panel has painted, read the latest results, which also starts the backend's
+   * periodic checks, and follow every change. Quiet: a failure leaves the dots grey.
+   */
+  function startHealth() {
+    if (!isDesktop || disposed || !api.agentHealth) return;
+    const run = () => {
+      if (!disposed && props.healthCheck !== false) void api.agentHealth?.().then(setAgentHealth).catch(() => undefined);
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 0);
+    void api
+      .onAgentHealth?.(setAgentHealth)
+      .then((cleanup) => {
+        if (disposed) cleanup();
+        else unsubscribeHealth = cleanup;
+      })
+      .catch(() => undefined);
+  }
+  // Turned back on in Settings: show the current results again (the backend checks only while it is on).
+  createEffect(
+    on(
+      () => props.healthCheck !== false,
+      (enabled, before) => {
+        if (enabled && before === false && isDesktop) void api.agentHealth?.().then(setAgentHealth).catch(() => undefined);
+      },
+    ),
+  );
+  /** Health results to show: none while `agents.healthCheck` is off. */
+  const health = createMemo(() => (props.healthCheck === false ? [] : agentHealthResults()));
   /** On app open: reconnect the agent that had the last chat in this workspace and resume that chat when the agent can. */
   async function restoreLastSession() {
     const workspace = props.workspacePath;
@@ -1311,6 +1348,27 @@ export function createAgentController(props: AgentPanelProps) {
   };
   /** Every stored segment of the chat thread that holds one of the connected agent's sessions (ADR 0005, thread links). */
   const threadFor = (sessionId: string) => threadOf(sessionMeta(), agentId(), sessionId);
+  /** The lead's state in the Live agents strip, from its turn and the requests that wait for the user. */
+  const leadState = (): LiveState => (permission() || elicitation() ? "Waiting for you" : running() ? "Working" : connecting() ? "Starting" : "Idle");
+  /**
+   * Every agent involved in the open chat: the lead, the agents it delegated to and the agents of earlier segments of
+   * this thread. The strip shows only when there is more than one.
+   */
+  const liveAgents = createMemo(() => {
+    const current = state().sessionId;
+    if (!connected() || !current) return [];
+    const id = agentId();
+    const earlier = threadFor(current)
+      .segments.filter((segment) => !(segment.sessionId === current && (!id || segment.agentId === id)))
+      .map((segment) => ({ id: segment.agentId, name: segment.connectionName || registryName(segment.agentId) || segment.agentId }));
+    return liveAgentsOf({
+      lead: { id, name: (id && registryName(id)) || agentLabel(), state: leadState() },
+      tasks: state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])),
+      waiting: (task) => childPermissionList().some((entry) => permissionWaitsOn(entry, task)),
+      earlier,
+      health: health(),
+    });
+  });
   /** The open chat's title: the thread's user title, else the title it had when it switched agent, else the agent's. */
   const currentTitle = () => {
     const id = sessionId();
@@ -2126,6 +2184,10 @@ export function createAgentController(props: AgentPanelProps) {
     sessionMetaOf,
     sessionMeta,
     threadFor,
+    health,
+    healthNow,
+    healthOn: () => props.healthCheck !== false,
+    liveAgents,
     currentTitle,
     canRename,
     renameChat,

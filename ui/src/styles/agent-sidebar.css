@@ -829,3 +829,29 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-refusal-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .sb-refusal-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sb-dim); font-size: 11px; }
 .sb-refusal-copy { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+
+/* Agent health check dot (ADR 0010): green Live, amber Slow, red-ish Unreachable, grey Signed out or not checked. */
+.sb-health {
+  display: inline-block; width: 7px; height: 7px; flex: none; border-radius: 50%;
+  background: var(--sb-faint); opacity: 0.55;
+  transition: background-color 0.4s ease, opacity 0.4s ease;
+}
+.sb-health[data-tone="live"] { background: var(--sb-success); opacity: 1; }
+.sb-health[data-tone="slow"] { background: var(--sb-warning); opacity: 1; }
+.sb-health[data-tone="unreachable"] { background: color-mix(in srgb, var(--sb-error) 80%, var(--sb-faint)); opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .sb-health { transition: none; } }
+.sb-option .sb-health, .sb-agent-name-line .sb-health { margin-left: 2px; }
+.sb-agent-name-line { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* Live agents of the current chat, stacked on the prompt box (shape from the shared stack rule in agent.css). */
+.sb-live-agents { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; }
+.sb-live-title { flex: none; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
+.sb-live-list { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.sb-live-agent { display: flex; min-width: 0; }
+.sb-live-entry { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; height: 22px; font-size: 11.5px; color: var(--sb-fg); }
+.sb-live-entry.sb-plain { border-radius: 5px; }
+.sb-live-entry.sb-plain:hover .sb-live-name { text-decoration: underline; text-underline-offset: 2px; }
+.sb-live-name { max-width: 110px; }
+.sb-live-state { flex: none; color: var(--sb-dim); }
+.sb-live-state[data-state="Waiting for you"] { color: var(--sb-warning); }
+.sb-live-state[data-state="Done"] { color: var(--sb-faint); }

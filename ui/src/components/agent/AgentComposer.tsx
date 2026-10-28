@@ -19,6 +19,7 @@ import { createPickers } from "./ComposerPickers";
 import { brandFromModelNames, brandIconFor } from "../../lib/brand-icons";
 import { configViews } from "../../lib/agent-view";
 import { PlanDrawer } from "./PlanDrawer";
+import { LiveAgents } from "./LiveAgents";
 import { QueuePanel } from "./QueuePanel";
 import { SlashPopover } from "./SlashPopover";
 import { UsageRing } from "./UsageRing";
@@ -184,6 +185,15 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   const pickers = createPickers(a, { get brand() { return brand(); }, get label() { return props.label; } }, () => input);
 
 
+  /** Bring a delegation card into view and focus it, from the Live agents strip. */
+  const openTaskCard = (taskId: string) => {
+    const card = footer?.closest(".agent-panel")?.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`);
+    if (!card) return;
+    const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    card.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
+    card.focus({ preventScroll: true });
+  };
+
   /** Taller field, about 40 percent of the panel. Local view state only; Escape never touches it. */
   const [expanded, setExpanded] = createSignal(false);
   createEffect(() => {
@@ -211,6 +221,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           </div>
         )}
       </Show>
+      <LiveAgents agents={a.liveAgents()} now={a.healthNow()} showHealth={a.healthOn()} onOpen={(agent) => agent.taskId && openTaskCard(agent.taskId)} />
       <Show when={showBanner()}>
         <ContextBanner
           used={usage()!.used}

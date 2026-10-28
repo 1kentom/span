@@ -73,6 +73,8 @@ export function createPickers(a: AgentController, props: { brand: Brand; label: 
           <AgentPopover
             desktop={isDesktop}
             agents={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: entry.version, current: a.connected() && entry.id === a.agentId() }))}
+            health={a.healthOn() ? a.health() : undefined}
+            healthNow={a.healthNow()}
             connectedName={a.connected() ? props.label : undefined}
             presets={presets()}
             updates={agentUpdates()}

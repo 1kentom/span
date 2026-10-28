@@ -7,6 +7,8 @@ import type { AgentUpdate_Serialize as AgentUpdate } from "../../bindings";
 import type { FoundAgent, PresetRow, RegistryAgent } from "./types";
 import { CommandChip } from "./CommandChip";
 import { UpdateBadge, UpdatePanel } from "./UpdateBadge";
+import { HealthDot } from "./HealthDot";
+import { findHealth, type AgentHealth } from "../../lib/agent-health";
 
 export { CommandChip };
 
@@ -33,6 +35,10 @@ type ConnectScreenProps = {
   customDraft?: { command: string };
   /** Opens a release notes link through the host's external opener. */
   onOpenExternal?: (url: string) => void;
+  /** Health check results (ADR 0010) for the Found rows. Unset while `agents.healthCheck` is off: no dots at all. */
+  health?: readonly AgentHealth[];
+  /** The clock for "4 min ago" in the dot tooltips. */
+  healthNow?: number;
   /** The merged `agents.delegation.enabled`. Unset means the default, which is on. */
   delegationEnabled?: boolean;
   /** Writes the user setting. Without it the switch is shown but cannot be changed. */
@@ -150,7 +156,12 @@ export function ConnectScreen(props: ConnectScreenProps) {
                 <div class="sb-agent-line">
                   <BrandIcon id={agent.id} name={agent.name} size={18} />
                   <span class="sb-agent-text">
-                    <span class="sb-agent-name">{agent.name}</span>
+                    <span class="sb-agent-name-line">
+                      <span class="sb-agent-name">{agent.name}</span>
+                      <Show when={props.health}>
+                        {(list) => <HealthDot health={findHealth(list(), agent.id, agent.name)} now={props.healthNow ?? Date.now()} />}
+                      </Show>
+                    </span>
                     <span class="sb-sub sb-installed-line" title={`Installed${agent.subtitle ? ` · ${agent.subtitle}` : ""}`}>
                       <Icon name="TickCircle" size={11} />
                       <span>Installed{agent.subtitle ? ` · ${agent.subtitle}` : ""}</span>

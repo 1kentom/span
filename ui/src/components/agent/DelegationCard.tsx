@@ -66,7 +66,7 @@ export function DelegationCard(props: DelegationCardProps) {
   };
   const openArtifact = (path: string) => setOpenError(props.onOpenArtifact?.(path) ? undefined : `Could not open ${path}`);
   return (
-    <section class="sb-delegation" classList={{ failed: props.status === "failed", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}: ${STATUS_TEXT[props.status]}`}>
+    <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}: ${STATUS_TEXT[props.status]}`}>
       <div class="sb-delegation-head">
         <BrandIcon name={props.agent} size={14} />
         <span class="sb-delegation-name sb-ellipsis">{props.agent}</span>

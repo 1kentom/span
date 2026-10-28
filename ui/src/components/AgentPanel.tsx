@@ -454,6 +454,8 @@ export function AgentPanel(props: AgentPanelProps) {
                     : undefined
                 }
                 found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${leaf(entry.launch.command)}` }))}
+                health={a.healthOn() ? a.health() : undefined}
+                healthNow={a.healthNow()}
                 presets={presetRows()}
                 updates={agentUpdates()}
                 checkingUpdates={agentUpdatesBusy()}
