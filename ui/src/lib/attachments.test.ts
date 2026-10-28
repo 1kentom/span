@@ -127,3 +127,30 @@ describe('helpers', () => {
     expect(isInWorkspace(png())).toBe(false);
   });
 });
+
+describe('audio attachments', () => {
+  const mp3 = () => createFileAttachment({ name: 'note.mp3', mime: '', bytes: bytes(8), source: 'picked' });
+  it('classifies audio by mime and by extension', () => {
+    expect(classifyFile('x.bin', 'audio/ogg')).toBe('audio');
+    for (const name of ['a.mp3', 'a.WAV', 'a.m4a', 'a.flac', 'a.ogg']) expect(classifyFile(name, '')).toBe('audio');
+    expect(classifyFile('a.png', '')).toBe('image');
+    expect(classifyFile('a.ts', '')).toBe('file');
+    expect(mp3()).toMatchObject({ kind: 'audio', mime: 'audio/mpeg' });
+    expect(createWorkspaceFile('sounds/a.wav').kind).toBe('audio');
+  });
+  it('sends audio inline only when the agent accepts it', () => {
+    expect(planAttachment(mp3(), all)).toEqual({ mode: 'audio' });
+    expect(planAttachment(mp3(), none)).toMatchObject({ mode: 'refuse', reason: 'This agent does not accept audio.' });
+  });
+  it('falls back to a resource link when the audio has a path but the agent lacks audio', () => {
+    const withPath = { ...mp3(), path: 'sounds/note.mp3' };
+    expect(planAttachment(withPath, none)).toEqual({ mode: 'link' });
+    expect(planAttachment(withPath, all)).toEqual({ mode: 'audio' });
+    expect(planAttachment(createWorkspaceFile('sounds/note.mp3'), none)).toEqual({ mode: 'link' });
+  });
+  it('gates audio like any other kind', () => {
+    const result = gateAttachments([mp3()], none);
+    expect(result.send).toHaveLength(0);
+    expect(result.blocked[0].reason).toBe('This agent does not accept audio.');
+  });
+});

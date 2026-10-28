@@ -1,6 +1,6 @@
 import { MAX_IMAGE_BYTES, formatAssetBytes } from './asset-preview';
 
-export type AttachmentKind = 'image' | 'text-paste' | 'file' | 'selection';
+export type AttachmentKind = 'image' | 'audio' | 'text-paste' | 'file' | 'selection';
 export type AttachmentSource = 'picked' | 'pasted' | 'dropped' | 'workspace-file' | 'editor-selection';
 export type AttachmentStatus = 'ready' | 'loading' | 'error';
 
@@ -53,7 +53,7 @@ export const PREVIEW_MAX_LINE_CHARS = 2000;
 
 const rasterMime = /^image\/(?:png|jpeg|gif|webp)$/;
 const textExtensions = /\.(?:txt|md|markdown|json|jsonc|ya?ml|toml|ini|cfg|conf|env|csv|tsv|log|xml|html?|css|scss|less|svg|js|jsx|mjs|cjs|ts|tsx|mts|cts|rs|py|rb|go|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|fish|sql|lua|vue|svelte|solid|graphql|proto|diff|patch|lock|gitignore|dockerfile)$/i;
-const extensionMime: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf', json: 'application/json', md: 'text/markdown', txt: 'text/plain' };
+const extensionMime: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', weba: 'audio/webm', json: 'application/json', md: 'text/markdown', txt: 'text/plain' };
 
 export function extensionOf(name: string): string { return /\.([A-Za-z0-9]+)$/.exec(name)?.[1].toLowerCase() ?? ''; }
 /** Prefer the declared mime, fall back to the extension, then to octet-stream. */
@@ -64,9 +64,9 @@ export function isTextLike(name: string, mime: string): boolean {
   return mime.startsWith('text/') || /^application\/(?:json|xml|javascript|x-sh|x-yaml|toml|sql)|\+(?:json|xml)$/.test(mime) || isSvgMime(mime) || textExtensions.test(name);
 }
 /** Classify a file by mime then extension. SVG is an image for preview; it is sent as text. */
-export function classifyFile(name: string, mime: string): 'image' | 'file' {
+export function classifyFile(name: string, mime: string): 'image' | 'audio' | 'file' {
   const resolved = resolveMime(name, mime);
-  return resolved.startsWith('image/') ? 'image' : 'file';
+  return resolved.startsWith('image/') ? 'image' : resolved.startsWith('audio/') ? 'audio' : 'file';
 }
 /** The largest size allowed for one item of this kind and mime. */
 export function maxBytesFor(kind: AttachmentKind, mime: string): number {
@@ -160,9 +160,11 @@ export function planAttachment(item: Attachment, caps: PromptCapabilities): Send
     if (!item.bytes) return item.path ? { mode: 'link' } : { mode: 'refuse', reason: 'The image data is no longer available.' };
     return caps.image ? { mode: 'image' } : { mode: 'refuse', reason: 'This agent does not accept images.' };
   }
-  if (item.mime.startsWith('audio/')) {
+  if (item.kind === 'audio' || item.mime.startsWith('audio/')) {
     if (!item.bytes) return item.path ? { mode: 'link' } : { mode: 'refuse', reason: 'The audio data is no longer available.' };
-    return caps.audio ? { mode: 'audio' } : { mode: 'refuse', reason: 'This agent does not accept audio.' };
+    if (caps.audio) return { mode: 'audio' };
+    // Without audio support the agent still gets a resource link when the file has a path.
+    return item.path ? { mode: 'link' } : { mode: 'refuse', reason: 'This agent does not accept audio.' };
   }
   if (hasText) return caps.embeddedContext ? { mode: 'resource' } : { mode: 'text' };
   if (item.path && !item.bytes) return { mode: 'link' };
