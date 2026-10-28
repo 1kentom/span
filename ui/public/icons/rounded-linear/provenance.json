@@ -1,0 +1,159 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Only selected interface action and chevron artwork is copied. Supplied original application assets are preserved separately.",
+  "processing": "Strict SVG element and attribute allowlist, local clip references only, visible fills and strokes normalized to currentColor. Path geometry is preserved. Application rendering uses an alpha mask tinted by currentColor.",
+  "rights": "Copied from the user-provided local icon library at the user’s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "save.svg",
+      "source": "files/iconsax-checked-file-dc9809c86e27-.svg",
+      "sourceSha256": "a9bdb6168ace85e0a33f2add3070b95d0a61c2eeba4fd6c96561c59bf0d0c0db",
+      "assetSha256": "54e37d7cf212070a13d0748821397c46d435591b1ccb52fa2c382d9393a68464"
+    },
+    {
+      "asset": "discard.svg",
+      "source": "files/iconsax-delete-file-a8ea9c6dcc52-.svg",
+      "sourceSha256": "0680c35151576f6f7f7ddec088c7523eb8abc1c9b6e4934a23353c44be96725e",
+      "assetSha256": "4455b0640048302a2745901104dbec3031c6c20d69adb9a875608b776aab72af"
+    },
+    {
+      "asset": "cancel.svg",
+      "source": "arrow2/iconsax-close-a15ca319f9db-.svg",
+      "sourceSha256": "6fca1c85b367e186e66227144a5132c98f8b353827070a8788bc44f8a7b8830e",
+      "assetSha256": "4d58756c6a02b86105f7eb5ed49ce93f69861a04465aad1da6c5a011645ed5f2"
+    },
+    {
+      "asset": "cut.svg",
+      "source": "beauty/iconsax-scissors-0eda1ee74472-.svg",
+      "sourceSha256": "661f132217572de054f01af581d2a0343a450c874905d4a5229eff03746fea1f",
+      "assetSha256": "ddfb10123d1613d25446e9956a6174729a42e46eaf7d79030a96879b777edc37"
+    },
+    {
+      "asset": "copy.svg",
+      "source": "ui-design/iconsax-duplicate-9cd37440af86-.svg",
+      "sourceSha256": "31c2ae40ae607bb02e1948d92fd6671e3f4d51154d887064c02f5022ab5e4b60",
+      "assetSha256": "d8e35f5a38136735c72877c0df8d2fc1e66cc68a4bedc775b618a0c2e3719c2d"
+    },
+    {
+      "asset": "paste.svg",
+      "source": "programming/iconsax-clip-board-120475eb21cc-.svg",
+      "sourceSha256": "c900b1613bc3a3fc4074cb595a49eefa07575b09388ae50b44d3a9300ec9f926",
+      "assetSha256": "a772917b0578a9c797019ecb1515dd733065e76d4e5ac465082ef88b9fe9a81f"
+    },
+    {
+      "asset": "path.svg",
+      "source": "network/iconsax-folder-route-909068edaac8-.svg",
+      "sourceSha256": "4a667e282fc92567e4f9b79df975c4b2060e51ab43ae13326710cb090e460457",
+      "assetSha256": "0e75801d2a6b3606e54fea08b24688af0dabf55aa704c7d0f5f8fb094503e402"
+    },
+    {
+      "asset": "file.svg",
+      "source": "files/iconsax-text-file-f1347af49678-.svg",
+      "sourceSha256": "020b38a4ed683ac6fb38303f22eb9c1edeca500fd9ac6f39b56bec91fe89bbe1",
+      "assetSha256": "5d378bb096f0ca586f6db5177d2131940233962fa517b965cfed23ca3c35f71a"
+    },
+    {
+      "asset": "folder.svg",
+      "source": "files/iconsax-folder-8732d38d80f9-.svg",
+      "sourceSha256": "1fb2187e087ba2261db561e189e64a81889eb3e04cff9d0af10667cd704d9391",
+      "assetSha256": "7659ac4498c6e4d0455aa6cc4ce183c5980b3dd21bce50cf4f08f485d78706a3"
+    },
+    {
+      "asset": "trash.svg",
+      "source": "essential/iconsax-trash-0d73d8c05c3f-.svg",
+      "sourceSha256": "3efbc1a453b8aa9ffee32c5e5bc15a152f0fe4b15ec092057ade29a654bbd46f",
+      "assetSha256": "34fac5483f0c02fee659f893841987ff5354f2b3391d0c8d1b3017e752f5d91b"
+    },
+    {
+      "asset": "rename.svg",
+      "source": "files/iconsax-rename-file-9f3fd26dab6e-.svg",
+      "sourceSha256": "14acd2af52335f2d8add64025d224fae36915601714e2c3c1ec74af1a27caba3",
+      "assetSha256": "d0f16c78a4237623d88e0aa818fa5cd363afa674ab735b9fb22f30da4a207a8f"
+    },
+    {
+      "asset": "new-file.svg",
+      "source": "files/iconsax-add-file-024b54b4d70f-.svg",
+      "sourceSha256": "69340ce764f7d07124b9e7bdb4cfa5fcf7e9b95481f7021e899cb3a5e8b4a7df",
+      "assetSha256": "26d0e29c1508465b5c3da744939023d2708da3c35184389a5dbb22bc4fd92d88"
+    },
+    {
+      "asset": "new-folder.svg",
+      "source": "files/iconsax-folder-add-7011b0a4a9e7-.svg",
+      "sourceSha256": "085d7b35b74cb81f4034919eba0a7d55900eaeb7f7051965c6aea43d9ccbad72",
+      "assetSha256": "a051f12601b4a2ac401e6dc552e37dc5c60ac8c38f68e24ddad1ef9b5065e4c7"
+    },
+    {
+      "asset": "open-folder.svg",
+      "source": "files/iconsax-folder-open-fae6d17fd215-.svg",
+      "sourceSha256": "2b41d954cd04097a50f0cc011ecf2acf8f4ef129bd376702c839f000ee4831cc",
+      "assetSha256": "19ec756dc7e93b72b39876eadd66a4f6191b6b061704f89dbea3690008df999b"
+    },
+    {
+      "asset": "close-circle.svg",
+      "source": "essential/iconsax-close-circle-61b962f76ca4-.svg",
+      "sourceSha256": "208013b7347449432fc2514ee5d3733f9c8434450f37cae0cfe34879478404cc",
+      "assetSha256": "90a360e4214d4211b241a34194287315dd4f59b5d695a10f7ecd307315547a5d"
+    },
+    {
+      "asset": "tick-circle.svg",
+      "source": "essential/iconsax-tick-circle-1cdfea8a2abb-.svg",
+      "sourceSha256": "2dc6ae2a0235b01bc006c61ed1bb11acf95de3929e16d117a129862e42e6069d",
+      "assetSha256": "81453245388d8e024d3ffb5b688f7841b34e3a5008daeded7aef19ce4f74f8a6"
+    },
+    {
+      "asset": "arrow-down4.svg",
+      "source": "arrow/iconsax-arrow-down4-2ae7ccb38fac-.svg",
+      "sourceSha256": "9e738e8e876927fb7e6de220465b742421220801539d18ccc8c10564df66e0cf",
+      "assetSha256": "58bdb4d6de39b127e410c897feea8a9af4d51c9afab6f3be722bca95dc2c0627"
+    },
+    {
+      "asset": "arrow-up3.svg",
+      "source": "arrow/iconsax-arrow-up3-fe34c82a0975-.svg",
+      "sourceSha256": "4d3a6d2666c540cab600854f28f6df85e497830d0332013314c88556bf46c8fe",
+      "assetSha256": "4feb2dc81d942605e268b74dc589806397eee8b6b4442ca663fe294ce2ad3345"
+    },
+    {
+      "asset": "arrow-left4.svg",
+      "source": "arrow/iconsax-arrow-left3-5544330a6ecd-.svg",
+      "sourceSha256": "7c2abc41410a1e5d277fa6ccca0585229474ba549642d783c8a7524d0b4f335b",
+      "assetSha256": "de0b921fd3eab7f1eda6bd3049d232b6389b2340f417add2148a9ce94f5da0ab",
+      "note": "Pure left chevron, retained application identifier arrow-left4."
+    },
+    {
+      "asset": "arrow-right4.svg",
+      "source": "arrow/iconsax-arrow-right4-936c10a60949-.svg",
+      "sourceSha256": "82c92971d05800182750454c318cfbf561e5938cb8f9c94060ea0126ac412b6d",
+      "assetSha256": "96c0a555128afa410a11a4ef1fad6e9644da94120f7777029d05b69d0e89d3ba"
+    },
+    {
+      "asset": "search.svg",
+      "source": "search/iconsax-search-normal-57aee632c8f8-.svg",
+      "sourceSha256": "f73d7f4295317c248f6b29880f0196bfb3c0b657fbeb9702541e7e2d3726c420",
+      "assetSha256": "e26e13fd026d9934bc9830b898f2c87942bd310a62b37f2ef7379c523c735680"
+    },
+    {
+      "asset": "keyboard.svg",
+      "source": "programming/iconsax-keyboard-920c4c6b4ebc-.svg",
+      "sourceSha256": "a91d14938a71a9c8b18b8917e139bbdeffc9147796a21f9c418271093955d68c",
+      "assetSha256": "c080e5b6298711745d75e3557b737d46c2e77aed05a45a820a3b3f61958790d0"
+    },
+    {
+      "asset": "filter.svg",
+      "source": "essential/iconsax-filter-33c382326f35-.svg",
+      "sourceSha256": "56b2c9b4ef18e8e7e47c8262c441b271e3983f404db60537c37a21b6dc38669b",
+      "assetSha256": "abd92c1247d576895207a9c2f10fc4ad684c0936694587f63cc51a794df2475f"
+    },
+    {
+      "asset": "reset.svg",
+      "source": "arrow/iconsax-rotate-left-ceebcf3295d6-.svg",
+      "sourceSha256": "b6c7713b6743b18b6735d0526653608e53122d54bed41ad3d245091c29fb2b60",
+      "assetSha256": "92fe48525d3d54b6482ed41c0b38c7fe3e04666841dff4b3943f1b55b98ce072"
+    },
+    {
+      "asset": "install.svg",
+      "source": "web/iconsax-receive-cloud-3c7f35ac2dd6-.svg",
+      "sourceSha256": "ba3ddce7890541e4ad990ec7e66149152e64691e9eac806b73019f83ed5fc636",
+      "assetSha256": "ba3ddce7890541e4ad990ec7e66149152e64691e9eac806b73019f83ed5fc636"
+    }
+  ]
+}

@@ -1,9 +1,10 @@
 use crate::DesktopState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use span_core::{BufferSnapshot, SessionState, SessionStore};
 use specta::Type;
 use std::sync::{Arc, Mutex};
 use tauri::State;
+use tauri_specta::Event;
 
 fn current_workspace(state: &DesktopState) -> Result<Arc<Mutex<span_core::CoreWorkspace>>, String> {
     state
@@ -17,7 +18,17 @@ fn current_workspace(state: &DesktopState) -> Result<Arc<Mutex<span_core::CoreWo
 enum FormatPreparation {
     Saved(BufferSnapshot),
     Format(span_core::FormatRequest),
+    Unformatted(String),
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatWarning {
+    pub path: String,
+    pub message: String,
+}
+
+pub type FormatWarningSink = Arc<dyn Fn(FormatWarning) + Send + Sync>;
 
 pub async fn format_or_save(
     state: DesktopState,
@@ -25,42 +36,106 @@ pub async fn format_or_save(
     expected_revision: u64,
     save: bool,
 ) -> Result<BufferSnapshot, String> {
+    format_or_save_with_warning(state, path, expected_revision, save, None).await
+}
+
+async fn save_unformatted(
+    state: DesktopState,
+    workspace: Arc<Mutex<span_core::CoreWorkspace>>,
+    path: String,
+    expected_revision: u64,
+    message: String,
+    warning: Option<FormatWarningSink>,
+) -> Result<BufferSnapshot, String> {
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        let current = current_workspace(&state)?;
+        if !Arc::ptr_eq(&current, &workspace) {
+            return Err("Workspace changed while formatting. Run Save again.".to_owned());
+        }
+        // Saving the authoritative buffer checks the original revision and disk state.
+        // A draft edited during formatter execution is never replaced or saved here.
+        workspace
+            .lock()
+            .map_err(|_| "Workspace state is unavailable".to_owned())?
+            .save_buffer(&path, expected_revision)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Save task failed: {error}"))??;
+    if let Some(warning) = warning {
+        warning(FormatWarning {
+            path: snapshot.path.clone(),
+            message,
+        });
+    }
+    Ok(snapshot)
+}
+
+pub async fn format_or_save_with_warning(
+    state: DesktopState,
+    path: String,
+    expected_revision: u64,
+    save: bool,
+    warning: Option<FormatWarningSink>,
+) -> Result<BufferSnapshot, String> {
     let workspace = current_workspace(&state)?;
     let worker_workspace = workspace.clone();
+    let worker_path = path.clone();
     let preparation = tauri::async_runtime::spawn_blocking(move || {
         let mut guard = worker_workspace
             .lock()
             .map_err(|_| "Workspace state is unavailable".to_owned())?;
-        if save
-            && !guard
-                .get_settings()
-                .map_err(|error| error.to_string())?
-                .format_on_save
-        {
-            return guard
-                .save_buffer(&path, expected_revision)
-                .map(FormatPreparation::Saved)
-                .map_err(|error| error.to_string());
+        if save {
+            // Settings files preserve JSONC comments and use core schema validation on save.
+            if std::path::Path::new(&worker_path).ends_with(".span/settings.jsonc") {
+                return guard
+                    .save_buffer(&worker_path, expected_revision)
+                    .map(FormatPreparation::Saved)
+                    .map_err(|error| error.to_string());
+            }
+            match guard.get_settings() {
+                Ok(settings) if !settings.format_on_save => {
+                    return guard
+                        .save_buffer(&worker_path, expected_revision)
+                        .map(FormatPreparation::Saved)
+                        .map_err(|error| error.to_string())
+                }
+                Err(error) => return Ok(FormatPreparation::Unformatted(error.to_string())),
+                _ => {}
+            }
         }
-        guard
-            .take_format_request(&path, expected_revision)
-            .map(FormatPreparation::Format)
-            .map_err(|error| error.to_string())
+        match guard.take_format_request(&worker_path, expected_revision) {
+            Ok(request) => Ok(FormatPreparation::Format(request)),
+            Err(error) if save => Ok(FormatPreparation::Unformatted(error.to_string())),
+            Err(error) => Err(error.to_string()),
+        }
     })
     .await
     .map_err(|error| format!("Prepare format task failed: {error}"))??;
     let request = match preparation {
         FormatPreparation::Saved(snapshot) => return Ok(snapshot),
+        FormatPreparation::Unformatted(message) => {
+            return save_unformatted(state, workspace, path, expected_revision, message, warning)
+                .await
+        }
         FormatPreparation::Format(request) => request,
     };
-    // Both built-in formatting and subprocess setup run away from the renderer thread.
-    let formatted = tauri::async_runtime::spawn_blocking(move || {
+    let attempt = tauri::async_runtime::spawn_blocking(move || {
         tauri::async_runtime::block_on(span_core::run_formatter(request))
             .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| format!("Formatter task failed: {error}"))??;
-    tauri::async_runtime::spawn_blocking(move || {
+    .map_err(|error| format!("Formatter task failed: {error}"))
+    .and_then(|result| result);
+    let formatted = match attempt {
+        Ok(formatted) => formatted,
+        Err(message) if save => {
+            return save_unformatted(state, workspace, path, expected_revision, message, warning)
+                .await
+        }
+        Err(message) => return Err(message),
+    };
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let current = current_workspace(&state)?;
         if !Arc::ptr_eq(&current, &workspace) {
             return Err("Workspace changed while formatting. Run the command again.".to_owned());
@@ -68,19 +143,34 @@ pub async fn format_or_save(
         let mut guard = workspace
             .lock()
             .map_err(|_| "Workspace state is unavailable".to_owned())?;
-        let snapshot = guard
-            .apply_format_result(formatted)
-            .map_err(|error| error.to_string())?;
+        let snapshot = match guard.apply_format_result(formatted) {
+            Ok(snapshot) => snapshot,
+            Err(error) if save => {
+                let saved = guard
+                    .save_buffer(&path, expected_revision)
+                    .map_err(|error| error.to_string())?;
+                return Ok((saved, Some(error.to_string())));
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         if save {
             guard
                 .save_buffer(&snapshot.path, snapshot.revision)
+                .map(|saved| (saved, None))
                 .map_err(|error| error.to_string())
         } else {
-            Ok(snapshot)
+            Ok((snapshot, None))
         }
     })
     .await
-    .map_err(|error| format!("Apply format task failed: {error}"))?
+    .map_err(|error| format!("Apply format task failed: {error}"))??;
+    if let (Some(message), Some(warning)) = (result.1, warning) {
+        warning(FormatWarning {
+            path: result.0.path.clone(),
+            message,
+        });
+    }
+    Ok(result.0)
 }
 
 #[tauri::command]
@@ -300,6 +390,247 @@ pub async fn read_image(
 
 #[cfg(test)]
 mod tests {
+    fn dirty_workspace(formatter: Vec<String>) -> (tempfile::TempDir, crate::DesktopState, u64) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("draft.ts"),
+            "const original = true;\n",
+        )
+        .unwrap();
+        let mut workspace = span_core::CoreWorkspace::open(directory.path())
+            .unwrap()
+            .with_user_settings(None);
+        let mut settings = span_core::Settings {
+            format_on_save: true,
+            ..Default::default()
+        };
+        settings.formatters.insert("typescript".into(), formatter);
+        workspace.update_settings(settings).unwrap();
+        workspace.open_buffer("draft.ts").unwrap();
+        let edited = workspace
+            .edit_buffer_delta(
+                "draft.ts",
+                0,
+                vec![span_core::TextEdit {
+                    from: 0,
+                    to: 0,
+                    insert: "// unsaved draft\n".into(),
+                }],
+            )
+            .unwrap();
+        let state = crate::DesktopState::default();
+        *state.workspace.lock().unwrap() =
+            Some(std::sync::Arc::new(std::sync::Mutex::new(workspace)));
+        (directory, state, edited.revision)
+    }
+
+    #[tokio::test]
+    async fn settings_jsonc_save_preserves_comments_without_invoking_a_formatter() {
+        let (directory, state, _) =
+            dirty_workspace(vec!["span-nonexistent-formatter-fixture".into()]);
+        let revision = {
+            let workspace = super::current_workspace(&state).unwrap();
+            let mut workspace = workspace.lock().unwrap();
+            let snapshot = workspace.open_buffer(".span/settings.jsonc").unwrap();
+            workspace
+                .edit_buffer_delta(
+                    ".span/settings.jsonc",
+                    snapshot.revision,
+                    vec![span_core::TextEdit {
+                        from: 0,
+                        to: 0,
+                        insert: "// retained settings comment\n".into(),
+                    }],
+                )
+                .unwrap()
+                .revision
+        };
+        let notices = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let captured = notices.clone();
+        let saved = super::format_or_save_with_warning(
+            state,
+            ".span/settings.jsonc".into(),
+            revision,
+            true,
+            Some(std::sync::Arc::new(move |_| {
+                captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })),
+        )
+        .await
+        .unwrap();
+        assert!(saved.text.starts_with("// retained settings comment\n"));
+        assert_eq!(notices.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join(".span/settings.jsonc")).unwrap(),
+            saved.text
+        );
+    }
+
+    #[tokio::test]
+    async fn format_on_save_missing_formatter_still_saves_original_draft() {
+        let (directory, state, revision) =
+            dirty_workspace(vec!["span-nonexistent-formatter-fixture".into()]);
+        let saved = super::format_or_save(state, "draft.ts".into(), revision, true)
+            .await
+            .unwrap();
+        assert_eq!(saved.saved_revision, revision);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("draft.ts")).unwrap(),
+            "// unsaved draft\nconst original = true;\n"
+        );
+    }
+
+    fn hanging_formatter() -> Vec<String> {
+        vec![
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--exact".into(),
+            "services::tests::formatter_timeout_fixture".into(),
+            "--nocapture".into(),
+        ]
+    }
+
+    #[test]
+    fn formatter_timeout_fixture() {
+        // Only the separately spawned formatter process selects this exact fixture.
+        let arguments: Vec<_> = std::env::args().collect();
+        if arguments.windows(2).any(|pair| {
+            pair[0] == "--exact" && pair[1] == "services::tests::formatter_timeout_fixture"
+        }) {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
+    }
+
+    #[tokio::test]
+    async fn format_on_save_timeout_falls_back_to_original_draft() {
+        let (directory, state, revision) = dirty_workspace(hanging_formatter());
+        let saved = super::format_or_save(state, "draft.ts".into(), revision, true)
+            .await
+            .unwrap();
+        assert_eq!(saved.saved_revision, revision);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("draft.ts")).unwrap(),
+            saved.text
+        );
+        assert_eq!(saved.text, "// unsaved draft\nconst original = true;\n");
+    }
+
+    #[tokio::test]
+    async fn edits_during_formatter_wait_are_never_saved_by_fallback() {
+        let (directory, state, revision) = dirty_workspace(hanging_formatter());
+        let task = tokio::spawn(super::format_or_save(
+            state.clone(),
+            "draft.ts".into(),
+            revision,
+            true,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let workspace = super::current_workspace(&state).unwrap();
+        workspace
+            .lock()
+            .unwrap()
+            .edit_buffer_delta(
+                "draft.ts",
+                revision,
+                vec![span_core::TextEdit {
+                    from: 0,
+                    to: 0,
+                    insert: "// newer edit\n".into(),
+                }],
+            )
+            .unwrap();
+        let error = task.await.unwrap().unwrap_err();
+        assert!(error.contains("Expected revision"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("draft.ts")).unwrap(),
+            "const original = true;\n"
+        );
+        let current = workspace
+            .lock()
+            .unwrap()
+            .buffer_snapshot("draft.ts")
+            .unwrap();
+        assert_eq!(current.saved_revision, 0);
+        assert!(current.text.starts_with("// newer edit"));
+    }
+
+    #[tokio::test]
+    async fn formatter_failure_never_hides_real_disk_conflict_or_clears_dirty_state() {
+        let (directory, state, revision) =
+            dirty_workspace(vec!["span-nonexistent-formatter-fixture".into()]);
+        std::fs::write(directory.path().join("draft.ts"), "external change\n").unwrap();
+        let error = super::format_or_save(state.clone(), "draft.ts".into(), revision, true)
+            .await
+            .unwrap_err();
+        assert!(error.contains("File changed on disk"), "{error}");
+        let current = super::current_workspace(&state)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .buffer_snapshot("draft.ts")
+            .unwrap();
+        assert_eq!(current.saved_revision, 0);
+        assert_eq!(current.revision, revision);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("draft.ts")).unwrap(),
+            "external change\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_format_still_errors_and_never_saves() {
+        let (directory, state, revision) =
+            dirty_workspace(vec!["span-nonexistent-formatter-fixture".into()]);
+        assert!(
+            super::format_or_save(state, "draft.ts".into(), revision, false)
+                .await
+                .unwrap_err()
+                .contains("formatter executable is unavailable")
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("draft.ts")).unwrap(),
+            "const original = true;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn advisory_is_emitted_only_after_successful_fallback_save() {
+        let (directory, state, revision) =
+            dirty_workspace(vec!["span-nonexistent-formatter-fixture".into()]);
+        let warnings = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = warnings.clone();
+        let sink: super::FormatWarningSink =
+            std::sync::Arc::new(move |warning| captured.lock().unwrap().push(warning));
+        let saved = super::format_or_save_with_warning(
+            state.clone(),
+            "draft.ts".into(),
+            revision,
+            true,
+            Some(sink.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(warnings.lock().unwrap().len(), 1);
+        assert_eq!(warnings.lock().unwrap()[0].path, "draft.ts");
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("draft.ts")).unwrap(),
+            saved.text
+        );
+        std::fs::write(directory.path().join("draft.ts"), "external\n").unwrap();
+        assert!(super::format_or_save_with_warning(
+            state,
+            "draft.ts".into(),
+            revision,
+            true,
+            Some(sink)
+        )
+        .await
+        .is_err());
+        assert_eq!(warnings.lock().unwrap().len(), 1);
+    }
+
     #[test]
     fn external_links_are_limited_to_web_and_mail() {
         for value in [

@@ -72,11 +72,13 @@ describe("AgentPermission", () => {
     ));
     expect([...host.querySelectorAll(".agent-permission-option")].map((button) => button.textContent?.replace(/\s+/g, " ").trim())).toEqual([
       "1Allow once",
-      "2Always allowRemembered for this session",
+      "2Always allowRemembered by Span for this session",
       "3Reject",
     ]);
     expect(host.querySelector(".agent-permission-summary")?.textContent).toBe("git status");
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "2" }));
+    const choice = host.querySelector<HTMLButtonElement>(".agent-permission-option")!;
+    choice.focus();
+    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true }));
     expect(chosen).toEqual(["always"]);
     host.querySelector<HTMLButtonElement>(".agent-link")!.click();
     expect(chosen).toEqual(["always", null]);
@@ -98,6 +100,55 @@ describe("AgentPermission", () => {
     const host = mount(() => <AgentPermission title="t" summary="" options={options} resolved active busy={false} onChoose={() => {}} />);
     expect(host.querySelector(".agent-permission-option")).toBeNull();
     expect(host.textContent).toContain("resolved");
+  });
+
+  it("never answers while digits are typed in editor or other text fields", () => {
+    const choose = vi.fn();
+    const host = mount(() => <AgentPermission title="t" summary="" options={options} resolved={false} active busy={false} onChoose={choose} />);
+    const editor = document.createElement("div");
+    editor.className = "cm-content";
+    editor.contentEditable = "true";
+    editor.setAttribute("contenteditable", "true");
+    editor.tabIndex = 0;
+    const textbox = document.createElement("div");
+    textbox.setAttribute("role", "textbox");
+    textbox.tabIndex = 0;
+    const area = document.createElement("textarea");
+    const input = document.createElement("input");
+    const unrelated = document.createElement("button");
+    document.body.append(editor, textbox, area, input, unrelated);
+    for (const target of [editor, textbox, area, input, unrelated]) {
+      target.focus();
+      const event = new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(choose).not.toHaveBeenCalled();
+    const choice = host.querySelector<HTMLButtonElement>(".agent-permission-option")!;
+    choice.focus();
+    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    expect(choose).toHaveBeenCalledExactlyOnceWith("once");
+  });
+
+  it("ignores consumed, composing, repeated keys and another open dialog", () => {
+    const choose = vi.fn();
+    const host = mount(() => <AgentPermission title="t" summary="" options={options} resolved={false} active busy={false} onChoose={choose} />);
+    const choice = host.querySelector<HTMLButtonElement>(".agent-permission-option")!;
+    choice.focus();
+    const consumed = new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true });
+    consumed.preventDefault();
+    choice.dispatchEvent(consumed);
+    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true, isComposing: true }));
+    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true, repeat: true }));
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.append(dialog);
+    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    expect(choose).not.toHaveBeenCalled();
+    dialog.remove();
+    choice.dispatchEvent(new KeyboardEvent("keydown", { key: "3", bubbles: true }));
+    expect(choose).toHaveBeenCalledExactlyOnceWith("no");
   });
 });
 

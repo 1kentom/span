@@ -17,8 +17,8 @@ export function sortPermissionOptions(options: PermissionOption[]): PermissionOp
 }
 
 export function permissionScope(kind: string): string {
-  if (kind === "allow_always") return "Remembered for this session";
-  if (kind === "reject_always") return "Remembered for this session";
+  if (kind === "allow_always") return "Remembered by Span for this session";
+  if (kind === "reject_always") return "Remembered by Span for this session";
   return "";
 }
 
