@@ -47,11 +47,11 @@ export function AgentPanel(props: AgentPanelProps) {
   const label = () => agent()?.title || agent()?.name || a.agentName();
   const brand = () => ({ id: a.agentId() ?? agent()?.name, name: label() });
   const hasAgent = () => Boolean(a.agentId() || agent());
-  /** Other models for a refused prompt: only with an open session, where the model can be switched in place. */
-  const signInModels = createMemo(() => (a.state().sessionId ? fallbackModels(configViews(a.state().config)) : []));
+  /** Other models for a refused prompt: only while this session's own turn was refused, so it can be sent again. */
+  const signInModels = createMemo(() => (a.canRetryModel() ? fallbackModels(configViews(a.state().config)) : []));
   const signInText = () => {
     const auth = a.state().auth;
-    const promptFailed = Boolean(a.state().sessionId) && a.state().feed.some((item) => item.kind === "user");
+    const promptFailed = a.canRetryModel();
     return signInCopy({ agent: label(), message: auth?.message ?? "", agentMessage: auth?.agentMessage, promptFailed, models: signInModels().length });
   };
   /**

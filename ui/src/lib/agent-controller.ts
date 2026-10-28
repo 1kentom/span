@@ -29,7 +29,7 @@ import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveNa
 import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
 import { moveItem } from "./agent-queue";
 import { readLastSession, writeLastSession } from "./last-session";
-import { chooseRestores, readLastConfig, writeLastConfig } from "./last-config";
+import { chooseRestores, readLastConfig, writeLastConfig, type SavedConfig } from "./last-config";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
@@ -174,6 +174,17 @@ export function createAgentController(props: AgentPanelProps) {
   let steering: Steering | undefined;
   /** The agent switch waiting for its new session or for its first prompt. Cleared once the context is sent. */
   let handoff: Handoff | undefined;
+  /**
+   * The turn the provider refused for a missing sign-in, in the session it was sent to. Only this turn can be sent
+   * again with another model; it is forgotten on any new prompt, chat switch, resume or connection.
+   */
+  const [refused, setRefused] = createSignal<{ sessionId: string; entry: Queued; itemId: number }>();
+  /** Session ids a prompt has gone out to, so a late options restore never races the user's own turn. */
+  const prompted = new Set<string>();
+  /** Bumped by every option change the user makes, so a restore running meanwhile stops instead of overwriting it. */
+  let configEdits = 0;
+  /** The options restore in flight. A send waits for it, and a user change goes out after it. */
+  const [restoring, setRestoring] = createSignal<Promise<void>>();
   const [rewindPick, setRewind] = createSignal<Rewind>();
   /** Counts dispatched turns, so a steer can tell its own turn from a later one. */
   let turnCounter = 0;
@@ -227,8 +238,13 @@ export function createAgentController(props: AgentPanelProps) {
     return undefined;
   });
   const canSend = createMemo(
-    () => connected() && !working() && !pendingAction() && Boolean(prompt().trim() || attachments().length) && blocked().length === 0 && !(rewind()?.mode === "edit" && branchBlock()),
+    () => connected() && !working() && !pendingAction() && !restoring() && Boolean(prompt().trim() || attachments().length) && blocked().length === 0 && !(rewind()?.mode === "edit" && branchBlock()),
   );
+  /** The sign-in card may offer another model: the open session's own prompt was refused. */
+  const canRetryModel = createMemo(() => {
+    const turn = refused();
+    return Boolean(turn && state().auth && turn.sessionId === state().sessionId);
+  });
   const permission = createMemo(() => openPermission(feed()));
   /** Open permission requests from delegated children, oldest first. */
   const childPermissionList = createMemo(() => childPermissions(state().strayPermissions, state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])), state().childRequests));
@@ -270,14 +286,16 @@ export function createAgentController(props: AgentPanelProps) {
     if (workspace && agent && id && !restoringLast) writeLastSession(workspace, { agentId: agent, sessionId: id });
   });
   /** The brand new session whose agent should get the user's remembered options once they arrive. Never a resumed chat. */
-  const [freshSession, setFreshSession] = createSignal<string>();
-  const markFresh = (id: string | undefined) => setFreshSession(id);
+  const [freshSession, setFreshSession] = createSignal<{ id: string; saved?: SavedConfig }>();
+  /** `saved` replaces the agent's remembered options, for a session that continues another one (edit, resend, fork). */
+  const markFresh = (id: string | undefined, saved?: SavedConfig) => setFreshSession(id ? { id, saved } : undefined);
   createEffect(() => {
     const id = sessionId();
     const options = state().config;
-    if (!id || id !== freshSession() || !options.length) return;
+    const fresh = freshSession();
+    if (!id || id !== fresh?.id || !options.length) return;
     setFreshSession(undefined);
-    void restoreConfig(id, options);
+    void restoreConfig(id, options, fresh.saved);
   });
   createEffect(on(sessionId, (id) => {
     setBannerDismissed(false);
@@ -358,6 +376,7 @@ export function createAgentController(props: AgentPanelProps) {
           // A different workspace: messages composed for the old one are dropped, not carried over.
           steering = undefined;
           handoff = undefined;
+          setRefused(undefined);
           setQueue([]);
           setQueueHeld(false);
           forgetChats();
@@ -623,6 +642,7 @@ export function createAgentController(props: AgentPanelProps) {
     const hadSession = Boolean(sessionId());
     const carry = Boolean(options.switching && state().feed.length && (id !== agentId() || name !== agentName()));
     handoff = carry ? { from: agentLabel(), to: name, text: buildHandoff(state().feed, { from: agentLabel(), root: cwd }) } : undefined;
+    setRefused(undefined);
     batch(() => {
       setWorking(true);
       setMenu(null);
@@ -804,6 +824,7 @@ export function createAgentController(props: AgentPanelProps) {
       await api.agentDisconnect();
       if (!current()) return;
       handoff = undefined;
+      setRefused(undefined);
       update((previous) => addFeedItem({ ...previous, sessionId: undefined, auth: undefined, running: false, status: "disconnected", statusMessage: "No agent connected" }, { kind: "note", text: "Agent disconnected" }));
       setConnecting(undefined);
       forgetChats();
@@ -833,19 +854,29 @@ export function createAgentController(props: AgentPanelProps) {
 
   /**
    * The provider behind the current model refused the prompt. Switch the same session to another model and send the
-   * refused prompt again, so one click recovers without a reconnect.
+   * refused turn again (its text, attachments and carried context), so one click recovers without a reconnect. Only the
+   * turn this session refused is sent: a sign-in card from anything else (a failed resume) offers no resend.
    */
   async function retryWithModel(value: string) {
     const current = guard(agentEpoch);
     const option = state().config.find((candidate) => candidate.category === "model");
-    const failed = [...state().feed].reverse().find((item) => item.kind === "user");
-    if (!option || !state().sessionId) return;
+    const turn = refused();
+    const id = state().sessionId;
+    if (!option || !id || !turn || turn.sessionId !== id || running()) return;
     setPendingAction("auth");
+    configEdits += 1;
     try {
       await api.agentSetConfig(option.id, value);
-      if (!current()) return;
-      patch({ auth: undefined, failure: undefined, status: "ready", statusMessage: "Connected and ready" });
-      if (failed && failed.kind === "user" && failed.text) sendText(failed.text);
+      const agent = agentId();
+      if (agent) writeLastConfig(agent, option.id, value);
+      if (!current() || refused() !== turn || state().sessionId !== id) return;
+      setRefused(undefined);
+      const { entry } = turn;
+      // The refused bubble is replaced by the resent one, and the composer no longer holds the same text to send twice.
+      update((previous) => ({ ...previous, auth: undefined, failure: undefined, status: "ready", statusMessage: "Connected and ready", feed: previous.feed.filter((item) => item.id !== turn.itemId) }));
+      if (prompt() === entry.text) setPrompt("");
+      if (entry.items.length && attachments().length === entry.items.length && attachments().every((item, index) => item.id === entry.items[index].id)) setAttachments([]);
+      void dispatch(entry);
     } catch (cause) {
       if (current()) fail({ phase: "session", message: `Could not change the model: ${errorText(cause)}` });
     } finally {
@@ -887,6 +918,9 @@ export function createAgentController(props: AgentPanelProps) {
     if (steering && !options.steered) releaseSteer();
     const turn = ++turnCounter;
     setBusyNotice(false);
+    setRefused(undefined);
+    const promptSession = state().sessionId;
+    if (promptSession) prompted.add(promptSession);
     // The first prompt after an agent switch carries the context, exactly once. Slash commands go out unchanged.
     const carried = handoff?.text && handoff.sessionId && handoff.sessionId === state().sessionId && !entry.message.trimStart().startsWith("/") ? handoff : undefined;
     if (carried) handoff = undefined;
@@ -941,6 +975,12 @@ export function createAgentController(props: AgentPanelProps) {
         ...(previous.sessionId ? { status: "ready", statusMessage: "Prompt failed" } : {}),
       }));
       holdQueue();
+      if (state().auth && promptSession && promptSession === state().sessionId) {
+        // Refused for a missing sign-in: nothing reached the agent, so the carried context waits for the resend and the
+        // card may send this exact turn again with another model.
+        if (carried && !handoff) handoff = carried;
+        if (turn === turnCounter) setRefused({ sessionId: promptSession, entry, itemId });
+      }
       if (steering?.turn === turn) {
         // This turn was being steered: the user wants the steer, not this turn's text, back.
         releaseSteer();
@@ -1110,27 +1150,43 @@ export function createAgentController(props: AgentPanelProps) {
     }
   }
 
-  /** Applies the options this agent had last time to its new session. Silent: the UI shows what the agent reports. */
-  async function restoreConfig(id: string, options: ConfigOption[]) {
+  /**
+   * Applies the options this agent had last time (or `saved`, the options of the session this one continues) to its
+   * new session. Silent: the UI shows what the agent reports. Sending waits until it settles.
+   */
+  function restoreConfig(id: string, options: ConfigOption[], saved?: SavedConfig): Promise<void> {
     const agent = agentId();
-    if (!agent) return;
+    const values = saved ?? (agent ? readLastConfig(agent) : undefined);
+    const restores = values ? chooseRestores(options, values) : [];
+    if (!restores.length) return Promise.resolve();
     const current = guard(agentEpoch);
-    for (const [configId, value] of chooseRestores(options, readLastConfig(agent))) {
-      // Once the user has sent a prompt, their session has moved on and a late change would race it.
-      if (!current() || sessionId() !== id || running() || state().feed.some((item) => item.kind === "user")) return;
-      try {
-        await api.agentSetConfig(configId, value);
-      } catch {
-        /* the agent may refuse, and the picker shows what it reports */
+    const edits = configEdits;
+    const run = (async () => {
+      for (const [configId, value] of restores) {
+        // A prompt to this session, or a change the user made meanwhile, wins over the remembered value.
+        if (!current() || sessionId() !== id || running() || prompted.has(id) || configEdits !== edits) return;
+        try {
+          await api.agentSetConfig(configId, value);
+        } catch {
+          /* the agent may refuse, and the picker shows what it reports */
+        }
       }
-    }
+    })();
+    const settled = run.finally(() => {
+      if (restoring() === settled) setRestoring(undefined);
+    });
+    setRestoring(settled);
+    return settled;
   }
   async function setConfig(configId: string, value: string) {
     const current = guard(agentEpoch);
     const option = state().config.find((candidate) => candidate.id === configId);
     if (!option || value === option.currentValue) return;
+    configEdits += 1;
     setPendingAction(`config:${configId}`);
     try {
+      // A restore value still in flight lands first, so this choice is the one that stays.
+      await restoring();
       await api.agentSetConfig(configId, value);
       const agent = agentId();
       if (agent) writeLastConfig(agent, configId, value);
@@ -1251,6 +1307,7 @@ export function createAgentController(props: AgentPanelProps) {
     setMenu(null);
     setWorking(true);
     const previousId = state().sessionId;
+    setRefused(undefined);
     if (options.discardOpen) releaseSteer();
     else stashOpenChat();
     followed.clear();
@@ -1396,9 +1453,18 @@ export function createAgentController(props: AgentPanelProps) {
     await reviewMany(rewindFiles().flatMap((file) => file.pending), true);
     if (rewind()?.mode === "restore") setRewind(undefined);
   }
+  /** Resend: the message goes out again as it was sent, attachments included, rebuilt like a composed prompt. */
   const resendFrom = (itemId: number) => {
     const item = feed().find((entry) => entry.id === itemId);
-    if (item?.kind === "user") void branchFrom(itemId, "resend", { id: `q-${++queueCounter}`, text: item.text, message: item.text, attachments: [], items: [] });
+    const capabilities = caps();
+    if (item?.kind !== "user" || !capabilities) return;
+    const items = item.attachments ?? [];
+    const built = buildPrompt(item.text, items, capabilities, props.workspacePath);
+    if (built.blocked.length) {
+      intake.reject(built.blocked.map(({ item: blockedItem, reason }) => ({ name: blockedItem.name, reason })));
+      return;
+    }
+    void branchFrom(itemId, "resend", { id: `q-${++queueCounter}`, text: item.text, message: built.text, attachments: built.attachments, items: [...items] });
   };
   const forkFrom = (itemId: number) => void branchFrom(itemId, "fork");
   /**
@@ -1420,7 +1486,8 @@ export function createAgentController(props: AgentPanelProps) {
     const from = agentLabel();
     const text = buildHandoff(earlier, { from, root: props.workspacePath, reason: branchReason(mode) });
     const before = sessionId();
-    // The chat being left keeps the draft it had before Edit; a fork keeps the composer as it is.
+    // The new session continues this one, so it starts on the same model and options, not the agent's defaults.
+    const source: SavedConfig = Object.fromEntries(state().config.map((option) => [option.id, option.currentValue]));
     const draft = mode === "fork" ? { text: prompt(), items: attachments() } : undefined;
     if (editing?.mode === "edit") setPrompt(editing.draft);
     setRewind(undefined);
@@ -1440,7 +1507,10 @@ export function createAgentController(props: AgentPanelProps) {
       setPrompt(draft.text);
       setAttachments(draft.items);
     }
-    if (entry) await dispatch(entry);
+    // Options the agent already reported are set before the first prompt; ones that arrive later are set on arrival.
+    if (state().config.length) await restoreConfig(id, state().config, source);
+    else markFresh(id, source);
+    if (entry && sessionId() === id) await dispatch(entry);
   }
   async function review(proposal: EditProposal, accept: boolean) {
     const current = guard(agentEpoch);
@@ -1757,6 +1827,7 @@ export function createAgentController(props: AgentPanelProps) {
     connectCustom,
     reconnect,
     retryWithModel,
+    canRetryModel,
     install,
     disconnect,
     authenticate,
