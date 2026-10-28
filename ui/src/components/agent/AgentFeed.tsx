@@ -6,7 +6,6 @@ import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
 import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
-import { Icon } from "../Icon";
 import { urlRecordText } from "../../lib/agent-url-request";
 import { EditsBypassNote, ErrorCard, Notice, StopCard } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
