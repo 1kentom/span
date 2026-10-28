@@ -126,9 +126,8 @@ export function taskNote(task: DelegationTaskState): string | undefined {
   return undefined;
 }
 
-/** The status line near the composer: only when the tools are attached to this session or the agent cannot get them. */
-export function delegationLine(note: DelegationNote, sessionId: string | undefined): { tone: "on" | "warn"; text: string } | undefined {
-  if (note.attached && sessionId && note.attached.sessionId === sessionId) return { tone: "on", text: "Delegation on" };
+/** The status line near the composer: only when the agent cannot get the delegation tools. Working delegation shows no text. */
+export function delegationLine(note: DelegationNote, _sessionId: string | undefined): { tone: "warn"; text: string } | undefined {
   if (note.unavailable) return { tone: "warn", text: `Delegation unavailable: ${note.unavailable.reason}` };
   return undefined;
 }
