@@ -7,6 +7,8 @@ import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import type { NavigationPort } from './lsp-navigation';
 import { createPreviewNavigationPort, previewNavigationFiles } from './navigation-preview';
 import { previewHover, previewHoverFiles } from './hover-preview';
+import { createHubPreview } from './hub-preview';
+import type { HubPort } from './lsp-hub-types';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
@@ -524,6 +526,27 @@ export const api = {
 
 const lspUnavailable = (): never => { throw { kind: 'unsupported', message: 'Language servers need the span desktop app.' }; };
 const noListener = async (): Promise<() => void> => () => undefined;
+const hubPreview = isDesktop ? undefined : createHubPreview(previewWorkspace.root);
+
+/**
+ * Hub commands that may be newer than the generated bindings. The generated command is used when it exists,
+ * the labelled fixture (see hub-preview.ts) answers in browser preview.
+ */
+type Loose = Record<string, ((...args: unknown[]) => Promise<unknown>) | undefined>;
+type LooseEvents = Record<string, { listen: (handler: (event: { payload: never }) => void) => Promise<() => void> } | undefined>;
+const missing = (name: string) => Promise.reject(new Error(`${name} is not available in this build of span.`));
+export const hubPort: HubPort = {
+  cancelInstall: server => isDesktop ? ((commands as unknown as Loose).lspCancelInstall?.(server) ?? missing('Cancelling an install')) : hubPreview!.hub.cancelInstall(server),
+  trustWorkspace: trusted => isDesktop ? ((commands as unknown as Loose).lspTrustWorkspace?.(trusted) ?? missing('Folder trust')) : hubPreview!.hub.trustWorkspace(trusted),
+  onWorkProgress: listener => isDesktop
+    ? ((events as unknown as LooseEvents).languageServerWorkProgress?.listen(event => listener(event.payload)) ?? noListener())
+    : hubPreview!.hub.onWorkProgress(listener),
+  pickPath: async (kind, title) => {
+    if (!isDesktop) return hubPreview!.hub.pickPath(kind, title);
+    const selected = await open({ directory: kind === 'folder', multiple: false, title });
+    return typeof selected === 'string' ? selected : null;
+  },
+};
 
 /** Language server commands and events. Browser preview has none, so requests are unsupported and listeners are inert. */
 export const lspPort: LspPort = {
@@ -532,12 +555,12 @@ export const lspPort: LspPort = {
   definition: (path, position, requestId) => isDesktop ? commands.lspDefinition(path, position, requestId) : previewNavigation.definition(path, position, requestId).then(reply => ({ ...reply, revision: 0, epoch: 0 })),
   format: (path, range, requestId) => isDesktop ? commands.lspFormat(path, range, requestId) : lspUnavailable(),
   cancel: requestId => isDesktop ? commands.lspCancel(requestId) : Promise.resolve(null),
-  install: server => isDesktop ? commands.lspInstall(server) : lspUnavailable(),
-  restart: server => isDesktop ? commands.lspRestart(server) : lspUnavailable(),
-  status: () => isDesktop ? commands.lspStatus() : Promise.resolve([]),
+  install: server => isDesktop ? commands.lspInstall(server) : hubPreview!.active() ? hubPreview!.install(server) : lspUnavailable(),
+  restart: server => isDesktop ? commands.lspRestart(server) : hubPreview!.active() ? hubPreview!.restart(server) : lspUnavailable(),
+  status: () => isDesktop ? commands.lspStatus() : Promise.resolve(hubPreview!.rows()),
   onDiagnostics: listener => isDesktop ? events.diagnosticsPublished.listen(event => listener(event.payload)) : noListener(),
-  onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : noListener(),
-  onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : noListener(),
+  onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : hubPreview!.onState(listener),
+  onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : hubPreview!.onInstallProgress(listener),
   onError: listener => isDesktop ? events.languageServerError.listen(event => listener(event.payload)) : noListener(),
 };
 

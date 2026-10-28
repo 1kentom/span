@@ -13,6 +13,8 @@ const aliases: Record<string, string> = {
 type Rule = { type?: string | string[]; enum?: unknown[]; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; items?: Rule; propertyNames?: Rule; pattern?: string; additionalProperties?: Rule | boolean };
 const rules = schema.properties as Record<string, Rule & { default?: unknown }>;
 const defaults = Object.fromEntries(Object.entries(rules).filter(([key, rule]) => !key.includes('.') && key !== '$schema' && 'default' in rule).map(([key, rule]) => [key, structuredClone(rule.default)])) as Settings;
+// The schema gives `languageServers` no default of its own, so the browser preview supplies the plain one.
+defaults.languageServers = { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] };
 const canonical = (key: string) => aliases[key] || key;
 
 /** Splits a dotted key such as `editor.syntaxColors.dark.keyword` into the known setting and the path below it. */
@@ -77,6 +79,7 @@ export function createPreviewSettings() {
     return structuredClone({ ...defaults, ...user, ...workspace,
       keybindings: { ...defaults.keybindings, ...(user.keybindings as Settings['keybindings']), ...(workspace.keybindings as Settings['keybindings']) },
       syntaxColors: mergeColors(user.syntaxColors, workspace.syntaxColors),
+      languageServers: Object.assign({}, defaults.languageServers, user.languageServers, workspace.languageServers) as Settings['languageServers'],
       formatters: { ...defaults.formatters, ...(user.formatters as Settings['formatters']), ...(workspace.formatters as Settings['formatters']) },
     } as Settings);
   }
