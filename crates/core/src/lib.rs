@@ -7,6 +7,8 @@ mod fs_ops;
 mod images;
 mod proposal_diff;
 mod recent;
+mod run_config;
+mod run_detection;
 mod search;
 mod session;
 mod settings;
@@ -20,10 +22,12 @@ pub use format::{
 };
 pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
+pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use settings::{
-    AgentSettings, AutoSaveMode, DelegationSettings, Settings, SettingsScope, Theme,
+    AgentSettings, AutoSaveMode, DelegationSettings, RunToolsSettings, Settings, SettingsScope,
+    Theme,
 };
 pub use tools::{list_tools, ToolInfo};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
@@ -54,6 +58,8 @@ pub enum CoreError {
     Settings(String),
     #[error("Formatter: {0}")]
     Formatter(String),
+    #[error("Run configuration: {0}")]
+    RunConfiguration(String),
     #[error("Search: {0}")]
     Search(String),
     #[error("Attachment rejected: {0}")]

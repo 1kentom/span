@@ -6,6 +6,29 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	openWorkspace: (path: string) => __TAURI_INVOKE<Workspace>("open_workspace", { path }),
+	runConfigurations: () => __TAURI_INVOKE<RunCatalog_Serialize>("run_configurations"),
+	runContext: () => __TAURI_INVOKE<RunContext_Serialize>("run_context"),
+	pendingRunApprovals: () => __TAURI_INVOKE<RunApprovalRequest[]>("pending_run_approvals"),
+	runToolsEnabled: () => __TAURI_INVOKE<boolean>("run_tools_enabled"),
+	runToolsSetEnabled: (enabled: boolean) => __TAURI_INVOKE<null>("run_tools_set_enabled", { enabled }),
+	resolveRunApproval: (id: string, allow: boolean) => __TAURI_INVOKE<null>("resolve_run_approval", { id, allow }),
+	saveRunConfiguration: (configuration: RunConfiguration_Deserialize, expectedWorkspaceRoot: string) => __TAURI_INVOKE<RunConfiguration_Serialize>("save_run_configuration", { configuration, expectedWorkspaceRoot }),
+	deleteRunConfiguration: (id: string, expectedWorkspaceRoot: string) => __TAURI_INVOKE<null>("delete_run_configuration", { id, expectedWorkspaceRoot }),
+	duplicateRunConfiguration: (id: string, expectedWorkspaceRoot: string) => __TAURI_INVOKE<RunConfiguration_Serialize>("duplicate_run_configuration", { id, expectedWorkspaceRoot }),
+	startRun: (configuration: RunConfiguration_Deserialize, expectedWorkspaceRoot: string, onEvent: Channel<RunEvent_Deserialize>) => __TAURI_INVOKE<RunInfo_Serialize>("start_run", { configuration, expectedWorkspaceRoot, onEvent }),
+	stopRun: (id: string) => __TAURI_INVOKE<RunInfo_Serialize>("stop_run", { id }),
+	restartRun: (id: string, onEvent: Channel<RunEvent_Deserialize>) => __TAURI_INVOKE<RunInfo_Serialize>("restart_run", { id, onEvent }),
+	listRuns: () => __TAURI_INVOKE<RunInfo_Serialize[]>("list_runs"),
+	runOutput: (id: string) => __TAURI_INVOKE<RunOutput>("run_output", { id }),
+	acknowledgeRun: (id: string, sequence: number) => __TAURI_INVOKE<null>("acknowledge_run", { id, sequence }),
+	terminalCreate: (cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent_Deserialize>) => __TAURI_INVOKE<TerminalInfo_Serialize>("terminal_create", { cwd, cols, rows, onEvent }),
+	terminalWrite: (id: string, data: number[]) => __TAURI_INVOKE<null>("terminal_write", { id, data }),
+	terminalResize: (id: string, cols: number, rows: number) => __TAURI_INVOKE<null>("terminal_resize", { id, cols, rows }),
+	terminalInterrupt: (id: string) => __TAURI_INVOKE<null>("terminal_interrupt", { id }),
+	terminalClose: (id: string) => __TAURI_INVOKE<null>("terminal_close", { id }),
+	terminalList: () => __TAURI_INVOKE<TerminalInfo_Serialize[]>("terminal_list"),
+	terminalScrollback: (id: string) => __TAURI_INVOKE<number[]>("terminal_scrollback", { id }),
+	terminalAcknowledge: (id: string, sequence: number) => __TAURI_INVOKE<null>("terminal_acknowledge", { id, sequence }),
 	listDirectory: (path: string) => __TAURI_INVOKE<FileEntry[]>("list_directory", { path }),
 	listFiles: () => __TAURI_INVOKE<FileEntry[]>("list_files"),
 	newFile: (path: string) => __TAURI_INVOKE<BufferSnapshot>("new_file", { path }),
@@ -120,6 +143,8 @@ export const commands = {
 export const events = {
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
+	runApprovalsChanged: makeEvent<RunApprovalsChanged, RunApprovalsChanged>("run-approvals-changed"),
+	runEvent: makeEvent<RunEvent_Serialize, RunEvent_Deserialize>("run-event"),
 	startupRequestError: makeEvent<StartupRequestError, StartupRequestError>("startup-request-error"),
 	startupRequestsChanged: makeEvent<StartupRequestsChanged, StartupRequestsChanged>("startup-requests-changed"),
 };
@@ -341,11 +366,13 @@ export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 /**  `agents.*` settings. */
 export type AgentSettings_Deserialize = {
 	delegation?: DelegationSettings_Deserialize,
+	runTools?: RunToolsSettings_Deserialize,
 };
 
 /**  `agents.*` settings. */
 export type AgentSettings_Serialize = {
 	delegation: DelegationSettings_Serialize,
+	runTools: RunToolsSettings_Serialize,
 };
 
 /**  A file the child produced or changed, inside the workspace. */
@@ -716,6 +743,18 @@ export type DelegationTask_Serialize = {
 	budgetUsed: UsageReport_Serialize,
 };
 
+export type DetectedRunTask = DetectedRunTask_Serialize | DetectedRunTask_Deserialize;
+
+export type DetectedRunTask_Deserialize = {
+	configuration: RunConfiguration_Deserialize,
+	source: string,
+};
+
+export type DetectedRunTask_Serialize = {
+	configuration: RunConfiguration_Serialize,
+	source: string,
+};
+
 export type EditProposal = {
 	id: string,
 	path: string,
@@ -872,6 +911,130 @@ export type RegistryAgent_Serialize = {
 	/**  Phase 0.1 installs pinned npm distributions. Other transports remain visible. */
 	installable: boolean,
 	package: string | null,
+};
+
+export type RunApprovalRequest = {
+	id: string,
+	action: string,
+	lead: SessionKey,
+	agentName: string,
+	name: string,
+	executable: string,
+	args: string[],
+	cwd: string,
+	envKeys: string[],
+	envReferences: { [key in string]: string },
+	envChanges: { [key in string]: string | null },
+	configRevision: string,
+	expiresAt: number,
+	executionResolved: boolean,
+};
+
+export type RunApprovalsChanged = {
+	pending: RunApprovalRequest[],
+};
+
+export type RunCatalog = RunCatalog_Serialize | RunCatalog_Deserialize;
+
+export type RunCatalog_Deserialize = {
+	workspaceRoot: string,
+	configurations: RunConfiguration_Deserialize[],
+	detected: DetectedRunTask_Deserialize[],
+};
+
+export type RunCatalog_Serialize = {
+	workspaceRoot: string,
+	configurations: RunConfiguration_Serialize[],
+	detected: DetectedRunTask_Serialize[],
+};
+
+export type RunConfiguration = RunConfiguration_Serialize | RunConfiguration_Deserialize;
+
+export type RunConfiguration_Deserialize = {
+	id: string,
+	name: string,
+	executable: string,
+	args?: string[],
+	cwd?: string,
+	/**  Only user supplied overrides. Prefer ${env:NAME} to saving literal credentials. */
+	env?: { [key in string]: string },
+};
+
+export type RunConfiguration_Serialize = {
+	id: string,
+	name: string,
+	executable: string,
+	args: string[],
+	cwd: string,
+	/**  Only user supplied overrides. Prefer ${env:NAME} to saving literal credentials. */
+	env: { [key in string]: string },
+};
+
+export type RunContext = RunContext_Serialize | RunContext_Deserialize;
+
+export type RunContext_Deserialize = {
+	workspaceRoot: string,
+	workspaceEpoch: number,
+	runs: RunInfo_Deserialize[],
+};
+
+export type RunContext_Serialize = {
+	workspaceRoot: string,
+	workspaceEpoch: number,
+	runs: RunInfo_Serialize[],
+};
+
+export type RunEvent = RunEvent_Serialize | RunEvent_Deserialize;
+
+export type RunEvent_Deserialize = { kind: "output"; id: string; sequence: number; workspaceEpoch: number; stream: RunStream; text: string } | { kind: "state"; run: RunInfo_Deserialize };
+
+export type RunEvent_Serialize = { kind: "output"; id: string; sequence: number; workspaceEpoch: number; stream: RunStream; text: string } | { kind: "state"; run: RunInfo_Serialize };
+
+export type RunInfo = RunInfo_Serialize | RunInfo_Deserialize;
+
+export type RunInfo_Deserialize = {
+	id: string,
+	configurationId: string,
+	workspaceEpoch: number,
+	name: string,
+	status: RunStatus,
+	exitCode?: number | null,
+	error?: string | null,
+};
+
+export type RunInfo_Serialize = {
+	id: string,
+	configurationId: string,
+	workspaceEpoch: number,
+	name: string,
+	status: RunStatus,
+	exitCode: number | null,
+	error: string | null,
+};
+
+export type RunOutput = {
+	id: string,
+	text: string,
+	truncated: boolean,
+};
+
+export type RunStatus = "running" | "stopping" | "stopped" | "exited" | "failed";
+
+export type RunStream = "stdout" | "stderr";
+
+/**  `agents.runTools.*`: workspace run configuration tools offered to agents. */
+export type RunToolsSettings = RunToolsSettings_Serialize | RunToolsSettings_Deserialize;
+
+/**  `agents.runTools.*`: workspace run configuration tools offered to agents. */
+export type RunToolsSettings_Deserialize = {
+	/**  Offer run configuration tools to new lead sessions. Off by default. */
+	enabled?: boolean,
+};
+
+/**  `agents.runTools.*`: workspace run configuration tools offered to agents. */
+export type RunToolsSettings_Serialize = {
+	/**  Offer run configuration tools to new lead sessions. Off by default. */
+	enabled: boolean,
 };
 
 export type SavedAttachment = {
@@ -1098,6 +1261,36 @@ export type SyntaxSnapshot = {
 	indentGuides: IndentGuide[],
 	/**  True when output limits or the query time budget were reached. */
 	truncated: boolean,
+};
+
+export type TerminalEvent = TerminalEvent_Serialize | TerminalEvent_Deserialize;
+
+export type TerminalEvent_Deserialize = { kind: "output"; id: string; data: number[]; sequence: number } | { kind: "exit"; id: string; code?: number | null } | { kind: "error"; id: string; message: string };
+
+export type TerminalEvent_Serialize = { kind: "output"; id: string; data: number[]; sequence: number } | { kind: "exit"; id: string; code: number | null } | { kind: "error"; id: string; message: string };
+
+export type TerminalInfo = TerminalInfo_Serialize | TerminalInfo_Deserialize;
+
+export type TerminalInfo_Deserialize = {
+	id: string,
+	cwd: string,
+	shell: string,
+	cols: number,
+	rows: number,
+	processId?: number | null,
+	exitCode?: number | null,
+	exited: boolean,
+};
+
+export type TerminalInfo_Serialize = {
+	id: string,
+	cwd: string,
+	shell: string,
+	cols: number,
+	rows: number,
+	processId: number | null,
+	exitCode: number | null,
+	exited: boolean,
 };
 
 /**  Offsets are UTF-16 code units in the pre-transaction document, as in CodeMirror. */

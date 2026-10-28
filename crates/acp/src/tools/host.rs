@@ -1,10 +1,11 @@
 //! The span-agents servers of the user's lead sessions, one per session.
 //!
 //! The desktop asks this host to open or restore a lead session. When
-//! delegation applies, a server is started first, its entry is offered in
-//! that one `session/new` or `session/load` only, and the server is bound to
-//! the session once the agent returns its id. The server stops when the
-//! session leaves the manager (close, delete, disconnect, process exit).
+//! delegation or run tools are enabled, a server is started first, its entry
+//! is offered in that one `session/new` or `session/load` only, and the server
+//! is bound to the session once the agent returns its id. The server stops
+//! when the session leaves the manager (close, delete, disconnect, process
+//! exit).
 use super::{transport_for, DecisionRecord, DelegationEvent, DelegationStatus, DelegationTask};
 use super::{ToolServer, ToolServerConfig};
 use crate::{SessionKey, SessionManager, SessionOrigin};
@@ -46,8 +47,8 @@ impl LeadServers {
         transport_for(&features).map(|_| ())
     }
 
-    /// Start a server when delegation is requested and the agent supports
-    /// it. `Ok(None)` means no server; the second value says why.
+    /// Start a server when any tool capability is requested and the agent
+    /// supports it. `Ok(None)` means no server; the second value says why.
     async fn prepare(
         manager: &SessionManager,
         connection_id: &str,
@@ -65,7 +66,7 @@ impl LeadServers {
     }
 
     /// Open a user session on `connection_id`. With `config`, the session
-    /// gets the delegation tools when its agent advertises MCP over HTTP;
+    /// gets the enabled Span tools when its agent advertises MCP over HTTP;
     /// otherwise it is opened without them and the reason is returned (and
     /// emitted as [`DelegationEvent::Unavailable`]). Other sessions on the
     /// connection, including delegated children, never get the entry.
