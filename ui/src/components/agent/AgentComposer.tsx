@@ -11,7 +11,7 @@ import { isSlashQuery, leaf, permissionDetails, slashGroups, type SpanCommand } 
 import { api, isDesktop } from "../../lib/client";
 import { URL_COPY, parseUrlRequest, withBrowserWait, type UrlRequestView } from "../../lib/agent-url-request";
 import { ContextBanner } from "./Banners";
-import { ComposerHints } from "./ComposerHints";
+import { AgentStatusBar } from "./AgentStatusBar";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
 import { RunningStep } from "./RunningStep";
 import { RUN_TEXT } from "../../lib/agent-hint-text";
@@ -509,12 +509,17 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         </div>
         <AttachmentNotices intake={a.intake} />
       </div>
-      <div class={a.running() ? "agent-composer-hint running" : "agent-composer-hint"}>
-        <span class="sb-ellipsis">{isDesktop ? (a.connected() ? a.state().statusMessage : "Connect an ACP agent to begin") : "Browser preview · agent unavailable"}</span>
-      </div>
-      <Show when={a.connected()}>
-        <ComposerHints mode={hintMode()} hints={hints()} />
-      </Show>
+      <AgentStatusBar
+        text={isDesktop ? (a.connected() ? a.state().statusMessage : "Connect an ACP agent to begin") : "Browser preview · agent unavailable"}
+        running={a.running()}
+        input={{
+          connecting: Boolean(a.connecting()),
+          toolActive: Boolean(a.runningStep()),
+          needsYou: dockOpen(),
+          failed: a.state().status === "error",
+        }}
+        hints={{ mode: hintMode(), hints: a.connected() ? hints() : {} }}
+      />
     </footer>
   );
 }

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const agent = readFileSync(resolve("src/styles/agent.css"), "utf8");
 const sidebar = readFileSync(resolve("src/styles/agent-sidebar.css"), "utf8");
 
 function rule(css: string, selector: string): string {
@@ -22,9 +21,20 @@ describe("hints row under the composer", () => {
     expect(rule(sidebar, ".agent-footer .sb-hint-key")).toMatch(/height:\s*18px/);
   });
 
-  it("starts the status line with a state dot that turns accent while a turn runs", () => {
-    expect(rule(agent, ".agent-composer-hint::before")).toMatch(/border-radius:\s*50%/);
-    expect(rule(agent, ".agent-composer-hint.running::before")).toContain("var(--sb-accent)");
-    expect(rule(agent, ".agent-composer-hint")).toContain("font-size: 11px");
+  it("puts the mark, the status and the shortcuts on one line that never wraps", () => {
+    const mark = readFileSync(resolve("src/styles/agent-mark.css"), "utf8");
+    const row = rule(mark, ".agent-footer .agent-statusbar");
+    expect(row).toContain("display: flex");
+    expect(row).toContain("white-space: nowrap");
+    expect(row).toContain("font-size: 11px");
+    expect(rule(mark, ".agent-footer .agent-statusbar .sb-hints")).toContain("flex-wrap: nowrap");
+  });
+
+  it("uses the pack's motion for each state and honours reduced motion", () => {
+    const mark = readFileSync(resolve("src/styles/agent-mark.css"), "utf8");
+    expect(mark).toMatch(/thinking"\] > img \{ animation: agent-mark-breathe 1\.8s/);
+    expect(mark).toMatch(/running"\] > img \{ animation: agent-mark-orbit 2\.2s/);
+    expect(mark).toMatch(/needs"\] > img \{ animation: agent-mark-nudge 2s/);
+    expect(mark).toContain("prefers-reduced-motion: no-preference");
   });
 });

@@ -613,27 +613,6 @@
   background: var(--sb-accent-surface);
   color: var(--sb-accent-fg);
 }
-/* Status line under the prompt box: a state dot, then the text, then the key hints on the next line. */
-.agent-composer-hint {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 8px 4px 0;
-  color: var(--sb-dim);
-  font-size: 11px;
-}
-.agent-composer-hint::before {
-  content: "";
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--sb-success);
-}
-.agent-composer-hint.running::before {
-  background: var(--sb-accent);
-}
 .agent-panel .sb-ring {
   flex: none;
 }
@@ -661,9 +640,6 @@
   }
   .agent-mode-button {
     max-width: 120px;
-  }
-  .agent-composer-hint > :last-child {
-    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
