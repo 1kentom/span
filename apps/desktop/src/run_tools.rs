@@ -16,6 +16,10 @@ use tauri::AppHandle;
 use tauri_specta::Event;
 use tokio::time::Instant;
 
+// MCP run output is an optional UI observation. Keep the event fan-out finite
+// even when a renderer is not listening, and keep execution independent of it.
+const MAX_AGENT_OUTPUT_EVENT_BYTES: usize = 256 * 1024;
+
 #[derive(Clone)]
 pub(crate) struct DesktopRunTools {
     state: DesktopState,
@@ -42,12 +46,66 @@ impl DesktopRunTools {
         approvals: ApprovalSink,
         run_events: runs::RunSink,
     ) -> Self {
+        let run_events = Self::bounded_run_sink(state.runs.clone(), run_events);
         Self {
             state,
             workspace,
             approvals,
             run_events,
         }
+    }
+
+    fn bounded_run_sink(service: runs::RunService, observer: runs::RunSink) -> runs::RunSink {
+        let output_bytes = Arc::new(Mutex::new(std::collections::HashMap::<String, usize>::new()));
+        Arc::new(move |event| {
+            let output = match &event {
+                runs::RunEvent::Output {
+                    id, sequence, text, ..
+                } => {
+                    let emit = output_bytes
+                        .lock()
+                        .ok()
+                        .map(|mut sent| {
+                            let current = sent.entry(id.clone()).or_default();
+                            let emit =
+                                current.saturating_add(text.len()) <= MAX_AGENT_OUTPUT_EVENT_BYTES;
+                            if emit {
+                                *current = current.saturating_add(text.len());
+                            }
+                            emit
+                        })
+                        .unwrap_or(false);
+                    Some((id.clone(), *sequence, emit))
+                }
+                runs::RunEvent::State { run } => {
+                    if matches!(
+                        run.status,
+                        runs::RunStatus::Exited
+                            | runs::RunStatus::Stopped
+                            | runs::RunStatus::Failed
+                    ) {
+                        if let Ok(mut sent) = output_bytes.lock() {
+                            sent.remove(&run.id);
+                        }
+                    }
+                    None
+                }
+            };
+
+            // Agent processes write to bounded RunService history first. A
+            // global event is only a best-effort live view, so renderer
+            // absence, slow ACKs, or a closed event channel must not kill the
+            // approved process. Bound serialized output sent to that view;
+            // the final state lets the UI refresh the authoritative snapshot.
+            if output.as_ref().map_or(true, |(_, _, emit)| *emit) {
+                let _ = observer(event);
+            }
+            if let Some((id, sequence, _)) = output {
+                service.acknowledge(&id, sequence).is_ok()
+            } else {
+                true
+            }
+        })
     }
 
     fn ensure_live(&self, lead: &SessionKey) -> Result<(), String> {
@@ -498,6 +556,38 @@ mod tests {
         net::TcpStream,
     };
 
+    #[test]
+    fn optional_agent_output_fanout_is_bounded() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let observer: runs::RunSink = Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+            true
+        });
+        let sink = DesktopRunTools::bounded_run_sink(runs::RunService::default(), observer);
+
+        for sequence in 1..=40 {
+            let _ = sink(RunEvent::Output {
+                id: "flood-run".into(),
+                sequence,
+                workspace_epoch: 1,
+                stream: runs::RunStream::Stdout,
+                text: "x".repeat(8 * 1024),
+            });
+        }
+
+        let events = events.lock().unwrap();
+        let forwarded_bytes = events
+            .iter()
+            .map(|event| match event {
+                RunEvent::Output { text, .. } => text.len(),
+                RunEvent::State { .. } => 0,
+            })
+            .sum::<usize>();
+        assert_eq!(forwarded_bytes, MAX_AGENT_OUTPUT_EVENT_BYTES);
+        assert_eq!(events.len(), 32);
+    }
+
     async fn exercise_mcp_run_call(disable_before_approval: bool) {
         let temp = tempfile::tempdir().unwrap();
         let user_settings_path = temp.path().join("user-settings.json");
@@ -517,8 +607,7 @@ mod tests {
             executable: "node".into(),
             args: vec![
                 "-e".into(),
-                "require('node:fs').writeFileSync('run-tool-marker.txt', 'approved-through-mcp')"
-                    .into(),
+                "require('node:fs').writeFileSync('run-tool-marker.txt', 'approved-through-mcp'); process.stdout.write('stdout-through-mcp\\n'); process.stderr.write('stderr-through-mcp\\n')".into(),
             ],
             cwd: ".".into(),
             env: Default::default(),
@@ -554,13 +643,9 @@ mod tests {
             }
             true
         });
-        let run_state = state.clone();
-        let run_events: runs::RunSink = Arc::new(move |event| match event {
-            RunEvent::Output { id, sequence, .. } => {
-                run_state.runs.acknowledge(&id, sequence).is_ok()
-            }
-            RunEvent::State { .. } => true,
-        });
+        // Model a global event emitter with no frontend listener. Its success
+        // means dispatch was accepted, not that a WebView will ACK the output.
+        let run_events: runs::RunSink = Arc::new(|_| true);
         let backend: Arc<dyn RunToolBackend> = Arc::new(DesktopRunTools::with_sinks(
             state.clone(),
             workspace.clone(),
@@ -714,6 +799,29 @@ mod tests {
                 fs::read_to_string(temp.path().join("run-tool-marker.txt")).unwrap(),
                 "approved-through-mcp"
             );
+            let run_id = reply["result"]["structuredContent"]["id"]
+                .as_str()
+                .expect("run_start returns the shared run ID")
+                .to_owned();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if state
+                        .runs
+                        .list()
+                        .unwrap()
+                        .iter()
+                        .any(|run| run.id == run_id && run.status == runs::RunStatus::Exited)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the process exits without a renderer ACK");
+            let output = state.runs.output(&run_id).unwrap();
+            assert!(output.text.contains("stdout-through-mcp"));
+            assert!(output.text.contains("stderr-through-mcp"));
         }
         let approvals = approval_requests.lock().unwrap();
         assert!(approvals

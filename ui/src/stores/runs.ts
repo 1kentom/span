@@ -65,7 +65,14 @@ export function createRunWorkbench(options: { generation: () => number; root: ()
       if (external && contextEpoch() === undefined) { if (earlyGlobal.length < 64) earlyGlobal.push(event); else if (event.kind === "output") acknowledge(event, token); return; }
       if (contextEpoch() !== eventEpoch) { if (event.kind === "output") acknowledge(event, -1); return; }
       if (event.kind === "output") { append(event.id, { stream: event.stream, text: event.text }); acknowledge(event, token); }
-      else { if (retired.has(event.run.id)) return; const first = !runs().some(run => run.id === event.run.id); updateRun({ ...event.run, exitCode: event.run.exitCode ?? null, error: event.run.error ?? null }); if (external && first) { setSelectedRunId(event.run.id); options.onReveal(); } }
+      else {
+        if (retired.has(event.run.id)) return;
+        const first = !runs().some(run => run.id === event.run.id);
+        const run = { ...event.run, exitCode: event.run.exitCode ?? null, error: event.run.error ?? null };
+        updateRun(run);
+        if (external && first) { setSelectedRunId(event.run.id); options.onReveal(); }
+        if (external && !active(run)) void refreshOutput(event.run.id, token);
+      }
     };
   }
   async function reload() {
@@ -114,6 +121,12 @@ export function createRunWorkbench(options: { generation: () => number; root: ()
     if (outputs()[id]) return;
     try { const result = await transport.runOutput(id); if (live(token) && !outputs()[id]) setOutputs(previous => ({ ...previous, [id]: { chunks: [{ stream: "history", text: result.text }], trimmed: result.truncated } })); }
     catch (cause) { report(cause, token); }
+  }
+  async function refreshOutput(id: string, token: number) {
+    try {
+      const result = await transport.runOutput(id);
+      if (live(token) && !retired.has(id) && runs().some(run => run.id === id)) setOutputs(previous => ({ ...previous, [id]: { chunks: [{ stream: "history", text: result.text }], trimmed: result.truncated } }));
+    } catch (cause) { report(cause, token); }
   }
   createEffect(on(() => [options.generation(), options.root()] as const, () => {
     const token = ++epoch; loadRequest++; setCatalog(emptyCatalog()); setRuns([]); setContextEpoch(undefined); setContextLoading(false); earlyGlobal = []; retired.clear(); setOutputs({}); setSelectedId(undefined); setSelectedRunId(undefined); setOperation(undefined); setLoading(false); setError(""); retryContext = async () => {};

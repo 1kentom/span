@@ -85,6 +85,20 @@ describe("run workbench", () => {
     view.globalEvent({ kind: "output", workspaceEpoch: 7, id: "stale-agent", sequence: 2, stream: "stderr", text: "old queued bus event" }); await settle();
     expect(view.store.runs()).toEqual([]); expect(view.store.outputs()["stale-agent"]).toBeUndefined(); expect(view.transport.acknowledgeRun).toHaveBeenCalledWith("stale-agent", 2);
   });
+  it("refreshes authoritative buffered output when an agent run exits after selection moves", async () => {
+    const view = setup(); await settle();
+    view.transport.runOutput.mockResolvedValueOnce({ id: "agent-run", text: "complete buffered stdout and stderr", truncated: false });
+    view.globalEvent({ kind: "state", run: info("agent-run") });
+    view.globalEvent({ kind: "state", run: info("other-run") });
+    expect(view.store.selectedRunId()).toBe("other-run");
+    view.globalEvent({ kind: "output", workspaceEpoch: 7, id: "agent-run", sequence: 1, stream: "stdout", text: "partial live output" });
+    view.globalEvent({ kind: "state", run: info("agent-run", "exited") });
+    await settle();
+    expect(view.transport.runOutput).toHaveBeenCalledWith("agent-run");
+    expect(view.store.outputs()["agent-run"].chunks).toEqual([{ stream: "history", text: "complete buffered stdout and stderr" }]);
+    await view.store.selectRun("agent-run");
+    expect(view.store.outputs()["agent-run"].chunks[0].text).toContain("complete buffered");
+  });
 
   it("caps forty completed runs and their output while preserving active sessions", async () => {
     const view = setup(); await settle(); view.globalEvent({ kind: "state", run: info("active") });
