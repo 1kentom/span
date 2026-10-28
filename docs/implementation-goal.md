@@ -14,17 +14,9 @@ This checklist expands the approved goal for the Phase 0.1 foundation. It guides
 
 ## Research and acceptance matrix
 
-Complete a feature-specific matrix before implementation. A broad product comparison does not substitute for checking the actual behavior relevant to the change.
+Use the [dated primary-source behavior matrix](editor-behavior-research.md) as the current research baseline. Its ten rows cover windows/tabs/splits, dirty close, file operations, settings, keybindings, autosave, zoom/panels, modal/menu access, ACP, and CLI ownership. It records source URLs, historical Fleet limits, Span's selected behavior, existing tests, and unverified acceptance boundaries.
 
-| Feature | VS Code primary source and observed behavior | Fleet primary source and observed behavior | Zed primary source and observed behavior | Span behavior and acceptance evidence |
-| --- | --- | --- | --- | --- |
-| Window, tabs, split panes, close and drag | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | State the supported workflow and test it against the supplied reference |
-| File operations, context menus and dirty state | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Include keyboard, pointer, cancellation, and unsaved-change outcomes |
-| Settings, keybindings, scopes and autosave | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Document supported settings and prove persistence and conflict behavior |
-| Zoom, panels, modal interactions and accessibility | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Verify keyboard access, focus handling, labels, and layout at supported zoom levels |
-| Agent Client Protocol providers and CLI lifecycle | Record exact source and behavior where applicable | Record exact source and behavior where applicable | Record exact source and behavior | Distinguish ACP protocol support from product-specific provider guarantees; test start, error, interrupt, quit, and recovery |
-
-For every row, include URLs and the date checked. Record unsupported or ambiguous behavior rather than filling gaps with assumptions. Convert the selected Span behavior into acceptance criteria before coding.
+Refresh the feature-specific row before further implementation. This audit documents existing code and does not establish that research preceded earlier changes. Familiar controls do not establish product parity, native performance, or provider interoperability. Keep the issue-specific verification status below separate from the research observations.
 
 ## Implementation and review sequence
 
