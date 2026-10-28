@@ -1,14 +1,26 @@
 //! The editor's authoritative text and workspace services.
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
 mod buffer;
+mod format;
+mod images;
 mod proposal_diff;
+mod recent;
 mod search;
+mod session;
 mod settings;
+mod tools;
 mod workspace;
 
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
+pub use format::{
+    native_program_path, resolve_program, run_formatter, FormatRequest, FormatResult,
+};
+pub use images::RasterImage;
+pub use recent::{RecentProject, RecentProjectStore};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
+pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use settings::{Settings, Theme};
+pub use tools::{list_tools, ToolInfo};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
 
 use std::path::Path;
@@ -35,6 +47,8 @@ pub enum CoreError {
     UnknownProposal(String),
     #[error("Settings: {0}")]
     Settings(String),
+    #[error("Formatter: {0}")]
+    Formatter(String),
     #[error("Search: {0}")]
     Search(String),
 }

@@ -29,3 +29,17 @@ Dependencies: similar 3.2.0 (Apache-2.0, verified MSRV 1.85) provides Myers line
 - `cargo run --release -p span-core --example rope_bench`
 
 The benchmark creates a 100 MiB ASCII file, excludes fixture generation, times the core disk read plus rope construction plus initial IPC snapshot, then times a middle insertion through the metadata acknowledgement API. Its file is in the OS cache. It does not measure Tauri serialization, frontend parsing, editable paint, startup, scrolling, memory, or the complete desktop performance gates.
+
+## Preferences, formatting and reopen state
+
+Settings additionally support UI and editor font families, UI size, panel drag collapse, Markdown's default preview mode, format on save, command shortcut overrides and per-language formatter argv. Shortcut overrides inherit the shared defaults when absent, and an empty array disables a command. Validation rejects unknown commands, unsupported key syntax, reserved editing/quit shortcuts and conflicts with effective defaults on the current platform. The raw workspace JSONC is available through `get_settings_jsonc`.
+
+Formatting is a three-step transaction: take `take_format_request` under the workspace mutex, release it while awaiting `run_formatter`, then reacquire it for `apply_format_result`. The final step checks the original revision, so typing during a formatter cannot be overwritten. Desktop save orchestration can run that pipeline when `formatOnSave` is enabled and save only after success. Errors preserve editor contents and leave saving to the caller.
+
+Built-in JSON formatting preserves key order and arbitrary precision numbers, and rejects duplicate keys to prevent data loss. Other languages invoke real rustfmt, Ruff or workspace/global Prettier when installed. A configured executable argv receives the document on stdin, supports `{path}` in arguments, and never passes through an implicit shell. Relative configured executable paths resolve from the workspace. Process execution and all pipe I/O share one ten-second deadline, with bounded input/output. Documents above 16 MiB require a different formatter workflow rather than blocking the editor. Missing tools return actionable errors.
+
+`resolve_program` and `native_program_path` include common Homebrew, Cargo and local binary locations as well as the inherited PATH. Native GUI launch does not require reading or executing a login shell. Tokio supports the asynchronous process lifecycle. serde_json's `preserve_order` and `arbitrary_precision` features prevent the JSON formatter from rewriting key order or losing numeric precision.
+
+`SessionStore` writes a separate user-profile JSON file at `~/.config/span/session.json`. It records workspace root, file groups, active selection, panel layout and per-file Markdown source/preview/both modes. Restore canonicalizes files inside the workspace, skips missing or escaping files, and ignores a missing workspace. Session storage never writes editor buffers or claims to recover unsaved drafts. It is an explicit JSON foundation store, not the later SQLite history system.
+
+`read_image` exposes at most 8 MiB of a rooted local PNG, JPEG, GIF or WebP after checking its byte signature. It does not fetch remote URLs or serve SVG/script content.

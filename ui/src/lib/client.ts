@@ -1,7 +1,9 @@
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
-import { commands } from '../bindings';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, InstalledAgent, RegistryAgent, SearchMatch, Settings_Serialize as Settings, SyntaxSnapshot, TextEdit, Workspace } from '../bindings';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { commands, events } from '../bindings';
+import { previewAssetFiles, previewAssetImage } from './preview-assets';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, Settings_Serialize as Settings, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -12,6 +14,8 @@ function nativeRequired(action: string): never {
 
 // This fixture exists only in browser preview. Native commands always use Rust workspace state.
 const fixture: Record<string, string> = {
+  ...previewAssetFiles,
+  '.env.local': 'SPAN_ENV=preview\nPORT=1420\nSPAN_SAMPLE_ONLY=true\n',
   'community/platform/node-rpc-client/src/rpc-node.ts': `import { JsonRpc } from './rpc';
 import { SocketTransport } from './socket-transport';
 import type { ConnectionOptions } from './types';
@@ -86,7 +90,8 @@ export function Editor(props: EditorProps) {
 };
 
 const buffers = new Map<string, BufferSnapshot>();
-let previewSettings: Settings = { theme: 'Dark', fontSize: 13, tabSize: 2, wordWrap: false };
+let previewSettings: Settings = { theme: 'Dark', fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: 'Inter', editorFontFamily: 'JetBrains Mono', collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, keybindings: {}, formatters: {} };
+let previewSession: SessionState | null = null;
 const previewWorkspace: Workspace = { name: 'intellij', root: '/preview/intellij' };
 const agentListeners = new Set<(event: AgentEvent) => void>();
 let agentGeneration = 0;
@@ -209,6 +214,98 @@ export const api = {
   },
   async getSettings(): Promise<Settings> {
     return isDesktop ? commands.getSettings() : { ...previewSettings };
+  },
+  async getSettingsJsonc(): Promise<string> {
+    return isDesktop ? commands.getSettingsJsonc() : JSON.stringify(previewSettings, null, 2);
+  },
+  async getSession(): Promise<SessionState | null> {
+    return isDesktop ? commands.getSession() : previewSession;
+  },
+  async saveSession(session: SessionState): Promise<void> {
+    if (isDesktop) await commands.saveSession(session);
+    else previewSession = structuredClone(session);
+  },
+  async formatBuffer(path: string, expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Running document formatters');
+    return commands.formatBuffer(path, expectedRevision);
+  },
+  async openExternal(url: string): Promise<void> {
+    if (isDesktop) { await commands.openExternal(url); return; }
+    const parsed = new URL(url);
+    if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) throw new Error('Only http, https and mailto links can open externally.');
+    window.open(parsed.href, '_blank', 'noopener,noreferrer');
+  },
+  async readImage(path: string): Promise<ImageSource> {
+    if (!isDesktop) { const image = previewAssetImage(path); if (image) return image; nativeRequired('Loading workspace images'); }
+    return commands.readImage(path);
+  },
+  async listTools(): Promise<ToolInfo[]> {
+    if (!isDesktop) nativeRequired('Detecting installed tools');
+    return commands.listTools();
+  },
+  async recentProjects(): Promise<RecentProject[]> {
+    return isDesktop ? commands.recentProjects() : [];
+  },
+  async removeRecentProject(root: string): Promise<RecentProject[]> {
+    return isDesktop ? commands.removeRecentProject(root) : [];
+  },
+  async clearRecentProjects(): Promise<void> {
+    if (isDesktop) await commands.clearRecentProjects();
+  },
+  async readClipboard(): Promise<string> {
+    if (isDesktop) return commands.readClipboard();
+    if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
+    return navigator.clipboard.readText();
+  },
+  async writeClipboard(text: string): Promise<void> {
+    if (isDesktop) { await commands.writeClipboard(text); return; }
+    if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
+    await navigator.clipboard.writeText(text);
+  },
+  async nativeWindowState(): Promise<NativeWindowState> {
+    return isDesktop ? commands.nativeWindowState() : { fullscreen: false, maximized: false, hasNativeTrafficLights: false };
+  },
+  async isFullscreen(): Promise<boolean> {
+    return (await api.nativeWindowState()).fullscreen;
+  },
+  async onWindowState(listener: (state: NativeWindowState) => void): Promise<() => void> {
+    if (!isDesktop) return () => undefined;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const update = () => { void commands.nativeWindowState().then(state => { if (active) listener(state); }).catch(() => undefined); };
+    const unlisten = await getCurrentWindow().onResized(() => { if (timer) clearTimeout(timer); timer = setTimeout(update, 50); });
+    update();
+    return () => { active = false; if (timer) clearTimeout(timer); unlisten(); };
+  },
+  async takeStartupRequests(): Promise<StartupRequest[]> {
+    return isDesktop ? commands.takeStartupRequests() : [];
+  },
+  async onOpenWorkspaceRequested(listener: (request: StartupRequest) => void | Promise<void>): Promise<() => void> {
+    if (!isDesktop) return () => undefined;
+    let active = true;
+    let draining = false;
+    let pending = false;
+    const drain = async () => {
+      pending = true;
+      if (draining) return;
+      draining = true;
+      try {
+        while (active && pending) {
+          pending = false;
+          const requests = await commands.takeStartupRequests();
+          for (const request of requests) { if (active) await listener(request); }
+        }
+      } finally { draining = false; }
+    };
+    const unlisten = await events.startupRequestsChanged.listen(() => { void drain().catch(error => console.error('Could not handle an open request:', error)); });
+    await drain();
+    return () => { active = false; unlisten(); };
+  },
+  async syncNativeMenu(bindings: Record<string, string[]>): Promise<string[]> {
+    return isDesktop ? commands.syncNativeMenu(bindings) : [];
+  },
+  async onNativeAction(listener: (action: NativeAction) => void): Promise<() => void> {
+    return isDesktop ? events.nativeActionEvent.listen(event => listener(event.payload.action)) : () => undefined;
   },
   async updateSettings(settings: Settings): Promise<Settings> {
     if (isDesktop) return commands.updateSettings(settings);

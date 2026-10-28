@@ -115,9 +115,16 @@ pub async fn install_registry_agent(
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|e| format!("Create agent cache: {e}"))?;
+    let npm = crate::launch::prepare_command(AgentCommand {
+        command: if cfg!(windows) { "npm.cmd" } else { "npm" }.into(),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+    })
+    .map_err(|error| format!("Install agent, ensure Node.js and npm are installed: {error}"))?;
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(180),
-        tokio::process::Command::new(if cfg!(windows) { "npm.cmd" } else { "npm" })
+        tokio::process::Command::new(npm.command)
+            .envs(npm.env)
             .args([
                 "install",
                 "--ignore-scripts",
@@ -236,14 +243,8 @@ fn launch_bin(
             .is_some_and(|line| line.contains("node")));
     let command = if node_script {
         args.insert(0, executable.to_string_lossy().into_owned());
-        let name = if cfg!(windows) { "node.exe" } else { "node" };
-        std::env::var_os("PATH")
-            .and_then(|path| {
-                std::env::split_paths(&path)
-                    .map(|directory| directory.join(name))
-                    .find(|path| path.is_file())
-            })
-            .ok_or("Node.js executable was not found in PATH")?
+        span_core::resolve_program("node")
+            .ok_or("Node.js executable was not found in PATH or common installation directories")?
             .to_string_lossy()
             .into_owned()
     } else {

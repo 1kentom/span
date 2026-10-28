@@ -10,11 +10,11 @@ async function ready(page: import("@playwright/test").Page) {
 test("quick open switches files while retaining existing tabs", async ({ page }) => {
   await ready(page);
   await page.getByRole("button", { name: "Open quick open", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Quick open", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Goto", exact: true });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("combobox", { name: "Find a file" }).fill("README.md");
   await dialog.getByRole("option", { name: /README\.md/ }).click();
-  await expect(page.getByRole("textbox", { name: "Edit README.md", exact: true })).toContainText("browser preview workspace");
+  await expect(page.getByRole("region", { name: "Markdown preview", exact: true })).toContainText("browser preview workspace");
   await expect(page.getByRole("tab", { name: /rpc-node\.ts/ })).toBeVisible();
   await page.getByRole("tab", { name: /rpc-node\.ts/ }).click();
   await expect(page.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true })).toContainText("SocketTransport");
@@ -106,9 +106,9 @@ test("split views share live buffer edits", async ({ page }) => {
 test("theme choices apply through the accessible settings menu", async ({ page }) => {
   await ready(page);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Color theme", exact: true }).click();
-  await page.getByRole("menuitemradio", { name: "Light", exact: true }).click();
-  await expect(page.locator(".span-editor").first()).toHaveAttribute("data-theme", "light");
+  await expect(page.getByRole("tab", { name: "Settings", exact: true })).toBeVisible();
+  await page.getByRole("radio", { name: "Light theme", exact: true }).click();
+  await expect(page.locator("main.ide")).toHaveClass(/theme-light/);
 });
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 2048, height: 1222 }]) {

@@ -1,0 +1,535 @@
+{
+  "retrieved": "2026-10-28",
+  "api": "https://api.svgl.app",
+  "documentation": "https://svgl.app/docs/api",
+  "repository": "https://github.com/pheralb/svgl",
+  "license": "Repository MIT, logos remain subject to their respective owners trademark and brand terms.",
+  "assets": [
+    {
+      "key": "deno",
+      "registry": {
+        "id": 74,
+        "title": "Deno",
+        "category": "Library",
+        "route": {
+          "light": "https://svgl.app/library/deno.svg",
+          "dark": "https://svgl.app/library/deno_dark.svg"
+        },
+        "wordmark": {
+          "light": "https://svgl.app/library/deno_wordmark.svg",
+          "dark": "https://svgl.app/library/deno_wordmark_dark.svg"
+        },
+        "brandUrl": "https://deno.com/brand",
+        "url": "https://deno.com/"
+      },
+      "files": {
+        "light": {
+          "file": "deno-light.svg",
+          "source": "https://svgl.app/library/deno.svg",
+          "sha256": "dca1ffa501e450f933071877f245af6fcb28caee7fab0d3108a45288f0d51586"
+        },
+        "dark": {
+          "file": "deno-dark.svg",
+          "source": "https://svgl.app/library/deno_dark.svg",
+          "sha256": "df1ad2289e1168ebab2c639a9a9f10d0141d1a3abb48260afb0f1dfe21c9c667"
+        }
+      }
+    },
+    {
+      "key": "npm",
+      "registry": {
+        "id": 76,
+        "title": "NPM",
+        "category": "Software",
+        "url": "https://www.npmjs.com/",
+        "route": "https://svgl.app/library/npm.svg",
+        "wordmark": "https://svgl.app/library/npm-wordmark.svg"
+      },
+      "files": {
+        "light": {
+          "file": "npm.svg",
+          "source": "https://svgl.app/library/npm.svg",
+          "sha256": "8fe7a9b3c30d7c44a4b7a431d6f943e30e374d8bde032d83377f2ab4e6a34544"
+        },
+        "dark": {
+          "file": "npm.svg",
+          "source": "https://svgl.app/library/npm.svg",
+          "sha256": "8fe7a9b3c30d7c44a4b7a431d6f943e30e374d8bde032d83377f2ab4e6a34544"
+        }
+      }
+    },
+    {
+      "key": "bun",
+      "registry": {
+        "id": 117,
+        "title": "Bun",
+        "category": "Library",
+        "route": "https://svgl.app/library/bun.svg",
+        "url": "https://bun.sh",
+        "brandUrl": "https://bun.sh/press-kit"
+      },
+      "files": {
+        "light": {
+          "file": "bun.svg",
+          "source": "https://svgl.app/library/bun.svg",
+          "sha256": "8d28d9adf8bcda380ac9fdd1418453d451ec61942ed6661f5360846ac36f521a"
+        },
+        "dark": {
+          "file": "bun.svg",
+          "source": "https://svgl.app/library/bun.svg",
+          "sha256": "8d28d9adf8bcda380ac9fdd1418453d451ec61942ed6661f5360846ac36f521a"
+        }
+      }
+    },
+    {
+      "key": "copilot",
+      "registry": {
+        "id": 126,
+        "title": "GitHub Copilot",
+        "category": "Software",
+        "route": {
+          "light": "https://svgl.app/library/copilot.svg",
+          "dark": "https://svgl.app/library/copilot_dark.svg"
+        },
+        "url": "https://github.com/features/copilot"
+      },
+      "files": {
+        "light": {
+          "file": "copilot-light.svg",
+          "source": "https://svgl.app/library/copilot.svg",
+          "sha256": "f9a0867d6e367502b33b093b638b066092b0f1b8814cd1450c745360aa92f1ba"
+        },
+        "dark": {
+          "file": "copilot-dark.svg",
+          "source": "https://svgl.app/library/copilot_dark.svg",
+          "sha256": "38b9324574b647fcda85d87642a0bf3c7804dcf4b7ad9f534f924de38a1dfbe4"
+        }
+      }
+    },
+    {
+      "key": "go",
+      "registry": {
+        "id": 136,
+        "title": "Go",
+        "category": "Language",
+        "route": {
+          "light": "https://svgl.app/library/golang.svg",
+          "dark": "https://svgl.app/library/golang_dark.svg"
+        },
+        "url": "https://go.dev/"
+      },
+      "files": {
+        "light": {
+          "file": "go-light.svg",
+          "source": "https://svgl.app/library/golang.svg",
+          "sha256": "4bd88a16c62798dc12ac6b10dd190ba6ea45a63cef6c3af0a8330c667a384354"
+        },
+        "dark": {
+          "file": "go-dark.svg",
+          "source": "https://svgl.app/library/golang_dark.svg",
+          "sha256": "6f0fa917b83cf37f49bec402d06f38d937a344a819ea58b354fc7224f5169815"
+        }
+      }
+    },
+    {
+      "key": "git",
+      "registry": {
+        "id": 170,
+        "title": "Git",
+        "category": "Software",
+        "route": "https://svgl.app/library/git.svg",
+        "url": "https://git-scm.com/"
+      },
+      "files": {
+        "light": {
+          "file": "git.svg",
+          "source": "https://svgl.app/library/git.svg",
+          "sha256": "cc43d5b0c4fae45b6e0857c17d602c0efb8526241ca9623a29863867a8f59f3a"
+        },
+        "dark": {
+          "file": "git.svg",
+          "source": "https://svgl.app/library/git.svg",
+          "sha256": "cc43d5b0c4fae45b6e0857c17d602c0efb8526241ca9623a29863867a8f59f3a"
+        }
+      }
+    },
+    {
+      "key": "python",
+      "registry": {
+        "id": 216,
+        "title": "Python",
+        "category": "Language",
+        "route": "https://svgl.app/library/python.svg",
+        "url": "https://www.python.org/"
+      },
+      "files": {
+        "light": {
+          "file": "python.svg",
+          "source": "https://svgl.app/library/python.svg",
+          "sha256": "e4d80b4ca9418d1ebb4ff880eb7cbe6896d60d61d9f44ead6723db29a4ed962e"
+        },
+        "dark": {
+          "file": "python.svg",
+          "source": "https://svgl.app/library/python.svg",
+          "sha256": "e4d80b4ca9418d1ebb4ff880eb7cbe6896d60d61d9f44ead6723db29a4ed962e"
+        }
+      }
+    },
+    {
+      "key": "openai",
+      "registry": {
+        "id": 270,
+        "title": "OpenAI",
+        "category": "AI",
+        "route": {
+          "light": "https://svgl.app/library/openai.svg",
+          "dark": "https://svgl.app/library/openai_dark.svg"
+        },
+        "wordmark": {
+          "light": "https://svgl.app/library/openai_wordmark_light.svg",
+          "dark": "https://svgl.app/library/openai_wordmark_dark.svg"
+        },
+        "url": "https://openai.com/",
+        "brandUrl": "https://openai.com/brand/"
+      },
+      "files": {
+        "light": {
+          "file": "openai-light.svg",
+          "source": "https://svgl.app/library/openai.svg",
+          "sha256": "71eba8e11d265af0e3375ad610db95b4a5fedf9f07c40e5252e73942b8c5982e"
+        },
+        "dark": {
+          "file": "openai-dark.svg",
+          "source": "https://svgl.app/library/openai_dark.svg",
+          "sha256": "4dac62f014aac76e15be7d681776cda434ce540beaa22410e9f7a87806a91f5a"
+        }
+      }
+    },
+    {
+      "key": "rust",
+      "registry": {
+        "id": 342,
+        "title": "Rust",
+        "category": "Language",
+        "route": {
+          "light": "https://svgl.app/library/rust.svg",
+          "dark": "https://svgl.app/library/rust_dark.svg"
+        },
+        "url": "https://www.rust-lang.org/"
+      },
+      "files": {
+        "light": {
+          "file": "rust-light.svg",
+          "source": "https://svgl.app/library/rust.svg",
+          "sha256": "383a6e47b7ef50f2646c626084896af12d79a7262f60a318cc51bfb780a0529d"
+        },
+        "dark": {
+          "file": "rust-dark.svg",
+          "source": "https://svgl.app/library/rust_dark.svg",
+          "sha256": "93750b6a19c9c4723956684ee4bde7691a652dafd782cfef76d27937cd0a0be6"
+        }
+      }
+    },
+    {
+      "key": "pnpm",
+      "registry": {
+        "id": 396,
+        "title": "Pnpm",
+        "category": "Software",
+        "route": {
+          "light": "https://svgl.app/library/pnpm.svg",
+          "dark": "https://svgl.app/library/pnpm_dark.svg"
+        },
+        "wordmark": {
+          "light": "https://svgl.app/library/pnpm_wordmark_light.svg",
+          "dark": "https://svgl.app/library/pnpm_wordmark_dark.svg"
+        },
+        "url": "https://pnpm.io/"
+      },
+      "files": {
+        "light": {
+          "file": "pnpm-light.svg",
+          "source": "https://svgl.app/library/pnpm.svg",
+          "sha256": "b8f4f05304a2081b08dc2a6713de68c5178ddec5ec8ef0b07c7852b00084ab61"
+        },
+        "dark": {
+          "file": "pnpm-dark.svg",
+          "source": "https://svgl.app/library/pnpm_dark.svg",
+          "sha256": "bde4fb8d2d95cc126c221113edc85fb393e24bf2085b12e1a376a669f3b8cd93"
+        }
+      }
+    },
+    {
+      "key": "mistral",
+      "registry": {
+        "id": 444,
+        "title": "Mistral AI",
+        "category": "AI",
+        "route": "https://svgl.app/library/mistral-ai_logo.svg",
+        "wordmark": "https://svgl.app/library/mistral-ai_wordmark.svg",
+        "url": "https://mistral.ai/"
+      },
+      "files": {
+        "light": {
+          "file": "mistral.svg",
+          "source": "https://svgl.app/library/mistral-ai_logo.svg",
+          "sha256": "792480de7c64c395ad438cfe0dd668cf7577961a8e653512ea6a45591a2f488e"
+        },
+        "dark": {
+          "file": "mistral.svg",
+          "source": "https://svgl.app/library/mistral-ai_logo.svg",
+          "sha256": "792480de7c64c395ad438cfe0dd668cf7577961a8e653512ea6a45591a2f488e"
+        }
+      }
+    },
+    {
+      "key": "node",
+      "registry": {
+        "id": 446,
+        "title": "Node.js",
+        "category": "Library",
+        "route": "https://svgl.app/library/nodejs.svg",
+        "url": "https://nodejs.org/",
+        "brandUrl": "https://nodejs.org/en/about/branding"
+      },
+      "files": {
+        "light": {
+          "file": "node.svg",
+          "source": "https://svgl.app/library/nodejs.svg",
+          "sha256": "6cd865951598a8a16dd3d588bd93c9d96b3b415a7162d6a1cf63089a2769ed0f"
+        },
+        "dark": {
+          "file": "node.svg",
+          "source": "https://svgl.app/library/nodejs.svg",
+          "sha256": "6cd865951598a8a16dd3d588bd93c9d96b3b415a7162d6a1cf63089a2769ed0f"
+        }
+      }
+    },
+    {
+      "key": "prettier",
+      "registry": {
+        "id": 519,
+        "title": "Prettier",
+        "category": "Library",
+        "route": {
+          "light": "https://svgl.app/library/prettier-icon-light.svg",
+          "dark": "https://svgl.app/library/prettier-icon-dark.svg"
+        },
+        "url": "https://prettier.io/"
+      },
+      "files": {
+        "light": {
+          "file": "prettier-light.svg",
+          "source": "https://svgl.app/library/prettier-icon-light.svg",
+          "sha256": "3e01fd476ed70882b3dbede11204b85a46361b5f2da3d1b8db4e047198abbe53"
+        },
+        "dark": {
+          "file": "prettier-dark.svg",
+          "source": "https://svgl.app/library/prettier-icon-dark.svg",
+          "sha256": "7b9a378c012bdddcb4ae7b671a5e68ebaaeeaba800bc1fec5995b019282093ba"
+        }
+      }
+    },
+    {
+      "key": "claude",
+      "registry": {
+        "id": 527,
+        "title": "Claude AI",
+        "category": "AI",
+        "route": "https://svgl.app/library/claude-ai-icon.svg",
+        "wordmark": {
+          "light": "https://svgl.app/library/claude-ai-wordmark-icon_light.svg",
+          "dark": "https://svgl.app/library/claude-ai-wordmark-icon_dark.svg"
+        },
+        "url": "https://claude.ai/"
+      },
+      "files": {
+        "light": {
+          "file": "claude.svg",
+          "source": "https://svgl.app/library/claude-ai-icon.svg",
+          "sha256": "0df6dad23995f5a76c6db8cc2a4e646ff45bd7a0626ef98662a7025646e5eea1"
+        },
+        "dark": {
+          "file": "claude.svg",
+          "source": "https://svgl.app/library/claude-ai-icon.svg",
+          "sha256": "0df6dad23995f5a76c6db8cc2a4e646ff45bd7a0626ef98662a7025646e5eea1"
+        }
+      }
+    },
+    {
+      "key": "zed",
+      "registry": {
+        "id": 534,
+        "title": "Zed",
+        "category": "Software",
+        "route": {
+          "light": "https://svgl.app/library/zed-logo.svg",
+          "dark": "https://svgl.app/library/zed-logo_dark.svg"
+        },
+        "url": "https://zed.dev/"
+      },
+      "files": {
+        "light": {
+          "file": "zed-light.svg",
+          "source": "https://svgl.app/library/zed-logo.svg",
+          "sha256": "0aebd721f51f600461fb666e755fc61ba911f649ce1b64599821a7d410861741"
+        },
+        "dark": {
+          "file": "zed-dark.svg",
+          "source": "https://svgl.app/library/zed-logo_dark.svg",
+          "sha256": "462fa5fa81e61f269321265f09c3d01c9a45f17c0aa674fa5723d04389546c92"
+        }
+      }
+    },
+    {
+      "key": "gemini",
+      "registry": {
+        "id": 565,
+        "title": "Gemini",
+        "category": [
+          "Google",
+          "AI"
+        ],
+        "route": "https://svgl.app/library/gemini.svg",
+        "wordmark": "https://svgl.app/library/gemini_wordmark.svg",
+        "url": "https://gemini.google.com/"
+      },
+      "files": {
+        "light": {
+          "file": "gemini.svg",
+          "source": "https://svgl.app/library/gemini.svg",
+          "sha256": "c11d94a9e3ecb32f67dd9350848cf3124d617680533275c672e1e6bf61ce8cd4"
+        },
+        "dark": {
+          "file": "gemini.svg",
+          "source": "https://svgl.app/library/gemini.svg",
+          "sha256": "c11d94a9e3ecb32f67dd9350848cf3124d617680533275c672e1e6bf61ce8cd4"
+        }
+      }
+    },
+    {
+      "key": "qwen",
+      "registry": {
+        "id": 567,
+        "title": "Qwen",
+        "category": [
+          "AI"
+        ],
+        "route": {
+          "light": "https://svgl.app/library/qwen_light.svg",
+          "dark": "https://svgl.app/library/qwen_dark.svg"
+        },
+        "url": "https://chat.qwenlm.ai/"
+      },
+      "files": {
+        "light": {
+          "file": "qwen-light.svg",
+          "source": "https://svgl.app/library/qwen_light.svg",
+          "sha256": "dcb3ba2f2b55ccbacbade0ca0bf98921fbaf8a07848972974b4a9bf8077376cf"
+        },
+        "dark": {
+          "file": "qwen-dark.svg",
+          "source": "https://svgl.app/library/qwen_dark.svg",
+          "sha256": "1729febe65990585b1ba96c223143f108f709f722c1d354238fd470630b51f54"
+        }
+      }
+    },
+    {
+      "key": "cursor",
+      "registry": {
+        "id": 613,
+        "title": "Cursor",
+        "category": [
+          "Software"
+        ],
+        "brandUrl": "https://cursor.com/brand",
+        "loftlyyUrl": "https://www.loftlyy.com/en/cursor",
+        "route": {
+          "light": "https://svgl.app/library/cursor_light.svg",
+          "dark": "https://svgl.app/library/cursor_dark.svg"
+        },
+        "wordmark": {
+          "light": "https://svgl.app/library/cursor_wordmark_light.svg",
+          "dark": "https://svgl.app/library/cursor_wordmark_dark.svg"
+        },
+        "url": "https://www.cursor.com"
+      },
+      "files": {
+        "light": {
+          "file": "cursor-light.svg",
+          "source": "https://svgl.app/library/cursor_light.svg",
+          "sha256": "c483c02f78eb2619778fdd959e72a9adfac4844854472cd2653d4cbfd60e4d71"
+        },
+        "dark": {
+          "file": "cursor-dark.svg",
+          "source": "https://svgl.app/library/cursor_dark.svg",
+          "sha256": "cd0e3e5d8991a4cdd4577f8896cd063105207665165c73e25a1ff918dd367eb7"
+        }
+      }
+    },
+    {
+      "key": "opencode",
+      "registry": {
+        "id": 648,
+        "title": "OpenCode",
+        "category": [
+          "AI",
+          "Software"
+        ],
+        "route": {
+          "light": "https://svgl.app/library/opencode.svg",
+          "dark": "https://svgl.app/library/opencode-dark.svg"
+        },
+        "wordmark": {
+          "light": "https://svgl.app/library/opencode-wordmark.svg",
+          "dark": "https://svgl.app/library/opencode-wordmark-dark.svg"
+        },
+        "url": "https://opencode.ai/"
+      },
+      "files": {
+        "light": {
+          "file": "opencode-light.svg",
+          "source": "https://svgl.app/library/opencode.svg",
+          "sha256": "5a44ee78769508c7226d8ac35b7b9738f929176a6c63b15f594a617afbc82a72"
+        },
+        "dark": {
+          "file": "opencode-dark.svg",
+          "source": "https://svgl.app/library/opencode-dark.svg",
+          "sha256": "e29bbe33380ad1c1ada9134b52f229d30e9776d60481512c9d81f2bb6f37def9"
+        }
+      }
+    },
+    {
+      "key": "codex",
+      "registry": {
+        "id": 656,
+        "title": "Codex",
+        "category": [
+          "AI",
+          "Software"
+        ],
+        "route": {
+          "light": "https://svgl.app/library/codex_light.svg",
+          "dark": "https://svgl.app/library/codex_dark.svg"
+        },
+        "wordmark": {
+          "light": "https://svgl.app/library/codex_wordmark_light.svg",
+          "dark": "https://svgl.app/library/codex_wordmark_dark.svg"
+        },
+        "url": "https://openai.com/codex/"
+      },
+      "files": {
+        "light": {
+          "file": "codex-light.svg",
+          "source": "https://svgl.app/library/codex_light.svg",
+          "sha256": "dde8b3563a40d55af25e3fb2509864d16ae214b0260748d294e2d011f2a6907c"
+        },
+        "dark": {
+          "file": "codex-dark.svg",
+          "source": "https://svgl.app/library/codex_dark.svg",
+          "sha256": "1b156eb915f7e74443f3fc491334f1896b6650e8fb597e2f2cb71c0ff7dd1cb0"
+        }
+      }
+    }
+  ]
+}

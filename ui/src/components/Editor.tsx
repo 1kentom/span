@@ -1,17 +1,13 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
-import { Annotation, Compartment, EditorState, StateEffect, StateField, Text, Transaction, type ChangeSet, type Extension } from "@codemirror/state";
+import { Annotation, Compartment, EditorState, Prec, StateEffect, StateField, Text, Transaction, type ChangeSet, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection, crosshairCursor, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, foldService, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from "@codemirror/commands";
 import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
-import { gotoLine, highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
-import { markdown } from "@codemirror/lang-markdown";
-import { rust } from "@codemirror/lang-rust";
-import { python } from "@codemirror/lang-python";
+import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import type { BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEdit } from "../bindings";
+import { loadLanguage, resolveLanguageId } from "../editor/languages";
 import "../styles/editor.css";
 
 export interface EditorEdit {
@@ -24,6 +20,19 @@ export interface EditorEdit {
 }
 
 export interface EditorDocumentChange { before: Text; changes: ChangeSet }
+
+export interface EditorCommands {
+  find: () => void;
+  replace: () => void;
+  goToLine: () => void;
+  format: () => void;
+  copy: () => Promise<void>;
+  cut: () => Promise<void>;
+  paste: () => Promise<void>;
+  selectAll: () => void;
+}
+
+export interface ClipboardPort { readText: () => Promise<string>; writeText: (text: string) => Promise<void> }
 
 export interface EditorCursor {
   line: number;
@@ -47,7 +56,9 @@ export interface EditorProps {
   active?: boolean;
   autofocus?: boolean;
   revealLine?: number;
+  revealColumn?: number;
   fontSize?: number;
+  fontFamily?: string;
   tabSize?: number;
   wordWrap?: boolean;
   proposal?: EditProposal;
@@ -55,6 +66,44 @@ export interface EditorProps {
   proposalStale?: boolean;
   onApplyProposal?: (proposalId: string, hunkIds: string[]) => void;
   onRejectProposal?: (proposalId: string) => void;
+  onCommands?: (commands: EditorCommands | undefined) => void;
+  onFormat?: () => void;
+  clipboard?: ClipboardPort;
+}
+
+export function revealPosition(doc: Text, line: number, column = 1): number {
+  const target = doc.line(Math.max(1, Math.min(doc.lines, Number.isFinite(line) ? Math.floor(line) : 1)));
+  return target.from + Math.max(0, Math.min(target.length, Number.isFinite(column) ? Math.floor(column) - 1 : 0));
+}
+
+function clipboardContent(state: EditorState) {
+  const selected = state.selection.ranges.filter((range) => !range.empty);
+  if (selected.length) return { text: selected.map((range) => state.sliceDoc(range.from, range.to)).join("\n"), cuts: selected.map((range) => ({ from: range.from, to: range.to, insert: "" })) };
+  const lines = [...new Map(state.selection.ranges.map((range) => { const line = state.doc.lineAt(range.head); return [line.number, line] as const; })).values()];
+  return { text: lines.map((line) => `${line.text}\n`).join(""), cuts: lines.map((line) => ({ from: line.from, to: Math.min(state.doc.length, line.to + 1), insert: "" })) };
+}
+
+export async function performClipboardAction(action: "copy" | "cut" | "paste", getState: () => EditorState | undefined, clipboard: ClipboardPort, dispatch: (transaction: Transaction) => void): Promise<void> {
+  const original = getState();
+  if (!original) throw new Error("Select an editor before using the clipboard.");
+  const content = action === "paste" ? undefined : clipboardContent(original);
+  const text = action === "paste" ? await clipboard.readText() : content!.text;
+  if (action !== "paste") await clipboard.writeText(text);
+  if (action === "copy" || (action === "paste" && text.length === 0)) return;
+  const current = getState();
+  if (!current || current.doc !== original.doc || !current.selection.eq(original.selection)) throw new Error("The document or selection changed while accessing the clipboard. Try again.");
+  const transaction = action === "cut"
+    ? current.update({ changes: content!.cuts, userEvent: "delete.cut", scrollIntoView: true })
+    : current.update(current.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
+  dispatch(transaction);
+}
+
+export function handleSharedHistoryKey(event: KeyboardEvent, callbacks: Pick<EditorProps, "onUndo" | "onRedo">): boolean {
+  if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey) return false;
+  const key = event.key.toLowerCase();
+  if (key === "z" && !event.shiftKey && callbacks.onUndo) { event.preventDefault(); callbacks.onUndo(); return true; }
+  if (((key === "z" && event.shiftKey) || (key === "y" && !event.shiftKey)) && callbacks.onRedo) { event.preventDefault(); callbacks.onRedo(); return true; }
+  return false;
 }
 
 const remoteEdit = Annotation.define<boolean>();
@@ -191,27 +240,27 @@ export function transactionEdits(changes: ChangeSet): TextEdit[] {
   return edits;
 }
 
-function languageFor(language: string, path: string): Extension {
-  const name = language.toLowerCase();
-  if (name.includes("typescript") || /\.[cm]?tsx?$/.test(path)) return javascript({ typescript: true, jsx: /\.tsx$/.test(path) });
-  if (name.includes("javascript") || /\.[cm]?jsx?$/.test(path)) return javascript({ jsx: /\.jsx$/.test(path) });
-  if (name === "json" || path.endsWith(".json")) return json();
-  if (name === "markdown" || /\.(md|mdx)$/.test(path)) return markdown();
-  if (name === "rust" || path.endsWith(".rs")) return rust();
-  if (name === "python" || path.endsWith(".py")) return python();
-  return [];
-}
-
-const codeHighlighting = HighlightStyle.define([
+export const codeHighlighting = HighlightStyle.define([
   { tag: [tags.keyword, tags.operatorKeyword, tags.modifier], color: "var(--syntax-keyword, #78c8c7)" },
   { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--syntax-string, #cc8dcb)" },
   { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: "var(--syntax-function, #d9ba7e)" },
-  { tag: [tags.number, tags.bool, tags.null], color: "var(--syntax-number, #d9ba7e)" },
+  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "var(--syntax-number, #d9ba7e)" },
   { tag: [tags.typeName, tags.className, tags.namespace], color: "var(--syntax-type, #80b7ec)" },
   { tag: [tags.comment, tags.meta], color: "var(--syntax-comment, #72777c)", fontStyle: "italic" },
   { tag: [tags.definition(tags.variableName)], color: "var(--syntax-definition, #af9bf2)" },
+  { tag: [tags.propertyName, tags.special(tags.variableName)], color: "var(--syntax-type, #80b7ec)" },
+  { tag: tags.tagName, color: "var(--syntax-keyword, #78c8c7)" },
+  { tag: tags.attributeName, color: "var(--syntax-function, #d9ba7e)" },
+  { tag: tags.attributeValue, color: "var(--syntax-string, #cc8dcb)" },
+  { tag: tags.standard(tags.variableName), color: "var(--syntax-definition, #af9bf2)" },
   { tag: [tags.heading], color: "var(--syntax-function, #d9ba7e)", fontWeight: "600" },
   { tag: [tags.link, tags.url], color: "var(--syntax-type, #80b7ec)", textDecoration: "underline" },
+  { tag: tags.strong, fontWeight: "700" },
+  { tag: tags.emphasis, fontStyle: "italic" },
+  { tag: tags.monospace, color: "var(--syntax-string, #cc8dcb)" },
+  { tag: tags.strikethrough, textDecoration: "line-through" },
+  { tag: [tags.quote, tags.contentSeparator], color: "var(--syntax-comment, #72777c)" },
+  { tag: [tags.list, tags.processingInstruction], color: "var(--syntax-keyword, #78c8c7)" },
   { tag: [tags.invalid], color: "var(--syntax-invalid, #e58a8a)" },
 ]);
 
@@ -267,6 +316,9 @@ export default function Editor(props: EditorProps) {
   let view: EditorView | undefined;
   let currentPath = "";
   let currentLanguage = "";
+  let languageGeneration = 0;
+  let requestedLanguage = "";
+  let currentFont = "";
   let syncGeneration = 0;
   let lastReveal = "";
   let appliedSyntax: SyntaxSnapshot | undefined;
@@ -280,6 +332,50 @@ export default function Editor(props: EditorProps) {
   const language = new Compartment();
   const appearance = new Compartment();
   const preferences = new Compartment();
+  function configureLanguage(hint: string, path: string) {
+    if (props.active === false) return;
+    const key = `${hint}:${path}`;
+    if (key === requestedLanguage) return;
+    requestedLanguage = key;
+    const generation = ++languageGeneration;
+    void loadLanguage(hint, path).then((support) => {
+      if (!view || generation !== languageGeneration || path !== currentPath) return;
+      view.dispatch({ effects: language.reconfigure(support ?? []) });
+    }).catch(() => {
+      if (view && generation === languageGeneration) { requestedLanguage = ""; view.dispatch({ effects: language.reconfigure([]) }); }
+    });
+  }
+  const commands: EditorCommands = {
+    find: () => { if (view && props.active !== false) openSearchPanel(view); },
+    replace: () => {
+      if (!view || props.active === false) return;
+      openSearchPanel(view);
+      queueMicrotask(() => { if (props.active !== false) view?.dom.querySelector<HTMLInputElement>('.cm-search input[name="replace"]')?.focus(); });
+    },
+    goToLine: () => { if (view && props.active !== false) gotoLine(view); },
+    format: () => { if (view && props.active !== false) props.onFormat?.(); },
+    copy: () => clipboardAction("copy"),
+    cut: () => clipboardAction("cut"),
+    paste: () => clipboardAction("paste"),
+    selectAll: () => {
+      if (!view || props.active === false) return;
+      view.dispatch({ selection: { anchor: 0, head: view.state.doc.length }, userEvent: "select" });
+      view.focus();
+    },
+  };
+  async function clipboardAction(action: "copy" | "cut" | "paste") {
+    const target = view;
+    const original = target?.state;
+    const clipboard = props.clipboard;
+    if (!clipboard) throw new Error("Clipboard access is unavailable.");
+    await performClipboardAction(action, () => view === target && props.active !== false ? target?.state : undefined, clipboard, (transaction) => {
+      historyOrigin = {};
+      target!.dispatch(transaction);
+      historyOrigin = {};
+      target!.focus();
+    });
+    if (action === "copy" && target && target === view && props.active !== false && original?.doc === target.state.doc && original.selection.eq(target.state.selection)) target.focus();
+  }
   const proposalIsStale = () => Boolean(props.proposal && (props.proposalStale || proposalChanged() || props.buffer.revision !== props.proposal.baseRevision));
   const toggleHunk = (hunkId: string, keep: boolean) => setSelectedHunks((current) => {
     const next = new Set(current);
@@ -311,22 +407,20 @@ export default function Editor(props: EditorProps) {
       search({ top: true }), highlightSelectionMatches(), indentGuides, syntaxState, proposalState,
       EditorState.allowMultipleSelections.of(true),
       preferences.of(preferenceExtensions(props.tabSize ?? 2, props.wordWrap ?? false)),
-      language.of(languageFor(props.buffer.language, props.buffer.path)),
+      language.of([]),
       appearance.of(EditorView.theme({}, { dark: props.theme !== "light" })),
       syntaxHighlighting(codeHighlighting), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       keymap.of([
         { key: "Mod-z", run: (editor) => { if (props.onUndo) { props.onUndo(); return true; } return undo(editor); }, preventDefault: true },
         { key: "Mod-Shift-z", run: (editor) => { if (props.onRedo) { props.onRedo(); return true; } return redo(editor); }, preventDefault: true },
         { key: "Mod-y", run: (editor) => { if (props.onRedo) { props.onRedo(); return true; } return redo(editor); }, preventDefault: true },
-        { key: "Mod-s", run: () => { props.onSave(); return true; }, preventDefault: true },
-        { key: "Mod-Alt-g", run: gotoLine },
-        ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...searchKeymap, ...foldKeymap, ...completionKeymap, indentWithTab,
+        ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...searchKeymap.filter((binding) => !["Mod-f", "Mod-g", "Mod-Alt-g"].includes(binding.key ?? "")), ...foldKeymap, ...completionKeymap, indentWithTab,
       ]),
-      EditorView.domEventHandlers({ beforeinput: (event) => {
+      Prec.highest(EditorView.domEventHandlers({ keydown: (event) => handleSharedHistoryKey(event, props), beforeinput: (event) => {
         if (event.inputType === "historyUndo" && props.onUndo) { event.preventDefault(); props.onUndo(); return true; }
         if (event.inputType === "historyRedo" && props.onRedo) { event.preventDefault(); props.onRedo(); return true; }
         return false;
-      } }),
+      } })),
       EditorView.contentAttributes.of({ "aria-label": `Edit ${props.buffer.path.split(/[\\/]/).pop() ?? "document"}`, "aria-multiline": "true", spellcheck: "false", autocapitalize: "off", autocorrect: "off" }),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
@@ -352,6 +446,7 @@ export default function Editor(props: EditorProps) {
     const state = EditorState.create({ doc: props.document ?? props.buffer.text, extensions: extensions() });
     sharedDocument = state.doc;
     view = new EditorView({ parent: host, state });
+    configureLanguage(props.buffer.language, props.buffer.path);
     reportCursor();
     if (props.autofocus) view.focus();
   });
@@ -363,9 +458,11 @@ export default function Editor(props: EditorProps) {
     const transition = props.change;
     const theme = props.theme;
     const revealLine = props.revealLine;
+    const revealColumn = props.revealColumn;
     const tabSize = props.tabSize ?? 2;
     const wordWrap = props.wordWrap ?? false;
     const active = props.active !== false;
+    const font = `${props.fontFamily}:${props.fontSize}`;
     const generation = ++syncGeneration;
     // Store acknowledgments can arrive inside the update listener. Defer their
     // application until CodeMirror has finished its current transaction.
@@ -375,8 +472,10 @@ export default function Editor(props: EditorProps) {
         currentPath = snapshot.path;
         currentLanguage = snapshot.language;
         appliedSyntax = undefined;
+        requestedLanguage = "";
         view.setState(EditorState.create({ doc: nextDocument ?? snapshot.text, extensions: extensions() }));
         sharedDocument = view.state.doc;
+        configureLanguage(snapshot.language, snapshot.path);
         reportCursor();
       }
       const wanted = nextDocument ?? Text.of(snapshot.text.split("\n"));
@@ -386,30 +485,38 @@ export default function Editor(props: EditorProps) {
       const effects: StateEffect<unknown>[] = [];
       if (snapshot.language !== currentLanguage) {
         currentLanguage = snapshot.language;
-        effects.push(language.reconfigure(languageFor(snapshot.language, snapshot.path)));
+        configureLanguage(snapshot.language, snapshot.path);
       }
       if (view.state.facet(EditorView.darkTheme) !== (theme !== "light")) {
         effects.push(appearance.reconfigure(EditorView.theme({}, { dark: theme !== "light" })));
       }
       if (view.state.tabSize !== tabSize || view.lineWrapping !== wordWrap) effects.push(preferences.reconfigure(preferenceExtensions(tabSize, wordWrap)));
-      const validSyntax = syntax?.revision === snapshot.revision ? syntax : undefined;
+      const languageId = resolveLanguageId(snapshot.language, snapshot.path);
+      const validSyntax = syntax?.revision === snapshot.revision && languageId !== "markdown" && languageId !== "dotenv" && syntax.language !== "text" ? syntax : undefined;
       if (appliedSyntax !== validSyntax || change) {
         appliedSyntax = validSyntax;
         effects.push(setSyntax.of(validSyntax));
       }
       if (change || effects.length) view.dispatch({ changes: change, effects, annotations: [remoteEdit.of(true), Transaction.addToHistory.of(false)] });
       sharedDocument = wanted;
-      const revealKey = `${currentPath}:${revealLine ?? ""}`;
+      const revealKey = `${currentPath}:${revealLine ?? ""}:${revealColumn ?? ""}`;
       if (revealKey !== lastReveal) {
         lastReveal = revealKey;
         if (revealLine !== undefined) {
-          const position = view.state.doc.line(Math.max(1, Math.min(view.state.doc.lines, Math.floor(revealLine)))).from;
+          const position = revealPosition(view.state.doc, revealLine, revealColumn);
           view.dispatch({ selection: { anchor: position }, effects: EditorView.scrollIntoView(position, { y: "center" }) });
         }
       }
-      if (active && !wasActive) { view.requestMeasure(); reportCursor(); }
+      if (active && !wasActive) { configureLanguage(snapshot.language, snapshot.path); view.requestMeasure(); reportCursor(); }
+      if (currentFont !== font) { currentFont = font; view.requestMeasure(); }
       wasActive = active;
     });
+  });
+
+  createEffect(() => {
+    const active = props.active !== false;
+    props.onCommands?.(active ? commands : undefined);
+    onCleanup(() => props.onCommands?.(undefined));
   });
 
   createEffect(() => {
@@ -438,7 +545,7 @@ export default function Editor(props: EditorProps) {
   });
 
   onCleanup(() => { view?.destroy(); view = undefined; });
-  return <div class="span-editor" classList={{ "is-active": props.active !== false }} data-theme={props.theme ?? "dark"} style={{ "--editor-font-size": `${props.fontSize ?? 13}px`, "--editor-line-height": `${Math.max(22, Math.round((props.fontSize ?? 13) * 22 / 13))}px`, "--editor-indent-size": `${props.tabSize ?? 2}ch` }}>
+  return <div class="span-editor" classList={{ "is-active": props.active !== false }} data-theme={props.theme ?? "dark"} style={{ "--editor-font-size": `${props.fontSize ?? 13}px`, "--editor-font-family": `${props.fontFamily ? `"${props.fontFamily.replace(/["\\]/g, "")}"` : '"JetBrains Mono"'}, monospace`, "--editor-line-height": `${Math.max(22, Math.round((props.fontSize ?? 13) * 22 / 13))}px`, "--editor-indent-size": `${props.tabSize ?? 2}ch` }}>
     <Show when={props.proposal}>{(proposal) => <div class="editor-proposal-review" role="region" aria-label="Review suggested changes">
       <div class="editor-proposal-summary"><strong>{proposalIsStale() ? "Proposal needs a fresh revision" : `${proposal().hunks.length} suggested ${proposal().hunks.length === 1 ? "change" : "changes"}`}</strong><span>{proposalIsStale() ? "This file changed. Reject this proposal and request a new one." : "Keep or skip each change, then apply your selection."}</span></div>
       <div class="editor-proposal-actions"><button type="button" class="proposal-reject" disabled={props.proposalBusy || !props.onRejectProposal} onClick={() => props.onRejectProposal?.(proposal().id)}>Reject proposal</button><button type="button" class="proposal-apply" disabled={props.proposalBusy || proposalIsStale() || selectedHunks().size === 0 || !props.onApplyProposal} onClick={() => props.onApplyProposal?.(proposal().id, [...selectedHunks()])}>{props.proposalBusy ? "Reviewing…" : `Apply selected (${selectedHunks().size})`}</button></div>

@@ -5,8 +5,12 @@ use span_core::{
 use span_syntax::{SyntaxEngine, SyntaxSnapshot};
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
-use tauri_specta::{collect_commands, Builder, ErrorHandlingMode};
+use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
+mod cli;
+mod menu;
+mod services;
+mod startup;
 
 /// The authoritative workspace is only accessed by blocking workers.
 #[derive(Clone, Default)]
@@ -14,6 +18,8 @@ pub struct DesktopState {
     pub workspace: Arc<Mutex<Option<Arc<Mutex<CoreWorkspace>>>>>,
     pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
+    pub session_gate: Arc<tokio::sync::Mutex<()>>,
+    pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
 }
@@ -54,6 +60,12 @@ async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<
             .lock()
             .map_err(|_| "Workspace state is unavailable".to_owned())?;
         *guard = Some(Arc::new(Mutex::new(workspace)));
+        drop(guard);
+        if let Err(error) = span_core::RecentProjectStore::for_current_user()
+            .and_then(|store| store.record_open(std::path::Path::new(&result.root)))
+        {
+            eprintln!("Could not update project history: {error}");
+        }
         Ok(result)
     })
     .await
@@ -111,10 +123,7 @@ async fn save_buffer(
     path: String,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
-        workspace.save_buffer(&path, expected_revision)
-    })
-    .await
+    services::format_or_save(state.inner().clone(), path, expected_revision, true).await
 }
 
 #[tauri::command]
@@ -261,6 +270,15 @@ async fn update_settings_jsonc(
 
 #[tauri::command]
 #[specta::specta]
+async fn get_settings_jsonc(state: State<'_, DesktopState>) -> Result<String, String> {
+    with_workspace(state.inner().clone(), |workspace| {
+        workspace.get_settings_jsonc()
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn syntax(state: State<'_, DesktopState>, path: String) -> Result<SyntaxSnapshot, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -293,6 +311,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         .error_handling(ErrorHandlingMode::Throw)
         // Revisions and offsets are bounded by available document memory, below JS integer precision.
         .dangerously_cast_bigints_to_number()
+        .events(collect_events![
+            menu::NativeActionEvent,
+            startup::StartupRequestsChanged
+        ])
         .commands(collect_commands![
             open_workspace,
             list_directory,
@@ -307,6 +329,21 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             get_settings,
             update_settings,
             update_settings_jsonc,
+            get_settings_jsonc,
+            services::format_buffer,
+            services::get_session,
+            services::save_session,
+            services::list_tools,
+            services::recent_projects,
+            services::remove_recent_project,
+            services::clear_recent_projects,
+            services::native_window_state,
+            services::read_clipboard,
+            services::write_clipboard,
+            startup::take_startup_requests,
+            services::open_external,
+            services::read_image,
+            menu::sync_native_menu,
             syntax,
             agents::agent_registry,
             agents::agent_installed,
@@ -328,15 +365,32 @@ pub fn export_bindings() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let action = cli::parse_args(std::env::args().skip(1), &std::env::current_dir()?)?;
+    let request = match action {
+        cli::CliAction::Help => {
+            print!("{}", cli::HELP);
+            return Ok(());
+        }
+        cli::CliAction::Version => {
+            println!("span {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        cli::CliAction::Open(request) => request,
+    };
+    let state = DesktopState::default();
+    startup::enqueue(&state, request)?;
     let builder = ipc_builder();
     #[cfg(debug_assertions)]
     export_bindings()?;
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(startup::forwarded))
         .plugin(tauri_plugin_dialog::init())
-        .manage(DesktopState::default())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(state)
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            menu::install(app.handle())?;
             Ok(())
         })
         .build(tauri::generate_context!())?;

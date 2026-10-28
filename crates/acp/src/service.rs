@@ -63,6 +63,7 @@ impl AgentService {
         if config.command.trim().is_empty() {
             return Err("Agent executable is required".into());
         }
+        let config = crate::launch::prepare_command(config)?;
         let cwd = std::fs::canonicalize(cwd).map_err(|e| format!("Agent workspace: {e}"))?;
         let workspace_root = workspace
             .lock()

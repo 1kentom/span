@@ -69,7 +69,7 @@
 
 .span-editor .cm-editor { height: 100%; background: var(--editor-bg); color: var(--editor-fg); }
 .span-editor .cm-editor.cm-focused { outline: none; }
-.span-editor .cm-scroller { overflow: auto; font: 400 var(--editor-font-size, 13px)/var(--editor-line-height, 22px) "JetBrains Mono", monospace; }
+.span-editor .cm-scroller { overflow: auto; font: 400 var(--editor-font-size, 13px)/var(--editor-line-height, 22px) var(--editor-font-family, "JetBrains Mono", monospace); }
 .span-editor .cm-content { padding: 12px 0 40vh; caret-color: var(--editor-fg); }
 .span-editor .cm-line { padding: 0 20px 0 12px; }
 .span-editor .cm-gutters { background: var(--editor-bg); color: var(--editor-muted); border: 0; padding-top: 0; user-select: none; }

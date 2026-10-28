@@ -3,7 +3,7 @@ export function Modal(props: { label: string; class?: string; children: JSX.Elem
   let dialog!: HTMLDivElement;
   const previous = document.activeElement as HTMLElement | null;
   onMount(() => {
-    queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], input, textarea, button")?.focus());
+    queueMicrotask(() => (dialog.querySelector<HTMLElement>("[autofocus]") || dialog.querySelector<HTMLElement>("input, textarea, button"))?.focus());
   });
   onCleanup(() => previous?.isConnected && previous.focus());
   return <div class="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) props.onClose(); }}><div ref={dialog} class={`modal ${props.class || ""}`} role="dialog" aria-label={props.label} aria-modal="true" onKeyDown={e => {

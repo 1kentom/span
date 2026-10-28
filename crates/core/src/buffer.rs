@@ -138,14 +138,39 @@ fn utf16_to_char(rope: &Rope, offset: u32) -> Result<usize> {
     Ok(char_index)
 }
 
-fn language(path: &str) -> &'static str {
-    match Path::new(path).extension().and_then(|s| s.to_str()) {
-        Some("ts" | "tsx") => "typescript",
+pub(crate) fn language(path: &str) -> &'static str {
+    let path = Path::new(path);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_ascii_lowercase);
+    if name
+        .as_deref()
+        .is_some_and(|name| name == ".env" || name.starts_with(".env."))
+    {
+        return "dotenv";
+    }
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("ts" | "tsx" | "mts" | "cts") => "typescript",
         Some("js" | "jsx" | "mjs" | "cjs") => "javascript",
         Some("json" | "jsonc") => "json",
-        Some("md" | "markdown") => "markdown",
+        Some("md" | "markdown" | "mdown" | "mkd" | "mdx") => "markdown",
         Some("rs") => "rust",
-        Some("py") => "python",
+        Some("py" | "pyi") => "python",
+        Some("yaml" | "yml") => "yaml",
+        Some("css") => "css",
+        Some("scss") => "scss",
+        Some("less") => "less",
+        Some("html" | "htm") => "html",
+        Some("vue") => "vue",
+        Some("svelte") => "svelte",
+        Some("toml") => "toml",
+        Some("sh" | "bash" | "zsh") => "shell",
         _ => "text",
     }
 }
