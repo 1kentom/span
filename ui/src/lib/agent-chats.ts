@@ -1,4 +1,11 @@
-import type { AgentEvent, SessionMeta_Serialize as SessionMeta, SessionRuntimeState_Serialize as SessionRuntimeState, SessionStates_Serialize as SessionStates } from "../bindings";
+import type {
+  AgentEvent,
+  ConfigOption,
+  SessionMetaPatch_Deserialize as SessionMetaPatch,
+  SessionMeta_Serialize as SessionMeta,
+  SessionRuntimeState_Serialize as SessionRuntimeState,
+  SessionStates_Serialize as SessionStates,
+} from "../bindings";
 import type { Queued } from "./agent-controller";
 import { RUN_TEXT } from "./agent-hint-text";
 import { clockText } from "./agent-running";
@@ -137,11 +144,11 @@ export function rowStatus(state: SessionRuntimeState | undefined, options: { now
 }
 
 /** What a History row shows from Span's stored session metadata (ADR 0005). */
-export type RowMeta = { title?: string; agents: { id: string; name: string }[]; models: string[] };
+export type RowMeta = { title?: string; agents: { id: string; name: string }[]; models: string[]; files?: number; delta?: { add: number; del: number } };
 
 /**
- * The agent and model chips and user title for a History row. Empty, zero and null fields mean unknown in the store,
- * so they produce no chip: a session Span never observed shows only what the agent lists.
+ * The agent avatars, model chips, counters and user title for a History row. Empty, zero and null fields mean unknown
+ * in the store, so they produce nothing: a session Span never observed shows only what the agent lists.
  */
 export function rowMeta(meta: SessionMeta | undefined): RowMeta {
   if (!meta) return { agents: [], models: [] };
@@ -153,7 +160,36 @@ export function rowMeta(meta: SessionMeta | undefined): RowMeta {
   for (const agent of meta.agents) addAgent(agent.agentId, agent.name);
   const models = meta.models.filter((model) => model.name.trim()).map((model) => (model.effort ? `${model.name} · ${model.effort}` : model.name));
   const title = meta.titleOverride?.trim();
-  return { ...(title ? { title } : {}), agents, models };
+  const delta = meta.linesAdded > 0 || meta.linesRemoved > 0 ? { add: Math.max(0, meta.linesAdded), del: Math.max(0, meta.linesRemoved) } : undefined;
+  return { ...(title ? { title } : {}), agents, models, ...(meta.filesChanged > 0 ? { files: meta.filesChanged } : {}), ...(delta ? { delta } : {}) };
+}
+
+/** The name the pickers show for an option's current value, else the raw value. */
+const choiceName = (option: ConfigOption) =>
+  option.groups.flatMap((group) => group.choices).find((choice) => choice.value === option.currentValue)?.name.trim() || option.currentValue.trim();
+
+/**
+ * The metadata patch for one finished turn (ADR 0005 section 5, step 1): the model and effort the turn ran with, by
+ * the names the model picker shows. No model option means no model is recorded. Undefined without an agent catalog
+ * id or a session, since the store is keyed by both.
+ */
+export function turnMetaPatch(input: { agentId: string | undefined; sessionId: string | undefined; connectionName: string; config: readonly ConfigOption[] }): SessionMetaPatch | undefined {
+  if (!input.agentId || !input.sessionId) return undefined;
+  const model = input.config.find((option) => option.category === "model");
+  const effort = input.config.find((option) => option.category === "thought_level");
+  const name = model ? choiceName(model) : "";
+  return {
+    agentId: input.agentId,
+    sessionId: input.sessionId,
+    connectionName: input.connectionName,
+    ...(name ? { models: [{ name, effort: (effort && choiceName(effort)) || null, turns: 1 }] } : {}),
+  };
+}
+
+/** The metadata patch naming an agent the lead session delegated to (ADR 0005 section 5, step 5). */
+export function delegationMetaPatch(agentId: string | undefined, leadSessionId: string, agentName: string): SessionMetaPatch | undefined {
+  if (!agentId || !leadSessionId || !agentName.trim()) return undefined;
+  return { agentId, sessionId: leadSessionId, agents: [{ agentId: agentName, name: agentName, role: "delegated", subagent: false }] };
 }
 
 const waiting = (state: SessionRuntimeState) => state.state === "waitingForApproval" || state.state === "waitingForAnswer";

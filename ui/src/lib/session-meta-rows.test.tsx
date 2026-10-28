@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentEvent, AgentFeatures, SessionMeta_Serialize as SessionMeta } from "../bindings";
+import type { AgentEvent, AgentFeatures, ConfigOption_Serialize as ConfigOption, SessionMeta_Serialize as SessionMeta } from "../bindings";
 import { createAgentController, type AgentController } from "./agent-controller";
-import { rowMeta } from "./agent-chats";
+import { delegationMetaPatch, rowMeta, turnMetaPatch } from "./agent-chats";
 import { writeLastSession } from "./last-session";
 import { mount } from "../components/agent/test-utils";
 
@@ -19,10 +19,12 @@ const mocks = vi.hoisted(() => {
       agentResumeSession: vi.fn(async (id: string) => id),
       agentDisconnect: vi.fn(async () => undefined),
       agentListSessions: vi.fn(async (): Promise<unknown[]> => []),
+      agentPrompt: vi.fn(async () => undefined),
     },
     agentPresets: vi.fn(async (): Promise<unknown[]> => []),
     sessionMetaList: vi.fn(async (): Promise<unknown[]> => []),
     sessionMetaSetTitle: vi.fn(),
+    sessionMetaUpdate: vi.fn(),
   };
 });
 vi.mock("./client", () => ({
@@ -32,6 +34,7 @@ vi.mock("./client", () => ({
   agentAuthenticateWith: vi.fn(),
   sessionMetaList: mocks.sessionMetaList,
   sessionMetaSetTitle: mocks.sessionMetaSetTitle,
+  sessionMetaUpdate: mocks.sessionMetaUpdate,
 }));
 
 const meta = (patch: Partial<SessionMeta> = {}): SessionMeta => ({
@@ -83,6 +86,47 @@ describe("rowMeta", () => {
   });
 });
 
+describe("rowMeta counters", () => {
+  it("adds file and line counts only when the store has them", () => {
+    expect(rowMeta(meta({ filesChanged: 3, linesAdded: 10, linesRemoved: 0 }))).toEqual({ agents: [], models: [], files: 3, delta: { add: 10, del: 0 } });
+    expect(rowMeta(meta({ linesRemoved: 2 }))).toEqual({ agents: [], models: [], delta: { add: 0, del: 2 } });
+    expect(rowMeta(meta())).toEqual({ agents: [], models: [] });
+  });
+});
+
+describe("metadata patches", () => {
+  const option = (category: string, currentValue: string, choices: [string, string][]): ConfigOption => ({
+    id: category,
+    name: category,
+    description: null,
+    category,
+    currentValue,
+    groups: [{ name: "", choices: choices.map(([value, name]) => ({ value, name, description: null })) }],
+  });
+
+  it("records the model and effort a turn ran with, by the names the pickers show", () => {
+    const config = [option("mode", "code", [["code", "Code"]]), option("model", "opus", [["opus", "Opus 4.5"]]), option("thought_level", "hi", [["hi", "high"]])];
+    expect(turnMetaPatch({ agentId: "claude", sessionId: "s", connectionName: "Claude Code", config })).toEqual({
+      agentId: "claude",
+      sessionId: "s",
+      connectionName: "Claude Code",
+      models: [{ name: "Opus 4.5", effort: "high", turns: 1 }],
+    });
+    expect(turnMetaPatch({ agentId: "claude", sessionId: "s", connectionName: "Claude Code", config: [option("model", "raw-id", [])] })?.models).toEqual([{ name: "raw-id", effort: null, turns: 1 }]);
+  });
+
+  it("records no model when the agent reports none, and nothing without an agent id or session", () => {
+    expect(turnMetaPatch({ agentId: "claude", sessionId: "s", connectionName: "Claude Code", config: [] })).toEqual({ agentId: "claude", sessionId: "s", connectionName: "Claude Code" });
+    expect(turnMetaPatch({ agentId: undefined, sessionId: "s", connectionName: "x", config: [] })).toBeUndefined();
+    expect(turnMetaPatch({ agentId: "claude", sessionId: undefined, connectionName: "x", config: [] })).toBeUndefined();
+  });
+
+  it("records a delegated agent on the lead session", () => {
+    expect(delegationMetaPatch("claude", "lead", "codex")).toEqual({ agentId: "claude", sessionId: "lead", agents: [{ agentId: "codex", name: "codex", role: "delegated", subagent: false }] });
+    expect(delegationMetaPatch(undefined, "lead", "codex")).toBeUndefined();
+  });
+});
+
 describe("history metadata wiring", () => {
   const features: AgentFeatures = { loadSession: true, image: true, audio: false, embeddedContext: true, mcpHttp: false, mcpSse: false, canListSessions: true, canResumeSessions: true, canCloseSessions: false, canDeleteSessions: false };
   const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -101,6 +145,7 @@ describe("history metadata wiring", () => {
     mocks.api.agentInstalled.mockResolvedValue([{ id: "codex", version: "1", launch: { command: "codex", args: ["acp"], env: {} } }]);
     mocks.sessionMetaList.mockReset();
     mocks.sessionMetaSetTitle.mockReset();
+    mocks.sessionMetaUpdate.mockReset();
   });
 
   async function open() {
@@ -151,5 +196,29 @@ describe("history metadata wiring", () => {
     await a.renameChat("old", "Parser fix");
     expect(a.sessionsError()).toContain("Could not rename that chat");
     expect(a.sessionMetaOf("old")).toBeUndefined();
+  });
+
+  it("records the model of each finished turn in the metadata store and shows it", async () => {
+    mocks.sessionMetaList.mockResolvedValue([]);
+    mocks.sessionMetaUpdate.mockImplementation(async (patch: { agentId: string; sessionId: string }) =>
+      meta({ agentId: patch.agentId, sessionId: patch.sessionId, models: [{ name: "gpt-5.1-codex", effort: null, usedMs: 1, turns: 1 }] }),
+    );
+    const a = await open();
+    mocks.emit({ kind: "config", sessionId: "fresh", options: [{ id: "model", name: "Model", description: null, category: "model", currentValue: "gpt-5.1-codex", groups: [] }] } as AgentEvent);
+    a.sendText("hello");
+    await tick();
+    expect(mocks.sessionMetaUpdate).toHaveBeenCalledWith({ agentId: "codex", sessionId: "fresh", connectionName: "Codex", models: [{ name: "gpt-5.1-codex", effort: null, turns: 1 }] });
+    expect(rowMeta(a.sessionMetaOf("fresh")).models).toEqual(["gpt-5.1-codex"]);
+  });
+
+  it("keeps the chat working when the metadata store refuses a write", async () => {
+    mocks.sessionMetaList.mockResolvedValue([]);
+    mocks.sessionMetaUpdate.mockRejectedValue(new Error("Open a folder to use session history"));
+    const a = await open();
+    a.sendText("hello");
+    await tick();
+    expect(mocks.sessionMetaUpdate).toHaveBeenCalled();
+    expect(a.state().failure).toBeUndefined();
+    expect(a.sessionMetaOf("fresh")).toBeUndefined();
   });
 });
