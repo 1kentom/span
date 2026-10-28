@@ -84,14 +84,19 @@ export function TerminalPanel(props: TerminalPanelProps) {
     });
     return inputQueue;
   };
+  const applyAppearance = () => {
+    if (!terminal || disposed) return;
+    const style = getComputedStyle(host);
+    terminal.options.theme = terminalTheme(style);
+    terminal.options.fontFamily = terminalFontFamily(props.fontFamily || style.getPropertyValue("--editor-font-family").trim());
+    terminal.options.fontSize = props.fontSize || 13;
+  };
   const resize = () => {
+    // Native WebViews can throttle frames while retained views still change theme.
+    applyAppearance();
     cancelAnimationFrame(resizeFrame);
     resizeFrame = requestAnimationFrame(() => {
       if (!props.visible || !terminal || !fit || disposed || host.clientWidth === 0) return;
-      const style = getComputedStyle(host);
-      terminal.options.theme = terminalTheme(style);
-      terminal.options.fontFamily = terminalFontFamily(props.fontFamily || style.getPropertyValue("--editor-font-family").trim());
-      terminal.options.fontSize = props.fontSize || 13;
       fit.fit();
       const id = sessionId; const token = generation;
       if (id && !exited()) void props.transport.resize(id, terminal.cols, terminal.rows).catch(failure => { if (token === generation && id === sessionId) report(failure); });
@@ -112,8 +117,10 @@ export function TerminalPanel(props: TerminalPanelProps) {
     terminal.loadAddon(fit);
     terminal.open(host);
     fit.fit();
-    // WebGL is an optional renderer. Context loss falls back to the default renderer.
-    if (typeof WebGL2RenderingContext !== "undefined") {
+    // Use xterm's DOM renderer in WKWebView, where additional WebGL sessions can
+    // consume output without painting. Other platforms retain the optional addon.
+    const nativeMac = "__TAURI_INTERNALS__" in window && navigator.platform.startsWith("Mac");
+    if (!nativeMac && typeof WebGL2RenderingContext !== "undefined") {
       try {
         const { WebglAddon } = await import("@xterm/addon-webgl");
         if (!disposed && token === generation) {
@@ -172,7 +179,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   };
   createEffect(() => {
     props.fontSize; props.fontFamily;
-    if (terminal && props.visible) resize();
+    if (terminal) resize();
   });
   createEffect(() => {
     if (props.visible) {

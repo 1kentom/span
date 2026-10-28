@@ -5,7 +5,7 @@ import { render } from "solid-js/web";
 import { TerminalPanel, type TerminalController, type TerminalTransport, type TerminalHandlers } from "./TerminalPanel";
 
 const xterm = vi.hoisted(() => ({
-  construct: vi.fn(), write: vi.fn(), dispose: vi.fn(), focus: vi.fn(), paste: vi.fn(),
+  construct: vi.fn(), write: vi.fn(), dispose: vi.fn(), focus: vi.fn(), paste: vi.fn(), webgl: vi.fn(),
   data: undefined as ((data: string) => void) | undefined,
   binary: undefined as ((data: string) => void) | undefined,
 }));
@@ -19,6 +19,10 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
   onBinary(callback: (data: string) => void) { xterm.binary = callback; }
 } }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class {
+  constructor() { xterm.webgl(); }
+  onContextLoss() {} dispose() {}
+} }));
 const cleanup: (() => void)[] = [];
 const observations: ResizeObserverCallback[] = [];
 beforeEach(() => {
@@ -276,4 +280,57 @@ it("updates editor font settings in the renderer without respawning or stealing 
   view.setFontSize(18); view.setFontFamily("SFMono-Regular");
   await vi.waitFor(() => expect(xterm.construct.mock.calls[0][0]).toMatchObject({ fontSize: 18, fontFamily: '"SFMono-Regular", monospace' }));
   expect(view.transport.create).toHaveBeenCalledOnce(); expect(view.transport.close).not.toHaveBeenCalled(); expect(xterm.focus).not.toHaveBeenCalled();
+});
+
+it("applies hidden-session themes and fonts without waiting for an animation frame", async () => {
+  vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  let background = "#18191b";
+  vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: (token: string) => token === "--island" ? background : "" }));
+  const view = mount(); view.root.className = "ide theme-dark";
+  await vi.waitFor(() => expect(view.controller()).toBeDefined());
+  const options = xterm.construct.mock.calls[0][0];
+  expect(options.theme.background).toBe("#18191b");
+  view.setShown(false); xterm.focus.mockClear();
+  background = "#ffffff"; view.root.className = "ide theme-light";
+  await vi.waitFor(() => expect(options.theme.background).toBe("#ffffff"));
+  background = "#1c1929"; view.root.className = "ide theme-purple";
+  await vi.waitFor(() => expect(options.theme.background).toBe("#1c1929"));
+  view.setFontSize(18); view.setFontFamily("Menlo");
+  expect(options).toMatchObject({ fontSize: 18, fontFamily: '"Menlo", monospace' });
+  expect(view.transport.resize).not.toHaveBeenCalled();
+  expect(view.transport.create).toHaveBeenCalledOnce();
+  expect(view.transport.close).not.toHaveBeenCalled();
+  expect(xterm.focus).not.toHaveBeenCalled();
+  const acknowledge = vi.fn();
+  const bytes = new TextEncoder().encode("retained real PTY output 日本語");
+  view.handlers().data(bytes, acknowledge);
+  expect(xterm.write).toHaveBeenLastCalledWith(bytes, acknowledge);
+  expect(acknowledge).not.toHaveBeenCalled();
+  xterm.write.mock.calls.at(-1)![1]();
+  expect(acknowledge).toHaveBeenCalledOnce();
+  view.setShown(true);
+  expect(view.transport.create).toHaveBeenCalledOnce();
+  expect(xterm.focus).toHaveBeenCalledOnce();
+});
+
+it.each([
+  [true, "MacIntel", false], [true, "MacARM", false],
+  [true, "Win32", true], [true, "Linux x86_64", true], [false, "MacIntel", true],
+])("selects the renderer for native=%s platform=%s without changing PTY input/output", async (native, platform, webgl) => {
+  vi.stubGlobal("WebGL2RenderingContext", class {});
+  if (native) vi.stubGlobal("__TAURI_INTERNALS__", {});
+  const platformSpy = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+  try {
+    const view = mount();
+    await vi.waitFor(() => expect(view.controller()).toBeDefined());
+    expect(xterm.webgl).toHaveBeenCalledTimes(webgl ? 1 : 0);
+    const bytes = new TextEncoder().encode("real PTY output 日本語🌱"); const acknowledge = vi.fn();
+    view.handlers().data(bytes, acknowledge);
+    expect(xterm.write).toHaveBeenLastCalledWith(bytes, acknowledge);
+    xterm.write.mock.calls.at(-1)![1]();
+    expect(acknowledge).toHaveBeenCalledOnce();
+    await view.controller()!.send("printf explicit", true);
+    expect(view.transport.write).toHaveBeenCalledExactlyOnceWith("terminal-1", new TextEncoder().encode("printf explicit\r"));
+  } finally { platformSpy.mockRestore(); }
 });
