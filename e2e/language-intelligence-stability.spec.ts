@@ -63,6 +63,7 @@ const overflowing = (page: Page) => page.evaluate(() => {
 
 for (const theme of ["dark", "light"] as const) {
   test(`the panel, the bolt and the status bar item never change size or place across every state (${theme})`, async ({ page }, testInfo) => {
+    test.slow(); // fifteen states, each measured several times
     await setup(page, "ready");
     if (theme === "light") await useLightTheme(page);
     await page.evaluate(() => (window as any).__spanHubPreview.set("ready"));
