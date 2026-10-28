@@ -195,9 +195,10 @@ pub(crate) fn compute(
 }
 
 /// The existing registry install, re-run. Mirrors `install_registry_agent`.
+/// The command sits in backticks so the UI can show it as copyable code.
 fn install_text(package: String) -> String {
     format!(
-        "Install it again from the ACP registry in Span. Span runs: npm install --ignore-scripts --no-audit --no-fund --no-package-lock --prefix <agent cache> -- {package}"
+        "Install it again from the ACP registry in Span. Span runs: `npm install --ignore-scripts --no-audit --no-fund --no-package-lock --prefix <agent cache> -- {package}`"
     )
 }
 
@@ -471,6 +472,7 @@ mod tests {
         assert_eq!(pi.status, UpdateStatus::UpdateAvailable);
         assert_eq!(pi.latest_version.as_deref(), Some("0.0.34"));
         assert!(pi.how_to_update.as_ref().unwrap().contains("pi-acp@0.0.34"));
+        assert!(pi.how_to_update.as_ref().unwrap().ends_with("pi-acp@0.0.34`"));
         // Garbage and missing entries are unknown, never up to date.
         assert_eq!(row(&rows, "weird").status, UpdateStatus::Unknown);
         assert_eq!(row(&rows, "gone").status, UpdateStatus::Unknown);

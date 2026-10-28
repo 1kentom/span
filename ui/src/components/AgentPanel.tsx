@@ -5,7 +5,7 @@ import { rowMeta } from "../lib/agent-chats";
 import { isNearBottom, relativeTime } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
 import type { AgentHint } from "../bindings";
-import { curatedAgent } from "../lib/acp-catalog";
+import { buildAgentCatalog, curatedAgent } from "../lib/acp-catalog";
 import { capabilityChips, classifyFailure, configViews, leaf } from "../lib/agent-view";
 import { fallbackModels } from "../lib/agent-options";
 import { AnimatedLogo } from "./AnimatedLogo";
@@ -13,7 +13,7 @@ import { BrandIcon } from "./BrandIcon";
 import { Icon } from "./Icon";
 import { AttachmentViewer, DropOverlay, attachmentBlockReason, type AttachmentTabView } from "./attachments";
 import type { Attachment } from "../lib/attachments";
-import { AgentCatalog } from "./agent/AgentCatalog";
+import { AgentCatalog, catalogPreset } from "./agent/AgentCatalog";
 import { AgentComposer } from "./agent/AgentComposer";
 import { AgentFeed } from "./agent/AgentFeed";
 import { ErrorCard, OfflineBar } from "./agent/Banners";
@@ -172,6 +172,8 @@ export function AgentPanel(props: AgentPanelProps) {
     return [...new Set(unsupportedAuth().flatMap((method) => (!covered(method) && methodHint(method) ? [methodHint(method)!] : [])))].filter((line) => line !== shown);
   };
   const unhinted = () => unsupportedAuth().filter((method) => !method.hint);
+  /** Local programs the curated list already connects through their known command, from the whole list rather than the searched one, so Known commands never repeats them. */
+  const catalogListedIds = () => buildAgentCatalog(a.registry(), a.installed()).filter((row) => catalogPreset(row, presetRows())).map((row) => row.definition.id);
   const presetRows = () => a.presets().map((preset) => ({ id: preset.id, name: preset.name, description: preset.description, command: [preset.launch.command, ...preset.launch.args].join(" ") }));
   const openHistory = () => {
     a.setView(a.view() === "history" ? "session" : "history");
@@ -381,9 +383,14 @@ export function AgentPanel(props: AgentPanelProps) {
                     removalConnected={Boolean(a.state().sessionId) && a.agentId() === a.removal()?.entry.id}
                     onCancelRemoval={a.cancelRemoval}
                     onConfirmRemoval={() => void a.confirmRemoval()}
+                    presets={presetRows()}
+                    onPreset={a.connectPreset}
+                    updates={agentUpdates()}
+                    onOpenExternal={props.onOpenExternal}
                   />
                 }
                 customDraft={customDraft()}
+                listedIds={catalogListedIds()}
                 found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${leaf(entry.launch.command)}` }))}
                 presets={presetRows()}
                 updates={agentUpdates()}
@@ -399,6 +406,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 onConnect={a.connectInstalled}
                 onInstall={(id) => void a.install(id)}
                 onCustom={a.connectCustom}
+                onOpenExternal={props.onOpenExternal}
               />
               <Show when={a.registryBusy()}>
                 <p class="sb-fine" role="status">

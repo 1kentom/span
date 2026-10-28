@@ -2,7 +2,7 @@
 export const menuIconAssets = {
   save: "save", discard: "discard", cancel: "cancel", cut: "cut", copy: "copy", duplicate: "copy",
   paste: "paste", path: "copy", file: "file", folder: "folder", trash: "trash", rename: "rename",
-  install: "install",
+  install: "package",
   newFile: "new-file", newFolder: "new-folder", openFolder: "open-folder",
   search: "search", keyboard: "keyboard", filter: "filter", reset: "reset",
 } as const;
