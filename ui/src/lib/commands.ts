@@ -23,7 +23,33 @@ export const actionDefinitions = [
   { id: "zoomOut", label: "Zoom Out", category: "View", keys: ["Mod+-"], inputs: true },
   { id: "resetZoom", label: "Reset Zoom", category: "View", keys: ["Mod+0"], inputs: true },
   { id: "goToLine", label: "Go to Line", category: "Editor", keys: ["Ctrl+G", "Mod+Alt+G"], inputs: false },
+  // Code navigation. Each id dispatches to the registry in navigation-actions.ts. Defaults were checked against every default above,
+  // the native menu, CodeMirror's default, search, fold, completion and history keymaps and the hard coded editor keymap.
+  { id: "goToDefinition", label: "Go to Definition", category: "Navigation", keys: ["F12"], inputs: false },
+  { id: "goToTypeDefinition", label: "Go to Type Definition", category: "Navigation", keys: ["Mod+Shift+F12"], inputs: false },
+  { id: "goToImplementation", label: "Go to Implementation", category: "Navigation", keys: ["Mod+F12"], inputs: false },
+  { id: "peekDefinition", label: "Peek Definition", category: "Navigation", keys: ["Alt+F12"], inputs: false },
+  { id: "peekTypeDefinition", label: "Peek Type Definition", category: "Navigation", keys: [], inputs: false },
+  { id: "peekImplementation", label: "Peek Implementation", category: "Navigation", keys: [], inputs: false },
+  { id: "findReferences", label: "Find All References", category: "Navigation", keys: ["Shift+F12"], inputs: false },
+  { id: "peekReferences", label: "Peek References", category: "Navigation", keys: ["Shift+Alt+F12"], inputs: false },
+  { id: "goToSymbolInFile", label: "Go to Symbol in File", category: "Navigation", keys: ["Mod+Shift+O"], inputs: false },
+  { id: "goToSymbolInWorkspace", label: "Go to Symbol in Workspace", category: "Navigation", keys: ["Mod+T"], inputs: true },
+  { id: "quickInfo", label: "Show Quick Definition", category: "Navigation", keys: ["Mod+Shift+I"], inputs: false },
+  { id: "showCallHierarchy", label: "Show Call Hierarchy", category: "Navigation", keys: ["Shift+Alt+H"], inputs: false },
+  { id: "showTypeHierarchy", label: "Show Type Hierarchy", category: "Navigation", keys: ["Mod+Alt+H"], inputs: false },
+  { id: "renameSymbol", label: "Rename Symbol", category: "Navigation", keys: ["F2"], inputs: false },
+  { id: "goBack", label: "Go Back", category: "Navigation", keys: ["Mod+Alt+ArrowLeft"], inputs: true },
+  { id: "goForward", label: "Go Forward", category: "Navigation", keys: ["Mod+Alt+ArrowRight"], inputs: true },
 ] as const;
+/** Colourable syntax tokens. Identical to `SYNTAX_TOKEN_IDS` in crates/core/src/settings.rs (a test compares them). */
+export const syntaxTokenIds = ["keyword", "controlKeyword", "operator", "punctuation", "comment", "docComment", "string", "number", "constant", "boolean", "function", "method", "type", "class", "interface", "enum", "typeParameter", "variable", "parameter", "property", "namespace", "importPath", "annotation", "macro", "label", "tag", "attribute", "regexp", "escape", "invalid"] as const;
+export type SyntaxTokenId = typeof syntaxTokenIds[number];
+/** Identical to `SYNTAX_THEMES` in crates/core/src/settings.rs. */
+export const syntaxThemeIds = ["dark", "light", "purple"] as const;
+export type SyntaxThemeId = typeof syntaxThemeIds[number];
+/** Defaults added after shortcuts could be saved. An existing explicit binding that claims one of these keys wins and only the default is dropped. */
+const inheritedDefaultIds: ReadonlySet<string> = new Set(["toggleFiles", "focusFiles", "goToDefinition", "goToTypeDefinition", "goToImplementation", "peekDefinition", "peekTypeDefinition", "peekImplementation", "findReferences", "peekReferences", "goToSymbolInFile", "goToSymbolInWorkspace", "quickInfo", "showCallHierarchy", "showTypeHierarchy", "renameSymbol", "goBack", "goForward"]);
 export type ActionId = typeof actionDefinitions[number]["id"];
 export type Platform = "mac" | "windows" | "linux";
 export type KeybindingOverrides = Record<string, string[]>;
@@ -40,7 +66,9 @@ const namedKeys: Record<string, string> = { equal: "=", numpadequal: "=", plus: 
 export function normalizeShortcut(value: string, platform?: Platform): string | undefined {
   const plusKey = /\+\+$/.test(value.trim());
   const tokens = (plusKey ? `${value.trim().slice(0, -1)}Plus` : value).split("+").map(token => token.trim());
-  if (tokens.some(token => !token) || tokens.length < 2) return;
+  if (tokens.some(token => !token)) return;
+  // A function key may stand alone (F12, F2); every other key needs a command modifier.
+  if (tokens.length < 2 && !/^f(?:[1-9]|1[0-9]|2[0-4])$/i.test(tokens[0] ?? "")) return;
   const modifiers = new Set<string>(); let key: string | undefined;
   for (const token of tokens) {
     let modifier = modifierNames[token.toLowerCase()];
@@ -52,7 +80,7 @@ export function normalizeShortcut(value: string, platform?: Platform): string | 
     if (!key) return;
   }
   // Modified shortcuts preserve ordinary typing and native text navigation.
-  if (!key || !["Mod", "Meta", "Ctrl", "Alt"].some(mod => modifiers.has(mod))) return;
+  if (!key || (!["Mod", "Meta", "Ctrl", "Alt"].some(mod => modifiers.has(mod)) && !/^F\d+$/.test(key))) return;
   return [...modifierOrder.filter(mod => modifiers.has(mod)), key].join("+");
 }
 export function resolveKeybindings(overrides: KeybindingOverrides = {}, platform: Platform = currentPlatform()): ResolvedKeybindings {
@@ -60,7 +88,7 @@ export function resolveKeybindings(overrides: KeybindingOverrides = {}, platform
   return Object.fromEntries(actionDefinitions.map(action => {
     const defaults: readonly string[] = action.id === "quickOpen" && platform === "mac" ? [...action.keys, "Ctrl+P"] : action.keys;
     // A newly introduced default must not invalidate an existing explicit binding.
-    const inherited = action.id === "toggleFiles" || action.id === "focusFiles" ? defaults.filter(key => !claimed.has(normalizeShortcut(key, platform))) : defaults;
+    const inherited = inheritedDefaultIds.has(action.id) ? defaults.filter(key => !claimed.has(normalizeShortcut(key, platform))) : defaults;
     const keys = Object.hasOwn(overrides, action.id) ? overrides[action.id] : inherited;
     return [action.id, [...new Set(keys.map(key => normalizeShortcut(key, platform)).filter((key): key is string => Boolean(key)))]];
   })) as ResolvedKeybindings;

@@ -21,6 +21,7 @@ import { absolutePath, relativePath, fileName, parentPath, contextMenuPosition, 
 import { SettingsPage } from "./components/SettingsPage";
 import { createWorkbench, settleIntent, SETTINGS_TAB, isSettingsBuffer, tabName, type EditorGroup } from "./stores/workbench";
 import { canDispatchAction, currentPlatform, dispatchKeyboard, nativeMenuBindings, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
+import { navigationActions, setNavigationNotifier } from "./lib/navigation-actions";
 import { createZoomController } from "./lib/zoom";
 import { createInternalDrag, type InternalDragState } from "./lib/internal-drag";
 import { compactFolders, setCompactFolders } from "./lib/explorer-prefs";
@@ -237,7 +238,10 @@ export default function App() {
     formatDocument: () => { void w.format(); }, formatWithLanguageServer: () => runEditor("formatWithLanguageServer"), goToLine: () => runEditor("goToLine"),
     zoomIn: () => applyZoom(zoom.zoomIn), zoomOut: () => applyZoom(zoom.zoomOut), resetZoom: () => applyZoom(zoom.reset),
     toggleWordWrap: () => { void w.updateEffectiveSetting("wordWrap", !w.settings().wordWrap).catch(error => w.setError(String(error))); },
+    ...navigationActions,
   };
+  setNavigationNotifier(message => w.setError(message));
+  onCleanup(() => setNavigationNotifier(undefined));
   const isZoomKey = (event: KeyboardEvent) => { const key = shortcutFromEvent(event); return !!key && (["zoomIn", "zoomOut", "resetZoom"] as const).some(action => bindings()[action].includes(key)); };
   const keyboard = (event: KeyboardEvent) => { if (w.busy() && !isZoomKey(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; } if (!modalAllowsGlobalShortcut(event) && !isZoomKey(event)) return; dispatchKeyboard(event, { bindings: bindings(), handlers, platform, nativeActions: nativeActions() }); };
   function saveSettingsClose() {
