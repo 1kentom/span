@@ -7,7 +7,14 @@
     "glyphsSha256": "11f35d5b533af16c9598ffa2109a66dd6eb0e7335b520c79c0d55588b3e7623d",
     "rasters": "frontend/static/model-icons/"
   },
-  "license": "The source project ships no licence file. Each mark belongs to its vendor, who retains trademark rights and any brand restrictions. The span project MIT licence does not cover these marks and does not establish separate rights to redistribute them.",
+  "simpleIcons": {
+    "package": "simple-icons",
+    "version": "16.29.0",
+    "tarball": "npm pack simple-icons@16.29.0, extracted with tar, no scripts run",
+    "pinnedBy": "taifa-ai frontend/package.json (^16.29.0), lockfile resolves 16.29.0",
+    "licenseFile": "LICENSE.md, CC0 1.0 Universal"
+  },
+  "license": "The source project ships no licence file. Each mark belongs to its vendor, who retains trademark rights and any brand restrictions. The span project MIT licence does not cover these marks and does not establish separate rights to redistribute them. The four simple-icons files (DeepSeek, NVIDIA, Meta, MiniMax) are CC0 1.0 as icon files, but the marks they depict are trademarks of their owners and are not covered by the span project MIT licence.",
   "assets": [
     {
       "key": "cohere",
@@ -72,6 +79,42 @@
       "source": "frontend/static/model-icons/nex-agi.png, copied byte for byte",
       "colour": "brand",
       "sha256": "1e2737885b26c420ee879c15dbb1f97f6a5ddffe7114ab9ce9fc01d02124ceb8"
+    },
+    {
+      "key": "deepseek",
+      "vendor": "DeepSeek",
+      "file": "deepseek.svg",
+      "source": "simple-icons 16.29.0 icons/deepseek.svg, with fill=\"currentColor\" added to the root svg element",
+      "originalSha256": "7a55a0a7391d116eba7d32807d6838478f9209f6034612941e74fbb14934e2ef",
+      "colour": "currentColor",
+      "sha256": "66d55e897334c4e9035ba9ee305e04fe40837ac30baea05d707eb97c26cfe28b"
+    },
+    {
+      "key": "nvidia",
+      "vendor": "NVIDIA",
+      "file": "nvidia.svg",
+      "source": "simple-icons 16.29.0 icons/nvidia.svg, with fill=\"currentColor\" added to the root svg element",
+      "originalSha256": "b0e4cfc12712c840d4d630c9a717200fbd09aeeadbd3faeac13bda2e2ed050b0",
+      "colour": "currentColor",
+      "sha256": "bb99135efd9039387434c0db376bca587a23d90c54ab0f389b6723cfcaa39367"
+    },
+    {
+      "key": "meta",
+      "vendor": "Meta Llama",
+      "file": "meta.svg",
+      "source": "simple-icons 16.29.0 icons/meta.svg, with fill=\"currentColor\" added to the root svg element",
+      "originalSha256": "e3e9db62f59dc477e5917687349b8aa9685b841d40300c1afad60ad85075cd2e",
+      "colour": "currentColor",
+      "sha256": "b00830ad4f36408df071220318fb29a20a926b325ef393ddcb6869edba921581"
+    },
+    {
+      "key": "minimax",
+      "vendor": "MiniMax",
+      "file": "minimax.svg",
+      "source": "simple-icons 16.29.0 icons/minimax.svg, with fill=\"currentColor\" added to the root svg element",
+      "originalSha256": "ef95e28b290e5954a5c0be338925d81f13b3d06a0a32af29a4bc64583fbcc368",
+      "colour": "currentColor",
+      "sha256": "cf247ea7e8c8f3b58aa63e9d4e603acf76a8b7836d1348142122675efb840165"
     }
   ]
 }
