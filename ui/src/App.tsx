@@ -15,6 +15,8 @@ import { AssetPreview, isAssetPath, isBinaryAssetPath, isSvgPath } from "./compo
 import { Breadcrumbs } from "./components/Breadcrumbs";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import { ToolsSettings } from "./components/ToolsSettings";
+import { UpdatesSettings } from "./components/UpdatesSettings";
+import { agentUpdateError, agentUpdates, agentUpdatesBusy, appUpdate, appUpdateBusy, checkAllUpdates } from "./lib/updates";
 import { absolutePath, relativePath, fileName, contextMenuPosition, isContextMenuKey } from "./lib/navigation";
 import { SettingsPage } from "./components/SettingsPage";
 import { createWorkbench, settleIntent, SETTINGS_TAB, type EditorGroup } from "./stores/workbench";
@@ -151,6 +153,9 @@ export default function App() {
   });
   onCleanup(() => { window.removeEventListener("keydown", keyboard, true); window.removeEventListener("beforeunload", beforeUnload); disposed = true; unlistenClose?.(); unlistenNative?.(); unlistenResize?.(); unlistenStartup?.(); endPanelDrag?.(); });
   createEffect(() => { document.documentElement.dataset.theme = theme(); });
+  // One check per launch, only when the user turned it on in their own settings file (ADR 0004).
+  let launchChecked = false;
+  createEffect(() => { if (isDesktop && !launchChecked && w.settings().updates?.checkOnLaunch) { launchChecked = true; void checkAllUpdates(); } });
   let menuSync = 0;
   createEffect(() => { const keys = bindings(); const recording = recordingShortcut(); if (!isDesktop || !nativeReady()) return; const generation = ++menuSync; void api.syncNativeMenu(recording ? {} : nativeMenuBindings(keys)).then(owned => { if (!disposed && generation === menuSync) setNativeActions(new Set(owned as ActionId[])); }).catch(error => w.setError(String(error))); });
 
@@ -196,7 +201,7 @@ export default function App() {
   }
   function SettingsDocument() {
     onCleanup(() => { setSettingsDirty(false); saveSettingsDraft = undefined; revertSettingsDraft = undefined; });
-    return <SettingsPage settings={w.settings()} settingsJsonc={w.settingsJsonc()} workspaceName={w.workspace()?.name} onChange={w.updateSettings} onSaveJsonc={w.saveSettingsJsonc} onReloadJsonc={w.reloadSettingsJsonc} onDirtyChange={setSettingsDirty} onSaveReady={save => { saveSettingsDraft = save; }} onRevertReady={revert => { revertSettingsDraft = revert; }} tools={<ToolsSettings tools={tools()} desktop={isDesktop} loaded={toolsLoaded()} busy={toolsBusy()} error={toolsError()} onRefresh={detectTools} />} onOpenTools={() => { if (!toolsLoaded()) void detectTools(); }} onOpenAgents={() => { setShowRight(true); queueMicrotask(() => document.querySelector<HTMLTextAreaElement>('[aria-label="Message to agent"]')?.focus()); }} shortcuts={<KeyboardSettings keybindings={w.settings().keybindings} onChange={keybindings => w.updateSettings({ keybindings })} onRecordingChange={setRecordingShortcut} platform={platform} />} />;
+    return <SettingsPage settings={w.settings()} settingsJsonc={w.settingsJsonc()} workspaceName={w.workspace()?.name} onChange={w.updateSettings} onSaveJsonc={w.saveSettingsJsonc} onReloadJsonc={w.reloadSettingsJsonc} onDirtyChange={setSettingsDirty} onSaveReady={save => { saveSettingsDraft = save; }} onRevertReady={revert => { revertSettingsDraft = revert; }} tools={<ToolsSettings tools={tools()} desktop={isDesktop} loaded={toolsLoaded()} busy={toolsBusy()} error={toolsError()} onRefresh={detectTools} />} updates={<UpdatesSettings desktop={isDesktop} busy={appUpdateBusy() || agentUpdatesBusy()} app={appUpdate()} agents={agentUpdates()} agentError={agentUpdateError()} checkOnLaunch={w.settings().updates?.checkOnLaunch ?? false} onCheck={() => checkAllUpdates(true)} onOpenRelease={url => void api.openExternal(url).catch(error => w.setError(String(error)))} />} onOpenTools={() => { if (!toolsLoaded()) void detectTools(); }} onOpenAgents={() => { setShowRight(true); queueMicrotask(() => document.querySelector<HTMLTextAreaElement>('[aria-label="Message to agent"]')?.focus()); }} shortcuts={<KeyboardSettings keybindings={w.settings().keybindings} onChange={keybindings => w.updateSettings({ keybindings })} onRecordingChange={setRecordingShortcut} platform={platform} />} />;
   }
   function EditorPane(props: { group: EditorGroup; width?: number }) {
     const groupId = props.group.id;

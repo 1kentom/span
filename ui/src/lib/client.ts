@@ -442,3 +442,15 @@ export async function agentCancelTask(taskId: string): Promise<void> {
   if (!isDesktop) nativeRequired('Cancelling an agent task');
   await commands.agentCancelTask(taskId);
 }
+
+/** Check-only agent update status: Span-installed registry agents against the registry's current version, and local programs through the version probe. Unknown means unknown; nothing is installed or run to update. */
+export async function agentUpdateStatus(): Promise<import('../bindings').AgentUpdate_Serialize[]> {
+  if (!isDesktop) nativeRequired('Agent update checks');
+  return commands.agentUpdateStatus();
+}
+
+/** Check-only app update check for this build's channel against the public GitHub release list. Never downloads or installs. Open `releaseUrl` with `api.openExternal` after a user click. */
+export async function appUpdateCheck(): Promise<import('../bindings').AppUpdate_Serialize> {
+  if (!isDesktop) nativeRequired('App update checks');
+  return commands.appUpdateCheck();
+}

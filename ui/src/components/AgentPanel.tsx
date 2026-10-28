@@ -20,6 +20,7 @@ import { HistoryList } from "./agent/HistoryList";
 import { HintLine, SignIn } from "./agent/SignIn";
 import type { ActionView, KeyHint } from "./agent/types";
 import { modalOpen } from "./agent/util";
+import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } from "../lib/updates";
 import "../styles/agent.css";
 
 const KEYS: KeyHint[] = [
@@ -284,6 +285,10 @@ export function AgentPanel(props: AgentPanelProps) {
               <ConnectScreen
                 found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${entry.launch.command}` }))}
                 presets={presetRows()}
+                updates={agentUpdates()}
+                checkingUpdates={agentUpdatesBusy()}
+                updateError={agentUpdateError()}
+                onCheckUpdates={() => void checkAgentUpdates(true)}
                 onPreset={a.connectPreset}
                 registry={a
                   .registry()

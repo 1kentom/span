@@ -433,3 +433,8 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-delegation-files { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
 .sb-delegation-actions { display: flex; gap: 6px; }
 .sb-delegation-hint { padding: 2px 4px 0; overflow-wrap: anywhere; }
+
+/* Update badges and the check row (ADR 0004). Tokens only. */
+.sb-update-badge { display: inline-block; align-self: flex-start; margin-top: 2px; padding: 0 6px; border: 1px solid var(--sb-accent-fg); border-radius: 4px; font-size: 10.5px; line-height: 16px; color: var(--sb-accent-fg); }
+.sb-update-check { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0 2px; }
+.sb-update-error { color: var(--sb-error); }

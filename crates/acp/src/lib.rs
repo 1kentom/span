@@ -7,6 +7,7 @@ mod registry;
 mod service;
 pub mod tools;
 mod types;
+pub mod update;
 pub use adapter::agent_presets;
 pub use manager::{
     AgentControl, ConnectionInfo, PendingKind, PendingRequest, SessionEndHook, SessionEvent,
