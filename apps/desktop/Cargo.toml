@@ -11,6 +11,7 @@ name = "span_desktop_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]
+embed-resource = "=3.0.12"
 tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]

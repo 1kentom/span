@@ -514,7 +514,7 @@ async fn run_process(
         .map_err(|error| CoreError::Formatter(format!("Formatter returned invalid UTF-8: {error}")))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[cfg(unix)]
