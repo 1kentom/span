@@ -201,3 +201,37 @@ export function contrastRatio(foreground: string, background: string): number {
 
 /** Tokens held to 3:1 instead of the 4.5:1 normal-text minimum. */
 export const LOW_CONTRAST_TOKENS: readonly TokenId[] = ["comment", "punctuation"];
+
+/** Minimum contrast ratio for a token: 3 for comments and punctuation, 4.5 for everything else. */
+export function contrastMinimum(id: TokenId): number {
+  return LOW_CONTRAST_TOKENS.includes(id) ? 3 : 4.5;
+}
+
+/** Expands #rgb to #rrggbb and lower cases; keeps #rrggbbaa. Returns null for anything invalid. */
+export function expandColor(value: string): string | null {
+  if (!isValidColor(value)) return null;
+  const hex = value.trim().slice(1).toLowerCase();
+  return `#${hex.length === 3 ? [...hex].map((digit) => digit + digit).join("") : hex}`;
+}
+
+/** The opaque #rrggbb part of a valid colour, for a native colour input. */
+export function pickerColor(value: string): string {
+  return (expandColor(value) ?? "#000000").slice(0, 7);
+}
+
+/** Contrast of a token colour against a theme's editor background. A translucent colour is blended over the background first. */
+export function tokenContrast(color: string, theme: SyntaxTheme): number {
+  const full = expandColor(color);
+  const background = THEME_BACKGROUNDS[theme];
+  if (!full) return 0;
+  if (full.length === 9) {
+    const alpha = Number.parseInt(full.slice(7, 9), 16) / 255;
+    const mix = [1, 3, 5].map((index) => {
+      const fg = Number.parseInt(full.slice(index, index + 2), 16);
+      const bg = Number.parseInt(background.slice(index, index + 2), 16);
+      return Math.round(fg * alpha + bg * (1 - alpha)).toString(16).padStart(2, "0");
+    });
+    return contrastRatio(`#${mix.join("")}`, background);
+  }
+  return contrastRatio(full, background);
+}

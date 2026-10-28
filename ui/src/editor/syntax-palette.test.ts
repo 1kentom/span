@@ -60,7 +60,7 @@ describe("default palettes", () => {
 
   it("matches the stylesheet defaults and the tree-sitter classes", () => {
     const css = readFileSync(resolve(__dirname, "../styles/syntax.css"), "utf8");
-    const selectors: Record<SyntaxTheme, string> = { dark: '.span-editor[data-theme="dark"]', light: '.span-editor[data-theme="light"]', purple: '.span-editor[data-theme="purple"]' };
+    const selectors: Record<SyntaxTheme, string> = { dark: ':root[data-theme="dark"]', light: ':root[data-theme="light"]', purple: ':root[data-theme="purple"]' };
     for (const theme of themes) {
       const block = new RegExp(`${selectors[theme].replace(/[[\]"]/g, "\\$&")} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
       for (const id of SYNTAX_TOKENS) expect(block, `${theme} --syn-${id}`).toContain(`--syn-${id}: ${defaultPalette(theme)[id]};`);

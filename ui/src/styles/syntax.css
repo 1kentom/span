@@ -1,6 +1,6 @@
-/* Generated defaults for the --syn-<id> tokens; syntax-palette.test.ts keeps this file in step with syntax-palette.ts. */
-.span-editor,
-.span-editor[data-theme="dark"] {
+/* Generated defaults for the --syn-<id> tokens, defined on the document root so that inline overrides set there (Settings, Syntax colors) reach every editor and widget; syntax-palette.test.ts keeps this file in step with syntax-palette.ts. */
+:root,
+:root[data-theme="dark"] {
   --syn-keyword: #78c8c7;
   --syn-controlKeyword: #78c8c7;
   --syn-operator: #b4bac0;
@@ -33,7 +33,7 @@
   --syn-invalid: #e58a8a;
 }
 
-.span-editor[data-theme="light"] {
+:root[data-theme="light"] {
   --syn-keyword: #25797d;
   --syn-controlKeyword: #25797d;
   --syn-operator: #5b6470;
@@ -66,7 +66,7 @@
   --syn-invalid: #d02f2f;
 }
 
-.span-editor[data-theme="purple"] {
+:root[data-theme="purple"] {
   --syn-keyword: #a6c8d4;
   --syn-controlKeyword: #a6c8d4;
   --syn-operator: #b4bac0;
