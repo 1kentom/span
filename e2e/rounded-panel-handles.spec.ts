@@ -49,7 +49,7 @@ for (const panel of [
 
 test("collapsed bottom bump overlays the full height editor without adding an offset", async ({ page }) => {
   await ready(page);
-  await page.getByRole("button", { name: "Close terminal panel", exact: true }).click();
+  await page.getByRole("button", { name: "Hide terminal", exact: true }).click();
   const editor = (await page.getByRole("region", { name: "Editor group 1", exact: true }).boundingBox())!;
   const project = (await page.getByRole("complementary", { name: "Project", exact: true }).boundingBox())!;
   expect(Math.abs(editor.y + editor.height - project.y - project.height)).toBeLessThanOrEqual(1);

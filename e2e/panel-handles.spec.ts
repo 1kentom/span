@@ -24,7 +24,7 @@ async function noFullRailAccent(handle: Locator) {
 
 test("collapsed terminal rail overlays its center area without shortening the editor", async ({ page }) => {
   await ready(page);
-  await page.getByRole("button", { name: "Close terminal panel", exact: true }).click();
+  await page.getByRole("button", { name: "Hide terminal", exact: true }).click();
   const editor = page.getByRole("region", { name: "Editor group 1", exact: true });
   const sidebar = page.getByRole("complementary", { name: "Project", exact: true });
   await expect.poll(async () => {

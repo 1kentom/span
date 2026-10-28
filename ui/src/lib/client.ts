@@ -4,7 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import { createPreviewSettings } from './preview-settings';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, TerminalEvent_Deserialize as TerminalEvent, TerminalInfo_Serialize as TerminalInfo, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -134,6 +134,38 @@ function previewEntries(path: string): FileEntry[] {
 }
 
 export const api = {
+  async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>): Promise<TerminalInfo> {
+    if (!isDesktop) nativeRequired('Creating terminal sessions');
+    return commands.terminalCreate(cwd, cols, rows, onEvent);
+  },
+  async terminalWrite(id: string, data: Uint8Array): Promise<void> {
+    if (!isDesktop) nativeRequired('Writing terminal input');
+    await commands.terminalWrite(id, Array.from(data));
+  },
+  async terminalResize(id: string, cols: number, rows: number): Promise<void> {
+    if (!isDesktop) nativeRequired('Resizing terminal sessions');
+    await commands.terminalResize(id, cols, rows);
+  },
+  async terminalInterrupt(id: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Interrupting terminal commands');
+    await commands.terminalInterrupt(id);
+  },
+  async terminalClose(id: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Closing terminal sessions');
+    await commands.terminalClose(id);
+  },
+  async terminalAcknowledge(id: string, sequence: number): Promise<void> {
+    if (!isDesktop) nativeRequired('Acknowledging terminal output');
+    await commands.terminalAcknowledge(id, sequence);
+  },
+  async terminalList(): Promise<TerminalInfo[]> {
+    if (!isDesktop) nativeRequired('Listing terminal sessions');
+    return commands.terminalList();
+  },
+  async terminalScrollback(id: string): Promise<Uint8Array> {
+    if (!isDesktop) nativeRequired('Reading terminal scrollback');
+    return Uint8Array.from(await commands.terminalScrollback(id));
+  },
   async openWorkspace(path?: string): Promise<Workspace | null> {
     if (!isDesktop) {
       if (path && path !== previewWorkspace.root) nativeRequired('Opening folders');
