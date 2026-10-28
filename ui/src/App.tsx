@@ -23,7 +23,7 @@ import { createSyntaxColorsEffect } from "./editor/syntax-colors-effect";
 import { SyntaxColorsSettings } from "./components/SyntaxColorsSettings";
 import { createWorkbench, settleIntent, SETTINGS_TAB, isSettingsBuffer, tabName, type EditorGroup } from "./stores/workbench";
 import { canDispatchAction, currentPlatform, normalizeShortcut, dispatchKeyboard, nativeMenuBindings, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
-import { navigationActions, setNavigationNotifier } from "./lib/navigation-actions";
+import { navigationActions, runNavigationAction, setNavigationNotifier, type NavigationActionId } from "./lib/navigation-actions";
 import { createZoomController } from "./lib/zoom";
 import { createInternalDrag, type InternalDragState } from "./lib/internal-drag";
 import { compactFolders, setCompactFolders } from "./lib/explorer-prefs";
@@ -37,6 +37,9 @@ import { navigationPort } from "./lib/client";
 import { LibraryViewer, NavigationLayer, NavigationPanels, NavigationTabs } from "./components/navigation/NavigationLayer";
 import { configureNavigation, createSymbolSource, navigationState, openSymbol, symbolCrumbs } from "./stores/navigation";
 import type { CapabilitiesDto } from "./bindings";
+import { createPreviewBinding, noticeFor, withHoverExtras } from "./lib/lsp-hover-binding";
+import { previewHoverCapabilities, previewHoverServer } from "./lib/hover-preview";
+import type { BindingContext } from "./stores/language-servers";
 import type { EditProposal, SyntaxSnapshot, ToolInfo, StartupRequest_Serialize as StartupRequest, RecentProject_Serialize as RecentProject } from "./bindings";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -138,6 +141,20 @@ export default function App() {
   const hasUnsaved = () => w.hasDirty() || settingsDirty();
   const selectionContext = () => { const path = w.activePath(); const current = cursor(); return path && !isSettingsBuffer(path) && current.selectedText ? { path, text: current.selectedText, startLine: current.line, endLine: current.line + current.selectedText.split("\n").length - 1 } : undefined; };
   const navigate = (path: string, line?: number, column?: number) => { const relative = relativePath(path, w.workspace()?.root); void w.openFile(relative).then(() => setReveal(line ? { path: relative, line, column } : undefined)); };
+  const navigateToSide = (path: string, line?: number, column?: number) => { const relative = relativePath(path, w.workspace()?.root); void w.openToSide(relative).then(() => setReveal(line ? { path: relative, line, column } : undefined)); };
+  /** The language server store's binding for desktop, the labelled fixture in browser preview, plus the workbench pieces the hover popup uses. */
+  const lspBindingFor = (path: string, context: BindingContext) => {
+    const base = isDesktop ? languageServers.binding(path, context) : createPreviewBinding(path, context, lspPort);
+    if (!base) return undefined;
+    return withHoverExtras(base, path, {
+      notice: () => { const root = w.workspace()?.root; const server = serverForBuffer(path); const entry = root && server ? languageServers.entryFor(server, `${root.replace(/[\\/]+$/, "")}/${path}`) : undefined; return entry ? noticeFor(entry.state.kind, entry) : undefined; },
+      shortcut: id => shortcut(id),
+      openExternal: url => api.openExternal(url),
+      navigateFile: target => navigate(target.path, target.line, target.column),
+      openLocationToSide: location => navigateToSide(location.path, location.range.start.line + 1, location.range.start.character + 1),
+      readSource: (location, lines) => navigationPort.readSource(location, lines),
+    });
+  };
   let pickingFile = false;
   function focusFiles() {
     batch(() => { setLeftView("Files"); setShowLeft(true); });
@@ -203,13 +220,45 @@ export default function App() {
   function startFileDrag(event: PointerEvent, path: string, group?: number) { fileDrag.start(event, { path, group, generation: w.workspaceGeneration() }); }
   createEffect(() => { w.workspaceGeneration(); w.busy(); w.groups().map(group => group.id).join(","); fileDrag.cancel(); });
   onCleanup(fileDrag.dispose);
+  /** Language server attached to this file: its label and, once it is ready, what it advertises. */
+  const serverInfoFor = (path: string): { label: string; capabilities?: CapabilitiesDto } | undefined => {
+    if (!isDesktop) return previewHoverServer(path) ? { label: "preview fixture", capabilities: previewHoverCapabilities } : undefined;
+    const server = serverForBuffer(path); const root = w.workspace()?.root;
+    if (!server) return undefined;
+    const entry = root ? languageServers.entryFor(server, `${root.replace(/[\\/]+$/, "")}/${path}`) : undefined;
+    return { label: serverLabels[server], capabilities: entry && entry.enabled && entry.state.kind === "ready" ? entry.capabilities ?? undefined : undefined };
+  };
+  /** Go to, Peek, References, Rename and Hierarchy, shown first in the editor menu when a language server is attached. */
+  function codeIntelligenceItems(path: string): ContextMenuItem[] {
+    const info = serverInfoFor(path);
+    if (!info || isSettingsBuffer(path)) return [];
+    const caps = info.capabilities;
+    const reason = caps ? `Not supported by ${info.label}` : `${info.label} is not ready`;
+    const entry = (id: NavigationActionId, label: string, supported: boolean | undefined, icon?: string, menuId: string = id): ContextMenuItem => ({ id: menuId, label, icon, shortcut: shortcut(id) || undefined, disabled: !supported, disabledReason: reason, onSelect: () => { runNavigationAction(id); } });
+    return [
+      entry("goToDefinition", "Go to Definition", caps?.definition, "goto"),
+      entry("goToTypeDefinition", "Go to Type Definition", caps?.typeDefinition, "Code1"),
+      entry("goToImplementation", "Go to Implementations", caps?.implementation, "Element3"),
+      entry("peekReferences", "Go to References", caps?.references, "Link2", "goToReferences"),
+      { id: "peek", label: "Peek", icon: "Eye", disabled: !caps, disabledReason: reason, children: [
+        entry("peekDefinition", "Peek Definition", caps?.definition),
+        entry("peekTypeDefinition", "Peek Type Definition", caps?.typeDefinition),
+        entry("peekImplementation", "Peek Implementations", caps?.implementation),
+        entry("peekReferences", "Peek References", caps?.references),
+      ] },
+      entry("findReferences", "Find All References", caps?.references, "menu-search"),
+      entry("renameSymbol", "Rename Symbol", caps?.rename, "menu-rename"),
+      entry("showCallHierarchy", "Show Call Hierarchy", caps?.callHierarchy, "Hierarchy"),
+      entry("showTypeHierarchy", "Show Type Hierarchy", caps?.typeHierarchy, "Hierarchy"),
+    ];
+  }
   function showContext(event: MouseEvent | KeyboardEvent, path: string, kind: "file" | "directory" | "tab" | "editor", group = w.activeGroup()) {
-    event.preventDefault(); event.stopPropagation(); const position = contextMenuPosition(event); const items: ContextMenuItem[] = [];
+    event.preventDefault(); event.stopPropagation(); const position = contextMenuPosition(event); const items: ContextMenuItem[] = kind === "editor" ? codeIntelligenceItems(path) : [];
     const regular = path !== SETTINGS_TAB && !isSettingsBuffer(path); const directory = kind === "directory";
     if (directory) items.push({ id: "toggle", label: w.expanded().has(path) ? "Collapse folder" : "Expand folder", icon: "menu-folder", onSelect: () => { void w.toggleDirectory(path); setShowLeft(true); setLeftView("Files"); } }, { id: "compact-folders", label: compactFolders() ? "Show folders separately" : "Compact single-child folders", icon: "menu-folder", onSelect: () => setCompactFolders(!compactFolders()) });
     else if (kind === "file") items.push({ id: "open", label: "Open file", icon: "menu-file", onSelect: () => navigate(path) });
     if (!directory) {
-      items.push({ id: "split", label: "Split editor", icon: "split-editor", children: [{ id: "split-right", label: "Open in split to the right", icon: "split-editor", onSelect: () => { void w.openToSide(path, group); } }] });
+      items.push({ id: "split", label: "Split editor", icon: "split-editor", separator: items.length > 0, children: [{ id: "split-right", label: "Open in split to the right", icon: "split-editor", onSelect: () => { void w.openToSide(path, group); } }] });
       if (kind === "tab") items.push({ id: "close", label: "Close tab", icon: "menu-cancel", shortcut: shortcut("closeTab"), onSelect: () => requestCloseTab(path, group) }, { id: "close-group", label: "Close editor group", icon: "menu-cancel", disabled: w.groups().length < 2, onSelect: () => requestCloseGroup(group) });
       items.push({ id: "save", label: "Save file", icon: "menu-save", disabled: !w.buffers[path], shortcut: shortcut("save"), onSelect: () => { void w.save(path); } });
     }
@@ -217,7 +266,7 @@ export default function App() {
       const controller = editorCommands.get(`${group}:${path}`);
       const clipboardAction = (action: "copy" | "cut" | "paste" | "selectAll") => { if (controller) void Promise.resolve(controller[action]()).catch(error => w.setError(String(error))); };
       items.push({ id: "cut", label: "Cut", icon: "menu-cut", separator: true, disabled: !controller, onSelect: () => clipboardAction("cut") }, { id: "copy", label: "Copy", icon: "menu-copy", disabled: !controller, onSelect: () => clipboardAction("copy") }, { id: "paste", label: "Paste", icon: "menu-paste", disabled: !controller, onSelect: () => clipboardAction("paste") }, { id: "selectAll", label: "Select all", disabled: !controller, onSelect: () => clipboardAction("selectAll") });
-      items.push({ id: "find", separator: true, label: "Find in file", icon: "SearchNormal1", shortcut: shortcut("findInFile"), onSelect: () => runEditor("find") }, { id: "goto", label: "Go to line", shortcut: shortcut("goToLine"), onSelect: () => runEditor("goToLine") }, { id: "format", label: "Format document", disabled: isSettingsBuffer(path) || !w.buffers[path], shortcut: shortcut("formatDocument"), onSelect: () => void w.format(path) });
+      items.push({ id: "find", separator: true, label: "Find in file", icon: "SearchNormal1", shortcut: shortcut("findInFile"), onSelect: () => runEditor("find") }, { id: "goto", label: "Go to line", shortcut: shortcut("goToLine"), onSelect: () => runEditor("goToLine") }, { id: "format", label: "Format document", disabled: isSettingsBuffer(path) || !w.buffers[path], shortcut: shortcut("formatDocument"), onSelect: () => { if (serverInfoFor(path)?.capabilities?.formatting && controller) controller.formatWithLanguageServer(); else void w.format(path); } });
     }
     if (regular) {
       const clipboard = fileClipboard(); const folder = directory ? path : parentPath(path);
@@ -362,7 +411,7 @@ export default function App() {
       const timer = setTimeout(() => { if (!w.synchronized(path)) return; void api.syntax(path).then(result => { if (w.documents()[path]?.document === doc && w.buffers[path]?.revision === revision && result.revision === revision) setSyntax(result); }).catch(() => undefined); }, 100); onCleanup(() => clearTimeout(timer));
     });
     return <div class="document-view" onContextMenu={event => showContext(event, props.path, "editor", props.group)} onKeyDown={event => { if (isContextMenuKey(event)) showContext(event, props.path, "editor", props.group); }}><Show when={markdown() || svg()}><div class="markdown-view-toolbar" role="toolbar" aria-label="Markdown view"><SourcePreviewToggle value={view()} onChange={mode => w.setMarkdownView(props.path, mode)} /></div></Show><div class={`document-view-content ${(markdown() || svg()) && view() === "both" ? "markdown-both" : ""}`}>
-      <div class="source-view" onFocusOut={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) w.autoSaveEditorBlur(props.path); }} style={{ display: (markdown() || asset()) && view() === "preview" ? "none" : "flex" }}><Show when={w.buffers[props.path]}>{buffer => <Editor buffer={buffer()} document={w.documents()[props.path]?.document} change={w.documents()[props.path]?.change} onEdit={edit => w.edit(props.path, edit)} onUndo={() => w.applyHistory(props.path)} onRedo={() => w.applyHistory(props.path, true)} onSave={saveActive} clipboard={{ readText: api.readClipboard, writeText: api.writeClipboard }} onFormat={() => void w.format(props.path)} lsp={isDesktop && !isSettingsBuffer(props.path) ? languageServers.binding(props.path, { workspaceRoot: () => w.workspace()?.root, getRevision: () => w.buffers[props.path]?.revision ?? 0, isSynchronized: () => w.synchronized(props.path), isActive: editorActive, getWorkspaceGeneration: w.workspaceGeneration, openLocation: location => navigate(location.path, location.range.start.line + 1, location.range.start.character + 1), notify: w.setError }) : undefined} onCommands={commands => { const key = `${props.group}:${props.path}`; if (commands) editorCommands.set(key, commands); else editorCommands.delete(key); }} onCursor={value => { if (props.active) setCursor(value); }} syntax={syntax()} active={editorActive()} readOnly={w.busy()} theme={theme()} fontSize={w.settings().fontSize} fontFamily={w.settings().editorFontFamily} tabSize={w.settings().tabSize} wordWrap={w.settings().wordWrap} revealLine={reveal()?.path === props.path ? reveal()?.line : undefined} revealColumn={reveal()?.path === props.path ? reveal()?.column : undefined} proposal={proposals().find(p => p.path === props.path)} proposalBusy={proposalBusy()} proposalStale={!w.synchronized(props.path)} onApplyProposal={(id, ids) => { void reviewProposal?.(id, ids); }} onRejectProposal={id => { void reviewProposal?.(id, []); }} />}</Show></div>
+      <div class="source-view" onFocusOut={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) w.autoSaveEditorBlur(props.path); }} style={{ display: (markdown() || asset()) && view() === "preview" ? "none" : "flex" }}><Show when={w.buffers[props.path]}>{buffer => <Editor buffer={buffer()} document={w.documents()[props.path]?.document} change={w.documents()[props.path]?.change} onEdit={edit => w.edit(props.path, edit)} onUndo={() => w.applyHistory(props.path)} onRedo={() => w.applyHistory(props.path, true)} onSave={saveActive} clipboard={{ readText: api.readClipboard, writeText: api.writeClipboard }} onFormat={() => void w.format(props.path)} lsp={!isSettingsBuffer(props.path) ? lspBindingFor(props.path, { workspaceRoot: () => w.workspace()?.root, getRevision: () => w.buffers[props.path]?.revision ?? 0, isSynchronized: () => w.synchronized(props.path), isActive: editorActive, getWorkspaceGeneration: w.workspaceGeneration, openLocation: location => navigate(location.path, location.range.start.line + 1, location.range.start.character + 1), notify: w.setError }) : undefined} onCommands={commands => { const key = `${props.group}:${props.path}`; if (commands) editorCommands.set(key, commands); else editorCommands.delete(key); }} onCursor={value => { if (props.active) setCursor(value); }} syntax={syntax()} active={editorActive()} readOnly={w.busy()} theme={theme()} fontSize={w.settings().fontSize} fontFamily={w.settings().editorFontFamily} tabSize={w.settings().tabSize} wordWrap={w.settings().wordWrap} revealLine={reveal()?.path === props.path ? reveal()?.line : undefined} revealColumn={reveal()?.path === props.path ? reveal()?.column : undefined} proposal={proposals().find(p => p.path === props.path)} proposalBusy={proposalBusy()} proposalStale={!w.synchronized(props.path)} onApplyProposal={(id, ids) => { void reviewProposal?.(id, ids); }} onRejectProposal={id => { void reviewProposal?.(id, []); }} />}</Show></div>
       <Show when={markdown() || asset()}><div class="preview-view" style={{ display: view() === "source" ? "none" : "flex" }}><Show when={markdown()} fallback={<AssetPreview path={props.path} source={assetSource()} active={previewActive()} loadImage={path => api.readImage(path)} />}><MarkdownPreview text={w.documents()[props.path]?.document || ""} documentPath={`${w.workspace()?.root}/${props.path}`} workspaceRoot={w.workspace()?.root || ""} active={previewActive()} onOpenFile={path => navigate(path)} loadImage={path => api.readImage(path)} onOpenExternal={url => void api.openExternal(url).catch(error => w.setError(String(error)))} /></Show></div></Show>
     </div></div>;
   }
