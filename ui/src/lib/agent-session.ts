@@ -452,6 +452,26 @@ function reduceDelegation(state: AgentState, event: DelegationEvent): AgentState
       const request = { taskId: event.taskId ?? null, child: event.child, agentName: event.agentName, sessionId: event.sessionId, requestId: event.requestId };
       return { ...state, childRequests: [...state.childRequests.filter((item) => item.requestId !== event.requestId), request].slice(-STRAY_LIMIT) };
     }
+    case "starting": {
+      // No prompt: the user turned delegation on. The card makes the start visible.
+      if (otherLead(event.lead)) return state;
+      const placeholder = { taskId: `starting:${event.agentId}:${state.nextId}`, child: { connectionId: "", sessionId: "" }, agentName: event.agentId, status: "starting" as const, startingAgentId: event.agentId };
+      return addFeedItem(state, { kind: "delegation", task: placeholder });
+    }
+    case "startFinished": {
+      if (otherLead(event.lead)) return state;
+      const index = state.feed.findIndex((item) => item.kind === "delegation" && item.task.status === "starting" && item.task.startingAgentId === event.agentId);
+      if (event.reason) {
+        if (index < 0) return state;
+        const reason = event.reason;
+        const detail = event.detail ?? undefined;
+        return { ...state, feed: state.feed.map((item, at): FeedItem => (at === index && item.kind === "delegation" ? { ...item, task: { ...item.task, status: "failed", rawStatus: "failed", reason, detail } } : item)) };
+      }
+      const cleared = index < 0 ? state : { ...state, feed: state.feed.filter((_, at) => at !== index) };
+      if (!event.launched) return cleared;
+      const leadName = state.delegation.attached?.agentName || state.agent?.title || state.agent?.name || "the lead";
+      return addFeedItem(cleared, { kind: "note", text: `Started ${event.agentName || event.agentId} for ${leadName}` });
+    }
     case "delegated":
     case "taskFinished": {
       if (otherLead(event.lead)) return state;

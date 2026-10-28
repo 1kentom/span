@@ -3,7 +3,8 @@ import type { PermissionEvent } from "./agent-session";
 
 /** Delegation view data. Everything here comes from DelegationEvent or DelegationStatus; nothing is inferred. */
 
-export type DelegationStatusKind = "queued" | "running" | "completed" | "failed" | "cancelled" | "unknown";
+/** `starting`: Span is starting the installed agent before the task exists. */
+export type DelegationStatusKind = "starting" | "queued" | "running" | "completed" | "failed" | "cancelled" | "unknown";
 
 /** One delegated task as the feed shows it. Timing, progress, result and budget arrive with the polled status and are absent until then. */
 export type DelegationTaskState = {
@@ -23,6 +24,8 @@ export type DelegationTaskState = {
   resultSummary?: string;
   artifacts?: Artifact[];
   budgetUsed?: UsageReport_Deserialize;
+  /** Set on the placeholder card shown while Span starts this installed agent. */
+  startingAgentId?: string;
 };
 
 /** The delegation facts the session keeps outside the feed. */
@@ -60,6 +63,7 @@ export function taskStatusKind(raw: string, reason?: FailureReason | null): Dele
 }
 
 export const STATUS_TEXT: Record<DelegationStatusKind, string> = {
+  starting: "Starting",
   queued: "Queued",
   running: "Running",
   completed: "Completed",
@@ -183,4 +187,4 @@ export function budgetText(budget: UsageReport_Deserialize | undefined): string 
 }
 
 /** Narrows a delegation event kind the reducer does not know to nothing. */
-export const knownDelegation = (event: DelegationEvent) => ["decision", "delegated", "taskFinished", "childPermission", "attached", "detached", "unavailable"].includes((event as { kind: string }).kind);
+export const knownDelegation = (event: DelegationEvent) => ["decision", "delegated", "taskFinished", "childPermission", "attached", "detached", "unavailable", "starting", "startFinished"].includes((event as { kind: string }).kind);
