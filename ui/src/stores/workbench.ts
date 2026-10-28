@@ -366,6 +366,12 @@ export function createWorkbench() {
     for (const [key, value] of Object.entries(patch)) if (JSON.stringify(scopeSettings()[key as keyof Settings]) !== JSON.stringify(value)) await api.updateSetting(scope, key, JSON.stringify(value));
     await refreshSettingsScope(scope); await syncCleanSettingsBuffer(scope);
   }
+  /** Writes one (possibly dotted) key in one scope, leaving every other key of that scope alone. A null value removes the key. */
+  async function updateSettingKey(key: string, value: unknown, scope: SettingsScope = settingsScope()) {
+    guardSettingsScope(scope);
+    await api.updateSetting(scope, key, value === null || value === undefined ? null : JSON.stringify(value));
+    await refreshSettingsScope(settingsScope()); await syncCleanSettingsBuffer(scope);
+  }
   async function updateEffectiveSetting(key: keyof Settings, value: Settings[keyof Settings]) { const scope: SettingsScope = workspace() ? "workspace" : "user"; guardSettingsScope(scope); await api.updateSetting(scope, key, JSON.stringify(value)); await refreshSettingsScope(); await syncCleanSettingsBuffer(scope); }
   async function resetSetting(key: keyof Settings) { const scope = settingsScope(); guardSettingsScope(scope); await api.updateSetting(scope, key, null); await refreshSettingsScope(scope); await syncCleanSettingsBuffer(scope); }
   async function refreshFiles() { const version = workspaceVersion; const entries = await api.listFiles(); if (version !== workspaceVersion) return; setFiles(entries); for (const directory of Object.keys(directories)) if (directories[directory]) await loadDirectory(directory); }
@@ -465,6 +471,6 @@ export function createWorkbench() {
   });
   createEffect(() => autosave.sync());
   onCleanup(() => autosave.dispose());
-  return { newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, toggleDirectory, openFile, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, confirmClose, splitEditor, search, updateSettings, refreshBuffer };
+  return { newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, toggleDirectory, openFile, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;

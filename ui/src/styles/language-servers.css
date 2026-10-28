@@ -57,3 +57,4 @@
 .span-editor .cm-tooltip.cm-tooltip-lint{background:var(--editor-bg);color:var(--editor-fg);border-color:var(--editor-guide)}
 .span-editor .cm-diagnostic{font:12px/19px Inter,sans-serif;border-left-width:3px}
 .span-editor .cm-diagnosticSource{color:var(--editor-muted)}
+.lsp-scope-note{color:var(--faint);font-size:11px}

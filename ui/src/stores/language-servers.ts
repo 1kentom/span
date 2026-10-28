@@ -103,7 +103,12 @@ export interface LanguageServers {
   entries: Record<string, ServerEntry[]>;
   /** True once the first status load finished. */
   loaded: Accessor<boolean>;
+  /** Last background failure (events, commands, status fetch) that has not been cleared by a success. */
   error: Accessor<string>;
+  /** The error when it concerns this server or no server in particular, else an empty string. */
+  errorFor: (server: LanguageServerId) => string;
+  /** Set while the latest `lsp_status` call failed. Cleared by the next success. */
+  statusError: Accessor<string>;
   init: () => Promise<void>;
   refresh: () => Promise<void>;
   dispose: () => void;
@@ -117,8 +122,21 @@ export interface LanguageServers {
   /** Remembers the state implied by a failed command until the next status change. */
   noteError: (path: string, error: LspErrorDto) => void;
   onDiagnostics: (listener: (event: DiagnosticsPublished_Deserialize) => void) => () => void;
-  onReset: (server: LanguageServerId, listener: () => void) => () => void;
+  /** Listener fires for a restart or stop of the server. `root` names the project folder the listener's file belongs to. */
+  onReset: (server: LanguageServerId, listener: () => void, root?: () => string | null | undefined) => () => void;
+  /** Latest diagnostics published for a path, kept so a new view of the file can replay them. */
+  latestDiagnostics: (path: string) => DiagnosticsPublished_Deserialize | undefined;
+  /** Drops cached diagnostics for paths `keep` rejects, or all of them when called without an argument. */
+  pruneDiagnostics: (keep?: (path: string) => boolean) => void;
 }
+
+export interface LanguageServersOptions {
+  /** Called for every new background failure so the app can show a toast. */
+  onError?: (message: string) => void;
+}
+
+const MAX_CACHED_DIAGNOSTICS = 200;
+const failureKinds: ReadonlySet<BufferLspState["kind"]> = new Set(["install-failed", "start-failed", "runtime-missing", "crashed", "needs-install"]);
 
 export interface BindingContext {
   workspaceRoot: () => string | undefined;
@@ -136,34 +154,62 @@ const normalizePath = (value: string) => value.replace(/\\/g, "/").replace(/\/+$
  * Status of every language server, fed by `lsp_status` and the backend events. It is a plain
  * module so tests can drive it with a fixture port. Call `init` once and `dispose` to unsubscribe.
  */
-export function createLanguageServers(port: LspPort): LanguageServers {
+export function createLanguageServers(port: LspPort, options: LanguageServersOptions = {}): LanguageServers {
   const [entries, setEntries] = createStore<Record<string, ServerEntry[]>>({});
   const [progress, setProgress] = createStore<Record<string, InstallProgress | undefined>>({});
   const [bufferErrors, setBufferErrors] = createStore<Record<string, BufferLspState | undefined>>({});
   const [loaded, setLoaded] = createSignal(false);
-  const [error, setError] = createSignal("");
+  const [error, setErrorText] = createSignal("");
+  const [errorServer, setErrorServer] = createSignal<LanguageServerId | undefined>();
+  const [statusError, setStatusError] = createSignal("");
   const diagnosticListeners = new Set<(event: DiagnosticsPublished_Deserialize) => void>();
-  const resetListeners = new Map<LanguageServerId, Set<() => void>>();
+  interface ResetListener { listener: () => void; root?: () => string | null | undefined }
+  const resetListeners = new Map<LanguageServerId, Set<ResetListener>>();
+  const diagnosticsCache = new Map<string, DiagnosticsPublished_Deserialize>();
+  /** Reports a background failure: remembered for the popover and forwarded for the toast. */
+  const fail = (message: string, server?: LanguageServerId) => {
+    setErrorServer(server); setErrorText(message);
+    if (message) { try { options.onError?.(message); } catch { /* a toast failure must not break the store */ } }
+  };
+  const clearError = () => { setErrorServer(undefined); setErrorText(""); };
   const stops: (() => void)[] = [];
   let initialized: Promise<void> | undefined;
   let disposed = false;
   let refreshing: Promise<void> | undefined;
   let refreshAgain = false;
 
-  const fireReset = (server: LanguageServerId) => { for (const listener of [...(resetListeners.get(server) ?? [])]) { try { listener(); } catch { /* a listener must not break the store */ } } };
+  /**
+   * Resets the views served by one project folder of a server. A listener whose folder is unknown
+   * is reset too, because it may belong to the folder. Other folders keep their diagnostics.
+   */
+  const fireReset = (server: LanguageServerId, root?: string | null) => {
+    for (const item of [...(resetListeners.get(server) ?? [])]) {
+      const own = item.root?.();
+      if (root != null && own != null && own !== root) continue;
+      try { item.listener(); } catch { /* a listener must not break the store */ }
+    }
+  };
+  const dropHints = (server: LanguageServerId) => {
+    for (const path of Object.keys(bufferErrors)) if (serverForBuffer(path) === server) setBufferErrors(path, undefined);
+  };
+  const dropCachedDiagnostics = (server: LanguageServerId) => {
+    for (const path of [...diagnosticsCache.keys()]) if (serverForBuffer(path) === server) diagnosticsCache.delete(path);
+  };
 
   function applyStatus(rows: ServerStatusDto_Serialize[]) {
     const next: Record<string, ServerEntry[]> = {};
     for (const row of rows) {
       (next[row.server] ??= []).push({ server: row.server, root: row.root, state: row.state, installed: row.installed, enabled: row.enabled, version: row.version, epoch: row.epoch, capabilities: row.capabilities });
     }
-    const restarted = Object.keys(next).filter(server => {
-      const before = entries[server]?.[0]?.epoch;
-      return before !== undefined && before !== next[server][0].epoch;
-    });
+    const restarted: { server: LanguageServerId; root: string | null }[] = [];
+    for (const [server, list] of Object.entries(next)) {
+      for (const row of list) {
+        const before = entries[server]?.find(item => item.root === row.root)?.epoch;
+        if (before !== undefined && before !== row.epoch) restarted.push({ server: server as LanguageServerId, root: row.root });
+      }
+    }
     setEntries(reconcile(next, { merge: false }));
-    setBufferErrors(reconcile({}));
-    for (const server of restarted) fireReset(server as LanguageServerId);
+    for (const { server, root } of restarted) { dropHints(server); dropCachedDiagnostics(server); fireReset(server, root); }
   }
 
   function refresh(): Promise<void> {
@@ -173,10 +219,13 @@ export function createLanguageServers(port: LspPort): LanguageServers {
         do {
           refreshAgain = false;
           const rows = await port.status();
-          if (!disposed) { applyStatus(rows); setError(""); setLoaded(true); }
+          if (!disposed) { applyStatus(rows); if (statusError()) clearError(); setStatusError(""); setLoaded(true); }
         } while (refreshAgain && !disposed);
       } catch (cause) {
-        if (!disposed) { setError(cause instanceof Error ? cause.message : String(cause)); setLoaded(true); }
+        if (!disposed) {
+          const message = `Could not read language server status: ${errorText(cause)}`;
+          setStatusError(message); fail(message); setLoaded(true);
+        }
       } finally { refreshing = undefined; }
     })();
     return refreshing;
@@ -186,7 +235,7 @@ export function createLanguageServers(port: LspPort): LanguageServers {
     try {
       const stop = await listen(listener);
       if (disposed) stop(); else stops.push(stop);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    } catch (cause) { fail(errorText(cause)); }
   }
 
   function init(): Promise<void> {
@@ -196,21 +245,31 @@ export function createLanguageServers(port: LspPort): LanguageServers {
         subscribe(port.onState, event => {
           const rows = entries[event.server];
           if (rows) {
-            // A root the status list does not know means a server wide state (install gates), which applies to every row.
+            // An event for a folder the status list has not seen yet only describes a row that has no folder. The refresh below adds the new folder.
             const exact = rows.some(row => row.root === event.root);
-            rows.forEach((row, index) => { if (!exact || row.root === event.root) setEntries(event.server, index, "state", event.state); });
+            rows.forEach((row, index) => { if (exact ? row.root === event.root : row.root === null) setEntries(event.server, index, "state", event.state); });
           }
           if (event.state.kind !== "installing") setProgress(event.server, undefined);
-          if (event.state.kind !== "ready") fireReset(event.server);
+          if (event.state.kind !== "ready") { dropHints(event.server); dropCachedDiagnostics(event.server); fireReset(event.server, event.root); }
           void refresh();
         }),
         subscribe(port.onInstallProgress, event => handleProgress(event)),
-        subscribe(port.onError, event => setError(`${serverLabels[event.server]}: ${event.message}`)),
-        subscribe(port.onDiagnostics, event => { for (const listener of [...diagnosticListeners]) { try { listener(event); } catch { /* ignore */ } } }),
+        subscribe(port.onError, event => fail(`${serverLabels[event.server]}: ${event.message}`, event.server)),
+        subscribe(port.onDiagnostics, event => {
+          cacheDiagnostics(event);
+          for (const listener of [...diagnosticListeners]) { try { listener(event); } catch { /* ignore */ } }
+        }),
       ]);
       await refresh();
     })();
     return initialized;
+  }
+
+  function cacheDiagnostics(event: DiagnosticsPublished_Deserialize) {
+    diagnosticsCache.delete(event.path);
+    if (!event.diagnostics?.length) return;
+    diagnosticsCache.set(event.path, event);
+    while (diagnosticsCache.size > MAX_CACHED_DIAGNOSTICS) diagnosticsCache.delete(diagnosticsCache.keys().next().value as string);
   }
 
   function handleProgress(event: LanguageServerInstallProgress_Deserialize) {
@@ -227,14 +286,13 @@ export function createLanguageServers(port: LspPort): LanguageServers {
     for (const stop of stops.splice(0)) { try { stop(); } catch { /* already gone */ } }
     diagnosticListeners.clear();
     resetListeners.clear();
+    diagnosticsCache.clear();
   }
 
-  const command = async (run: () => Promise<unknown>) => {
-    try { await run(); setError(""); }
-    catch (cause) {
-      const text = cause && typeof cause === "object" && typeof (cause as { kind?: unknown }).kind === "string" ? describeLspError(cause as LspErrorDto) : cause instanceof Error ? cause.message : String(cause);
-      setError(text);
-    }
+  const errorText = (cause: unknown) => cause && typeof cause === "object" && typeof (cause as { kind?: unknown }).kind === "string" ? describeLspError(cause as LspErrorDto) : cause instanceof Error ? cause.message : typeof cause === "string" ? cause : JSON.stringify(cause);
+  const command = async (server: LanguageServerId, label: string, run: () => Promise<unknown>) => {
+    try { await run(); clearError(); }
+    catch (cause) { fail(`${label} ${serverLabels[server]} failed: ${errorText(cause)}`, server); }
     await refresh();
   };
 
@@ -255,8 +313,15 @@ export function createLanguageServers(port: LspPort): LanguageServers {
     const hinted = bufferErrors[path];
     const absolute = workspaceRoot && !/^([A-Za-z]:)?[\\/]/.test(path) ? `${normalizePath(workspaceRoot)}/${path}` : path;
     const entry = entryFor(server, absolute);
-    if (!entry && hinted) return hinted;
-    return deriveBufferState(server, entry, progress[server]);
+    const derived = deriveBufferState(server, entry, progress[server]);
+    if (!hinted) return derived;
+    if (!entry) return hinted;
+    // A hint from a failed request wins over a state that shows no problem, until a request succeeds or the server restarts.
+    // What the server itself reports as a failure, or a switch turned off in settings, always wins over a hint.
+    if (derived.kind === "disabled" || failureKinds.has(derived.kind)) return derived;
+    // A "starting" hint must not hide a server that has since become ready.
+    if (!failureKinds.has(hinted.kind) && derived.kind === "ready") return derived;
+    return hinted;
   }
 
   function binding(path: string, context: BindingContext): LspBinding | undefined {
@@ -273,10 +338,12 @@ export function createLanguageServers(port: LspPort): LanguageServers {
       getEpoch: () => row()?.epoch,
       getCapabilities: () => { const entry = row(); return entry && entry.enabled && entry.state.kind === "ready" ? entry.capabilities ?? undefined : undefined; },
       subscribeDiagnostics: listener => { diagnosticListeners.add(listener); return () => diagnosticListeners.delete(listener); },
-      subscribeReset: listener => onReset(server, listener),
+      subscribeReset: listener => onReset(server, listener, () => row()?.root),
       openLocation: context.openLocation,
       notify: context.notify,
       reportError: error => noteError(path, error),
+      reportOk: () => { if (bufferErrors[path]) setBufferErrors(path, undefined); },
+      getLatestDiagnostics: () => diagnosticsCache.get(path),
     };
   }
 
@@ -285,31 +352,36 @@ export function createLanguageServers(port: LspPort): LanguageServers {
     if (derived && derived.kind !== "unsupported") setBufferErrors(path, derived);
   }
 
-  function onReset(server: LanguageServerId, listener: () => void) {
-    const set = resetListeners.get(server) ?? new Set();
-    set.add(listener);
+  function onReset(server: LanguageServerId, listener: () => void, root?: () => string | null | undefined) {
+    const set = resetListeners.get(server) ?? new Set<ResetListener>();
+    const item: ResetListener = { listener, root };
+    set.add(item);
     resetListeners.set(server, set);
-    return () => { set.delete(listener); };
+    return () => { set.delete(item); };
   }
 
   return {
-    entries, loaded, error, init, refresh, dispose,
-    install: server => command(() => port.install(server)),
-    restart: server => command(() => port.restart(server)),
+    entries, loaded, error, init, statusError,
+    errorFor: server => { const owner = errorServer(); return !owner || owner === server ? error() : ""; }, refresh, dispose,
+    install: server => command(server, "Installing", () => port.install(server)),
+    restart: server => command(server, "Restarting", () => port.restart(server)),
     retry: server => {
       const kind = entryFor(server)?.state.kind;
-      return command(() => kind === "installFailed" || kind === "needsInstall" ? port.install(server) : port.restart(server));
+      const install = kind === "installFailed" || kind === "needsInstall";
+      return command(server, install ? "Installing" : "Restarting", () => install ? port.install(server) : port.restart(server));
     },
     entryFor, bufferState, progress: server => progress[server], binding,
     noteError,
     onDiagnostics: listener => { diagnosticListeners.add(listener); return () => { diagnosticListeners.delete(listener); }; },
     onReset,
+    latestDiagnostics: path => diagnosticsCache.get(path),
+    pruneDiagnostics: keep => { for (const path of [...diagnosticsCache.keys()]) if (!keep || !keep(path)) diagnosticsCache.delete(path); },
   };
 }
 
 /** Owner-scoped helper for components: creates the store under the current reactive owner and disposes with it. */
-export function useLanguageServers(port: LspPort): LanguageServers {
-  const store = createLanguageServers(port);
+export function useLanguageServers(port: LspPort, options?: LanguageServersOptions): LanguageServers {
+  const store = createLanguageServers(port, options);
   onCleanup(() => store.dispose());
   void store.init();
   return store;

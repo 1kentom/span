@@ -12,6 +12,12 @@ export interface LanguageServerStatusProps {
   onRestart: (server: LanguageServerId) => void;
   onRetry: (server: LanguageServerId) => void;
   onOpenSettings: () => void;
+  /** Last background failure for this server (events, install, restart). Shown in the popover. */
+  error?: string;
+  /** Set when reading the server status itself failed. */
+  statusError?: string;
+  /** Reads the server status again. */
+  onRefresh?: () => void;
 }
 
 type Tone = "ok" | "busy" | "warn" | "bad" | "off";
@@ -28,7 +34,12 @@ export function LanguageServerStatus(props: LanguageServerStatusProps) {
   let trigger!: HTMLButtonElement;
   const server = () => props.state.kind === "unsupported" ? undefined : props.state.server;
   const name = () => { const value = server(); return value ? serverLabels[value] : ""; };
-  const summary = () => `${name()}: ${stateLabels[props.state.kind]}`;
+  /** A failed status read must not leave the item on "Checking" forever. */
+  const statusFailed = () => props.state.kind === "unknown" && Boolean(props.statusError);
+  const stateLabel = () => statusFailed() ? "Status unavailable" : stateLabels[props.state.kind];
+  const tone = () => statusFailed() ? "bad" : tones[props.state.kind];
+  const message = () => statusFailed() ? props.statusError! : describeBufferState(props.state);
+  const summary = () => `${name()}: ${stateLabel()}`;
   const close = (restoreFocus = true) => { setOpen(false); if (restoreFocus) trigger?.focus(); };
 
   createEffect(() => {
@@ -43,15 +54,16 @@ export function LanguageServerStatus(props: LanguageServerStatusProps) {
   const act = (run: () => void) => () => { run(); close(); };
   const percent = () => { const state = props.state; return state.kind === "installing" && state.total ? Math.min(100, Math.round(((state.received ?? 0) / state.total) * 100)) : undefined; };
 
-  return <Show when={server()}>{current => <div class="lsp-status" ref={root} data-tone={tones[props.state.kind]} onKeyDown={event => { if (event.key === "Escape" && open()) { event.preventDefault(); event.stopPropagation(); close(); } }}>
-    <button ref={trigger} type="button" class="lsp-status-button" aria-haspopup="dialog" aria-expanded={open()} aria-controls={open() ? id : undefined} aria-label={`Language server. ${summary()}`} title={describeBufferState(props.state)} onClick={() => setOpen(!open())}>
+  return <Show when={server()}>{current => <div class="lsp-status" ref={root} data-tone={tone()} onKeyDown={event => { if (event.key === "Escape" && open()) { event.preventDefault(); event.stopPropagation(); close(); } }}>
+    <button ref={trigger} type="button" class="lsp-status-button" aria-haspopup="dialog" aria-expanded={open()} aria-controls={open() ? id : undefined} aria-label={`Language server. ${summary()}`} title={message()} onClick={() => setOpen(!open())}>
       <i class="lsp-dot" aria-hidden="true" />
-      <span class="lsp-status-text">{name()}<Show when={props.state.kind !== "ready"}><span class="lsp-status-state"> {stateLabels[props.state.kind]}<Show when={percent() !== undefined}> {percent()}%</Show></span></Show></span>
+      <span class="lsp-status-text">{name()}<Show when={props.state.kind !== "ready"}><span class="lsp-status-state"> {stateLabel()}<Show when={percent() !== undefined}> {percent()}%</Show></span></Show></span>
     </button>
     <Show when={open()}>
       <div class="lsp-popover" id={id} role="dialog" aria-label={`${name()} language server`}>
-        <div class="lsp-popover-heading"><strong>{name()}</strong><span>{stateLabels[props.state.kind]}</span></div>
-        <p class="lsp-message" role="status">{describeBufferState(props.state)}</p>
+        <div class="lsp-popover-heading"><strong>{name()}</strong><span>{stateLabel()}</span></div>
+        <p class="lsp-message" role="status">{message()}</p>
+        <Show when={props.error && props.error !== message() && !(statusFailed() && props.error === props.statusError)}><p class="lsp-message error-text" role="alert">{props.error}</p></Show>
         <Show when={props.state.kind === "installing"}>
           <div class="lsp-progress" role="progressbar" aria-label={`Installing ${name()}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent()}><i style={{ width: `${percent() ?? 35}%` }} classList={{ indeterminate: percent() === undefined }} /></div>
         </Show>
@@ -63,7 +75,12 @@ export function LanguageServerStatus(props: LanguageServerStatusProps) {
               <Show when={!props.autoInstall}><p class="lsp-note">Automatic install is off, so nothing downloads until you choose Install.</p></Show>
             </>}</Show>
             <Show when={state.kind === "install-failed" && state.retryable}><button type="button" class="button primary" onClick={act(() => props.onRetry(current()))}>Retry install</button></Show>
-            <Show when={state.kind === "install-failed" && !state.retryable}><p class="lsp-note">This failure cannot be fixed by retrying. Check the settings, then restart.</p></Show>
+            <Show when={state.kind === "install-failed" && !state.retryable}>
+              <p class="lsp-note">This failure cannot be fixed by retrying. Check the settings, then restart.</p>
+              <button type="button" class="button primary" onClick={act(() => props.onRestart(current()))}>Restart {name()}</button>
+              <button type="button" class="lsp-link" onClick={act(props.onOpenSettings)}>Open language server settings<Icon name="arrow-right4" size={12} /></button>
+            </Show>
+            <Show when={Boolean(props.statusError) && props.onRefresh}><button type="button" class="button primary" onClick={act(() => props.onRefresh!())}>Retry</button></Show>
             <Show when={state.kind === "start-failed" || state.kind === "crashed"}><button type="button" class="button primary" onClick={act(() => props.onRestart(current()))}>Restart {name()}</button></Show>
             <Show when={state.kind === "runtime-missing"}>
               <button type="button" class="lsp-link" onClick={act(props.onOpenSettings)}>Open language server settings<Icon name="arrow-right4" size={12} /></button>

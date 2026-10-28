@@ -1,4 +1,4 @@
-import { ChangeSet, EditorState, Facet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import { ChangeSet, EditorSelection, EditorState, Facet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, hoverTooltip, keymap, type Tooltip } from "@codemirror/view";
 import { pickedCompletion, snippet, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { forceLinting, linter, type Diagnostic } from "@codemirror/lint";
@@ -29,6 +29,10 @@ export interface LspBinding {
   notify: (message: string) => void;
   /** Quiet channel for typed failures, so the status item can reflect them. */
   reportError?: (error: LspErrorDto) => void;
+  /** Called when a request succeeded, so a hint left by an earlier failure can be dropped. */
+  reportOk?: () => void;
+  /** Latest diagnostics published for this file. A new view replays them, because the publish already happened. */
+  getLatestDiagnostics?: () => DiagnosticsPublished_Deserialize | undefined;
 }
 
 interface Runtime {
@@ -241,6 +245,7 @@ function createCompletionSource(runtime: Runtime) {
     const outcome = await runtime.session.completion(runtime.path, offsetToPosition(snapshot.doc, context.pos), trigger);
     if (outcome.kind === "silent") return null;
     if (outcome.kind === "error") { binding.reportError?.(outcome.error); return null; }
+    binding.reportOk?.();
     if (context.aborted || !current(runtime, view, snapshot, outcome.response)) return null;
     const list = outcome.response.data;
     if (!list.items.length) return null;
@@ -295,6 +300,7 @@ function createHover(runtime: Runtime) {
     const snapshot = capture(runtime, view);
     const outcome = await runtime.session.hover(runtime.path, offsetToPosition(snapshot.doc, pos));
     if (outcome.kind === "error") binding.reportError?.(outcome.error);
+    if (outcome.kind === "ok") binding.reportOk?.();
     if (outcome.kind !== "ok" || !current(runtime, view, snapshot, outcome.response)) return null;
     const hover = outcome.response.data;
     if (!hover || !hover.markdown.trim()) return null;
@@ -365,6 +371,10 @@ function createDiagnostics(runtime: Runtime): Extension {
         runtime.binding.subscribeDiagnostics(event => this.receive(event)),
         runtime.binding.subscribeReset(() => this.reset()),
       ];
+      // The server may have published before this view existed (reopened tab, split). Replay through the same revision checks.
+      const latest = runtime.binding.getLatestDiagnostics?.();
+      // Deferred: a view cannot be dispatched to while it is still being constructed.
+      if (latest) this.timer = setTimeout(() => this.receive(latest), 0);
     }
     receive(event: DiagnosticsPublished_Deserialize) {
       if (event.path !== runtime.path || runtime.destroyed) return;
@@ -412,23 +422,55 @@ function runtimeOf(view: EditorView): Runtime | undefined { return view.state.fa
 
 const isMac = () => typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
-export async function goToDefinitionAt(view: EditorView, pos: number): Promise<boolean> {
+export type DefinitionResult = "opened" | "none" | "failed" | "skipped" | "unavailable";
+
+/**
+ * Asks the server for a definition and opens it. "unavailable" means no server feature is wired up,
+ * "skipped" means the reply was superseded or stale, "none" and "failed" mean nothing was opened.
+ */
+export async function resolveDefinition(view: EditorView, pos: number, announceNone = true): Promise<DefinitionResult> {
   const runtime = runtimeOf(view);
-  if (!runtime || runtime.destroyed) return false;
+  if (!runtime || runtime.destroyed) return "unavailable";
   const binding = runtime.binding;
-  if (!binding.getCapabilities()?.definition) return false;
-  if (!await awaitSynchronized(binding, () => runtime.destroyed)) return true;
+  if (!binding.getCapabilities()?.definition) return "unavailable";
+  if (!await awaitSynchronized(binding, () => runtime.destroyed)) return "skipped";
   const snapshot = capture(runtime, view);
   const outcome = await runtime.session.definition(runtime.path, offsetToPosition(snapshot.doc, pos));
-  if (outcome.kind === "silent") return true;
-  if (outcome.kind === "error") { binding.reportError?.(outcome.error); binding.notify(outcome.message); return true; }
-  if (!current(runtime, view, snapshot, outcome.response)) return true;
+  if (outcome.kind === "silent") return "skipped";
+  if (outcome.kind === "error") { binding.reportError?.(outcome.error); binding.notify(outcome.message); return "failed"; }
+  binding.reportOk?.();
+  if (!current(runtime, view, snapshot, outcome.response)) return "skipped";
   const target = outcome.response.data[0];
-  if (target) binding.openLocation(target); else binding.notify("No definition found.");
-  return true;
+  if (target) { binding.openLocation(target); return "opened"; }
+  if (announceNone) binding.notify("No definition found.");
+  return "none";
 }
 
-export const goToDefinition = (view: EditorView) => { void goToDefinitionAt(view, view.state.selection.main.head); return Boolean(runtimeOf(view)?.binding.getCapabilities()?.definition); };
+export async function goToDefinitionAt(view: EditorView, pos: number): Promise<boolean> {
+  return await resolveDefinition(view, pos) !== "unavailable";
+}
+
+export const goToDefinition = (view: EditorView) => {
+  void goToDefinitionAt(view, view.state.selection.main.head).catch(() => undefined);
+  return Boolean(runtimeOf(view)?.binding.getCapabilities()?.definition);
+};
+
+/**
+ * Cmd/Ctrl-click choice: CodeMirror uses that modifier to add a cursor, and multiple selections stay on.
+ * So the click first asks the server whether the token under it has a definition. If it does, the
+ * definition opens. If it does not (or the request fails), the cursor is added exactly as the default
+ * would have done. Clicks off a word, and any click while no server can answer, are left to
+ * CodeMirror untouched. F12 always goes to the definition.
+ */
+export async function definitionOrAddCursor(view: EditorView, pos: number): Promise<DefinitionResult> {
+  const doc = view.state.doc;
+  const result = await resolveDefinition(view, pos, false);
+  if ((result === "none" || result === "failed") && view.state.doc === doc && view.state.facet(EditorState.allowMultipleSelections)) {
+    const ranges = view.state.selection.ranges;
+    view.dispatch({ selection: EditorSelection.create([...ranges, EditorSelection.cursor(Math.min(pos, doc.length))], ranges.length), userEvent: "select.pointer" });
+  }
+  return result;
+}
 
 export type FormatOutcome = { status: "applied" | "unchanged" | "unsupported" | "stale" | "failed"; message?: string };
 
@@ -455,6 +497,7 @@ export async function formatWithLanguageServer(view: EditorView): Promise<Format
     const outcome = await runtime.session.format(runtime.path, null);
     if (outcome.kind === "silent") return { status: "stale" };
     if (outcome.kind === "error") { binding.reportError?.(outcome.error); return fail("failed", `Formatting failed: ${outcome.message}`); }
+    binding.reportOk?.();
     if (!current(runtime, view, snapshot, outcome.response)) return fail("stale", "Formatting skipped because the file changed. Try again.");
     const changes = editsToChanges(snapshot.doc, outcome.response.data);
     if (changes.empty) return { status: "unchanged" };
@@ -480,15 +523,15 @@ export function lspExtension(path: string, binding: LspBinding): Extension {
       mousedown(event, view) {
         if (event.button !== 0 || !(isMac() ? event.metaKey : event.ctrlKey) || !binding.getCapabilities()?.definition) return false;
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-        if (pos === null) return false;
+        if (pos === null || !view.state.wordAt(pos)) return false;
         event.preventDefault();
-        void goToDefinitionAt(view, pos);
+        void definitionOrAddCursor(view, pos).catch(() => undefined);
         return true;
       },
     }),
     keymap.of([
       { key: "F12", run: goToDefinition, preventDefault: true },
-      { key: "Mod-Alt-Shift-f", run: view => { if (!runtimeOf(view)?.binding.getCapabilities()?.formatting) return false; void formatWithLanguageServer(view); return true; }, preventDefault: true },
+      { key: "Mod-Alt-Shift-f", run: view => { if (!runtimeOf(view)?.binding.getCapabilities()?.formatting) return false; void formatWithLanguageServer(view).catch(() => undefined); return true; }, preventDefault: true },
     ]),
   ];
 }

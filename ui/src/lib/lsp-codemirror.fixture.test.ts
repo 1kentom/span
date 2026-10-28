@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { applyCompletion, convertSnippet, decideDiagnostics, editsToChanges, formatWithLanguageServer, lspExtension, lspMarks, mapDiagnostics, renderHoverMarkdown, replyIsCurrent, type LspBinding } from "./lsp-codemirror";
+import { applyCompletion, convertSnippet, decideDiagnostics, definitionOrAddCursor, editsToChanges, formatWithLanguageServer, lspExtension, lspMarks, mapDiagnostics, renderHoverMarkdown, replyIsCurrent, type LspBinding } from "./lsp-codemirror";
 import type { LspSession } from "./lsp-client";
 
 // Fixture tests: a fake session stands in for the Tauri commands. No real language server is involved.
@@ -14,7 +14,7 @@ function make(doc: string, over: Partial<LspBinding> = {}, session: Partial<LspS
     getRevision: () => 1, isSynchronized: () => true, isActive: () => true, getWorkspaceGeneration: () => 0, getEpoch: () => 0,
     getCapabilities: () => caps, subscribeDiagnostics: () => () => undefined, subscribeReset: () => () => undefined, openLocation: vi.fn(), notify, ...over,
   };
-  const view = new EditorView({ state: EditorState.create({ doc, extensions: lspExtension("a.ts", binding) }), parent: document.body });
+  const view = new EditorView({ state: EditorState.create({ doc, extensions: [EditorState.allowMultipleSelections.of(true), lspExtension("a.ts", binding)] }), parent: document.body });
   return { view, binding, notify };
 }
 const edit = (l: number, c: number, l2: number, c2: number, newText: string) => ({ range: { start: { line: l, character: c }, end: { line: l2, character: c2 } }, newText });
@@ -146,5 +146,52 @@ describe("fixture: format", () => {
     const m = make("a", { getCapabilities: () => ({ ...caps, formatting: false }) });
     expect((await formatWithLanguageServer(m.view)).status).toBe("unsupported");
     m.view.destroy();
+  });
+});
+
+describe("fixture: diagnostics replay on a new view", () => {
+  const d = [{ severity: "error", message: "bad", range: { start: { line: 0, character: 6 }, end: { line: 0, character: 7 } } }];
+  it("shows the latest published set when a view is created, through the revision check", async () => {
+    const { view } = make("const x = 1;\n", { getLatestDiagnostics: () => ({ path: "a.ts", revision: 1, diagnostics: d } as any) });
+    await new Promise(r => setTimeout(r, 20));
+    expect(lspMarks(view.state)).toHaveLength(1);
+    view.destroy();
+  });
+  it("drops a replayed set older than the buffer", async () => {
+    const { view } = make("const x = 1;\n", { getRevision: () => 5, getLatestDiagnostics: () => ({ path: "a.ts", revision: 1, diagnostics: d } as any) });
+    await new Promise(r => setTimeout(r, 20));
+    expect(lspMarks(view.state)).toHaveLength(0);
+    view.destroy();
+  });
+});
+
+describe("fixture: Cmd/Ctrl-click definition versus add cursor", () => {
+  const where = { path: "b.ts", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
+  it("opens the definition and adds no cursor when the token has one", async () => {
+    const openLocation = vi.fn();
+    const { view } = make("foo bar", { openLocation }, { definition: vi.fn(async () => ({ kind: "ok", response: { revision: 1, epoch: 0, data: [where] } })) as any });
+    expect(await definitionOrAddCursor(view, 5)).toBe("opened");
+    expect(openLocation).toHaveBeenCalledWith(where);
+    expect(view.state.selection.ranges).toHaveLength(1);
+    view.destroy();
+  });
+  it("falls back to adding a cursor when there is no definition, without a toast", async () => {
+    const { view, notify } = make("foo bar", {}, { definition: vi.fn(async () => ({ kind: "ok", response: { revision: 1, epoch: 0, data: [] } })) as any });
+    expect(await definitionOrAddCursor(view, 5)).toBe("none");
+    expect(view.state.selection.ranges.map(r => r.head)).toEqual([0, 5]);
+    expect(notify).not.toHaveBeenCalled();
+    view.destroy();
+  });
+  it("also falls back to adding a cursor when the request fails", async () => {
+    const { view } = make("foo bar", {}, { definition: vi.fn(async () => ({ kind: "error", error: { kind: "other", message: "x" }, message: "x" })) as any });
+    expect(await definitionOrAddCursor(view, 4)).toBe("failed");
+    expect(view.state.selection.ranges).toHaveLength(2);
+    view.destroy();
+  });
+  it("leaves the click to CodeMirror when no server can answer", async () => {
+    const { view } = make("foo bar", { getCapabilities: () => undefined });
+    expect(await definitionOrAddCursor(view, 5)).toBe("unavailable");
+    expect(view.state.selection.ranges).toHaveLength(1);
+    view.destroy();
   });
 });
