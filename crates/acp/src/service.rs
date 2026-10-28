@@ -1,6 +1,6 @@
 use crate::{
-    AgentCommand, AgentEvent, ConfigChoice, ConfigGroup, ConfigOption, PermissionOption, PlanEntry,
-    SessionSummary,
+    AgentCommand, AgentEvent, AgentFeatures, AuthMethodInfo, ConfigChoice, ConfigGroup,
+    ConfigOption, PermissionOption, PlanEntry, PromptAttachment, SessionSummary, SlashCommand,
 };
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
@@ -22,7 +22,8 @@ pub struct AgentService {
 
 enum Command {
     NewSession(Reply<String>),
-    Prompt(String, String, Reply<()>),
+    Prompt(String, Vec<ContentBlock>, Reply<()>),
+    Authenticate(String, Reply<()>),
     Cancel(String),
     SetConfig(String, String, String, Reply<()>),
     ListSessions(Reply<Vec<SessionSummary>>),
@@ -34,6 +35,12 @@ struct Permission {
     scope: String,
     options: Vec<agent_client_protocol::schema::v1::PermissionOption>,
     reply: oneshot::Sender<Option<String>>,
+}
+struct Elicitation {
+    session: Option<String>,
+    mode: String,
+    schema: Option<Value>,
+    reply: oneshot::Sender<ElicitationAction>,
 }
 struct Proposal {
     session: String,
@@ -57,7 +64,15 @@ struct Bridge {
     proposals: HashMap<String, Proposal>,
     remembered: HashMap<(String, String), PermissionOptionKind>,
     revisions: HashMap<(String, String), u64>,
+    elicitations: HashMap<String, Elicitation>,
+    prompt_image: bool,
+    prompt_embedded: bool,
+    auth_methods: Vec<AuthMethodInfo>,
+    auth_required: bool,
 }
+
+/// Largest base64 payload accepted for an image or blob attachment.
+const MAX_ATTACHMENT_BASE64: usize = 20 * 1024 * 1024;
 
 impl AgentService {
     pub async fn start(
@@ -137,15 +152,87 @@ impl AgentService {
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
-    pub async fn prompt(&self, session_id: String, text: String) -> Result<(), String> {
-        if text.trim().is_empty() {
+    /// Send a prompt. Slash commands are ordinary text such as `/web query`.
+    /// Image and embedded resource attachments are rejected unless the agent advertised them.
+    pub async fn prompt(
+        &self,
+        session_id: String,
+        text: String,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<(), String> {
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err("Prompt cannot be empty".into());
+        }
+        let (image, embedded) = {
+            let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            (bridge.prompt_image, bridge.prompt_embedded)
+        };
+        let blocks = prompt_blocks(text, attachments, image, embedded)?;
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::Prompt(session_id, blocks, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Call `authenticate` with an advertised `agent` method. Create the session afterwards.
+    pub async fn authenticate(&self, method_id: String) -> Result<(), String> {
+        {
+            let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            match bridge.auth_methods.iter().find(|m| m.id == method_id) {
+                None => return Err("Unknown authentication method".into()),
+                Some(method) if !method.supported => {
+                    return Err("Terminal sign-in is not supported by this client".into())
+                }
+                Some(_) => {}
+            }
         }
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::Prompt(session_id, text, tx))
+            .send(Command::Authenticate(method_id, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// True when the last session creation failed because the agent wants authentication.
+    pub fn auth_required(&self) -> bool {
+        self.state.lock().map(|b| b.auth_required).unwrap_or(false)
+    }
+    /// Answer an elicitation. `action` is `accept`, `decline` or `cancel`.
+    /// `content_json` is a JSON object of field values and applies to `accept` only.
+    pub fn respond_elicitation(
+        &self,
+        request_id: String,
+        action: String,
+        content_json: Option<String>,
+    ) -> Result<(), String> {
+        let mut bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+        let pending = bridge
+            .elicitations
+            .get(&request_id)
+            .ok_or("Input request is no longer pending")?;
+        let decision = match action.as_str() {
+            "accept" => {
+                let content = match content_json.as_deref().filter(|c| !c.trim().is_empty()) {
+                    Some(json) => Some(elicitation_content(json, pending.schema.as_ref())?),
+                    None if pending.mode == "form" => {
+                        elicitation_content("{}", pending.schema.as_ref())?;
+                        None
+                    }
+                    None => None,
+                };
+                ElicitationAction::Accept(ElicitationAcceptAction::new().content(content))
+            }
+            "decline" => ElicitationAction::Decline,
+            "cancel" => ElicitationAction::Cancel,
+            _ => return Err("Action must be accept, decline or cancel".into()),
+        };
+        let pending = bridge
+            .elicitations
+            .remove(&request_id)
+            .ok_or("Input request is no longer pending")?;
+        pending
+            .reply
+            .send(decision)
+            .map_err(|_| "Input request expired".into())
     }
     pub async fn set_config(
         &self,
@@ -334,6 +421,9 @@ async fn run(
     let notifications = emit.clone();
     let permission_state = state.clone();
     let permission_emit = emit.clone();
+    let complete_emit = emit.clone();
+    let elicit_state = state.clone();
+    let elicit_emit = emit.clone();
     let read_workspace = workspace.clone();
     let read_state = state.clone();
     let write_workspace = workspace.clone();
@@ -380,6 +470,49 @@ async fn run(
                     Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
                     None => RequestPermissionOutcome::Cancelled,
                 }))
+            })
+        }, agent_client_protocol::on_receive_request!())
+        .on_receive_notification(async move |notification: CompleteElicitationNotification, _cx| {
+            complete_emit(AgentEvent::ElicitationComplete { elicitation_id: notification.elicitation_id.to_string() });
+            Ok(())
+        }, agent_client_protocol::on_receive_notification!())
+        .on_receive_request(async move |request: CreateElicitationRequest, responder, cx| {
+            let state = elicit_state.clone(); let emit = elicit_emit.clone();
+            cx.spawn(async move {
+                let (mode, session, tool_call, schema, url, elicitation_id) = match &request.mode {
+                    ElicitationMode::Form(form) => {
+                        let (session, tool) = scope_parts(&form.scope);
+                        ("form", session, tool, serde_json::to_value(&form.requested_schema).ok(), None, None)
+                    }
+                    ElicitationMode::Url(link) => {
+                        let (session, tool) = scope_parts(&link.scope);
+                        ("url", session, tool, None, Some(link.url.clone()), Some(link.elicitation_id.to_string()))
+                    }
+                    _ => return responder.respond_with_error(agent_client_protocol::Error::invalid_params().data("Unsupported elicitation mode")),
+                };
+                let safe_url = url.as_ref().is_none_or(|u| { let lower = u.to_ascii_lowercase(); lower.starts_with("https://") || lower.starts_with("http://") });
+                let (tx, rx) = oneshot::channel();
+                let pending = (|| -> Result<Option<String>, String> {
+                    let mut bridge = state.lock().map_err(|_| "Agent state lock poisoned")?;
+                    if bridge.closed || !safe_url { return Ok(None); }
+                    if let Some(id) = &session { if !bridge.sessions.contains(id) || bridge.cancelled.contains(id) { return Ok(None); } }
+                    bridge.sequence += 1;
+                    let id = format!("elicitation-{}", bridge.sequence);
+                    bridge.elicitations.insert(id.clone(), Elicitation { session: session.clone(), mode: mode.to_owned(), schema: schema.clone(), reply: tx });
+                    Ok(Some(id))
+                })();
+                let id = match pending { Ok(value) => value, Err(error) => return responder.respond_with_internal_error(error) };
+                let action = match id {
+                    None => ElicitationAction::Decline,
+                    Some(id) => {
+                        emit(AgentEvent::Elicitation { request_id: id.clone(), session_id: session, tool_call_id: tool_call, mode: mode.into(),
+                            message: request.message.clone(), schema_json: schema.map(|v| v.to_string()), url, elicitation_id });
+                        let action = rx.await.unwrap_or(ElicitationAction::Cancel);
+                        emit(AgentEvent::ElicitationResolved { request_id: id });
+                        action
+                    }
+                };
+                responder.respond(CreateElicitationResponse::new(action))
             })
         }, agent_client_protocol::on_receive_request!())
         .on_receive_request(async move |request: ReadTextFileRequest, responder, _cx| {
@@ -432,7 +565,9 @@ async fn run(
         }, agent_client_protocol::on_receive_request!())
         .connect_with(agent, async move |cx: ConnectionTo<Agent>| {
             let initialized = tokio::time::timeout(std::time::Duration::from_secs(40), cx.send_request(InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
-                ClientCapabilities::new().fs(FileSystemCapabilities::new().read_text_file(true).write_text_file(true)).terminal(false)))
+                ClientCapabilities::new().fs(FileSystemCapabilities::new().read_text_file(true).write_text_file(true)).terminal(false)
+                    .session(ClientSessionCapabilities::new().notices(NoticeCapabilities::new()).compaction(CompactionCapabilities::new()))
+                    .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()).url(ElicitationUrlCapabilities::new()))))
                 .block_task()).await;
             let initialized = match initialized {
                 Ok(result) => result,
@@ -443,7 +578,17 @@ async fn run(
                 let _ = ready.send(Err("Agent negotiated an unsupported protocol version".into())); return Ok(());
             }
             let (can_load, can_list) = initialized.as_ref().ok().map(|response| (response.agent_capabilities.load_session, response.agent_capabilities.session_capabilities.list.is_some())).unwrap_or((false, false));
+            let (ready_event, auth_methods) = match initialized.as_ref().ok() {
+                Some(response) => ready_event(response),
+                None => (AgentEvent::Ready { agent_name: None, agent_title: None, agent_version: None, features: AgentFeatures::default(), auth_methods: Vec::new() }, Vec::new()),
+            };
+            if let (Ok(mut bridge), AgentEvent::Ready { features, .. }) = (state.lock(), &ready_event) {
+                bridge.prompt_image = features.image;
+                bridge.prompt_embedded = features.embedded_context;
+                bridge.auth_methods = auth_methods.clone();
+            }
             let _ = ready.send(Ok(()));
+            emit(ready_event);
             emit(AgentEvent::Capabilities { can_load_session: can_load, can_list_sessions: can_list });
             emit(AgentEvent::Status { state: "connected".into(), message: "ACP initialized. Agent process has your OS privileges.".into() });
             let mut cancel_deadline: Option<tokio::time::Instant> = None;
@@ -469,7 +614,14 @@ async fn run(
                             Err(_) => { let _ = reply.send(Err("Agent session creation timed out after 30 seconds".into())); break; }
                         };
                         let options = result.as_ref().ok().and_then(|response| response.config_options.as_ref()).map(|options| config_options(options)).unwrap_or_default();
-                        let result = result.map(|response| response.session_id.to_string()).map_err(|e| e.to_string());
+                        let needs_auth = result.as_ref().err().is_some_and(|e| e.code == ErrorCode::AuthRequired);
+                        if let Ok(mut bridge) = state.lock() { bridge.auth_required = needs_auth; }
+                        if needs_auth {
+                            let message = result.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+                            let methods = state.lock().map(|b| b.auth_methods.clone()).unwrap_or_default();
+                            emit(AgentEvent::AuthRequired { message: format!("Authentication required: {message}"), auth_methods: methods });
+                        }
+                        let result = result.map(|response| response.session_id.to_string()).map_err(|e| if needs_auth { format!("Authentication required: {e}") } else { e.to_string() });
                         if let Ok(id) = &result {
                             if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                             emit(AgentEvent::Session { session_id: id.clone() });
@@ -477,7 +629,20 @@ async fn run(
                         }
                         let _ = reply.send(result);
                     }
-                    Command::Prompt(id, text, reply) => {
+                    Command::Authenticate(method_id, reply) => {
+                        let auth_cx = cx.clone(); let auth_state = state.clone();
+                        cx.spawn(async move {
+                            let result = tokio::time::timeout(std::time::Duration::from_secs(120), auth_cx.send_request(AuthenticateRequest::new(method_id)).block_task()).await;
+                            let result = match result {
+                                Ok(Ok(_)) => { if let Ok(mut bridge) = auth_state.lock() { bridge.auth_required = false; } Ok(()) }
+                                Ok(Err(error)) => Err(error.to_string()),
+                                Err(_) => Err("The agent did not finish authentication within 120 seconds".to_string()),
+                            };
+                            let _ = reply.send(result);
+                            Ok(())
+                        })?;
+                    }
+                    Command::Prompt(id, blocks, reply) => {
                         let valid = state.lock().map(|mut bridge| {
                             if bridge.closed || !bridge.sessions.contains(&id) { return Err("Unknown session".to_string()); }
                             if !bridge.running.insert(id.clone()) { return Err("A prompt is already running in this session".to_string()); }
@@ -486,7 +651,7 @@ async fn run(
                         if let Err(error) = valid { let _ = reply.send(Err(error)); continue; }
                         let prompt_cx = cx.clone(); let prompt_emit = emit.clone(); let prompt_state = state.clone();
                         cx.spawn(async move {
-                            let result = prompt_cx.send_request(PromptRequest::new(id.clone(), vec![ContentBlock::Text(TextContent::new(text))])).block_task().await;
+                            let result = prompt_cx.send_request(PromptRequest::new(id.clone(), blocks)).block_task().await;
                             if let Ok(mut bridge) = prompt_state.lock() { bridge.running.remove(&id); }
                             match result {
                                 Ok(response) => { prompt_emit(AgentEvent::Complete { session_id: id, stop_reason: enum_string(&response.stop_reason) }); let _ = reply.send(Ok(())); }
@@ -609,12 +774,204 @@ fn cancel_pending(
                 let _ = p.reply.send(ReviewDecision::default());
             }
         }
+        let elicitations: Vec<_> = bridge
+            .elicitations
+            .iter()
+            .filter(|(_, e)| session.is_none_or(|s| e.session.as_deref() == Some(s)))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in elicitations {
+            if let Some(e) = bridge.elicitations.remove(&id) {
+                let _ = e.reply.send(ElicitationAction::Cancel);
+            }
+        }
         if session.is_none() {
             bridge.closed = true;
             bridge.remembered.clear();
         }
     }
     let _ = emit;
+}
+
+fn blocks_text(blocks: &[Value]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn scope_parts(scope: &ElicitationScope) -> (Option<String>, Option<String>) {
+    match scope {
+        ElicitationScope::Session(s) => (
+            Some(s.session_id.to_string()),
+            s.tool_call_id.as_ref().map(|id| id.to_string()),
+        ),
+        _ => (None, None),
+    }
+}
+
+/// Build the `Ready` event and the auth method list from the initialize response.
+fn ready_event(response: &InitializeResponse) -> (AgentEvent, Vec<AuthMethodInfo>) {
+    let caps = &response.agent_capabilities;
+    let auth_methods: Vec<AuthMethodInfo> = response
+        .auth_methods
+        .iter()
+        .map(|method| match method {
+            AuthMethod::Agent(m) => AuthMethodInfo {
+                id: m.id.to_string(),
+                name: m.name.clone(),
+                description: m.description.clone(),
+                kind: "agent".into(),
+                supported: true,
+            },
+            AuthMethod::Terminal(m) => AuthMethodInfo {
+                id: m.id.to_string(),
+                name: m.name.clone(),
+                description: m.description.clone(),
+                kind: "terminal".into(),
+                supported: false,
+            },
+            _ => AuthMethodInfo {
+                id: String::new(),
+                name: "Unknown method".into(),
+                description: None,
+                kind: "unknown".into(),
+                supported: false,
+            },
+        })
+        .filter(|method| !method.id.is_empty())
+        .collect();
+    let session = &caps.session_capabilities;
+    let event = AgentEvent::Ready {
+        agent_name: response.agent_info.as_ref().map(|i| i.name.clone()),
+        agent_title: response.agent_info.as_ref().and_then(|i| i.title.clone()),
+        agent_version: response.agent_info.as_ref().map(|i| i.version.clone()),
+        features: AgentFeatures {
+            load_session: caps.load_session,
+            image: caps.prompt_capabilities.image,
+            audio: caps.prompt_capabilities.audio,
+            embedded_context: caps.prompt_capabilities.embedded_context,
+            mcp_http: caps.mcp_capabilities.http,
+            mcp_sse: caps.mcp_capabilities.sse,
+            can_list_sessions: session.list.is_some(),
+            can_resume_sessions: session.resume.is_some(),
+            can_close_sessions: session.close.is_some(),
+            can_delete_sessions: session.delete.is_some(),
+        },
+        auth_methods: auth_methods.clone(),
+    };
+    (event, auth_methods)
+}
+
+/// Turn the prompt text and attachments into ACP content blocks, enforcing
+/// the capabilities the agent advertised.
+fn prompt_blocks(
+    text: String,
+    attachments: Vec<PromptAttachment>,
+    image: bool,
+    embedded: bool,
+) -> Result<Vec<ContentBlock>, String> {
+    let mut blocks = Vec::new();
+    if !text.trim().is_empty() {
+        blocks.push(ContentBlock::Text(TextContent::new(text)));
+    }
+    for attachment in attachments {
+        match attachment {
+            PromptAttachment::Image {
+                data,
+                mime_type,
+                uri,
+            } => {
+                if !image {
+                    return Err("This agent does not accept image attachments".into());
+                }
+                if !mime_type.starts_with("image/") {
+                    return Err("Image attachment needs an image/* MIME type".into());
+                }
+                if data.len() > MAX_ATTACHMENT_BASE64 {
+                    return Err("Image attachment is too large".into());
+                }
+                let mut content = ImageContent::new(data, mime_type);
+                content.uri = uri;
+                blocks.push(ContentBlock::Image(content));
+            }
+            PromptAttachment::ResourceLink {
+                uri,
+                name,
+                mime_type,
+                description,
+            } => {
+                let mut link = ResourceLink::new(name, uri);
+                link.mime_type = mime_type;
+                link.description = description;
+                blocks.push(ContentBlock::ResourceLink(link));
+            }
+            PromptAttachment::Resource {
+                uri,
+                mime_type,
+                text,
+                blob,
+            } => {
+                if !embedded {
+                    return Err("This agent does not accept embedded resources".into());
+                }
+                let resource = match (text, blob) {
+                    (Some(text), None) => {
+                        let mut contents = TextResourceContents::new(text, uri);
+                        contents.mime_type = mime_type;
+                        EmbeddedResourceResource::TextResourceContents(contents)
+                    }
+                    (None, Some(blob)) => {
+                        if blob.len() > MAX_ATTACHMENT_BASE64 {
+                            return Err("Embedded resource is too large".into());
+                        }
+                        let mut contents = BlobResourceContents::new(blob, uri);
+                        contents.mime_type = mime_type;
+                        EmbeddedResourceResource::BlobResourceContents(contents)
+                    }
+                    _ => return Err("Embedded resource needs exactly one of text or blob".into()),
+                };
+                blocks.push(ContentBlock::Resource(EmbeddedResource::new(resource)));
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+/// Parse form answers and check them against the flat schema the agent sent.
+fn elicitation_content(
+    json: &str,
+    schema: Option<&Value>,
+) -> Result<std::collections::BTreeMap<String, ElicitationContentValue>, String> {
+    let value: Value = serde_json::from_str(json).map_err(|e| format!("Invalid answers: {e}"))?;
+    let object = value.as_object().ok_or("Answers must be a JSON object")?;
+    let properties = schema
+        .and_then(|s| s.get("properties"))
+        .and_then(Value::as_object);
+    if let Some(properties) = properties {
+        if let Some(unknown) = object.keys().find(|key| !properties.contains_key(*key)) {
+            return Err(format!("Unknown field: {unknown}"));
+        }
+    }
+    if let Some(required) = schema
+        .and_then(|s| s.get("required"))
+        .and_then(Value::as_array)
+    {
+        for key in required.iter().filter_map(Value::as_str) {
+            if !object.contains_key(key) {
+                return Err(format!("Missing required field: {key}"));
+            }
+        }
+    }
+    object
+        .iter()
+        .map(|(key, value)| {
+            serde_json::from_value::<ElicitationContentValue>(value.clone())
+                .map(|parsed| (key.clone(), parsed))
+                .map_err(|_| format!("Unsupported value for {key}"))
+        })
+        .collect()
 }
 
 fn enum_string<T: serde::Serialize>(value: &T) -> String {
@@ -701,6 +1058,110 @@ fn session_update(emit: &EventSink, session_id: String, update: Value) {
                 .to_owned();
             if !text.is_empty() {
                 emit(AgentEvent::User { session_id, text });
+            }
+        }
+        "available_commands_update" => {
+            let commands = update
+                .get("availableCommands")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            Some(SlashCommand {
+                                name: item.get("name")?.as_str()?.to_owned(),
+                                description: item
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                input_hint: item
+                                    .pointer("/input/hint")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            emit(AgentEvent::AvailableCommands {
+                session_id,
+                commands,
+            });
+        }
+        "current_mode_update" => {
+            if let Some(mode_id) = update.get("currentModeId").and_then(Value::as_str) {
+                emit(AgentEvent::CurrentMode {
+                    session_id,
+                    mode_id: mode_id.to_owned(),
+                });
+            }
+        }
+        "session_info_update" => emit(AgentEvent::SessionInfo {
+            session_id,
+            title: update
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            updated_at: update
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
+        "usage_update" => {
+            if let (Some(used), Some(size)) = (
+                update.get("used").and_then(Value::as_u64),
+                update.get("size").and_then(Value::as_u64),
+            ) {
+                emit(AgentEvent::Usage {
+                    session_id,
+                    used,
+                    size,
+                    cost_amount: update.pointer("/cost/amount").and_then(Value::as_f64),
+                    cost_currency: update
+                        .pointer("/cost/currency")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                });
+            }
+        }
+        "notice" => {
+            if let Some(title) = update.get("title").and_then(Value::as_str) {
+                emit(AgentEvent::Notice {
+                    session_id,
+                    severity: string("severity"),
+                    title: title.to_owned(),
+                    description: update
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                });
+            }
+        }
+        "compaction_update" => emit(AgentEvent::Compaction {
+            session_id,
+            compaction_id: string("compactionId"),
+            status: string("status"),
+            summary: update
+                .get("summary")
+                .and_then(Value::as_array)
+                .map(|blocks| blocks_text(blocks))
+                .filter(|text| !text.is_empty()),
+            error: update
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
+        "compaction_summary_chunk" => {
+            let text = blocks_text(std::slice::from_ref(
+                update.get("content").unwrap_or(&Value::Null),
+            ));
+            if !text.is_empty() {
+                emit(AgentEvent::CompactionSummary {
+                    session_id,
+                    compaction_id: string("compactionId"),
+                    text,
+                });
             }
         }
         "config_option_update" => {

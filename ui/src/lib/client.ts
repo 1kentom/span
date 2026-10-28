@@ -3,7 +3,7 @@ import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -344,9 +344,19 @@ export const api = {
     if (generation !== agentGeneration) throw new Error('Agent connection was superseded by another connection or disconnect.');
     return session;
   },
-  async agentPrompt(text: string): Promise<void> {
+  async agentPrompt(text: string, attachments: PromptAttachment[] = []): Promise<void> {
     if (!isDesktop) nativeRequired('Sending agent prompts');
-    await commands.agentPrompt(text);
+    await commands.agentPrompt(text, attachments.length ? attachments : null);
+  },
+  /** Sign in with an advertised method, then the blocked session is created. Returns the session id. */
+  async agentAuthenticate(methodId: string): Promise<string> {
+    if (!isDesktop) nativeRequired('Signing in to agents');
+    return commands.agentAuthenticate(methodId);
+  },
+  /** action is accept, decline or cancel. contentJson is a JSON object string and applies to accept. */
+  async agentElicitation(requestId: string, action: 'accept' | 'decline' | 'cancel', contentJson: string | null = null): Promise<void> {
+    if (!isDesktop) nativeRequired('Answering agent requests');
+    await commands.agentElicitation(requestId, action, contentJson);
   },
   async agentSetConfig(configId: string, value: string): Promise<void> {
     if (!isDesktop) nativeRequired('Changing agent options');

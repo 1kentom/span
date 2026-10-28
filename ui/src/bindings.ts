@@ -42,7 +42,14 @@ export const commands = {
 	agentNewSession: () => __TAURI_INVOKE<string>("agent_new_session"),
 	agentListSessions: () => __TAURI_INVOKE<SessionSummary_Serialize[]>("agent_list_sessions"),
 	agentResumeSession: (sessionId: string) => __TAURI_INVOKE<string>("agent_resume_session", { sessionId }),
-	agentPrompt: (text: string) => __TAURI_INVOKE<null>("agent_prompt", { text }),
+	agentPrompt: (text: string, attachments: PromptAttachment_Deserialize[] | null) => __TAURI_INVOKE<null>("agent_prompt", { text, attachments }),
+	/**
+	 *  Sign in with an advertised method, then create the session that was blocked.
+	 *  Returns the new session id, or the current one when a session already exists.
+	 */
+	agentAuthenticate: (methodId: string) => __TAURI_INVOKE<string>("agent_authenticate", { methodId }),
+	/**  Answer an agent input request. `action` is accept, decline or cancel. */
+	agentElicitation: (requestId: string, action: string, contentJson: string | null) => __TAURI_INVOKE<null>("agent_elicitation", { requestId, action, contentJson }),
 	agentSetConfig: (configId: string, value: string) => __TAURI_INVOKE<null>("agent_set_config", { configId, value }),
 	agentCancel: () => __TAURI_INVOKE<null>("agent_cancel"),
 	agentDisconnect: () => __TAURI_INVOKE<null>("agent_disconnect"),
@@ -76,7 +83,25 @@ export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
 export type AgentEvent_Deserialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | 
 /**  A user turn replayed while an earlier session is restored. */
-{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Deserialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title?: string | null; status?: string | null; 
+{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | 
+/**  Negotiated agent identity, features and sign-in methods, sent once after initialize. */
+{ kind: "ready"; agentName?: string | null; agentTitle?: string | null; agentVersion?: string | null; features: AgentFeatures; authMethods: AuthMethodInfo_Deserialize[] } | 
+/**  Session creation needs `agent_authenticate` first. */
+{ kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Deserialize[] } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Deserialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title?: string | null; updatedAt?: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount?: number | null; costCurrency?: string | null } | { kind: "notice"; sessionId: string; 
+/**  `info`, `warning`, `error`, or an agent specific value. */
+severity: string; title: string; description?: string | null } | { kind: "compaction"; sessionId: string; compactionId: string; 
+/**  `in_progress`, `completed`, `failed`, `cancelled` or an agent specific value. */
+status: string; summary?: string | null; error?: string | null } | { kind: "compactionSummary"; sessionId: string; compactionId: string; text: string } | 
+/**  The agent asks the user for input. Answer with `agent_elicitation`. */
+{ kind: "elicitation"; requestId: string; sessionId?: string | null; toolCallId?: string | null; 
+/**  `form` or `url`. */
+mode: string; message: string; 
+/**  Form mode: the requested JSON schema, serialized. */
+schemaJson?: string | null; 
+/**  URL mode: show the full URL and ask for consent before opening it. */
+url?: string | null; elicitationId?: string | null } | { kind: "elicitationResolved"; requestId: string } | 
+/**  A URL elicitation finished on the agent side. */
+{ kind: "elicitationComplete"; elicitationId: string } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Deserialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title?: string | null; status?: string | null; 
 /**  ACP tool kind such as `read`, `edit` or `execute`. */
 toolKind?: string | null; 
 /**  Set when an agent reports the call as made by a subagent. */
@@ -84,11 +109,74 @@ parentToolCallId?: string | null; contentJson: string } | { kind: "permission"; 
 
 export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | 
 /**  A user turn replayed while an earlier session is restored. */
-{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Serialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title: string | null; status: string | null; 
+{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | 
+/**  Negotiated agent identity, features and sign-in methods, sent once after initialize. */
+{ kind: "ready"; agentName: string | null; agentTitle: string | null; agentVersion: string | null; features: AgentFeatures; authMethods: AuthMethodInfo_Serialize[] } | 
+/**  Session creation needs `agent_authenticate` first. */
+{ kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Serialize[] } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Serialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title: string | null; updatedAt: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount: number | null; costCurrency: string | null } | { kind: "notice"; sessionId: string; 
+/**  `info`, `warning`, `error`, or an agent specific value. */
+severity: string; title: string; description: string | null } | { kind: "compaction"; sessionId: string; compactionId: string; 
+/**  `in_progress`, `completed`, `failed`, `cancelled` or an agent specific value. */
+status: string; summary: string | null; error: string | null } | { kind: "compactionSummary"; sessionId: string; compactionId: string; text: string } | 
+/**  The agent asks the user for input. Answer with `agent_elicitation`. */
+{ kind: "elicitation"; requestId: string; sessionId: string | null; toolCallId: string | null; 
+/**  `form` or `url`. */
+mode: string; message: string; 
+/**  Form mode: the requested JSON schema, serialized. */
+schemaJson: string | null; 
+/**  URL mode: show the full URL and ask for consent before opening it. */
+url: string | null; elicitationId: string | null } | { kind: "elicitationResolved"; requestId: string } | 
+/**  A URL elicitation finished on the agent side. */
+{ kind: "elicitationComplete"; elicitationId: string } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Serialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title: string | null; status: string | null; 
 /**  ACP tool kind such as `read`, `edit` or `execute`. */
 toolKind: string | null; 
 /**  Set when an agent reports the call as made by a subagent. */
 parentToolCallId: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
+
+/**  What the agent said it supports during `initialize`. */
+export type AgentFeatures = {
+	loadSession: boolean,
+	image: boolean,
+	audio: boolean,
+	embeddedContext: boolean,
+	mcpHttp: boolean,
+	mcpSse: boolean,
+	canListSessions: boolean,
+	canResumeSessions: boolean,
+	canCloseSessions: boolean,
+	canDeleteSessions: boolean,
+};
+
+/**  An authentication method from `initialize`. */
+export type AuthMethodInfo = AuthMethodInfo_Serialize | AuthMethodInfo_Deserialize;
+
+/**  An authentication method from `initialize`. */
+export type AuthMethodInfo_Deserialize = {
+	id: string,
+	name: string,
+	description?: string | null,
+	/**
+	 *  `agent` methods run through `authenticate`. `terminal` methods need an
+	 *  interactive login this client does not implement.
+	 */
+	kind: string,
+	/**  Whether `agent_authenticate` accepts this method. */
+	supported: boolean,
+};
+
+/**  An authentication method from `initialize`. */
+export type AuthMethodInfo_Serialize = {
+	id: string,
+	name: string,
+	description: string | null,
+	/**
+	 *  `agent` methods run through `authenticate`. `terminal` methods need an
+	 *  interactive login this client does not implement.
+	 */
+	kind: string,
+	/**  Whether `agent_authenticate` accepts this method. */
+	supported: boolean,
+};
 
 /**  A transaction acknowledgement without materializing the complete document. */
 export type BufferRevision = {
@@ -234,6 +322,27 @@ export type PlanEntry = {
 	priority: string,
 	status: string,
 };
+
+/**  Extra prompt content. Plain text always travels in the prompt text itself. */
+export type PromptAttachment = PromptAttachment_Serialize | PromptAttachment_Deserialize;
+
+/**  Extra prompt content. Plain text always travels in the prompt text itself. */
+export type PromptAttachment_Deserialize = 
+/**  Needs the agent's `image` prompt capability. `data` is base64. */
+{ kind: "image"; data: string; mimeType: string; uri?: string | null } | 
+/**  Supported by every agent. */
+{ kind: "resourceLink"; uri: string; name: string; mimeType?: string | null; description?: string | null } | 
+/**  Needs the agent's `embeddedContext` prompt capability. Give `text` or base64 `blob`. */
+{ kind: "resource"; uri: string; mimeType?: string | null; text?: string | null; blob?: string | null };
+
+/**  Extra prompt content. Plain text always travels in the prompt text itself. */
+export type PromptAttachment_Serialize = 
+/**  Needs the agent's `image` prompt capability. `data` is base64. */
+{ kind: "image"; data: string; mimeType: string; uri: string | null } | 
+/**  Supported by every agent. */
+{ kind: "resourceLink"; uri: string; name: string; mimeType: string | null; description: string | null } | 
+/**  Needs the agent's `embeddedContext` prompt capability. Give `text` or base64 `blob`. */
+{ kind: "resource"; uri: string; mimeType: string | null; text: string | null; blob: string | null };
 
 export type ProposalHunk = {
 	id: string,
@@ -407,6 +516,23 @@ export type Settings_Serialize = {
 	formatOnSave: boolean,
 	keybindings: { [key in string]: string[] },
 	formatters: { [key in string]: string[] },
+};
+
+/**  A slash command the agent advertises. Run it by sending `/name args` as prompt text. */
+export type SlashCommand = SlashCommand_Serialize | SlashCommand_Deserialize;
+
+/**  A slash command the agent advertises. Run it by sending `/name args` as prompt text. */
+export type SlashCommand_Deserialize = {
+	name: string,
+	description: string,
+	inputHint?: string | null,
+};
+
+/**  A slash command the agent advertises. Run it by sending `/name args` as prompt text. */
+export type SlashCommand_Serialize = {
+	name: string,
+	description: string,
+	inputHint: string | null,
 };
 
 export type StartupFile = StartupFile_Serialize | StartupFile_Deserialize;

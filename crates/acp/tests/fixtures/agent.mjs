@@ -6,6 +6,9 @@ let sequence = 100;
 let sessions = 0;
 let activePrompt;
 let ignoreCancel = false;
+let authenticated = false;
+const rich = process.argv.includes('--rich');
+const needsAuth = process.argv.includes('--auth');
 const callbacks = new Map();
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const result = (id, value) => send({ id, result: value });
@@ -17,12 +20,26 @@ const call = (method, params) => new Promise((resolve, reject) => {
 });
 async function prompt(message) {
   const { sessionId, prompt } = message.params;
-  const text = prompt[0].text;
+  const text = prompt.find(block => block.type === 'text')?.text ?? '';
   activePrompt = message.id;
   ignoreCancel = text === 'stubborn';
   if (text === 'crash') { console.error('fixture process failure'); process.exit(7); }
   if (text === 'truncated') { process.stdout.write('{"jsonrpc":"2.0","id":'); process.exit(0); }
   if (text === 'wait' || text === 'stubborn') return;
+  if (text.startsWith('stop:')) { result(message.id, { stopReason: text.slice(5) }); return; }
+  if (text === 'echo' || text.startsWith('/') || prompt.some(block => block.type !== 'text')) {
+    update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(prompt) } });
+    result(message.id, { stopReason: 'end_turn' }); return;
+  }
+  if (text.startsWith('elicit-')) {
+    const scope = { sessionId };
+    const answer = text === 'elicit-form'
+      ? await call('elicitation/create', { ...scope, mode: 'form', message: 'Pick a name', requestedSchema: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' } }, required: ['name'] } })
+      : await call('elicitation/create', { ...scope, mode: 'url', elicitationId: 'e-1', message: 'Sign in', url: text === 'elicit-badurl' ? 'javascript:alert(1)' : 'https://example.com/auth' });
+    if (text === 'elicit-url') send({ method: 'elicitation/complete', params: { elicitationId: 'e-1' } });
+    update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(answer) } });
+    result(message.id, { stopReason: 'end_turn' }); return;
+  }
   update(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Checking buffer' } });
   update(sessionId, { sessionUpdate: 'plan', entries: [{ content: 'Review edit', priority: 'high', status: 'in_progress' }] });
   update(sessionId, { sessionUpdate: 'tool_call', toolCallId: 'edit-1', title: 'Edit sample', kind: 'edit', status: 'pending' });
@@ -54,12 +71,31 @@ input.on('line', line => {
   if (message.method === 'initialize') {
     const fs = message.params.clientCapabilities.fs;
     if (!fs.readTextFile || !fs.writeTextFile || message.params.clientCapabilities.terminal) process.exit(8);
-    const agentCapabilities = process.argv.includes('--resume') ? { loadSession: true, sessionCapabilities: { list: {} } } : {};
-    result(message.id, { protocolVersion: 1, agentCapabilities, agentInfo: { name: 'span-test-peer', version: '1.0.0' } });
+    const client = message.params.clientCapabilities;
+    if (rich && !(client.session?.notices && client.session?.compaction && client.elicitation?.form && client.elicitation?.url)) process.exit(8);
+    let agentCapabilities = process.argv.includes('--resume') ? { loadSession: true, sessionCapabilities: { list: {} } } : {};
+    if (rich) agentCapabilities = { loadSession: true, promptCapabilities: { image: true, embeddedContext: true }, mcpCapabilities: { http: true }, sessionCapabilities: { list: {}, resume: {}, close: {} } };
+    const authMethods = needsAuth ? [{ id: 'token', name: 'Token', description: 'API token' }, { type: 'terminal', id: 'tui', name: 'Terminal login', args: ['login'] }] : [];
+    result(message.id, { protocolVersion: 1, agentCapabilities, authMethods, agentInfo: { name: 'span-test-peer', title: 'Span Test Peer', version: '1.0.0' } });
+  } else if (message.method === 'authenticate') {
+    if (message.params.methodId === 'token') { authenticated = true; result(message.id, {}); }
+    else send({ id: message.id, error: { code: -32602, message: 'Unknown method' } });
   } else if (message.method === 'session/new') {
     if (process.argv.includes('--hang-session')) return;
+    if (needsAuth && !authenticated) { send({ id: message.id, error: { code: -32000, message: 'Sign in required' } }); return; }
     cwd = message.params.cwd;
-    result(message.id, { sessionId: `fixture-${++sessions}` });
+    const sessionId = `fixture-${++sessions}`;
+    result(message.id, { sessionId });
+    if (rich) {
+      update(sessionId, { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'web', description: 'Search the web', input: { hint: 'query' } }, { name: 'plan', description: 'Plan' }] });
+      update(sessionId, { sessionUpdate: 'current_mode_update', currentModeId: 'architect' });
+      update(sessionId, { sessionUpdate: 'session_info_update', title: 'Renamed chat', updatedAt: '2026-10-28T10:00:00Z' });
+      update(sessionId, { sessionUpdate: 'usage_update', used: 1200, size: 200000, cost: { amount: 0.25, currency: 'USD' } });
+      update(sessionId, { sessionUpdate: 'notice', severity: 'warning', title: 'MCP server unavailable', description: 'docs offline' });
+      update(sessionId, { sessionUpdate: 'compaction_update', compactionId: 'c-1', status: 'in_progress' });
+      update(sessionId, { sessionUpdate: 'compaction_summary_chunk', compactionId: 'c-1', content: { type: 'text', text: 'Summary part' } });
+      update(sessionId, { sessionUpdate: 'compaction_update', compactionId: 'c-1', status: 'completed' });
+    }
   } else if (message.method === 'session/list') {
     result(message.id, { sessions: [{ sessionId: 'old-1', cwd, title: 'Earlier chat', updatedAt: '2026-10-28T09:00:00Z' }] });
   } else if (message.method === 'session/load') {

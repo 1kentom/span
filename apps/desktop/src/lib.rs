@@ -353,6 +353,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_list_sessions,
             agents::agent_resume_session,
             agents::agent_prompt,
+            agents::agent_authenticate,
+            agents::agent_elicitation,
             agents::agent_set_config,
             agents::agent_cancel,
             agents::agent_disconnect,

@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prompt_session = session.clone();
     let request = format!("This is a single isolated ACP editor integration test. Use only ACP filesystem read and write tools for {}. Read it, then propose changing its entire content to exactly hello span followed by one newline. Write through the client's fs/write_text_file callback so the editor can review the proposal. Do not run shell commands, terminal commands, processes, network tools, direct filesystem writes, or access any other file. If these ACP callbacks are unavailable, say so and stop. After the editor accepts, finish briefly.", path.display());
     let mut prompt =
-        tokio::spawn(async move { prompt_service.prompt(prompt_session, request).await });
+        tokio::spawn(async move { prompt_service.prompt(prompt_session, request, vec![]).await });
     let deadline = tokio::time::sleep(std::time::Duration::from_secs(90));
     tokio::pin!(deadline);
     let mut tool_kinds = HashMap::new();

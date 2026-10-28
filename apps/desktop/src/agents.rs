@@ -1,5 +1,7 @@
 use crate::DesktopState;
-use span_acp::{AgentCommand, AgentEvent, AgentService, InstalledAgent, RegistryAgent};
+use span_acp::{
+    AgentCommand, AgentEvent, AgentService, InstalledAgent, PromptAttachment, RegistryAgent,
+};
 use span_core::BufferSnapshot;
 use tauri::{ipc::Channel, Manager, State};
 
@@ -27,6 +29,15 @@ fn active(state: &DesktopState) -> Result<ActiveAgent, String> {
         .map_err(|_| "Agent state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "Connect an agent first".to_owned())
+}
+
+/// Like `active`, but refuses while the agent still needs authentication.
+fn active_session(state: &DesktopState) -> Result<ActiveAgent, String> {
+    let agent = active(state)?;
+    if agent.session.is_empty() {
+        return Err("Sign in to the agent first".into());
+    }
+    Ok(agent)
 }
 
 pub fn disconnect(state: &DesktopState) -> Result<(), String> {
@@ -104,6 +115,18 @@ pub async fn agent_connect(
         match tokio::time::timeout(std::time::Duration::from_secs(45), service.new_session()).await
         {
             Ok(Ok(session)) => session,
+            Ok(Err(_)) if service.auth_required() => {
+                // Keep the process alive. The UI gets an AuthRequired event and
+                // calls agent_authenticate, which creates the session.
+                *state
+                    .agent
+                    .lock()
+                    .map_err(|_| "Agent state is unavailable".to_owned())? = Some(ActiveAgent {
+                    service,
+                    session: String::new(),
+                });
+                return Ok(String::new());
+            }
             result => {
                 let _ = service.shutdown();
                 return Err(match result {
@@ -155,9 +178,49 @@ pub async fn agent_resume_session(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn agent_prompt(state: State<'_, DesktopState>, text: String) -> Result<(), String> {
+pub async fn agent_prompt(
+    state: State<'_, DesktopState>,
+    text: String,
+    attachments: Option<Vec<PromptAttachment>>,
+) -> Result<(), String> {
+    let agent = active_session(state.inner())?;
+    agent
+        .service
+        .prompt(agent.session, text, attachments.unwrap_or_default())
+        .await
+}
+
+/// Sign in with an advertised method, then create the session that was blocked.
+/// Returns the new session id, or the current one when a session already exists.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_authenticate(
+    state: State<'_, DesktopState>,
+    method_id: String,
+) -> Result<String, String> {
     let agent = active(state.inner())?;
-    agent.service.prompt(agent.session, text).await
+    agent.service.authenticate(method_id).await?;
+    if !agent.session.is_empty() {
+        return Ok(agent.session);
+    }
+    let session = agent.service.new_session().await?;
+    switch_session(state.inner(), &session)?;
+    Ok(session)
+}
+
+/// Answer an agent input request. `action` is accept, decline or cancel.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_elicitation(
+    state: State<'_, DesktopState>,
+    request_id: String,
+    action: String,
+    content_json: Option<String>,
+) -> Result<(), String> {
+    let agent = active(state.inner())?;
+    agent
+        .service
+        .respond_elicitation(request_id, action, content_json)
 }
 
 #[tauri::command]
@@ -167,7 +230,7 @@ pub async fn agent_set_config(
     config_id: String,
     value: String,
 ) -> Result<(), String> {
-    let agent = active(state.inner())?;
+    let agent = active_session(state.inner())?;
     agent
         .service
         .set_config(agent.session, config_id, value)
@@ -177,7 +240,7 @@ pub async fn agent_set_config(
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_cancel(state: State<'_, DesktopState>) -> Result<(), String> {
-    let agent = active(state.inner())?;
+    let agent = active_session(state.inner())?;
     agent.service.cancel(agent.session)
 }
 
@@ -196,7 +259,7 @@ pub async fn agent_permission(
     request_id: String,
     option_id: Option<String>,
 ) -> Result<(), String> {
-    let agent = active(state.inner())?;
+    let agent = active_session(state.inner())?;
     agent
         .service
         .respond_permission(agent.session, request_id, option_id)
