@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import type { ConfigOptionView } from "./types";
@@ -7,6 +7,7 @@ import { TRAIT_INFO, chipTrait, isFastSwitchOn, modelTraits, overlayTrait, type 
 import type { BrandIdentity } from "../../lib/brand-icons";
 import { EffortSlider, defaultLevel, focusModelRow, modelNameOf } from "./EffortSlider";
 import { groupOptions } from "../../lib/agent-options";
+import { COST_INFO, COST_ORDER, hasCostTiers, modelCost, readFreeOnly, writeFreeOnly, type ModelCost } from "../../lib/model-cost";
 
 type ModelPopoverProps = {
   agentName: string;
@@ -68,6 +69,17 @@ export function ModelPopover(props: ModelPopoverProps) {
   const brand = () => props.brand ?? { name: props.agentName };
   const fastOn = () => fastSwitchOn(props.options);
   const groups = createMemo(() => groupOptions(props.options));
+  const [freeOnly, setFreeOnly] = createSignal(readFreeOnly());
+  /** Model rows grouped by cost tier when the list mixes free and other models. Free-only keeps the current model visible. */
+  const tiersOf = (option: ConfigOptionView): { cost?: ModelCost; values: string[] }[] => {
+    if (option.category !== "model" || !hasCostTiers(option.choices)) return [{ values: option.choices.map((choice) => choice.value) }];
+    return COST_ORDER.map((cost) => ({
+      cost,
+      values: option.choices
+        .filter((choice) => modelCost(choice) === cost && (!freeOnly() || cost === "free" || choice.value === option.currentValue))
+        .map((choice) => choice.value),
+    })).filter((tier) => tier.values.length);
+  };
   // Model lists first, then sliders, each keyed by id so a config update keeps the control under focus.
   const sections = createMemo(() => [...groups().model, ...groups().effort].map((option) => option.id), undefined, { equals: (a, b) => a.join("\n") === b.join("\n") });
   createEffect(() => {
@@ -93,6 +105,8 @@ export function ModelPopover(props: ModelPopoverProps) {
           // The last seen option stays readable while a removed row is disposed.
           let last = props.options.find((candidate) => candidate.id === optionId)!;
           const option = () => (last = props.options.find((candidate) => candidate.id === optionId) ?? last);
+          // Equal tiers keep their identity, so a config update does not rebuild the rows or drop focus.
+          const tiers = createMemo(() => tiersOf(option()), undefined, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) });
           return (
             <>
               <Show when={index() > 0}><div class="sb-rule-h" /></Show>
@@ -101,26 +115,42 @@ export function ModelPopover(props: ModelPopoverProps) {
                 fallback={
                   <div role="radiogroup" aria-label={option().name}>
                     <div class="sb-eyebrow">{`${option().name} · ${props.agentName}`}</div>
-                    <For each={option().choices.map((choice) => choice.value)}>
-                      {(choiceValue) => {
-                        let lastChoice = option().choices.find((candidate) => candidate.value === choiceValue)!;
-                        const choice = () => (lastChoice = option().choices.find((candidate) => candidate.value === choiceValue) ?? lastChoice);
-                        const current = () => choiceValue === option().currentValue;
-                        const traits = () => modelTraits(choice(), { fastOn: current() && fastOn() });
-                        return (
-                          <button class="sb-option" role="radio" aria-checked={current()} disabled={props.busy} onClick={() => props.onSelect(option().id, choiceValue)}>
-                            <ModelIcon id={brand().id} name={brand().name} traits={traits()} />
-                            <span class="sb-option-text">
-                              <span class="sb-option-line">
-                                <span class="sb-option-name">{choice().name}</span>
-                                <Show when={chipTrait(traits(), choice().name)}>{(trait) => <TraitChip trait={trait()} />}</Show>
-                              </span>
-                              <Show when={choice().description}><span class="sb-sub wrap">{choice().description}</span></Show>
-                            </span>
-                            <Show when={current()}><Icon name="TickCircle" size={14} class="sb-accent" /></Show>
-                          </button>
-                        );
-                      }}
+                    <Show when={option().category === "model" && hasCostTiers(option().choices)}>
+                      <button class="sb-option sb-free-toggle" role="switch" aria-checked={freeOnly()} onClick={() => { setFreeOnly(!freeOnly()); writeFreeOnly(freeOnly()); }}>
+                        <span class="sb-option-text">
+                          <span class="sb-option-name">Free models only</span>
+                          <span class="sb-sub wrap">{freeOnly() ? "Subscription and paid models are hidden" : "Showing every model"}</span>
+                        </span>
+                        <span class="sb-switch" aria-hidden="true"><span class="sb-switch-knob" /></span>
+                      </button>
+                    </Show>
+                    <For each={tiers()}>
+                      {(tier) => (
+                        <>
+                          <Show when={tier.cost}><div class="sb-eyebrow sb-tier">{COST_INFO[tier.cost!].chip}</div></Show>
+                          <For each={tier.values}>
+                            {(choiceValue) => {
+                              let lastChoice = option().choices.find((candidate) => candidate.value === choiceValue)!;
+                              const choice = () => (lastChoice = option().choices.find((candidate) => candidate.value === choiceValue) ?? lastChoice);
+                              const current = () => choiceValue === option().currentValue;
+                              const traits = () => modelTraits(choice(), { fastOn: current() && fastOn() });
+                              return (
+                                <button class="sb-option" role="radio" aria-checked={current()} disabled={props.busy} onClick={() => props.onSelect(option().id, choiceValue)}>
+                                  <ModelIcon id={brand().id} name={brand().name} traits={traits()} />
+                                  <span class="sb-option-text">
+                                    <span class="sb-option-line">
+                                      <span class="sb-option-name">{choice().name}</span>
+                                      <Show when={chipTrait(traits(), choice().name)}>{(trait) => <TraitChip trait={trait()} />}</Show>
+                                    </span>
+                                    <Show when={choice().description}><span class="sb-sub wrap">{choice().description}</span></Show>
+                                  </span>
+                                  <Show when={current()}><Icon name="TickCircle" size={14} class="sb-accent" /></Show>
+                                </button>
+                              );
+                            }}
+                          </For>
+                        </>
+                      )}
                     </For>
                   </div>
                 }
