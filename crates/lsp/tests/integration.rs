@@ -562,19 +562,44 @@ async fn test_caller_driven_cancellation() {
     };
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let cancel_token_clone = cancel_token.clone();
+    let request = client.completion_with_cancel(completion_params, cancel_token.clone());
+    tokio::pin!(request);
 
-    let request_task = tokio::spawn(async move {
-        client
-            .completion_with_cancel(completion_params, cancel_token_clone)
-            .await
-    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                result = &mut request => panic!("completion completed before cancellation: {result:?}"),
+                event = client.next_event() => match event {
+                    Some(ServerEvent::Notification { method, .. })
+                        if method == "span/testRequestReceived" => break,
+                    Some(_) => {}
+                    None => panic!("Event channel closed before request was received"),
+                }
+            }
+        }
+    })
+    .await
+    .expect("server did not receive the completion request");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
     cancel_token.cancel();
 
-    let result = request_task.await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), &mut request)
+        .await
+        .expect("cancelled request did not finish");
     assert!(matches!(result, Err(LspError::Cancelled)));
+
+    match tokio::time::timeout(Duration::from_secs(2), client.next_event())
+        .await
+        .expect("server did not observe cancellation")
+    {
+        Some(ServerEvent::Notification { method, params }) => {
+            assert_eq!(method, "span/cancelObserved");
+            assert!(params.is_some());
+        }
+        _ => panic!("Expected cancellation confirmation notification"),
+    }
+
+    client.shutdown().await.unwrap();
 }
 
 #[tokio::test]

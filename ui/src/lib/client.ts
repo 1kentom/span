@@ -3,7 +3,7 @@ import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, Settings_Serialize as Settings, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -347,6 +347,22 @@ export const api = {
   async agentPrompt(text: string): Promise<void> {
     if (!isDesktop) nativeRequired('Sending agent prompts');
     await commands.agentPrompt(text);
+  },
+  async agentSetConfig(configId: string, value: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Changing agent options');
+    await commands.agentSetConfig(configId, value);
+  },
+  async agentNewSession(): Promise<string> {
+    if (!isDesktop) nativeRequired('Starting a new chat');
+    return commands.agentNewSession();
+  },
+  async agentListSessions(): Promise<SessionSummary[]> {
+    if (!isDesktop) nativeRequired('Listing earlier chats');
+    return commands.agentListSessions();
+  },
+  async agentResumeSession(sessionId: string): Promise<string> {
+    if (!isDesktop) nativeRequired('Resuming a chat');
+    return commands.agentResumeSession(sessionId);
   },
   async agentCancel(): Promise<void> {
     if (!isDesktop) nativeRequired('Cancelling agents');

@@ -132,7 +132,7 @@ export function renderMarkdownBlock(block: MarkdownBlock, context: RenderContext
   return markdown.renderer.render(block.tokens, markdown.options, context);
 }
 
-async function highlightFence(element: HTMLElement) {
+export async function highlightFence(element: HTMLElement) {
   const code = element.textContent ?? "";
   if (!code || code.length > 40_000) return;
   const name = element.dataset.language ?? "";
