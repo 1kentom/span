@@ -140,6 +140,27 @@ async fn discard_buffer(
 
 #[tauri::command]
 #[specta::specta]
+async fn save_attachment(
+    state: State<'_, DesktopState>,
+    dir: String,
+    file_name: String,
+    data_base64: String,
+) -> Result<span_core::SavedAttachment, String> {
+    use base64::Engine;
+    if data_base64.len() / 4 * 3 > span_core::MAX_ATTACHMENT_BYTES + 3 {
+        return Err("Attachment is too large to save.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|_| "Attachment data is not valid base64.".to_string())?;
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.save_attachment(&dir, &file_name, &bytes)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn search(
     state: State<'_, DesktopState>,
     query: SearchQuery,
@@ -323,6 +344,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             edit_buffer_delta,
             save_buffer,
             discard_buffer,
+            save_attachment,
             search,
             search_stream,
             cancel_search,

@@ -3,7 +3,7 @@ import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -238,6 +238,11 @@ export const api = {
   async readImage(path: string): Promise<ImageSource> {
     if (!isDesktop) { const image = previewAssetImage(path); if (image) return image; nativeRequired('Loading workspace images'); }
     return commands.readImage(path);
+  },
+  /** Writes an attachment into the workspace without overwriting. Returns the workspace-relative path. */
+  async saveAttachment(dir: string, fileName: string, dataBase64: string): Promise<SavedAttachment> {
+    if (!isDesktop) nativeRequired('Saving attachments to the workspace');
+    return commands.saveAttachment(dir, fileName, dataBase64);
   },
   async listTools(): Promise<ToolInfo[]> {
     if (!isDesktop) nativeRequired('Detecting installed tools');

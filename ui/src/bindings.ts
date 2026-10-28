@@ -12,6 +12,7 @@ export const commands = {
 	editBufferDelta: (path: string, expectedRevision: number, changes: TextEdit[]) => __TAURI_INVOKE<BufferRevision>("edit_buffer_delta", { path, expectedRevision, changes }),
 	saveBuffer: (path: string, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("save_buffer", { path, expectedRevision }),
 	discardBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("discard_buffer", { path }),
+	saveAttachment: (dir: string, fileName: string, dataBase64: string) => __TAURI_INVOKE<SavedAttachment>("save_attachment", { dir, fileName, dataBase64 }),
 	search: (query: SearchQuery_Deserialize) => __TAURI_INVOKE<SearchMatch[]>("search", { query }),
 	searchStream: (id: string, query: SearchQuery_Deserialize, onMatch: Channel<SearchMatch>) => __TAURI_INVOKE<number>("search_stream", { id, query, onMatch }),
 	cancelSearch: (id: string) => __TAURI_INVOKE<null>("cancel_search", { id }),
@@ -394,6 +395,14 @@ export type RegistryAgent_Serialize = {
 	/**  Phase 0.1 installs pinned npm distributions. Other transports remain visible. */
 	installable: boolean,
 	package: string | null,
+};
+
+export type SavedAttachment = {
+	/**  Workspace-relative path with forward slashes. */
+	path: string,
+	size: number,
+	/**  True when the requested name was taken and a numbered name was used. */
+	renamed: boolean,
 };
 
 export type SearchMatch = {
