@@ -164,7 +164,13 @@ newBlock?: boolean | null } |
 /**  Session creation needs `agent_authenticate` first. */
 { kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Deserialize[]; 
 /**  Set when the user must sign in outside Span. */
-hint?: AgentHint | null } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Deserialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title?: string | null; updatedAt?: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount?: number | null; costCurrency?: string | null } | { kind: "notice"; sessionId: string; 
+hint?: AgentHint | null; 
+/**
+ *  The agent's own error text, set when it does not read as a
+ *  sign-in request (for example an account or plan notice). Show it
+ *  first; the sign-in methods are secondary.
+ */
+agentMessage?: string | null } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Deserialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title?: string | null; updatedAt?: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount?: number | null; costCurrency?: string | null } | { kind: "notice"; sessionId: string; 
 /**  `info`, `warning`, `error`, or an agent specific value. */
 severity: string; title: string; description?: string | null; 
 /**  Set for a notice the agent later clears with `noticeCleared`. */
@@ -219,7 +225,13 @@ newBlock?: boolean } |
 /**  Session creation needs `agent_authenticate` first. */
 { kind: "authRequired"; message: string; authMethods: AuthMethodInfo_Serialize[]; 
 /**  Set when the user must sign in outside Span. */
-hint?: AgentHint } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Serialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title: string | null; updatedAt: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount: number | null; costCurrency: string | null } | { kind: "notice"; sessionId: string; 
+hint?: AgentHint; 
+/**
+ *  The agent's own error text, set when it does not read as a
+ *  sign-in request (for example an account or plan notice). Show it
+ *  first; the sign-in methods are secondary.
+ */
+agentMessage?: string } | { kind: "availableCommands"; sessionId: string; commands: SlashCommand_Serialize[] } | { kind: "currentMode"; sessionId: string; modeId: string } | { kind: "sessionInfo"; sessionId: string; title: string | null; updatedAt: string | null } | { kind: "usage"; sessionId: string; used: number; size: number; costAmount: number | null; costCurrency: string | null } | { kind: "notice"; sessionId: string; 
 /**  `info`, `warning`, `error`, or an agent specific value. */
 severity: string; title: string; description: string | null; 
 /**  Set for a notice the agent later clears with `noticeCleared`. */
@@ -323,7 +335,41 @@ export type AgentHint =
 /**  "Compacting conversation". */
 "compacting" | 
 /**  "Preparing tool". The agent has not named the tool call yet. */
-"toolPending";
+"toolPending" | 
+/**
+ *  "it will not ask before running tools, and Span's approval prompts
+ *  will not appear". The session's mode lets the
+ *  agent run tools without asking (bypassPermissions, agent-full-access,
+ *  yolo, never); the notice title is the mode's name.
+ */
+"permissionsBypassed" | 
+/**
+ *  "Stopped after you rejected a request". The turn ended `cancelled`
+ *  after the user rejected a permission or an edit in it.
+ */
+"rejectedByUser" | 
+/**
+ *  "The agent still lists a conversation you deleted. Span hides it until
+ *  you reconnect." The agent answered `session/delete` but kept the session.
+ */
+"deletedStillListed" | 
+/**
+ *  "Run `opencode auth login` in a terminal, or choose another model,
+ *  then retry". The current model's provider lacks credentials and the
+ *  model option offers others.
+ */
+"runOpencodeAuthLoginOrSwitchModel" | 
+/**
+ *  "needs setup in a terminal or environment variables, which Span does
+ *  not do. Set it up, then reconnect." A sign-in method with no input
+ *  Span can collect.
+ */
+"needsEnvironmentSetup" | 
+/**
+ *  "Request interrupted by user". A restored session replays an
+ *  interrupted turn.
+ */
+"interruptedByUser";
 
 /**  A launch command for an agent that is not installed from the registry. */
 export type AgentPreset = AgentPreset_Serialize | AgentPreset_Deserialize;

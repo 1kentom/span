@@ -459,6 +459,16 @@
   max-width: 96px;
   color: var(--sb-dim);
 }
+/* A mode that skips approval prompts is never cut to an ambiguous "Bypass permi...": the chip grows and turns warning coloured. */
+.agent-mode-button.warn {
+  flex: none;
+  gap: 4px;
+}
+.agent-mode-button.warn .agent-model-name {
+  max-width: none;
+  overflow: visible;
+  color: var(--sb-warning);
+}
 .agent-level {
   display: inline-flex;
   align-items: flex-end;
@@ -510,7 +520,7 @@
   .agent-model-button .agent-model-name {
     max-width: 78px;
   }
-  .agent-mode-button {
+  .agent-mode-button:not(.warn) {
     display: none;
   }
   .agent-composer-hint > :last-child {

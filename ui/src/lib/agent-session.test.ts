@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, AgentFeatures } from "../bindings";
-import { canCompact, initialAgentState, mergeTool, openPermission, reduceAgentEvent, type AgentState, type ToolEvent } from "./agent-session";
+import { canCompact, initialAgentState, mergeTool, openPermission, reduceAgentEvent, type AgentState, type FeedItem, type ToolEvent } from "./agent-session";
 
 const features: AgentFeatures = { loadSession: true, image: false, audio: false, embeddedContext: true, mcpHttp: false, mcpSse: false, canListSessions: true, canResumeSessions: false, canCloseSessions: false, canDeleteSessions: false };
 const apply = (events: AgentEvent[], state: AgentState = initialAgentState(true)) => events.reduce(reduceAgentEvent, state);
@@ -127,5 +127,60 @@ describe("agent session reducer", () => {
       live(),
     );
     expect(openPermission(state.feed)?.event.requestId).toBe("r2");
+  });
+});
+
+describe("live agent run findings", () => {
+  const permission = (toolCallId = "t1"): AgentEvent => ({ kind: "permission", sessionId: "s1", requestId: "r1", toolCallId, title: "present.txt", toolKind: "read", options: [{ optionId: "once", name: "Allow once", kind: "allow_once" }, { optionId: "reject", name: "Reject", kind: "reject_once" }] });
+  const status = (state: AgentState, id = "t1") => state.feed.find((item): item is Extract<FeedItem, { kind: "tool" }> => item.kind === "tool" && item.event.toolCallId === id)?.event.status;
+
+  it("keeps a tool waiting while its permission is open, even after OpenCode reports in_progress first", () => {
+    // OpenCode 2.0.32: tool_call pending, tool_call_update in_progress, then session/request_permission.
+    let state = apply([tool({ status: "pending", title: "read", toolKind: "read" }), tool({ status: "in_progress" }), permission()], live());
+    expect(status(state)).toBe("pending");
+    state = apply([tool({ status: "in_progress" })], state);
+    expect(status(state)).toBe("pending");
+    state = apply([{ kind: "permissionResolved", sessionId: "s1", requestId: "r1" }], state);
+    expect(status(state)).toBe("in_progress");
+    state = apply([tool({ status: "failed" })], state);
+    expect(status(state)).toBe("failed");
+  });
+
+  it("a resolved permission does not undo a final status that arrived meanwhile", () => {
+    const state = apply([tool({ status: "in_progress" }), permission(), tool({ status: "completed" }), { kind: "permissionResolved", sessionId: "s1", requestId: "r1" }], live());
+    expect(status(state)).toBe("completed");
+  });
+
+  it("says the turn stopped after a rejection, and plain Stopped otherwise", () => {
+    const rejected = apply([{ kind: "complete", sessionId: "s1", stopReason: "cancelled", hint: "rejectedByUser" } as AgentEvent], live());
+    expect(rejected.feed.at(-1)).toMatchObject({ kind: "note", text: "Stopped after you rejected a request" });
+    const plain = apply([{ kind: "complete", sessionId: "s1", stopReason: "cancelled" }], live());
+    expect(plain.feed.at(-1)).toMatchObject({ kind: "note", text: "Stopped" });
+  });
+
+  it("holds the permission bypass notice as connection state, not a feed card, until it is cleared", () => {
+    const notice = { kind: "notice", sessionId: "s1", severity: "warning", title: "Bypass permissions", description: null, noticeId: "span/permission-bypass", hint: "permissionsBypassed" } as AgentEvent;
+    const state = apply([notice], live());
+    expect(state.permissionBypass).toEqual({ mode: "Bypass permissions" });
+    expect(state.feed.some((item) => item.kind === "notice")).toBe(false);
+    const cleared = apply([{ kind: "noticeCleared", sessionId: "s1", noticeId: "span/permission-bypass" }], state);
+    expect(cleared.permissionBypass).toBeUndefined();
+    expect(apply([notice, { kind: "session", sessionId: "s2" }], live()).permissionBypass).toBeUndefined();
+  });
+
+  it("notes a deleted conversation the agent still lists, though its notice names that other session", () => {
+    const state = apply([{ kind: "notice", sessionId: "old", severity: "info", title: "", description: null, hint: "deletedStillListed" } as AgentEvent], live());
+    expect(state.feed.at(-1)).toMatchObject({ kind: "note", text: "The agent still lists a conversation you deleted. Span hides it until you reconnect." });
+  });
+
+  it("shows a replayed interruption as a small note instead of a user bubble", () => {
+    const state = apply([{ kind: "notice", sessionId: "s1", severity: "info", title: "", description: null, hint: "interruptedByUser" } as AgentEvent], live());
+    expect(state.feed.at(-1)).toMatchObject({ kind: "note", text: "Request interrupted by user" });
+  });
+
+  it("keeps the agent's own message when an auth error is not a sign-in request", () => {
+    const tier = "This client is no longer supported for Gemini Code Assist for individuals.";
+    const state = apply([{ kind: "authRequired", message: `Authentication required: ${tier}`, authMethods: [], agentMessage: tier } as AgentEvent]);
+    expect(state.auth?.agentMessage).toBe(tier);
   });
 });

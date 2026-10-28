@@ -13,7 +13,7 @@ import type {
   SlashCommand,
 } from "../bindings";
 import type { Attachment } from "./attachments";
-import { hintText } from "./agent-hint-text";
+import { hintText, PERMISSION_BYPASS_NOTICE } from "./agent-hint-text";
 import { isFinished, knownDelegation, mergeTask, type ChildRequest, type DelegationNote, type DelegationTaskState } from "./agent-delegation";
 
 /** Agent session state built from ACP events. Pure data: the panel derives every view from it. */
@@ -27,7 +27,7 @@ export type FeedItem =
   | { id: number; kind: "note"; text: string }
   | { id: number; kind: "notice"; severity: string; title: string; description?: string; /** Set for a notice the agent later clears. */ noticeId?: string; hint?: AgentHint }
   | { id: number; kind: "compaction"; compactionId: string; status: string; summary: string; error?: string }
-  | { id: number; kind: "tool"; event: ToolEvent }
+  | { id: number; kind: "tool"; event: ToolEvent; /** A status held back while a permission for this call is open; the step shows as waiting until then. */ deferredStatus?: string }
   | { id: number; kind: "permission"; event: PermissionEvent; resolved: boolean }
   | { id: number; kind: "proposal"; proposal: EditProposal; resolution?: "accepted" | "rejected" }
   | { id: number; kind: "stop"; reason: string; hint?: AgentHint }
@@ -46,7 +46,9 @@ export type AgentState = {
   statusMessage: string;
   sessionId?: string;
   agent?: AgentInfo;
-  auth?: { message: string; methods: AuthMethodInfo[]; hint?: AgentHint };
+  auth?: { message: string; methods: AuthMethodInfo[]; hint?: AgentHint; /** The agent's own text when it is not a sign-in request. Shown first; sign-in is secondary. */ agentMessage?: string };
+  /** The session's mode lets the agent run tools without asking. `mode` is the mode's name. */
+  permissionBypass?: { mode: string };
   canLoad: boolean;
   canList: boolean;
   commands: SlashCommand[];
@@ -105,7 +107,7 @@ export function initialAgentState(desktop: boolean): AgentState {
 
 /** Clears everything tied to one conversation, keeping the agent identity and logs. */
 export function resetConversation(state: AgentState): AgentState {
-  return { ...state, feed: [], plan: [], elicitations: [], strayPermissions: [], childRequests: [], usage: undefined, turnUsage: undefined, sessionTitle: undefined, commands: [], running: false, stopRequested: false };
+  return { ...state, feed: [], plan: [], elicitations: [], strayPermissions: [], childRequests: [], usage: undefined, turnUsage: undefined, sessionTitle: undefined, commands: [], running: false, stopRequested: false, permissionBypass: undefined };
 }
 
 export function addFeedItem(state: AgentState, item: DistributiveOmit<FeedItem, "id">): AgentState {
@@ -216,6 +218,8 @@ function eventSession(event: AgentEvent): string | undefined {
 /** Applies one ACP event. Events for another session are ignored. */
 export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentState {
   const session = eventSession(event);
+  // Names the deleted session, not the open one, so it is noted before the session filter.
+  if (event.kind === "notice" && event.hint === "deletedStillListed") return addFeedItem(state, { kind: "note", text: hintText(event.hint)! });
   if (session && state.sessionId && session !== state.sessionId) {
     // Another session on this connection. Delegated children ask permission here; the view decides which are theirs.
     if (event.kind === "permission") return { ...state, strayPermissions: [...state.strayPermissions.filter((item) => item.requestId !== event.requestId), event].slice(-STRAY_LIMIT) };
@@ -238,6 +242,7 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         stopRequested: false,
         sessionId: undefined,
         auth: undefined,
+        permissionBypass: undefined,
         elicitations: [],
         strayPermissions: [],
         childRequests: [],
@@ -247,7 +252,7 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
       };
     }
     case "session":
-      return { ...state, sessionId: event.sessionId, status: "ready", auth: undefined };
+      return { ...state, sessionId: event.sessionId, status: "ready", auth: undefined, permissionBypass: event.sessionId === state.sessionId ? state.permissionBypass : undefined };
     case "capabilities":
       return { ...state, canLoad: event.canLoadSession, canList: event.canListSessions };
     case "ready":
@@ -258,7 +263,7 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         canList: event.features.canListSessions,
       };
     case "authRequired":
-      return { ...state, auth: { message: event.message, methods: event.authMethods, ...(event.hint ? { hint: event.hint } : {}) } };
+      return { ...state, auth: { message: event.message, methods: event.authMethods, ...(event.hint ? { hint: event.hint } : {}), ...(event.agentMessage ? { agentMessage: event.agentMessage } : {}) } };
     case "availableCommands":
       return { ...state, commands: event.commands };
     case "currentMode":
@@ -282,12 +287,15 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         },
       };
     case "notice": {
+      if (event.hint === "permissionsBypassed") return { ...state, permissionBypass: { mode: event.title } };
+      if (event.hint === "interruptedByUser") return addFeedItem(state, { kind: "note", text: hintText(event.hint)! });
       const notice = { kind: "notice" as const, severity: event.severity, title: event.title, description: event.description ?? undefined, ...(event.noticeId ? { noticeId: event.noticeId } : {}), ...(event.hint ? { hint: event.hint } : {}) };
       const id = event.noticeId;
       if (id && state.feed.some((item) => item.kind === "notice" && item.noticeId === id)) return mapFeed(state, (item) => (item.kind === "notice" && item.noticeId === id ? { ...notice, id: item.id } : item));
       return addFeedItem(state, notice);
     }
     case "noticeCleared":
+      if (event.noticeId === PERMISSION_BYPASS_NOTICE) return { ...state, permissionBypass: undefined };
       return { ...state, feed: state.feed.filter((item) => !(item.kind === "notice" && item.noticeId === event.noticeId)) };
     case "compaction": {
       const found = state.feed.some((item) => item.kind === "compaction" && item.compactionId === event.compactionId);
@@ -320,14 +328,24 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
     case "config":
       return { ...state, config: event.options };
     case "tool": {
+      const asking = awaitsPermission(state.feed, event.toolCallId);
       const existing = state.feed.some((item) => item.kind === "tool" && item.event.toolCallId === event.toolCallId);
-      if (!existing) return addFeedItem(state, { kind: "tool", event });
-      return mapFeed(state, (item) => (item.kind === "tool" && item.event.toolCallId === event.toolCallId ? { ...item, event: mergeTool(item.event, event) } : item));
+      if (!existing) return addFeedItem(state, holdWhileAsking({ kind: "tool", event }, asking));
+      return mapFeed(state, (item) => (item.kind === "tool" && item.event.toolCallId === event.toolCallId ? holdWhileAsking({ ...item, event: mergeTool(item.event, event) }, asking) : item));
     }
     case "permission":
-      return addFeedItem(state, { kind: "permission", event, resolved: false });
-    case "permissionResolved":
-      return resolvePermission(dropRequest(state, event.requestId), event.requestId);
+      // OpenCode reports in_progress before it asks: the step waits until the user answers.
+      return addFeedItem(
+        mapFeed(state, (item) => (item.kind === "tool" && item.event.toolCallId === event.toolCallId ? holdWhileAsking(item, true) : item)),
+        { kind: "permission", event, resolved: false },
+      );
+    case "permissionResolved": {
+      const asked = state.feed.find((item) => item.kind === "permission" && item.event.requestId === event.requestId);
+      const resolved = resolvePermission(dropRequest(state, event.requestId), event.requestId);
+      const toolCallId = asked?.kind === "permission" ? asked.event.toolCallId : undefined;
+      if (!toolCallId || awaitsPermission(resolved.feed, toolCallId)) return resolved;
+      return mapFeed(resolved, (item) => (item.kind === "tool" && item.event.toolCallId === toolCallId ? releaseHeld(item) : item));
+    }
     case "delegation":
       return reduceDelegation(state, event.event);
     case "proposal":
@@ -345,7 +363,7 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         ...(tokens !== undefined ? { turnUsage: { tokens } } : {}),
       };
       if (CARD_STOP_REASONS.includes(event.stopReason)) return addFeedItem(next, { kind: "stop", reason: event.stopReason, ...(event.hint ? { hint: event.hint } : {}) });
-      if (event.stopReason === "cancelled") return addFeedItem(next, { kind: "note", text: "Stopped" });
+      if (event.stopReason === "cancelled") return addFeedItem(next, { kind: "note", text: (event.hint === "rejectedByUser" && hintText(event.hint)) || "Stopped" });
       const quiet = event.hint === "noOutputStreamed" ? hintText(event.hint) : undefined;
       return quiet ? addFeedItem(next, { kind: "note", text: quiet }) : next;
     }
@@ -360,6 +378,27 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
       };
   }
   return state;
+}
+
+type ToolItem = Extract<FeedItem, { kind: "tool" }>;
+
+/** True while a permission request for this tool call is open. */
+const awaitsPermission = (feed: readonly FeedItem[], toolCallId: string) => feed.some((item) => item.kind === "permission" && !item.resolved && item.event.toolCallId === toolCallId);
+
+/** While the user is asked, a running status is held back and the step stays pending (waiting). A final status always shows. */
+function holdWhileAsking(item: DistributiveOmit<ToolItem, "id">, asking: boolean): ToolItem {
+  const { deferredStatus, ...rest } = item as ToolItem;
+  const status = rest.event.status;
+  if (asking && status === "in_progress") return { ...rest, event: { ...rest.event, status: "pending" }, deferredStatus: status } as ToolItem;
+  if (status === "pending" && deferredStatus) return { ...rest, deferredStatus } as ToolItem;
+  return rest as ToolItem;
+}
+
+/** Shows the status held back while the permission was open, unless a newer one replaced it. */
+function releaseHeld(item: ToolItem): ToolItem {
+  const { deferredStatus, ...rest } = item;
+  if (!deferredStatus) return item;
+  return rest.event.status === "pending" ? { ...rest, event: { ...rest.event, status: deferredStatus } } : rest;
 }
 
 /** Forgets a child's open request, and the typed event that named it. */

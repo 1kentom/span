@@ -7,7 +7,8 @@
 // Steps: {"update": {...}} sends session/update (sessionId from the step, the
 // request, or the last session/new result), {"sleep": ms}, {"request":
 // {"method", "params"}} waits for the client's answer, {"hold": true} leaves a
-// prompt unanswered until a `session/cancel` line answers it.
+// prompt unanswered until a `session/cancel` line answers it, {"notify":
+// {"method", "params"}} sends any other notification as is.
 // Every incoming message is appended to the --record file as one JSON line.
 import fs from 'node:fs';
 import readline from 'node:readline';
@@ -39,6 +40,7 @@ function entry(method) {
 async function run(steps, message) {
   for (const step of steps ?? []) {
     if (step.sleep) await sleep(step.sleep);
+    if (step.notify) send({ method: step.notify.method, params: step.notify.params });
     if (step.update) send({ method: 'session/update', params: { sessionId: step.sessionId ?? message.params?.sessionId ?? lastSession, update: step.update } });
     if (step.request) await call(step.request.method, { sessionId: message.params?.sessionId ?? lastSession, ...step.request.params });
     if (step.hold) return true;

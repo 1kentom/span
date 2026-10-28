@@ -10,6 +10,8 @@ type SignInProps = Brand & {
   /** Short UI copy for the backend's auth hint, for example the OpenCode terminal login. */
   hint?: string;
   methods: AuthMethod[];
+  /** The agent reported something other than a sign-in request, shown above: no method is the primary action. */
+  secondary?: boolean;
   busy?: boolean;
   onPick: (methodId: string) => void;
   /** Called with a typed secret for methods that ask for an API key or a gateway. */
@@ -38,7 +40,7 @@ export function SignIn(props: SignInProps) {
             <>
               <button
                 class="sb-method"
-                classList={{ primary: index() === 0 && !method.input }}
+                classList={{ primary: !props.secondary && index() === 0 && !method.input }}
                 disabled={props.busy}
                 aria-expanded={method.input ? asking() === method.id : undefined}
                 onClick={() => (method.input ? setAsking(asking() === method.id ? undefined : method.id) : props.onPick(method.id))}

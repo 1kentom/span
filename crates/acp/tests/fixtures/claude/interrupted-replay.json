@@ -1,0 +1,30 @@
+{
+  "quirk": "A restored session replays [Request interrupted by user] as a user chunk: it becomes an info notice with hint interruptedByUser instead of a user bubble.",
+  "drive": [
+    {
+      "do": "load",
+      "session": "312c639d-40d2-4a77-9313-3c2610f18f00"
+    }
+  ],
+  "events": [
+    {
+      "kind": "user",
+      "text": "Count from 1 to 300, one number per line, slowly."
+    },
+    {
+      "kind": "notice",
+      "severity": "info",
+      "hint": "interruptedByUser"
+    }
+  ],
+  "absent": [
+    {
+      "kind": "user",
+      "text": "[Request interrupted by user]"
+    },
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    }
+  ]
+}

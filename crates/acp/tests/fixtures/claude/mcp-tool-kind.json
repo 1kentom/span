@@ -1,0 +1,29 @@
+{
+  "quirk": "An MCP tool call carries kind other, which the typed schema drops as its default: the Tool event reports toolKind other, like the Permission event.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "List the agents",
+      "permission": "allow_once"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "toolu_01VqJniW9hRwokt3tg3apGWa",
+      "status": "pending",
+      "toolKind": "other"
+    },
+    {
+      "kind": "permission",
+      "toolKind": "other"
+    },
+    {
+      "kind": "tool",
+      "status": "completed"
+    }
+  ]
+}
