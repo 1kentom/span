@@ -294,14 +294,14 @@ describe("warningParts", () => {
 
 describe("configFilesIn", () => {
   const codex = "Codex is ignoring 2 unrecognized configuration settings. Check for typos or deprecated settings.";
-  const detail = "user (/Users/user/.codex/config.toml): mcp_servers.Sanity.type is ignored. user (/Users/user/.codex/config.toml): mcp_servers.iconsax.type is ignored.";
+  const detail = "user (/home/dev/.codex/config.toml): mcp_servers.serverA.type is ignored. user (/home/dev/.codex/config.toml): mcp_servers.serverB.type is ignored.";
   it("returns each config path once, unshortened", () => {
-    expect(configFilesIn(codex, detail)).toEqual(["/Users/user/.codex/config.toml"]);
+    expect(configFilesIn(codex, detail)).toEqual(["/home/dev/.codex/config.toml"]);
   });
   it("returns nothing when no path is named", () => {
     expect(configFilesIn("Rate limit is close.", "Slow down.")).toEqual([]);
     expect(configFilesIn("See https://example.com/settings.json for help.")).toEqual([]);
-    expect(configFilesIn("Edit /Users/user/notes.txt")).toEqual([]);
+    expect(configFilesIn("Edit /home/dev/notes.txt")).toEqual([]);
   });
   it("finds paths in code spans, home paths, drive paths and sentence ends", () => {
     expect(configFilesIn("Bad value in `/etc/app/a.yaml`.", "Also ~/.config/b.jsonc, and C:\\Users\\me\\c.ini.")).toEqual(["/etc/app/a.yaml", "~/.config/b.jsonc", "C:\\Users\\me\\c.ini"]);

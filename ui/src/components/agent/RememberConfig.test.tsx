@@ -17,7 +17,9 @@ const mocks = vi.hoisted(() => {
       agentConnect: vi.fn(),
       agentNewSession: vi.fn(),
       agentResumeSession: vi.fn(async (id: string) => id),
-      agentPrompt: vi.fn((_message: string, _attachments: unknown[]) => new Promise(() => undefined)),
+      agentPrompt: vi.fn((_message: string, _attachments: unknown[]): Promise<unknown> => new Promise(() => undefined)),
+      agentCancel: vi.fn(async () => undefined),
+      openBuffer: vi.fn(),
       agentDisconnect: vi.fn(async () => undefined),
       agentListSessions: vi.fn(async (): Promise<unknown[]> => []),
       agentSetConfig: vi.fn(async (_id: string, _value: string) => undefined),
@@ -64,6 +66,8 @@ beforeEach(() => {
     return "s2";
   });
   mocks.api.agentResumeSession.mockClear();
+  mocks.api.agentPrompt.mockReset();
+  mocks.api.agentPrompt.mockImplementation(() => new Promise(() => undefined));
   mocks.api.agentSetConfig.mockReset();
   mocks.api.agentSetConfig.mockImplementation(async () => undefined);
   mocks.api.agentInstalled.mockResolvedValue([{ id: "codex", version: "1", launch: { command: "codex", args: ["acp"], env: {} } }]);
@@ -149,4 +153,107 @@ describe("remembered config", () => {
     await a.setConfig("model", "luna");
     expect(window.localStorage.getItem("span.agent.lastConfig")).toBeNull();
   });
+
+  it("applies the remembered options when a chat with messages switches agent", async () => {
+    mocks.api.agentInstalled.mockResolvedValue([
+      { id: "codex", version: "1", launch: { command: "codex", args: ["acp"], env: {} } },
+      { id: "opencode", version: "1", launch: { command: "opencode", args: ["acp"], env: {} } },
+    ]);
+    const a = start();
+    await connected(a);
+    mocks.emit({ kind: "user", sessionId: "s1", text: "earlier ask" } as AgentEvent, { kind: "text", sessionId: "s1", text: "earlier answer" } as AgentEvent);
+    await tick();
+    writeLastConfig("opencode", "model", "luna");
+    mocks.api.agentConnect.mockImplementationOnce(async () => {
+      mocks.emit({ kind: "ready", agentName: "opencode", agentTitle: "OpenCode", agentVersion: "1", features, authMethods: [] }, opened("s3"), configEvent("s3"));
+      return "s3";
+    });
+    a.connectInstalled("opencode");
+    await tick();
+    expect(a.feed().some((item) => item.kind === "user")).toBe(true);
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("model", "luna");
+  });
+
+  it("lets a change the user makes during the restore win and holds sending until it settles", async () => {
+    writeLastConfig("codex", "model", "luna");
+    writeLastConfig("codex", "effort", "high");
+    let release!: () => void;
+    mocks.api.agentSetConfig.mockImplementationOnce(() => new Promise<undefined>((resolve) => (release = () => resolve(undefined))));
+    mocks.api.agentConnect.mockImplementation(async () => {
+      const effort = { id: "effort", name: "Effort", description: null, category: "thought_level", currentValue: "low", groups: choices(["low", "medium", "high"]) };
+      mocks.emit({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] }, opened("s1"), { kind: "config", sessionId: "s1", options: [model("gpt"), effort] } as unknown as AgentEvent);
+      return "s1";
+    });
+    const a = start();
+    await connected(a);
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledTimes(1);
+    expect(mocks.api.agentSetConfig).toHaveBeenLastCalledWith("model", "luna");
+    a.setPrompt("hello");
+    expect(a.canSend()).toBe(false);
+    const picked = a.setConfig("effort", "medium");
+    release();
+    await picked;
+    await tick();
+    expect(mocks.api.agentSetConfig.mock.calls).toEqual([["model", "luna"], ["effort", "medium"]]);
+    expect(readLastConfig("codex").effort).toBe("medium");
+    expect(a.canSend()).toBe(true);
+  });
 });
+
+describe("edit, resend and fork keep the source session's options", () => {
+  /** Codex in s1 on the luna model (the agent's own change, so nothing is remembered) with one sent turn. */
+  async function sentTurn(a: AgentController) {
+    await connected(a);
+    mocks.emit(configEvent("s1", "luna"));
+    await tick();
+    mocks.api.agentPrompt.mockImplementationOnce(async () => undefined);
+    a.setPrompt("ask");
+    a.intake.addPastedText("pasted line\n".repeat(40));
+    a.send();
+    await tick();
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "end_turn" } as unknown as AgentEvent);
+    await tick();
+    mocks.api.agentSetConfig.mockClear();
+  }
+  const userId = (a: AgentController) => a.feed().find((item) => item.kind === "user")!.id;
+
+  it("resends with the attachments and on the source model, set before the prompt goes out", async () => {
+    const a = start();
+    await sentTurn(a);
+    const [, firstAttachments] = mocks.api.agentPrompt.mock.calls[0];
+    expect(firstAttachments).toHaveLength(1);
+    a.resendFrom(userId(a));
+    await tick();
+    await tick();
+    expect(a.state().sessionId).toBe("s2");
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("model", "luna");
+    expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(2);
+    const [resent, resentAttachments] = mocks.api.agentPrompt.mock.calls[1];
+    expect(resent.endsWith("ask")).toBe(true);
+    expect(resentAttachments).toEqual(firstAttachments);
+    expect(mocks.api.agentSetConfig.mock.invocationCallOrder[0]).toBeLessThan(mocks.api.agentPrompt.mock.invocationCallOrder[1]);
+  });
+
+  it("edits on the source model", async () => {
+    const a = start();
+    await sentTurn(a);
+    a.editFrom(userId(a));
+    a.setPrompt("ask again");
+    a.send();
+    await tick();
+    await tick();
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("model", "luna");
+    expect(mocks.api.agentSetConfig.mock.invocationCallOrder[0]).toBeLessThan(mocks.api.agentPrompt.mock.invocationCallOrder[1]);
+  });
+
+  it("forks on the source model", async () => {
+    const a = start();
+    await sentTurn(a);
+    a.forkFrom(userId(a));
+    await tick();
+    await tick();
+    expect(a.state().sessionId).toBe("s2");
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("model", "luna");
+  });
+});
+
