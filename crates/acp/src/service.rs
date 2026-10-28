@@ -1,6 +1,6 @@
 use crate::{
-    AgentCommand, AgentEvent, ConfigChoice, ConfigGroup, ConfigOption, PermissionOption, PlanEntry,
-    SessionSummary,
+    AgentAuthMethod, AgentCommand, AgentEvent, ConfigChoice, ConfigGroup, ConfigOption,
+    PermissionOption, PlanEntry, SessionSummary,
 };
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
@@ -19,10 +19,12 @@ pub struct AgentService {
     state: Arc<Mutex<Bridge>>,
     workspace: Arc<Mutex<CoreWorkspace>>,
     completion: watch::Receiver<bool>,
+    auth_cancel: watch::Sender<bool>,
 }
 
 enum Command {
     NewSession(Reply<String>),
+    Authenticate(String, Reply<String>),
     Prompt(String, String, Reply<()>),
     Cancel(String),
     SetConfig(String, String, String, Reply<()>),
@@ -58,6 +60,9 @@ struct Bridge {
     proposals: HashMap<String, Proposal>,
     remembered: HashMap<(String, String), PermissionOptionKind>,
     revisions: HashMap<(String, String), u64>,
+    auth_methods: Vec<AuthMethod>,
+    auth_required: bool,
+    auth_in_progress: bool,
 }
 
 impl AgentService {
@@ -86,6 +91,7 @@ impl AgentService {
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = oneshot::channel();
         let (completion_tx, completion_rx) = watch::channel(false);
+        let (auth_cancel_tx, auth_cancel_rx) = watch::channel(false);
         let shared = state.clone();
         let service_workspace = workspace.clone();
         std::thread::Builder::new()
@@ -103,6 +109,7 @@ impl AgentService {
                             shared.clone(),
                             emit.clone(),
                             rx,
+                            auth_cancel_rx,
                             ready_tx,
                         )
                         .await;
@@ -134,6 +141,7 @@ impl AgentService {
             state,
             workspace: service_workspace,
             completion: completion_rx,
+            auth_cancel: auth_cancel_tx,
         })
     }
 
@@ -148,6 +156,19 @@ impl AgentService {
             .send(Command::NewSession(tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    pub async fn authenticate(&self, method_id: String) -> Result<String, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::Authenticate(method_id, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    pub fn auth_required(&self) -> Result<bool, String> {
+        self.state
+            .lock()
+            .map(|bridge| (bridge.auth_required || bridge.auth_in_progress) && !bridge.closed)
+            .map_err(|_| "Agent state lock poisoned".into())
     }
     pub async fn prompt(&self, session_id: String, text: String) -> Result<(), String> {
         if text.trim().is_empty() {
@@ -206,6 +227,7 @@ impl AgentService {
             .map_err(|_| "Agent disconnected".into())
     }
     pub fn shutdown(&self) -> Result<(), String> {
+        let _ = self.auth_cancel.send(true);
         self.state
             .lock()
             .map_err(|_| "Agent state lock poisoned")?
@@ -353,6 +375,7 @@ async fn run(
     state: Arc<Mutex<Bridge>>,
     emit: EventSink,
     mut rx: mpsc::UnboundedReceiver<Command>,
+    auth_cancel: watch::Receiver<bool>,
     ready: Reply<()>,
 ) -> agent_client_protocol::Result<()> {
     let logger = emit.clone();
@@ -479,6 +502,11 @@ async fn run(
                 let _ = ready.send(Err("Agent negotiated an unsupported protocol version".into())); return Ok(());
             }
             let (can_load, can_list) = initialized.as_ref().ok().map(|response| (response.agent_capabilities.load_session, response.agent_capabilities.session_capabilities.list.is_some())).unwrap_or((false, false));
+            if let Ok(response) = &initialized {
+                if let Ok(mut bridge) = state.lock() {
+                    bridge.auth_methods = response.auth_methods.clone();
+                }
+            }
             let _ = ready.send(Ok(()));
             emit(AgentEvent::Capabilities { can_load_session: can_load, can_list_sessions: can_list });
             emit(AgentEvent::Status { state: "connected".into(), message: "ACP initialized. Agent process has your OS privileges.".into() });
@@ -508,13 +536,120 @@ async fn run(
                         };
                         let (id, options) = match result {
                             Ok(response) => (response.session_id.to_string(), response.config_options.as_ref().map_or_else(Vec::new, |options| config_options(options))),
+                            Err(error) if matches!(&error.code, ErrorCode::AuthRequired) => {
+                                let message = auth_required_message(&state, &emit);
+                                let _ = reply.send(Err(message));
+                                continue;
+                            }
                             Err(error) => { let message = crate::compatibility::user_error("session/new", &error, &emit); let _ = reply.send(Err(message)); break; }
                         };
+                        if let Ok(mut bridge) = state.lock() { bridge.auth_required = false; }
                         if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                         emit(AgentEvent::Session { session_id: id.clone() });
                         if !options.is_empty() { emit(AgentEvent::Config { session_id: id.clone(), options }); }
                         let _ = reply.send(Ok(id));
 
+                    }
+                    Command::Authenticate(method_id, reply) => {
+                        let validated = state.lock().map(|mut bridge| {
+                            if bridge.closed { return Err("Agent connection is closed".to_string()); }
+                            if !bridge.auth_required { return Err("Agent is not waiting for authentication".to_string()); }
+                            if bridge.auth_in_progress { return Err("Agent authentication is already in progress".to_string()); }
+                            if !bridge.auth_methods.iter().any(|method| matches!(method, AuthMethod::Agent(agent_method) if agent_method.id.0.as_ref() == method_id)) {
+                                return Err("That authentication method was not advertised by this agent or requires an unsupported interactive terminal".to_string());
+                            }
+                            bridge.auth_in_progress = true;
+                            Ok(())
+                        }).unwrap_or_else(|_| Err("Agent state lock poisoned".into()));
+                        if let Err(error) = validated { let _ = reply.send(Err(error)); continue; }
+                        let auth_cx = cx.clone();
+                        let auth_state = state.clone();
+                        let auth_emit = emit.clone();
+                        let auth_compatibility_failed = compatibility_failed.clone();
+                        let auth_cwd = cwd.clone();
+                        let mut auth_cancel = auth_cancel.clone();
+                        if *auth_cancel.borrow() {
+                            if let Ok(mut bridge) = state.lock() { bridge.auth_in_progress = false; }
+                            let _ = reply.send(Err("Agent authentication was cancelled because the connection closed".into()));
+                            continue;
+                        }
+                        cx.spawn(async move {
+                            let auth_request = auth_cx.send_request(AuthenticateRequest::new(method_id.clone()));
+                            let auth_cancellation = auth_request.cancellation_handle();
+                            let response = tokio::select! {
+                                _ = auth_cancel.changed() => {
+                                    let _ = auth_cancellation.cancel();
+                                    None
+                                }
+                                response = tokio::time::timeout(std::time::Duration::from_secs(90), auth_request.block_task()) => Some(response),
+                            };
+                            let auth_result = match response {
+                                None => Err("Agent authentication was cancelled because the connection closed".to_string()),
+                                Some(Ok(Ok(_))) => Ok(()),
+                                Some(Ok(Err(error))) if matches!(&error.code, ErrorCode::AuthRequired) => {
+                                    Err(auth_required_message(&auth_state, &auth_emit))
+                                }
+                                Some(Ok(Err(error))) if matches!(&error.code, ErrorCode::MethodNotFound) => {
+                                    Err("This adapter advertised an authentication method but does not implement ACP authenticate. Update its ACP adapter or choose another agent. See Protocol logs for details.".to_string())
+                                }
+                                Some(Ok(Err(error))) => Err(crate::compatibility::user_error("authenticate", &error, &auth_emit)),
+                                Some(Err(_)) => Err("Agent authentication timed out after 90 seconds. You can retry or disconnect.".into()),
+                            };
+                            if let Err(error) = auth_result {
+                                if let Ok(mut bridge) = auth_state.lock() { bridge.auth_in_progress = false; }
+                                let _ = reply.send(Err(error));
+                                return Ok(());
+                            }
+                            let still_open = auth_state.lock().map(|mut bridge| {
+                                if bridge.closed || !bridge.auth_required { return false; }
+                                bridge.auth_required = false;
+                                true
+                            }).unwrap_or(false);
+                            if !still_open { let _ = reply.send(Err("Authentication was cancelled because the agent connection closed".into())); return Ok(()); }
+                            let session_request = auth_cx.send_request(NewSessionRequest::new(auth_cwd));
+                            let session_cancellation = session_request.cancellation_handle();
+                            let session = tokio::select! {
+                                _ = auth_cancel.changed() => {
+                                    let _ = session_cancellation.cancel();
+                                    None
+                                }
+                                response = tokio::time::timeout(std::time::Duration::from_secs(30), session_request.block_task()) => Some(response),
+                            };
+                            let (id, options) = match session {
+                                None => { let _ = reply.send(Err("Agent session creation was cancelled because the connection closed".into())); return Ok(()); }
+                                Some(Ok(Ok(response))) => (response.session_id.to_string(), response.config_options.as_ref().map_or_else(Vec::new, |options| config_options(options))),
+                                Some(Ok(Err(error))) if matches!(&error.code, ErrorCode::AuthRequired) => {
+                                    let message = auth_required_message(&auth_state, &auth_emit);
+                                    let _ = reply.send(Err(message));
+                                    return Ok(());
+                                }
+                                Some(Ok(Err(error))) => {
+                                    let message = crate::compatibility::user_error("session/new", &error, &auth_emit);
+                                    if let Ok(mut bridge) = auth_state.lock() { bridge.auth_in_progress = false; }
+                                    let _ = reply.send(Err(message));
+                                    let _ = auth_compatibility_failed.send(());
+                                    return Ok(());
+                                }
+                                Some(Err(_)) => {
+                                    if let Ok(mut bridge) = auth_state.lock() { bridge.auth_in_progress = false; }
+                                    let _ = reply.send(Err("Agent session creation timed out after 30 seconds. Disconnect and reconnect before retrying.".into()));
+                                    let _ = auth_compatibility_failed.send(());
+                                    return Ok(());
+                                }
+                            };
+                            let mut bridge = match auth_state.lock() {
+                                Ok(bridge) if !bridge.closed => bridge,
+                                _ => { let _ = reply.send(Err("Authentication was cancelled because the agent connection closed".into())); return Ok(()); }
+                            };
+                            bridge.auth_required = false;
+                            bridge.auth_in_progress = false;
+                            bridge.sessions.insert(id.clone());
+                            drop(bridge);
+                            auth_emit(AgentEvent::Session { session_id: id.clone() });
+                            if !options.is_empty() { auth_emit(AgentEvent::Config { session_id: id.clone(), options }); }
+                            let _ = reply.send(Ok(id));
+                            Ok(())
+                        })?;
                     }
                     Command::Prompt(id, text, reply) => {
                         let valid = state.lock().map(|mut bridge| {
@@ -616,6 +751,39 @@ async fn run(
             }
             Ok(())
         }).await
+}
+
+fn auth_required_message(state: &Arc<Mutex<Bridge>>, emit: &EventSink) -> String {
+    let methods = match state.lock() {
+        Ok(mut bridge) => {
+            bridge.auth_required = true;
+            bridge.auth_in_progress = false;
+            bridge
+                .auth_methods
+                .iter()
+                .filter_map(|method| match method {
+                    AuthMethod::Agent(method) => Some(AgentAuthMethod {
+                        method_id: method.id.to_string(),
+                        name: method.name.clone(),
+                        description: method.description.clone(),
+                    }),
+                    AuthMethod::Terminal(_) => None,
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        }
+        Err(_) => Vec::new(),
+    };
+    let message = if methods.is_empty() {
+        "This agent requires authentication, but it did not advertise a supported ACP login method. Its interactive terminal login is not available here. Update the adapter or choose another agent.".to_string()
+    } else {
+        "Choose an authentication method advertised by this agent to continue.".to_string()
+    };
+    emit(AgentEvent::AuthenticationRequired {
+        methods,
+        message: message.clone(),
+    });
+    message
 }
 
 fn cancel_pending(

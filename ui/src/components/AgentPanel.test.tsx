@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
   resumeSession: vi.fn(),
   newSession: vi.fn(),
+  authenticate: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({
   isDesktop: true,
@@ -33,6 +34,7 @@ vi.mock("../lib/client", () => ({
     agentListSessions: mocks.listSessions,
     agentResumeSession: mocks.resumeSession,
     agentNewSession: mocks.newSession,
+    agentAuthenticate: mocks.authenticate,
   },
 }));
 const managed: InstalledAgent = {
@@ -96,12 +98,82 @@ beforeEach(() => {
   mocks.listSessions.mockResolvedValue([{ sessionId: "earlier-chat", title: "Earlier fixture chat", updatedAt: null }]);
   mocks.resumeSession.mockResolvedValue("earlier-chat");
   mocks.newSession.mockResolvedValue("new-chat");
+  mocks.authenticate.mockResolvedValue("session-1");
 });
 afterEach(() => {
   disposers.splice(0).forEach((dispose) => dispose());
   document.body.replaceChildren();
 });
 describe("agent menu", () => {
+  it("shows advertised ACP login choices, retries a failed method and creates the session after success", async () => {
+    const { root, open, button } = mount();
+    mocks.connect.mockResolvedValueOnce(null);
+    await open();
+    button("Codex").click();
+    await flush();
+    const receive = mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
+    receive({
+      kind: "authenticationRequired",
+      methods: [{ methodId: "codex-login", name: "Sign in with Codex", description: "Use the adapter sign-in flow" }],
+      message: "Choose an authentication method advertised by this agent to continue.",
+    });
+    await flush();
+    expect(root.textContent).toContain("Sign in to Codex");
+    expect(root.textContent).toContain("Use the adapter sign-in flow");
+    mocks.authenticate.mockRejectedValueOnce(new Error("Authentication was declined. Try again."));
+    root.querySelector<HTMLButtonElement>(".agent-auth-method")!.click();
+    await flush();
+    expect(root.textContent).toContain("Authentication was declined. Try again.");
+    expect(mocks.authenticate).toHaveBeenCalledWith("codex-login");
+    root.querySelector<HTMLButtonElement>('[aria-label="Try again"]')?.click();
+    await flush();
+    expect(mocks.authenticate).toHaveBeenCalledTimes(2);
+    expect(root.textContent).not.toContain("Sign in with Codex");
+    expect(root.querySelector("#agent-prompt")).toBeTruthy();
+  });
+
+  it("cancels authentication by disconnecting the pending agent process", async () => {
+    const { root, open, button } = mount();
+    mocks.connect.mockResolvedValueOnce(null);
+    await open();
+    button("Codex").click();
+    await flush();
+    const receive = mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
+    receive({ kind: "authenticationRequired", methods: [], message: "No supported login method" });
+    await flush();
+    root.querySelector<HTMLButtonElement>(".agent-auth-actions button")!.click();
+    await flush();
+    expect(mocks.disconnect).toHaveBeenCalledTimes(1);
+    expect(root.textContent).not.toContain("Sign in to Codex");
+  });
+
+  it("ignores an authentication result after the workspace changes and disconnects the old process", async () => {
+    const { root, open, button, setWorkspace } = mount();
+    mocks.connect.mockResolvedValueOnce(null);
+    await open();
+    button("Codex").click();
+    await flush();
+    const receive = mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
+    receive({
+      kind: "authenticationRequired",
+      methods: [{ methodId: "codex-login", name: "Sign in with Codex", description: null }],
+      message: "Choose an authentication method advertised by this agent to continue.",
+    });
+    await flush();
+    let resolveAuthentication!: (session: string) => void;
+    mocks.authenticate.mockReturnValueOnce(new Promise((resolve) => { resolveAuthentication = resolve; }));
+    root.querySelector<HTMLButtonElement>(".agent-auth-method")!.click();
+    await flush();
+    expect(root.querySelector('[aria-label="Signing in"]')).toBeTruthy();
+    expect(root.querySelector<HTMLButtonElement>(".agent-auth-method")?.disabled).toBe(true);
+    setWorkspace("/workspace/two");
+    await flush();
+    resolveAuthentication("stale-session");
+    await flush();
+    expect(mocks.disconnect).toHaveBeenCalled();
+    expect(root.textContent).not.toContain("Sign in to Codex");
+  });
+
   it("preserves model selection, streamed Markdown, queued follow-ups and chat resume after connecting a curated agent", async () => {
     const { root, open, button } = mount(); await open(); button("Codex").click(); await flush();
     const receive = mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;

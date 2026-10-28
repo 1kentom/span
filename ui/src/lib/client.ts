@@ -413,7 +413,7 @@ export const api = {
     if (!isDesktop) nativeRequired('Installing agents');
     return commands.agentInstall(id);
   },
-  async agentConnect(command: AgentCommand, cwd: string): Promise<string> {
+  async agentConnect(command: AgentCommand, cwd: string): Promise<string | null> {
     if (!isDesktop) nativeRequired('Connecting agents');
     const generation = ++agentGeneration;
     const channel = new Channel<AgentEvent>();
@@ -424,6 +424,10 @@ export const api = {
     const session = await commands.agentConnect(command, cwd, channel);
     if (generation !== agentGeneration) throw new Error('Agent connection was superseded by another connection or disconnect.');
     return session;
+  },
+  async agentAuthenticate(methodId: string): Promise<string> {
+    if (!isDesktop) nativeRequired('Authenticating agents');
+    return commands.agentAuthenticate(methodId);
   },
   async agentPrompt(text: string): Promise<void> {
     if (!isDesktop) nativeRequired('Sending agent prompts');

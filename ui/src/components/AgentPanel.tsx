@@ -10,6 +10,7 @@ import {
 } from "solid-js";
 import type {
   AgentCommand,
+  AgentAuthMethod_Deserialize as AgentAuthMethod,
   BufferSnapshot,
   AgentEvent,
   ConfigOption_Deserialize as ConfigOption,
@@ -131,6 +132,11 @@ export function AgentPanel(props: AgentPanelProps) {
   const [hiddenSelection, setHiddenSelection] = createSignal("");
   const [pendingAction, setPendingAction] = createSignal("");
   const [configOptions, setConfigOptions] = createSignal<ConfigOption[]>([]);
+  const [authMethods, setAuthMethods] = createSignal<AgentAuthMethod[]>([]);
+  const [authMessage, setAuthMessage] = createSignal("");
+  const [authError, setAuthError] = createSignal("");
+  const [authMethodBusy, setAuthMethodBusy] = createSignal("");
+  const [authRetryMethod, setAuthRetryMethod] = createSignal<string>();
   const [configMenuId, setConfigMenuId] = createSignal("");
   const [canLoad, setCanLoad] = createSignal(false);
   const [canList, setCanList] = createSignal(false);
@@ -269,8 +275,16 @@ export function AgentPanel(props: AgentPanelProps) {
       ([path, generation], previous) => {
         if (previous && path === previous[0] && generation === previous[1])
           return;
+        if (previous && (sessionId() || authMessage())) {
+          void api.agentDisconnect().catch(() => undefined);
+        }
         agentEpoch += 1;
         setSessionId(undefined);
+        setAuthMethods([]);
+        setAuthMessage("");
+        setAuthError("");
+        setAuthRetryMethod(undefined);
+        setAuthMethodBusy("");
         setAgentName("Select agent");
         setActiveAgentId(undefined);
         setRemoval(undefined);
@@ -331,6 +345,10 @@ export function AgentPanel(props: AgentPanelProps) {
         setRunning(false);
         setStopRequested(false);
         setSessionId(undefined);
+        setAuthMethods([]);
+        setAuthMessage("");
+        setAuthError("");
+        setAuthRetryMethod(undefined);
       }
     } else if (event.kind === "session") {
       setSessionId(event.sessionId);
@@ -338,6 +356,19 @@ export function AgentPanel(props: AgentPanelProps) {
     } else if (event.kind === "capabilities") {
       setCanLoad(event.canLoadSession);
       setCanList(event.canListSessions);
+    } else if (event.kind === "authenticationRequired") {
+      setSessionId(undefined);
+      setRunning(false);
+      resetSessionState();
+      setAuthMethods(event.methods);
+      setAuthMessage(event.message);
+      setAuthError("");
+      setAuthMethodBusy("");
+      setAuthRetryMethod(undefined);
+      setAuthRetryMethod(undefined);
+      setWorking(false);
+      setStatus("auth-required");
+      setStatusMessage("Sign in to continue");
     } else if (event.kind === "config") {
       setConfigOptions(event.options);
     } else if (event.kind === "user") {
@@ -469,6 +500,9 @@ export function AgentPanel(props: AgentPanelProps) {
     onCleanup(() => window.removeEventListener("keydown", keyboard));
   });
   onCleanup(() => {
+    if (sessionId() || authMessage()) {
+      void api.agentDisconnect().catch(() => undefined);
+    }
     disposed = true;
     unsubscribe?.();
   });
@@ -607,19 +641,26 @@ export function AgentPanel(props: AgentPanelProps) {
     setStatus("connecting");
     setStatusMessage(`Starting ${name}`);
     try {
-      if (sessionId()) await api.agentDisconnect();
+      if (sessionId() || authMessage()) await api.agentDisconnect();
       if (!current()) return;
       setFeed([]);
       resetSessionState();
       setSessionId(undefined);
+      setAuthMethods([]);
+      setAuthMessage("");
+      setAuthError("");
+      setAuthMethodBusy("");
+      setAuthRetryMethod(undefined);
       setAgentName(name);
       setActiveAgentId(identity);
       const id = await api.agentConnect(command, cwd);
       if (!current()) return;
-      setSessionId(id);
-      setStatus("ready");
-      setStatusMessage("Connected and ready");
-      focusPrompt();
+      setSessionId(id ?? undefined);
+      if (id) {
+        setStatus("ready");
+        setStatusMessage("Connected and ready");
+        focusPrompt();
+      }
     } catch (cause) {
       if (!current()) return;
       setStatus("error");
@@ -627,6 +668,54 @@ export function AgentPanel(props: AgentPanelProps) {
       fail(`Could not connect ${name}`, agentFailureMessage(errorText(cause)));
     } finally {
       if (current()) setWorking(false);
+    }
+  }
+  async function authenticate(method: AgentAuthMethod) {
+    if (!authMethods().some((candidate) => candidate.methodId === method.methodId))
+      return;
+    const epoch = agentEpoch;
+    const current = () => !disposed && epoch === agentEpoch;
+    setAuthMethodBusy(method.methodId);
+    setAuthError("");
+    setWorking(true);
+    try {
+      const id = await api.agentAuthenticate(method.methodId);
+      if (!current()) return;
+      setSessionId(id);
+      setAuthMethods([]);
+      setAuthMessage("");
+      setAuthError("");
+      setAuthRetryMethod(undefined);
+      setStatus("ready");
+      setStatusMessage("Connected and ready");
+      focusPrompt();
+    } catch (cause) {
+      if (!current()) return;
+      setAuthError(agentFailureMessage(errorText(cause)));
+      setAuthRetryMethod(method.methodId);
+      setStatus("auth-required");
+      setStatusMessage("Sign in to continue");
+    } finally {
+      if (current()) {
+        setWorking(false);
+        setAuthMethodBusy("");
+      }
+    }
+  }
+  async function cancelAuthentication() {
+    agentEpoch += 1;
+    try {
+      await api.agentDisconnect();
+      setAuthMethods([]);
+      setAuthMessage("");
+      setAuthError("");
+      setAuthRetryMethod(undefined);
+      setSessionId(undefined);
+      setActiveAgentId(undefined);
+      setStatus("disconnected");
+      setStatusMessage("No agent connected");
+    } catch (cause) {
+      setAuthError(errorText(cause));
     }
   }
   function pickCatalog(row: CatalogRow) {
@@ -1075,6 +1164,63 @@ export function AgentPanel(props: AgentPanelProps) {
           ACP log
         </button>
       </header>
+      <Show when={status() === "auth-required"}>
+        <section class="agent-auth-panel" aria-label="Agent sign in">
+          <div class="agent-auth-heading">
+            <strong>Sign in to {agentName()}</strong>
+            <span>{authMessage()}</span>
+          </div>
+          <Show when={authMethods().length === 0}>
+            <p class="agent-auth-unavailable">
+              This adapter has no login method Span can run.
+            </p>
+          </Show>
+          <For each={authMethods()}>
+            {(method) => (
+              <button
+                class="agent-auth-method"
+                disabled={working()}
+                onClick={() => void authenticate(method)}
+              >
+                <span class="agent-menu-copy">
+                  <strong>{method.name}</strong>
+                  <Show when={method.description}>
+                    <small>{method.description}</small>
+                  </Show>
+                </span>
+                <Show
+                  when={authMethodBusy() === method.methodId}
+                  fallback={<Icon name="arrow-right4" size={15} />}
+                >
+                  <span class="agent-auth-spinner" aria-label="Signing in" />
+                </Show>
+              </button>
+            )}
+          </For>
+          <Show when={authError()}>
+            <p class="agent-auth-error" role="alert">{authError()}</p>
+          </Show>
+          <div class="agent-auth-actions">
+            <Show when={authError() && authRetryMethod()}>
+              <button
+                aria-label="Try again"
+                disabled={working()}
+                onClick={() => {
+                  const method = authMethods().find(
+                    (entry) => entry.methodId === authRetryMethod(),
+                  );
+                  if (method) void authenticate(method);
+                }}
+              >
+                Try again
+              </button>
+            </Show>
+            <button onClick={() => void cancelAuthentication()}>
+              Cancel and disconnect
+            </button>
+          </div>
+        </section>
+      </Show>
       <Show when={error()}>
         <div class="agent-error" role="alert">
           <div class="agent-error-top">

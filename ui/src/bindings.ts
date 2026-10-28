@@ -53,7 +53,8 @@ export const commands = {
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
 	agentRemove: (id: string, uninstall: boolean) => __TAURI_INVOKE<null>("agent_remove", { id, uninstall }),
-	agentConnect: (command: AgentCommand_Deserialize, cwd: string, onEvent: Channel<AgentEvent_Deserialize>) => __TAURI_INVOKE<string>("agent_connect", { command, cwd, onEvent }),
+	agentConnect: (command: AgentCommand_Deserialize, cwd: string, onEvent: Channel<AgentEvent_Deserialize>) => __TAURI_INVOKE<string | null>("agent_connect", { command, cwd, onEvent }),
+	agentAuthenticate: (methodId: string) => __TAURI_INVOKE<string>("agent_authenticate", { methodId }),
 	/**  Start a fresh conversation on the connected agent process. */
 	agentNewSession: () => __TAURI_INVOKE<string>("agent_new_session"),
 	agentListSessions: () => __TAURI_INVOKE<SessionSummary_Serialize[]>("agent_list_sessions"),
@@ -76,6 +77,32 @@ export const events = {
 };
 
 /* Types */
+/**
+ *  Authentication choice advertised by an ACP agent. IDs and labels are
+ *  projected from the protocol SDK types into the generated desktop contract.
+ */
+export type AgentAuthMethod = AgentAuthMethod_Serialize | AgentAuthMethod_Deserialize;
+
+/**
+ *  Authentication choice advertised by an ACP agent. IDs and labels are
+ *  projected from the protocol SDK types into the generated desktop contract.
+ */
+export type AgentAuthMethod_Deserialize = {
+	methodId: string,
+	name: string,
+	description?: string | null,
+};
+
+/**
+ *  Authentication choice advertised by an ACP agent. IDs and labels are
+ *  projected from the protocol SDK types into the generated desktop contract.
+ */
+export type AgentAuthMethod_Serialize = {
+	methodId: string,
+	name: string,
+	description: string | null,
+};
+
 export type AgentCommand = AgentCommand_Serialize | AgentCommand_Deserialize;
 
 export type AgentCommand_Deserialize = {
@@ -92,19 +119,19 @@ export type AgentCommand_Serialize = {
 
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-export type AgentEvent_Deserialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | 
+export type AgentEvent_Deserialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } |
 /**  A user turn replayed while an earlier session is restored. */
-{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Deserialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title?: string | null; status?: string | null; 
+{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | { kind: "authenticationRequired"; methods: AgentAuthMethod_Deserialize[]; message: string } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Deserialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title?: string | null; status?: string | null;
 /**  ACP tool kind such as `read`, `edit` or `execute`. */
-toolKind?: string | null; 
+toolKind?: string | null;
 /**  Set when an agent reports the call as made by a subagent. */
 parentToolCallId?: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
 
-export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | 
+export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } |
 /**  A user turn replayed while an earlier session is restored. */
-{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Serialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title: string | null; status: string | null; 
+{ kind: "user"; sessionId: string; text: string } | { kind: "capabilities"; canLoadSession: boolean; canListSessions: boolean } | { kind: "authenticationRequired"; methods: AgentAuthMethod_Serialize[]; message: string } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "config"; sessionId: string; options: ConfigOption_Serialize[] } | { kind: "tool"; sessionId: string; toolCallId: string; title: string | null; status: string | null;
 /**  ACP tool kind such as `read`, `edit` or `execute`. */
-toolKind: string | null; 
+toolKind: string | null;
 /**  Set when an agent reports the call as made by a subagent. */
 parentToolCallId: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
 

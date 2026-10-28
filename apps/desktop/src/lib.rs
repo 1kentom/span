@@ -596,6 +596,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_install,
             agents::agent_remove,
             agents::agent_connect,
+            agents::agent_authenticate,
             agents::agent_new_session,
             agents::agent_list_sessions,
             agents::agent_resume_session,

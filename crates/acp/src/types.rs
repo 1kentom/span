@@ -66,6 +66,16 @@ pub struct SessionSummary {
     pub updated_at: Option<String>,
 }
 
+/// Authentication choice advertised by an ACP agent. IDs and labels are
+/// projected from the protocol SDK types into the generated desktop contract.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAuthMethod {
+    pub method_id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(
     tag = "kind",
@@ -96,6 +106,10 @@ pub enum AgentEvent {
     Capabilities {
         can_load_session: bool,
         can_list_sessions: bool,
+    },
+    AuthenticationRequired {
+        methods: Vec<AgentAuthMethod>,
+        message: String,
     },
     Plan {
         session_id: String,

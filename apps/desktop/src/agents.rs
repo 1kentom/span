@@ -6,6 +6,10 @@ use tauri::{ipc::Channel, Manager, State};
 #[derive(Clone)]
 pub struct ActiveAgent {
     service: AgentService,
+    session: Option<String>,
+}
+struct ActiveAgentSession {
+    service: AgentService,
     session: String,
 }
 
@@ -24,17 +28,27 @@ fn switch_session(
     if !active.service.same_connection(expected) {
         return Err("The agent connection changed while switching conversations".into());
     }
-    active.session = session.to_owned();
+    active.session = Some(session.to_owned());
     Ok(())
 }
 
-fn active(state: &DesktopState) -> Result<ActiveAgent, String> {
-    state
+fn active(state: &DesktopState) -> Result<ActiveAgentSession, String> {
+    let active = state
         .agent
         .lock()
         .map_err(|_| "Agent state is unavailable".to_owned())?
         .clone()
-        .ok_or_else(|| "Connect an agent first".to_owned())
+        .ok_or_else(|| "Connect an agent first".to_owned())?;
+    if active.session.is_none() || active.service.auth_required()? {
+        return Err("Choose an advertised authentication method before starting a session".into());
+    }
+    let session = active.session.ok_or_else(|| {
+        "Choose an advertised authentication method before starting a session".to_owned()
+    })?;
+    Ok(ActiveAgentSession {
+        service: active.service,
+        session,
+    })
 }
 
 pub fn disconnect(state: &DesktopState) -> Result<(), String> {
@@ -113,7 +127,7 @@ pub async fn agent_connect(
     command: AgentCommand,
     cwd: String,
     on_event: Channel<AgentEvent>,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     let state = state.inner().clone();
     let _gate = state.connection_gate.lock().await;
     let workspace = state
@@ -135,26 +149,56 @@ pub async fn agent_connect(
     })
     .await
     .map_err(|error| format!("Agent connection task failed: {error}"))??;
-    let session =
-        match tokio::time::timeout(std::time::Duration::from_secs(45), service.new_session()).await
-        {
-            Ok(Ok(session)) => session,
-            result => {
-                let _ = service.shutdown();
-                return Err(match result {
-                    Ok(Err(error)) => error,
-                    Err(_) => "Agent session creation timed out after 45 seconds".to_owned(),
-                    Ok(Ok(_)) => "Agent session creation failed".to_owned(),
-                });
-            }
-        };
     *state
         .agent
         .lock()
         .map_err(|_| "Agent state is unavailable".to_owned())? = Some(ActiveAgent {
-        service,
-        session: session.clone(),
+        service: service.clone(),
+        session: None,
     });
+    match tokio::time::timeout(std::time::Duration::from_secs(45), service.new_session()).await {
+        Ok(Ok(session)) => {
+            switch_session(&state, &service, &session)?;
+            Ok(Some(session))
+        }
+        Ok(Err(_)) if service.auth_required()? => Ok(None),
+        result => {
+            let _ = service.shutdown();
+            if let Ok(mut active) = state.agent.lock() {
+                if active
+                    .as_ref()
+                    .is_some_and(|agent| agent.service.same_connection(&service))
+                {
+                    active.take();
+                }
+            }
+            Err(match result {
+                Ok(Err(error)) => error,
+                Err(_) => "Agent session creation timed out after 45 seconds".to_owned(),
+                Ok(Ok(_)) => "Agent session creation failed".to_owned(),
+            })
+        }
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_authenticate(
+    state: State<'_, DesktopState>,
+    method_id: String,
+) -> Result<String, String> {
+    let state = state.inner();
+    let agent = state
+        .agent
+        .lock()
+        .map_err(|_| "Agent state is unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "Connect an agent first".to_owned())?;
+    if agent.session.is_some() && !agent.service.auth_required()? {
+        return Err("This agent connection already has a session".into());
+    }
+    let session = agent.service.authenticate(method_id).await?;
+    switch_session(state, &agent.service, &session)?;
     Ok(session)
 }
 
@@ -315,7 +359,7 @@ mod session_tests {
         let state = DesktopState::default();
         *state.agent.lock().unwrap() = Some(ActiveAgent {
             service: current.clone(),
-            session: "current".into(),
+            session: Some("current".into()),
         });
         assert!(switch_session(&state, &old, "old-result").is_err());
         assert_eq!(active(&state).unwrap().session, "current");

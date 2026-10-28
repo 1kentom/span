@@ -1258,3 +1258,81 @@
 .agent-dot-small.failed {
   background: var(--agent-error, #d98b96);
 }
+
+.agent-auth-panel {
+  display: grid;
+  gap: 9px;
+  margin: 12px 0 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--island);
+}
+
+.agent-auth-heading {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.agent-auth-heading span,
+.agent-auth-unavailable {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-auth-method {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 8px 10px;
+  color: var(--agent-fg, #c4c5c8);
+  border: 1px solid var(--agent-border, #33363b);
+  border-radius: 7px;
+  background: var(--agent-control, #27292e);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-auth-method:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.agent-auth-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--agent-border, #33363b);
+  border-top-color: var(--agent-accent-fg, #a29dff);
+  border-radius: 50%;
+  animation: agent-auth-spin 0.8s linear infinite;
+}
+
+.agent-auth-error {
+  margin: 0;
+  color: var(--agent-error, #d26979);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-auth-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-auth-actions button {
+  padding: 4px 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+@keyframes agent-auth-spin {
+  to { transform: rotate(360deg); }
+}

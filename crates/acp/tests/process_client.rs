@@ -64,6 +64,116 @@ async fn setup() -> (
     let session = service.new_session().await.expect("new ACP session");
     (directory, workspace, service, events, session)
 }
+
+async fn setup_auth(flags: &[&str]) -> (tempfile::TempDir, AgentService, Events) {
+    let directory = tempfile::tempdir().expect("temporary workspace");
+    let workspace = Arc::new(Mutex::new(
+        CoreWorkspace::open(directory.path())
+            .expect("workspace")
+            .with_user_settings(None),
+    ));
+    let (tx, events) = mpsc::unbounded_channel();
+    let mut args = vec![format!(
+        "{}/tests/fixtures/agent.mjs",
+        env!("CARGO_MANIFEST_DIR")
+    )];
+    args.extend(flags.iter().map(|flag| (*flag).to_owned()));
+    let service = AgentService::start(
+        AgentCommand {
+            command: "node".into(),
+            args,
+            env: BTreeMap::new(),
+        },
+        directory.path().to_string_lossy().into_owned(),
+        workspace,
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    )
+    .await
+    .expect("initialize authentication fixture");
+    (directory, service, events)
+}
+
+#[tokio::test]
+async fn authentication_retains_connection_and_creates_session_after_explicit_login() {
+    let (_directory, service, mut events) =
+        setup_auth(&["--auth-required", "--auth-fail-once"]).await;
+    let first = service
+        .new_session()
+        .await
+        .expect_err("initial session requires login");
+    assert!(first.contains("Choose an authentication method"));
+    assert!(service.auth_required().unwrap());
+    let auth = next(&mut events, |event| {
+        matches!(event, AgentEvent::AuthenticationRequired { .. })
+    })
+    .await;
+    assert!(
+        matches!(auth, AgentEvent::AuthenticationRequired { methods, .. }
+        if methods.len() == 1 && methods[0].method_id == "fixture-login")
+    );
+
+    let failed = service
+        .authenticate("fixture-login".into())
+        .await
+        .unwrap_err();
+    assert!(failed.contains("Fixture login failed once"));
+    assert!(service.auth_required().unwrap());
+    let first_session = service
+        .authenticate("fixture-login".into())
+        .await
+        .expect("retry login");
+    assert_eq!(first_session, "fixture-1");
+    assert!(!service.auth_required().unwrap());
+    assert!(
+        matches!(next(&mut events, |event| matches!(event, AgentEvent::Session { .. })).await,
+        AgentEvent::Session { session_id } if session_id == first_session)
+    );
+    assert_eq!(service.new_session().await.unwrap(), "fixture-2");
+    service.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn authentication_rejects_unadvertised_methods_and_reports_unsupported_adapter() {
+    let (_directory, service, _events) =
+        setup_auth(&["--auth-required", "--auth-method-not-found"]).await;
+    let _ = service.new_session().await.unwrap_err();
+    let invalid = service
+        .authenticate("not-advertised".into())
+        .await
+        .unwrap_err();
+    assert!(invalid.contains("not advertised"));
+    let unsupported = service
+        .authenticate("fixture-login".into())
+        .await
+        .unwrap_err();
+    assert!(unsupported.contains("does not implement ACP authenticate"));
+    service.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn closing_connection_cancels_pending_authentication() {
+    let (_directory, service, mut events) = setup_auth(&["--auth-required", "--auth-hang"]).await;
+    let _ = service.new_session().await.unwrap_err();
+    let _ = next(&mut events, |event| {
+        matches!(event, AgentEvent::AuthenticationRequired { .. })
+    })
+    .await;
+    let pending_service = service.clone();
+    let pending =
+        tokio::spawn(async move { pending_service.authenticate("fixture-login".into()).await });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    service
+        .shutdown_and_wait()
+        .await
+        .expect("close the owning process");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), pending)
+        .await
+        .expect("pending auth should finish on close")
+        .expect("authentication task should join");
+    assert!(result.is_err());
+}
 #[tokio::test]
 async fn real_process_stream_permission_unsaved_read_and_review() {
     let (directory, workspace, service, mut events, session) = setup().await;

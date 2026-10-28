@@ -6,6 +6,8 @@ let sequence = 100;
 let sessions = 0;
 let activePrompt;
 let ignoreCancel = false;
+let authenticated = false;
+let authAttempts = 0;
 const modelConfig = value => [{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: value, options: [{ value: 'fast', name: 'Fast' }, { value: 'deep', name: 'Deep' }] }];
 const callbacks = new Map();
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
@@ -56,12 +58,21 @@ input.on('line', line => {
     const fs = message.params.clientCapabilities.fs;
     if (!fs.readTextFile || !fs.writeTextFile || message.params.clientCapabilities.terminal) process.exit(8);
     const agentCapabilities = process.argv.includes('--resume') ? { loadSession: true, sessionCapabilities: { list: {} } } : {};
-    result(message.id, { protocolVersion: 1, agentCapabilities, agentInfo: { name: 'span-test-peer', version: '1.0.0' } });
+    result(message.id, { protocolVersion: 1, agentCapabilities, agentInfo: { name: 'span-test-peer', version: '1.0.0' }, ...(process.argv.includes('--auth-required') ? { authMethods: [{ id: 'fixture-login', name: 'Fixture login', description: 'Test-only login method' }] } : {}) });
   } else if (message.method === 'session/new') {
     if (process.argv.includes('--missing-session')) { send({ id: message.id, error: { code: -32601, message: 'Method not found: session/new' } }); return; }
+    if (process.argv.includes('--auth-required') && !authenticated) { send({ id: message.id, error: { code: -32000, message: 'Authentication required' } }); return; }
     if (process.argv.includes('--hang-session')) return;
     cwd = message.params.cwd;
     result(message.id, { sessionId: `fixture-${++sessions}`, ...(process.argv.includes('--config') ? { configOptions: modelConfig('fast') } : {}) });
+  } else if (message.method === 'authenticate') {
+    if (message.params.methodId !== 'fixture-login') { send({ id: message.id, error: { code: -32601, message: 'Unknown authentication method' } }); return; }
+    if (process.argv.includes('--auth-method-not-found')) { send({ id: message.id, error: { code: -32601, message: 'Method not found: authenticate' } }); return; }
+    authAttempts += 1;
+    if (process.argv.includes('--auth-fail-once') && authAttempts === 1) { send({ id: message.id, error: { code: -32001, message: 'Fixture login failed once' } }); return; }
+    if (process.argv.includes('--auth-hang')) { console.error('fixture authentication started'); return; }
+    authenticated = true;
+    result(message.id, {});
   } else if (message.method === 'session/set_config_option') {
     result(message.id, { configOptions: modelConfig(message.params.value) });
   } else if (message.method === 'session/list') {
