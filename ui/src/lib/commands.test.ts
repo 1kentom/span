@@ -149,3 +149,25 @@ describe("central keyboard commands", () => {
     expect(shortcutFromEvent(key("|", { ctrlKey: true, shiftKey: true, code: "Backslash" }))).toBe("Ctrl+Shift+\\");
   });
 });
+
+
+it("opens Source Control with literal Control Shift G on every platform and honors custom bindings", () => {
+  for (const platform of ["mac", "windows", "linux"] as const) {
+    const handler = vi.fn();
+    const bindings = resolveKeybindings({}, platform);
+    expect(bindings.showSourceControl).toEqual(["Ctrl+Shift+G"]);
+    const event = key("G", { ctrlKey: true, shiftKey: true });
+    expect(dispatchKeyboard(event, { bindings, platform, handlers: { showSourceControl: handler } })).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(resolveKeybindings({ showSourceControl: ["Mod+Alt+G"], goToLine: [] }, platform).showSourceControl).toEqual([platform === "mac" ? "Meta+Alt+G" : "Ctrl+Alt+G"]);
+  }
+});
+
+it("does not displace a pre-existing explicit Control Shift G binding when Source Control is introduced", () => {
+  for (const platform of ["mac", "windows", "linux"] as const) {
+    const overrides = { save: ["Ctrl+Shift+G"] };
+    expect(resolveKeybindings(overrides, platform).showSourceControl).toEqual([]);
+    expect(validateKeybindings(overrides, platform)).toEqual([]);
+    expect(validateKeybindings({ ...overrides, showSourceControl: ["Ctrl+Shift+G"] }, platform).some(issue => issue.message.includes("already assigned"))).toBe(true);
+  }
+});

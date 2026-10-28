@@ -322,6 +322,7 @@ const COMMAND_IDS: &[&str] = &[
     "toggleProject",
     "toggleAssistant",
     "toggleTerminal",
+    "showSourceControl",
     "toggleWordWrap",
     "markdownPreview",
     "formatDocument",
@@ -495,6 +496,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("toggleProject", vec!["Mod+B"]),
         ("toggleAssistant", vec!["Mod+Alt+B"]),
         ("toggleTerminal", vec!["Mod+J"]),
+        ("showSourceControl", vec!["Ctrl+Shift+G"]),
         ("toggleWordWrap", vec!["Alt+Z"]),
         ("markdownPreview", vec!["Mod+Shift+V"]),
         ("formatDocument", vec!["Alt+Shift+F"]),
@@ -519,6 +521,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
                 | "newFile"
                 | "newFolder"
                 | "newFromTemplate"
+                | "showSourceControl"
         ) {
             defaults.retain(|shortcut| {
                 !claimed.contains(&shortcut_conflict_key(shortcut).expect("valid default shortcut"))
@@ -1227,6 +1230,35 @@ mod language_server_tests {
 #[cfg(test)]
 mod file_open_shortcut_tests {
     use super::*;
+
+    #[test]
+    fn source_control_shortcut_validates_and_preserves_explicit_existing_keys() {
+        assert!(COMMAND_IDS.contains(&"showSourceControl"));
+        for command in ["showSourceControl", "save"] {
+            Settings {
+                keybindings: HashMap::from([(command.into(), vec!["Ctrl+Shift+G".into()])]),
+                ..Default::default()
+            }
+            .validate()
+            .unwrap();
+        }
+        assert!(Settings {
+            keybindings: HashMap::from([
+                ("showSourceControl".into(), vec!["Ctrl+Shift+G".into()]),
+                ("save".into(), vec!["Ctrl+Shift+G".into()]),
+            ]),
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+        assert!(schema["properties"]["keybindings"]["propertyNames"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == "showSourceControl"));
+    }
 
     #[test]
     fn picker_command_validates_and_preserves_existing_explicit_keys() {

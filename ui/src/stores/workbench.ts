@@ -10,10 +10,15 @@ import { fileName, normalizePath } from "../lib/navigation";
 import type { BufferSnapshot, FileEntry, FileIndexStatus, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
 
 export const SETTINGS_TAB = "span:settings";
+const GIT_TAB_PREFIX = "span:git:";
+export const isGitTab = (path: string) => path.startsWith(GIT_TAB_PREFIX);
+export function gitTabKey(path: string) { try { return isGitTab(path) ? decodeURIComponent(path.slice(GIT_TAB_PREFIX.length, path.lastIndexOf(":"))) : undefined; } catch { return undefined; } }
+export function gitTabId(key: string, title: string) { return `${GIT_TAB_PREFIX}${encodeURIComponent(key)}:${encodeURIComponent(title)}`; }
+function gitTabTitle(path: string) { try { return decodeURIComponent(path.slice(path.lastIndexOf(":") + 1)); } catch { return "Git comparison"; } }
 export function settingsBufferScope(path: string): SettingsScope | undefined { return path === "settings://user" ? "user" : path === "settings://workspace" ? "workspace" : undefined; }
 export const isSettingsBuffer = (path: string) => settingsBufferScope(path) !== undefined;
 export const settingsBufferPath = (scope: SettingsScope) => `settings://${scope}`;
-export const tabName = (path: string) => path === SETTINGS_TAB ? "Settings" : isSettingsBuffer(path) ? `${settingsBufferScope(path) === "user" ? "User" : "Workspace"} settings.jsonc` : path.split("/").pop() || path;
+export const tabName = (path: string) => path === SETTINGS_TAB ? "Settings" : isGitTab(path) ? gitTabTitle(path) : isSettingsBuffer(path) ? `${settingsBufferScope(path) === "user" ? "User" : "Workspace"} settings.jsonc` : path.split("/").pop() || path;
 export async function settleIntent<T>(intent: T, isCurrent: (intent: T) => boolean, work: () => Promise<boolean>, complete: () => void | Promise<void>): Promise<boolean> {
   if (!isCurrent(intent) || !await work() || !isCurrent(intent)) return false;
   await complete();
@@ -113,6 +118,7 @@ export function createWorkbench() {
   let activeSearch: { cancel: () => Promise<void> } | undefined;
   const report = (e: unknown) => setError(typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
   const tracksTab = (path: string) => path !== SETTINGS_TAB && !isSettingsBuffer(path);
+  const filesystemTab = (path: string) => tracksTab(path) && !isGitTab(path);
   function rememberTab(path?: string) { if (path && tracksTab(path)) tabRecency.set(path, ++tabClock); }
   function setActiveGroup(group: number) {
     const changed = activeGroup() !== group;
@@ -121,11 +127,11 @@ export function createWorkbench() {
   }
   function invalidateOpenIntent(group: number) { latestOpenByGroup.set(group, ++openIntent); }
   const activeTab = () => groups().find(g => g.id === activeGroup())?.active;
-  const activePath = () => activeTab() === SETTINGS_TAB ? undefined : activeTab();
+  const activePath = () => { const path = activeTab(); return path && path !== SETTINGS_TAB && !isGitTab(path) ? path : undefined; };
   const hasOpenEditor = (path: string) => groups().some(group => group.tabs.includes(path));
   /** Tell the backend language servers a file is no longer shown anywhere, so they can close it. */
   function releaseBuffer(path: string) {
-    if (!isDesktop || path === SETTINGS_TAB || isSettingsBuffer(path) || hasOpenEditor(path)) return;
+    if (!isDesktop || path === SETTINGS_TAB || isSettingsBuffer(path) || isGitTab(path) || hasOpenEditor(path)) return;
     void Promise.resolve(api.releaseBuffer(path)).catch(() => undefined);
   }
   function cancelFormat(path: string) {
@@ -144,7 +150,7 @@ export function createWorkbench() {
   let sessionWriting: Promise<void> = Promise.resolve();
   function sessionSnapshot(): SessionState | undefined {
     const current = workspace(); if (!current) return;
-    return { workspaceRoot: current.root, groups: groups().map(group => ({ paths: group.tabs.filter(path => path !== SETTINGS_TAB && !isSettingsBuffer(path)), activePath: group.active && group.active !== SETTINGS_TAB && !isSettingsBuffer(group.active) ? group.active : group.tabs.find(path => path !== SETTINGS_TAB && !isSettingsBuffer(path)) || null })), activeGroup: Math.max(0, groups().findIndex(group => group.id === activeGroup())), panels: panels(), markdownViews: markdownViews(), splitVertical: splitVertical() && groups().length > 1 };
+    return { workspaceRoot: current.root, groups: groups().map(group => ({ paths: group.tabs.filter(filesystemTab), activePath: group.active && filesystemTab(group.active) ? group.active : group.tabs.find(filesystemTab) || null })), activeGroup: Math.max(0, groups().findIndex(group => group.id === activeGroup())), panels: panels(), markdownViews: markdownViews(), splitVertical: splitVertical() && groups().length > 1 };
   }
   async function persistSession() {
     if (sessionTimer) clearTimeout(sessionTimer);
@@ -273,7 +279,16 @@ export function createWorkbench() {
       if (openingBuffers.get(path) === pending) openingBuffers.delete(path);
     }
   }
+  function openGitTab(key: string, title: string, group = activeGroup()) {
+    if (busy() || !workspace() || !groups().some(item => item.id === group)) return;
+    const path = gitTabId(key, title);
+    invalidateOpenIntent(group);
+    batch(() => { setActiveGroup(group); setGroups(current => current.map(item => item.id === group ? { ...item, tabs: item.tabs.includes(path) ? item.tabs : [...item.tabs, path], active: path } : item)); });
+    rememberTab(path); enforceTabLimit();
+    return path;
+  }
   async function openFile(path: string, group = activeGroup()) {
+    if (isGitTab(path)) { if (groups().some(item => item.tabs.includes(path))) { invalidateOpenIntent(group); batch(() => { setActiveGroup(group); setGroups(current => current.map(item => item.id === group ? { ...item, tabs: item.tabs.includes(path) ? item.tabs : [...item.tabs, path], active: path } : item)); }); rememberTab(path); enforceTabLimit(); } return; }
     const version = workspaceVersion;
     if (!groups().some(item => item.id === group)) return;
     const intent = ++openIntent;
@@ -463,7 +478,7 @@ export function createWorkbench() {
     for (const path of current[index]?.tabs || []) if (!hasOpenEditor(path)) { cancelFormat(path); releaseBuffer(path); }
   }
   function removeTab(path: string, group: number, recordClosed = true) {
-    if (recordClosed && path !== SETTINGS_TAB && !isSettingsBuffer(path)) { closedTabs.push({ path, group }); if (closedTabs.length > 20) closedTabs.shift(); }
+    if (recordClosed && filesystemTab(path)) { closedTabs.push({ path, group }); if (closedTabs.length > 20) closedTabs.shift(); }
     if (groups().find(item => item.id === group)?.active === path) invalidateOpenIntent(group);
     setGroups(current => current.map(item => {
       if (item.id !== group) return item;
@@ -799,6 +814,6 @@ export function createWorkbench() {
   });
   createEffect(() => autosave.sync());
   onCleanup(() => { autosave.dispose(); cancelAllFormats(); });
-  return { indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
+  return { openGitTab, indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;

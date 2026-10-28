@@ -1,3 +1,4 @@
+import type { GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
 import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
@@ -139,6 +140,43 @@ function previewEntries(path: string): FileEntry[] {
 }
 
 export const api = {
+  async gitContext(): Promise<GitContext> {
+    if (!isDesktop) nativeRequired('Reading Git repositories');
+    return commands.gitContext();
+  },
+  async gitEnable(context: GitContext): Promise<GitStatus> {
+    if (!isDesktop) nativeRequired('Enabling Git');
+    return commands.gitEnable(context);
+  },
+  async gitStatus(context: GitContext): Promise<GitStatus> {
+    if (!isDesktop) nativeRequired('Reading Git status');
+    return commands.gitStatus(context);
+  },
+  async gitDiff(context: GitContext, path: string, side: GitDiffSide, expectedIndexRevision: string): Promise<GitDiff> {
+    if (!isDesktop) nativeRequired('Reading Git differences');
+    return commands.gitDiff(context, path, side, expectedIndexRevision);
+  },
+  async gitHistory(context: GitContext, query: GitHistoryQuery): Promise<GitHistoryPage> {
+    if (!isDesktop) nativeRequired('Reading Git history');
+    return commands.gitHistory(context, query);
+  },
+  async gitCommitDiff(context: GitContext, commitId: string, path: string | null): Promise<GitDiff> {
+    if (!isDesktop) nativeRequired('Reading Git commit differences');
+    return commands.gitCommitDiff(context, commitId, path);
+  },
+  async gitStage(context: GitContext, paths: string[], expectedIndexRevision: string): Promise<GitStatus> {
+    if (!isDesktop) nativeRequired('Staging Git changes');
+    return commands.gitStage(context, paths, expectedIndexRevision);
+  },
+  async gitUnstage(context: GitContext, paths: string[], expectedIndexRevision: string): Promise<GitStatus> {
+    if (!isDesktop) nativeRequired('Unstaging Git changes');
+    return commands.gitUnstage(context, paths, expectedIndexRevision);
+  },
+  async gitCommit(context: GitContext, message: string, expectedIndexRevision: string, expectedStagedSnapshot: string): Promise<GitCommitResult> {
+    if (!isDesktop) nativeRequired('Creating Git commits');
+    return commands.gitCommit(context, message, expectedIndexRevision, expectedStagedSnapshot);
+  },
+
   // Interactive terminal commands always use the native PTY backend.
   async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>): Promise<TerminalInfo> {
     if (!isDesktop) nativeRequired('Creating terminal sessions');

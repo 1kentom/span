@@ -7,6 +7,7 @@ export const actionDefinitions = [
   { id: "commandPalette", label: "Show All Commands", category: "Navigation", keys: ["Mod+Shift+P"], inputs: true },
   { id: "findInFile", label: "Find in File", category: "Editor", keys: ["Mod+F"], inputs: false },
   { id: "searchWorkspace", label: "Search in Files", category: "Navigation", keys: ["Mod+Shift+F"], inputs: true },
+  { id: "showSourceControl", label: "Show Source Control", category: "Navigation", keys: ["Ctrl+Shift+G"], inputs: true },
   { id: "settings", label: "Open Settings", category: "Preferences", keys: ["Mod+,"], inputs: true },
   { id: "closeTab", label: "Close Editor Tab", category: "File", keys: ["Mod+W"], inputs: true },
   { id: "save", label: "Save File", category: "File", keys: ["Mod+S"], inputs: true },

@@ -14,6 +14,7 @@ pub enum NativeAction {
     QuickOpen,
     ToggleFiles,
     FocusFiles,
+    ShowSourceControl,
     OpenFile,
     CommandPalette,
     FindInFile,
@@ -49,6 +50,11 @@ const ACTIONS: &[(&str, &str, NativeAction)] = &[
     ("quickOpen", "Go to File...", NativeAction::QuickOpen),
     ("toggleFiles", "Toggle Files", NativeAction::ToggleFiles),
     ("focusFiles", "Show Files", NativeAction::FocusFiles),
+    (
+        "showSourceControl",
+        "Show Source Control",
+        NativeAction::ShowSourceControl,
+    ),
     ("openFile", "Open File...", NativeAction::OpenFile),
     (
         "commandPalette",
@@ -191,6 +197,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["commandPalette"],
             &items["toggleFiles"],
             &items["focusFiles"],
+            &items["showSourceControl"],
             &items["splitEditor"],
             &items["splitEditorDown"],
             &items["toggleProject"],
