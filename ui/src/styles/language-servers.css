@@ -49,11 +49,6 @@
 .lsp-field p{margin:0;color:var(--faint);font-size:11px}
 
 /* Editor widgets, drawn with the editor tokens so every theme matches */
-.span-editor .cm-lsp-hover{max-width:520px;max-height:260px;overflow:auto;padding:6px 10px;font:12px/19px Inter,sans-serif;color:var(--editor-fg)}
-.span-editor .cm-lsp-hover p{margin:4px 0}
-.span-editor .cm-lsp-hover code{font:11.5px/18px "JetBrains Mono",monospace;color:var(--editor-fg)}
-.span-editor .cm-lsp-hover pre{margin:4px 0;padding:6px 8px;border-radius:4px;background:color-mix(in srgb,var(--editor-fg),var(--editor-bg) 94%);white-space:pre-wrap;overflow-wrap:anywhere}
-.span-editor .cm-lsp-hover hr{border:0;border-top:1px solid var(--editor-guide);margin:6px 0}
 .span-editor .cm-tooltip.cm-tooltip-lint{background:var(--editor-bg);color:var(--editor-fg);border-color:var(--editor-guide)}
 .span-editor .cm-diagnostic{font:12px/19px Inter,sans-serif;border-left-width:3px}
 .span-editor .cm-diagnosticSource{color:var(--editor-muted)}

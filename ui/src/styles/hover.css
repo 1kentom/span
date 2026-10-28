@@ -1,0 +1,80 @@
+/* Hover popup, notices and the go to definition link. Colours come from the editor and --syn-* tokens, so every theme matches. */
+.span-editor .cm-tooltip:has(> ul.cm-tooltip-lint:empty){display:none}
+.span-editor .cm-tooltip:has(> .cm-lsp-hover),.span-editor .cm-tooltip:has(> .cm-lsp-notice){padding:0;overflow:hidden;box-shadow:0 6px 22px rgba(0,0,0,.28)}
+.cm-lsp-hover{display:flex;flex-direction:column;width:max-content;min-width:180px;max-width:min(560px,92vw);font:12px/19px Inter,sans-serif;color:var(--editor-fg);outline:0}
+.cm-lsp-hover:focus-visible{box-shadow:inset 0 0 0 1px var(--accent,currentColor)}
+.cm-lsp-hover-body{max-height:min(320px,50vh);overflow:auto;padding:6px 10px;overscroll-behavior:contain}
+.cm-lsp-hover-body>:first-child{margin-top:0}
+.cm-lsp-hover-body>:last-child{margin-bottom:0}
+.cm-lsp-markdown>*:first-child{margin-top:0}
+.cm-lsp-markdown>*:last-child{margin-bottom:0}
+.cm-lsp-markdown p{margin:5px 0;overflow-wrap:anywhere}
+.cm-lsp-markdown h1,.cm-lsp-markdown h2,.cm-lsp-markdown h3,.cm-lsp-markdown h4,.cm-lsp-markdown h5,.cm-lsp-markdown h6{margin:8px 0 3px;font-size:12px;line-height:18px;font-weight:600}
+.cm-lsp-markdown h1{font-size:13px}
+.cm-lsp-markdown ul,.cm-lsp-markdown ol{margin:4px 0;padding-left:20px}
+.cm-lsp-markdown li{margin:1px 0}
+.cm-lsp-markdown blockquote{margin:5px 0;padding:0 0 0 9px;border-left:3px solid var(--editor-guide);color:var(--editor-muted,var(--editor-fg))}
+.cm-lsp-markdown hr,.cm-lsp-hover-body .cm-lsp-divider{border:0;border-top:1px solid var(--editor-guide);margin:7px 0}
+.cm-lsp-markdown a{color:var(--syn-type,var(--accent,currentColor));text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.cm-lsp-markdown code{font:11.5px/18px "JetBrains Mono",monospace;padding:0 3px;border-radius:3px;background:color-mix(in srgb,var(--editor-fg),var(--editor-bg) 92%)}
+.cm-lsp-markdown table{border-collapse:collapse;margin:5px 0;display:block;overflow:auto;max-width:100%}
+.cm-lsp-markdown th,.cm-lsp-markdown td{border:1px solid var(--editor-guide);padding:2px 7px;text-align:left}
+.cm-lsp-markdown th{font-weight:600}
+.cm-lsp-markdown .align-right{text-align:right}
+.cm-lsp-markdown .align-center{text-align:center}
+.cm-lsp-code{margin:5px 0;border-radius:4px;background:color-mix(in srgb,var(--editor-fg),var(--editor-bg) 94%)}
+.cm-lsp-code pre{margin:0;padding:6px 8px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.cm-lsp-code code{padding:0;background:none;border-radius:0;font:11.5px/18px "JetBrains Mono",monospace}
+.cm-lsp-code.cm-lsp-signature{margin-top:0}
+.cm-lsp-code.cm-lsp-signature+*{border-top:1px solid var(--editor-guide);padding-top:6px;margin-top:7px}
+.cm-lsp-code.cm-lsp-signature+hr{display:none}
+.cm-lsp-diagnostics{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.cm-lsp-diagnostic{display:grid;grid-template-columns:14px 1fr;column-gap:7px;align-items:start}
+.cm-lsp-severity{width:14px;height:14px;margin-top:2.5px;background:currentColor;mask-size:contain;mask-repeat:no-repeat;mask-position:center;-webkit-mask-size:contain;-webkit-mask-repeat:no-repeat;-webkit-mask-position:center}
+.cm-lsp-diagnostic-error .cm-lsp-severity{color:var(--danger,#f06b6b)}
+.cm-lsp-diagnostic-warning .cm-lsp-severity{color:var(--warning,#e5b455)}
+.cm-lsp-diagnostic-info .cm-lsp-severity,.cm-lsp-diagnostic-hint .cm-lsp-severity{color:var(--syn-type,#80b7ec)}
+.cm-lsp-diagnostic-message{overflow-wrap:anywhere;white-space:pre-wrap}
+.cm-lsp-diagnostic-source{grid-column:2;color:var(--editor-muted,var(--editor-fg));opacity:.75;font-size:11px;line-height:16px}
+.cm-lsp-hover-hint{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:5px 10px;border-top:1px solid var(--editor-guide);color:var(--editor-muted,var(--editor-fg));font-size:11px;line-height:16px}
+.cm-lsp-hover-hint button{flex:none;color:var(--syn-type,var(--accent,currentColor));background:none;border:0;padding:1px 4px;border-radius:3px;font:inherit;cursor:pointer}
+.cm-lsp-hover-hint button:hover{text-decoration:underline}
+.cm-lsp-hover-actions{display:flex;flex-wrap:wrap;gap:2px 12px;padding:3px 6px;border-top:1px solid var(--editor-guide);background:color-mix(in srgb,var(--editor-fg),var(--editor-bg) 95%)}
+.cm-lsp-hover-actions button{display:inline-flex;align-items:center;gap:7px;padding:2px 5px;border:0;border-radius:3px;background:none;color:var(--editor-fg);font:inherit;font-size:11.5px;line-height:18px;cursor:pointer}
+.cm-lsp-hover-actions button:hover,.cm-lsp-hover-actions button:focus-visible{background:color-mix(in srgb,var(--editor-fg),var(--editor-bg) 88%);outline:0}
+.cm-lsp-hover-actions button:focus-visible{box-shadow:0 0 0 1px var(--accent,currentColor)}
+.cm-lsp-hover-actions kbd{font:10.5px/16px "JetBrains Mono",monospace;color:var(--editor-muted,var(--editor-fg));opacity:.8;background:none;border:0;padding:0}
+.cm-lsp-notice{padding:3px 9px;font:12px/18px Inter,sans-serif;color:var(--editor-fg);white-space:nowrap}
+.span-editor .cm-lsp-link{text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.span-editor .cm-content:has(.cm-lsp-link) .cm-lsp-link{cursor:pointer}
+/* Fenced code colours: the same --syn-* tokens the editor uses */
+.cm-lsp-hover .syn-keyword{color:var(--syn-keyword)}
+.cm-lsp-hover .syn-controlKeyword{color:var(--syn-controlKeyword)}
+.cm-lsp-hover .syn-operator{color:var(--syn-operator)}
+.cm-lsp-hover .syn-punctuation{color:var(--syn-punctuation)}
+.cm-lsp-hover .syn-comment{color:var(--syn-comment)}
+.cm-lsp-hover .syn-docComment{color:var(--syn-docComment)}
+.cm-lsp-hover .syn-string{color:var(--syn-string)}
+.cm-lsp-hover .syn-number{color:var(--syn-number)}
+.cm-lsp-hover .syn-constant{color:var(--syn-constant)}
+.cm-lsp-hover .syn-boolean{color:var(--syn-boolean)}
+.cm-lsp-hover .syn-function{color:var(--syn-function)}
+.cm-lsp-hover .syn-method{color:var(--syn-method)}
+.cm-lsp-hover .syn-type{color:var(--syn-type)}
+.cm-lsp-hover .syn-class{color:var(--syn-class)}
+.cm-lsp-hover .syn-interface{color:var(--syn-interface)}
+.cm-lsp-hover .syn-enum{color:var(--syn-enum)}
+.cm-lsp-hover .syn-typeParameter{color:var(--syn-typeParameter)}
+.cm-lsp-hover .syn-variable{color:var(--syn-variable)}
+.cm-lsp-hover .syn-parameter{color:var(--syn-parameter)}
+.cm-lsp-hover .syn-property{color:var(--syn-property)}
+.cm-lsp-hover .syn-namespace{color:var(--syn-namespace)}
+.cm-lsp-hover .syn-importPath{color:var(--syn-importPath)}
+.cm-lsp-hover .syn-annotation{color:var(--syn-annotation)}
+.cm-lsp-hover .syn-macro{color:var(--syn-macro)}
+.cm-lsp-hover .syn-label{color:var(--syn-label)}
+.cm-lsp-hover .syn-tag{color:var(--syn-tag)}
+.cm-lsp-hover .syn-attribute{color:var(--syn-attribute)}
+.cm-lsp-hover .syn-regexp{color:var(--syn-regexp)}
+.cm-lsp-hover .syn-escape{color:var(--syn-escape)}
+.cm-lsp-hover .syn-invalid{color:var(--syn-invalid)}
