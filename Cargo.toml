@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/syntax", "crates/acp", "crates/lsp", "apps/desktop"]
+members = ["crates/core", "crates/syntax", "crates/acp", "crates/lsp", "crates/file-index", "apps/desktop"]
 resolver = "2"
 
 [workspace.package]
@@ -20,6 +20,9 @@ span-core = { path = "crates/core" }
 span-syntax = { path = "crates/syntax" }
 span-acp = { path = "crates/acp" }
 span-lsp = { path = "crates/lsp" }
+span-file-index = { path = "crates/file-index" }
+ignore = "0.4"
+nucleo-matcher = "0.3.1"
 
 # Keep local development and validation caches small enough for desktop builds.
 [profile.dev]

@@ -17,6 +17,10 @@ grep-searcher = "0.1"
 grep-matcher = "0.1"
 # Exact line diffs preserve independent, reviewable ACP write hunks.
 similar = "=3.2.0"
+dprint-plugin-json = "=0.25.2"
+dprint-plugin-markdown = "=0.28.2"
+dprint-plugin-typescript = "=0.96.1"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
@@ -30,4 +34,10 @@ version = "=5.2.9"
 rustix = { version = "1.1", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
