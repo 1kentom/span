@@ -1,0 +1,4 @@
+.internal-drag-source{touch-action:none;user-select:none}
+html.internal-dragging,html.internal-dragging *{cursor:grabbing!important;user-select:none!important}
+.internal-drag-preview{position:fixed;z-index:300;pointer-events:none;display:flex;align-items:center;gap:8px;padding:7px 10px;max-width:300px;border:1px solid var(--tabBorder);border-radius:6px;background:var(--island);color:var(--strong);box-shadow:0 3px 12px #0004;font-size:12px}
+.internal-drag-preview>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.internal-drag-preview>small{color:var(--dim);white-space:nowrap;font-size:11px}

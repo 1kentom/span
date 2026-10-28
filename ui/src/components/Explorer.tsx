@@ -3,7 +3,7 @@ import type { FileEntry } from "../bindings";
 import type { Workbench } from "../stores/workbench";
 import Icon, { FileIcon } from "./Icon";
 
-export function Explorer(props: { workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onFileDragStart?: (event: DragEvent, path: string) => void }) {
+export function Explorer(props: { workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onFilePointerDown?: (event: PointerEvent, path: string) => void }) {
   const w = props.workbench;
   const [query, setQuery] = createSignal("");
   let timer: ReturnType<typeof setTimeout>;
@@ -21,7 +21,7 @@ export function Explorer(props: { workbench: Workbench; view: "Files" | "Search"
     const entry = rowProps.entry;
     const expanded = () => w.expanded().has(entry.path);
     return <>
-      <button class={`tree-row ${w.activePath() === entry.path ? "selected" : ""}`} role="treeitem" aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-selected={!entry.isDir && w.activePath() === entry.path} draggable={!entry.isDir && !!props.onFileDragStart} onDragStart={event => { if (!entry.isDir) props.onFileDragStart?.(event, entry.path); }} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={() => entry.isDir ? void w.toggleDirectory(entry.path) : props.onNavigate(entry.path)} onKeyDown={e => {
+      <button class={`tree-row ${!entry.isDir && props.onFilePointerDown ? "internal-drag-source" : ""} ${w.activePath() === entry.path ? "selected" : ""}`} role="treeitem" aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-selected={!entry.isDir && w.activePath() === entry.path} draggable={false} onPointerDown={event => { if (!entry.isDir) props.onFilePointerDown?.(event, entry.path); }} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={() => entry.isDir ? void w.toggleDirectory(entry.path) : props.onNavigate(entry.path)} onKeyDown={e => {
         if (entry.isDir && ((e.key === "ArrowRight" && !expanded()) || (e.key === "ArrowLeft" && expanded()))) { e.preventDefault(); void w.toggleDirectory(entry.path); }
       }} title={entry.path}>
         <Show when={entry.isDir} fallback={<span class="tree-indent" />}><Icon name={expanded() ? "arrow-down4" : "arrow-right4"} size={13} /></Show>
