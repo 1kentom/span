@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Largest attachment accepted in one save.
 pub const MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
-const MAX_NAME_BYTES: usize = 255;
+pub(crate) const MAX_NAME_BYTES: usize = 255;
 const MAX_COLLISION_SUFFIX: u32 = 10_000;
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(1);
@@ -30,13 +30,13 @@ fn reject(message: impl Into<String>) -> CoreError {
 }
 
 /// Directories the workspace scan already hides, so attachments must not land in them.
-fn is_protected(name: &str) -> bool {
+pub(crate) fn is_protected(name: &str) -> bool {
     [".git", ".span", "node_modules"]
         .iter()
         .any(|protected| name.eq_ignore_ascii_case(protected))
 }
 
-fn is_windows_reserved(name: &str) -> bool {
+pub(crate) fn is_windows_reserved(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("").trim_end();
     let upper = stem.to_ascii_uppercase();
     matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
@@ -74,7 +74,7 @@ fn check_component(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn numbered(file_name: &str, n: u32) -> String {
+pub(crate) fn numbered(file_name: &str, n: u32) -> String {
     let path = Path::new(file_name);
     match (path.file_stem(), path.extension()) {
         (Some(stem), Some(ext)) => {
@@ -99,7 +99,7 @@ impl CoreWorkspace {
             )));
         }
         check_component(file_name)?;
-        let directory = self.ensure_attachment_dir(dir)?;
+        let directory = ensure_dir_under(&self.root, dir)?;
         let temp = write_temp(&directory, bytes)?;
         let result = self.link_unique(&directory, file_name, &temp);
         let _ = fs::remove_file(&temp);
@@ -109,41 +109,6 @@ impl CoreWorkspace {
             size: bytes.len() as u32,
             renamed,
         })
-    }
-
-    /// Validate `dir` lexically, then create it one component at a time, re-checking the
-    /// canonical location each step so a symlinked component cannot lead outside the root.
-    fn ensure_attachment_dir(&self, dir: &str) -> Result<PathBuf> {
-        if dir.contains('\0') {
-            return Err(reject("directory contains NUL"));
-        }
-        let requested = Path::new(dir);
-        if requested.is_absolute() {
-            return Err(CoreError::OutsideWorkspace(dir.to_owned()));
-        }
-        let mut current = self.root.clone();
-        for component in requested.components() {
-            let part = match component {
-                Component::CurDir => continue,
-                Component::Normal(part) => part.to_string_lossy().into_owned(),
-                _ => return Err(CoreError::OutsideWorkspace(dir.to_owned())),
-            };
-            check_component(&part)?;
-            current.push(&part);
-            if current.symlink_metadata().is_err() {
-                fs::create_dir(&current).map_err(|e| io_error("Create directory", &current, e))?;
-            }
-            current = current
-                .canonicalize()
-                .map_err(|e| io_error("Resolve directory", &current, e))?;
-            if !current.starts_with(&self.root) {
-                return Err(CoreError::OutsideWorkspace(dir.to_owned()));
-            }
-            if !current.is_dir() {
-                return Err(reject(format!("not a directory: {part}")));
-            }
-        }
-        Ok(current)
     }
 
     /// Atomically publish `temp` under the first free name. A hard link fails when the
@@ -188,10 +153,46 @@ impl CoreWorkspace {
     }
 }
 
+/// Validate `dir` lexically, then create it one component at a time under the canonical
+/// `root`, re-checking the canonical location each step so a symlinked component cannot
+/// lead outside the root. Shared by attachments and archive extraction.
+pub(crate) fn ensure_dir_under(root: &Path, dir: &str) -> Result<PathBuf> {
+    if dir.contains('\0') {
+        return Err(reject("directory contains NUL"));
+    }
+    let requested = Path::new(dir);
+    if requested.is_absolute() {
+        return Err(CoreError::OutsideWorkspace(dir.to_owned()));
+    }
+    let mut current = root.to_path_buf();
+    for component in requested.components() {
+        let part = match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => part.to_string_lossy().into_owned(),
+            _ => return Err(CoreError::OutsideWorkspace(dir.to_owned())),
+        };
+        check_component(&part)?;
+        current.push(&part);
+        if current.symlink_metadata().is_err() {
+            fs::create_dir(&current).map_err(|e| io_error("Create directory", &current, e))?;
+        }
+        current = current
+            .canonicalize()
+            .map_err(|e| io_error("Resolve directory", &current, e))?;
+        if !current.starts_with(root) {
+            return Err(CoreError::OutsideWorkspace(dir.to_owned()));
+        }
+        if !current.is_dir() {
+            return Err(reject(format!("not a directory: {part}")));
+        }
+    }
+    Ok(current)
+}
+
 /// Fallback for filesystems without hard links: copy `temp` to `target`, which must
 /// not exist (`create_new`). Unlike `rename`, this never replaces a file, even one
 /// created after the caller looked. A failed copy leaves no partial target.
-fn publish_new(temp: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn publish_new(temp: &Path, target: &Path) -> std::io::Result<()> {
     let bytes = fs::read(temp)?;
     let mut file = OpenOptions::new()
         .write(true)

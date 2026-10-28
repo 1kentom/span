@@ -523,3 +523,59 @@ export async function agentCancelTask(taskId: string): Promise<void> {
   if (!isDesktop) nativeRequired('Cancelling an agent task');
   await commands.agentCancelTask(taskId);
 }
+
+/** Archive commands throw `{ kind, message }`; this rethrows it as an Error that keeps `kind`. */
+export class ArchiveCommandError extends Error {
+  constructor(readonly kind: import('../bindings').ArchiveErrorKind, message: string) {
+    super(message);
+    this.name = 'ArchiveCommandError';
+  }
+}
+
+async function archiveCall<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const typed = error as Partial<import('../bindings').ArchiveError> | null;
+    if (typed && typeof typed === 'object' && typeof typed.kind === 'string' && typeof typed.message === 'string') {
+      throw new ArchiveCommandError(typed.kind, typed.message);
+    }
+    throw error;
+  }
+}
+
+let archiveSequence = 0;
+
+/** List an archive (a workspace-relative path or inline base64 bytes) with each entry's safety verdict. */
+export async function archiveList(source: import('../bindings').ArchiveSourceInput): Promise<import('../bindings').ArchiveListing_Serialize> {
+  if (!isDesktop) nativeRequired('Viewing archives');
+  return archiveCall(() => commands.archiveList(source));
+}
+
+/** Read at most 4 MiB of one entry, by its listed path. */
+export async function archiveReadEntry(source: import('../bindings').ArchiveSourceInput, path: string, offset: number, len: number): Promise<import('../bindings').ArchiveEntryChunk> {
+  if (!isDesktop) nativeRequired('Reading archive entries');
+  return archiveCall(() => commands.archiveReadEntry(source, path, offset, len));
+}
+
+/** Plan an extraction without writing. With `conflict: 'ask'`, conflicts come back for the user to decide. */
+export async function archivePlanExtract(source: import('../bindings').ArchiveSourceInput, options: import('../bindings').ExtractOptions_Deserialize): Promise<import('../bindings').ExtractPlan_Serialize> {
+  if (!isDesktop) nativeRequired('Extracting archives');
+  return archiveCall(() => commands.archivePlanExtract(source, options));
+}
+
+/** Extract into the workspace with streamed progress. `cancel` stops between chunks and leaves no partial files. */
+export function archiveExtract(
+  source: import('../bindings').ArchiveSourceInput,
+  options: import('../bindings').ExtractOptions_Deserialize,
+  onProgress: (progress: import('../bindings').ExtractProgress_Deserialize) => void,
+): { done: Promise<import('../bindings').ExtractReport_Serialize>; cancel: () => Promise<void> } {
+  if (!isDesktop) nativeRequired('Extracting archives');
+  const id = `archive-${++archiveSequence}`;
+  const channel = new Channel<import('../bindings').ExtractProgress_Deserialize>();
+  channel.onmessage = onProgress;
+  return {
+    done: archiveCall(() => commands.archiveExtract(id, source, options, channel)),
+    cancel: async () => { await commands.archiveCancel(id); },
+  };
+}

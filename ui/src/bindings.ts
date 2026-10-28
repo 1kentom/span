@@ -114,6 +114,19 @@ export const commands = {
 	 *  active chat's lead is searched first.
 	 */
 	agentCancelTask: (taskId: string) => __TAURI_INVOKE<null>("agent_cancel_task", { taskId }),
+	/**  List entries with the safety verdict for each. */
+	archiveList: (source: ArchiveSourceInput) => __TAURI_INVOKE<ArchiveListing_Serialize>("archive_list", { source }),
+	/**  Read at most 4 MiB of one entry, starting at `offset`. */
+	archiveReadEntry: (source: ArchiveSourceInput, path: string, offset: number, len: number) => __TAURI_INVOKE<ArchiveEntryChunk>("archive_read_entry", { source, path, offset, len }),
+	/**  Decide what extraction would do, without writing. With `ask`, conflicts come back here. */
+	archivePlanExtract: (source: ArchiveSourceInput, options: ExtractOptions_Deserialize) => __TAURI_INVOKE<ExtractPlan_Serialize>("archive_plan_extract", { source, options }),
+	/**
+	 *  Extract into the workspace. The plan is recomputed here from `options`; progress is
+	 *  streamed on `on_progress` and `archive_cancel(id)` stops between chunks.
+	 */
+	archiveExtract: (id: string, source: ArchiveSourceInput, options: ExtractOptions_Deserialize, onProgress: Channel<ExtractProgress_Deserialize>) => __TAURI_INVOKE<ExtractReport_Serialize>("archive_extract", { id, source, options, onProgress }),
+	/**  Ask a running extraction to stop. Unknown ids are ignored. */
+	archiveCancel: (id: string) => __TAURI_INVOKE<null>("archive_cancel", { id }),
 };
 
 /** Events */
@@ -348,6 +361,110 @@ export type AgentSettings_Serialize = {
 	delegation: DelegationSettings_Serialize,
 };
 
+export type ArchiveEntry = ArchiveEntry_Serialize | ArchiveEntry_Deserialize;
+
+/**  A slice of one entry's bytes for previews. */
+export type ArchiveEntryChunk = {
+	dataBase64: string,
+	offset: number,
+	entrySize: number,
+	eof: boolean,
+};
+
+export type ArchiveEntry_Deserialize = {
+	/**
+	 *  Normalised path with `/` (no trailing slash) for safe entries. Unsafe entries show
+	 *  the raw name with control characters replaced by U+FFFD.
+	 */
+	path: string,
+	isDir: boolean,
+	/**  Unpacked size from the header. */
+	size: number,
+	/**  Compressed size, known for ZIP only. */
+	packedSize?: number | null,
+	/**  Milliseconds since the Unix epoch. ZIP times have no zone and are read as UTC. */
+	modifiedMs?: number | null,
+	unsafeReason?: UnsafeReason | null,
+	isSymlink: boolean,
+};
+
+export type ArchiveEntry_Serialize = {
+	/**
+	 *  Normalised path with `/` (no trailing slash) for safe entries. Unsafe entries show
+	 *  the raw name with control characters replaced by U+FFFD.
+	 */
+	path: string,
+	isDir: boolean,
+	/**  Unpacked size from the header. */
+	size: number,
+	/**  Compressed size, known for ZIP only. */
+	packedSize: number | null,
+	/**  Milliseconds since the Unix epoch. ZIP times have no zone and are read as UTC. */
+	modifiedMs: number | null,
+	unsafeReason: UnsafeReason | null,
+	isSymlink: boolean,
+};
+
+/**  Typed failure for archive operations. `message` is ready to show. */
+export type ArchiveError = {
+	kind: ArchiveErrorKind,
+	message: string,
+};
+
+export type ArchiveErrorKind = "notAnArchive" | "damaged" | "unsupportedMethod" | "passwordProtected" | "tooLarge" | "invalidPath" | "entryNotFound" | "unavailable" | "busy" | "io";
+
+export type ArchiveFormat = "zip" | "tar" | "tarGz";
+
+export type ArchiveListing = ArchiveListing_Serialize | ArchiveListing_Deserialize;
+
+export type ArchiveListing_Deserialize = {
+	format: ArchiveFormat,
+	/**  Compression summary for the footer, for example `Deflate` or `Deflate, Stored`. */
+	compression: string,
+	entries: ArchiveEntry_Deserialize[],
+	totals: ArchiveTotals,
+	/**  True when the entry or listing byte cap stopped the listing early. */
+	truncated: boolean,
+};
+
+export type ArchiveListing_Serialize = {
+	format: ArchiveFormat,
+	/**  Compression summary for the footer, for example `Deflate` or `Deflate, Stored`. */
+	compression: string,
+	entries: ArchiveEntry_Serialize[],
+	totals: ArchiveTotals,
+	/**  True when the entry or listing byte cap stopped the listing early. */
+	truncated: boolean,
+};
+
+/**
+ *  Where the archive comes from. The UI never passes an absolute path: a workspace file
+ *  is named relative to the workspace root, and anything else arrives as bytes.
+ */
+export type ArchiveSourceInput = 
+/**  Workspace-relative path. */
+{ kind: "workspace"; path: string } | 
+/**  Archive bytes held by the UI, base64 encoded. `name` drives format detection. */
+{ kind: "inline"; name: string; dataBase64: string } | 
+/**  An upload held by the uploads store. See [`upload_source`]. */
+{ kind: "upload"; id: string };
+
+export type ArchiveTotals = {
+	files: number,
+	/**  Explicit folder entries plus folders implied by safe entry paths. */
+	folders: number,
+	unpackedBytes: number,
+	/**  Sum of compressed entry sizes for ZIP, the archive size for TAR and TGZ. */
+	packedBytes: number,
+	/**  Entries that are always skipped. */
+	unsafeEntries: number,
+	/**
+	 *  Unsafe entries that point outside the archive tree (absolute, drive, UNC, `..`,
+	 *  links). The viewer's "N entries point outside the archive" count.
+	 */
+	outsideEntries: number,
+};
+
 /**  A file the child produced or changed, inside the workspace. */
 export type Artifact = {
 	/**  Workspace relative, forward slashes. */
@@ -505,6 +622,22 @@ export type ConfigOption_Serialize = {
 	currentValue: string,
 	groups: ConfigGroup_Serialize[],
 };
+
+export type ConflictAction = "skip" | "replace" | "rename";
+
+/**  The user's answer for one conflicting target (workspace-relative, as planned). */
+export type ConflictDecision = {
+	target: string,
+	action: ConflictAction,
+};
+
+export type ConflictMode = 
+/**  Plan only reports conflicts; nothing is written until each has a decision. */
+"ask" | "skip" | 
+/**  Replace existing files. Never replaces a folder, a symlink, or a file with a folder. */
+"replace" | 
+/**  Write under a numbered name such as `a (1).txt`. */
+"rename";
 
 /**  A decision the lead recorded with `record_decision` (#54). */
 export type DecisionRecord = {
@@ -721,6 +854,139 @@ export type EditProposal = {
 	path: string,
 	baseRevision: number,
 	hunks: ProposalHunk[],
+};
+
+export type ExistingKind = "file" | "folder" | "symlink" | 
+/**  No file on disk yet, but an editor buffer is open for this path. */
+"openBuffer";
+
+export type ExtractConflict = ExtractConflict_Serialize | ExtractConflict_Deserialize;
+
+export type ExtractConflict_Deserialize = {
+	entry: string,
+	/**  Workspace-relative target path. */
+	target: string,
+	existing: ExistingKind,
+	/**  How it is or was resolved; `None` means it still needs a decision. */
+	resolution?: ConflictAction | null,
+};
+
+export type ExtractConflict_Serialize = {
+	entry: string,
+	/**  Workspace-relative target path. */
+	target: string,
+	existing: ExistingKind,
+	/**  How it is or was resolved; `None` means it still needs a decision. */
+	resolution: ConflictAction | null,
+};
+
+export type ExtractFailure = {
+	entry: string,
+	message: string,
+};
+
+export type ExtractOptions = ExtractOptions_Serialize | ExtractOptions_Deserialize;
+
+export type ExtractOptions_Deserialize = {
+	/**  Entry paths as listed. A folder path selects everything below it. `None` is all. */
+	selection?: string[] | null,
+	/**  Workspace-relative folder; empty means the workspace root. */
+	destination: string,
+	keepStructure: boolean,
+	skipHidden: boolean,
+	conflict: ConflictMode,
+	/**  Create a new folder named after the archive (numbered if taken) inside `destination`. */
+	intoNewFolder: boolean,
+	/**  Answers for conflicts from an earlier `ask` plan. */
+	decisions?: ConflictDecision[] | null,
+};
+
+export type ExtractOptions_Serialize = {
+	/**  Entry paths as listed. A folder path selects everything below it. `None` is all. */
+	selection: string[] | null,
+	/**  Workspace-relative folder; empty means the workspace root. */
+	destination: string,
+	keepStructure: boolean,
+	skipHidden: boolean,
+	conflict: ConflictMode,
+	/**  Create a new folder named after the archive (numbered if taken) inside `destination`. */
+	intoNewFolder: boolean,
+	/**  Answers for conflicts from an earlier `ask` plan. */
+	decisions: ConflictDecision[] | null,
+};
+
+export type ExtractPlan = ExtractPlan_Serialize | ExtractPlan_Deserialize;
+
+export type ExtractPlan_Deserialize = {
+	/**  Workspace-relative destination, including the predicted new folder. */
+	destination: string,
+	files: number,
+	folders: number,
+	/**  Sum of planned file sizes from the headers. */
+	bytes: number,
+	skipped: SkippedEntry[],
+	conflicts: ExtractConflict_Deserialize[],
+	/**  True when the mode is `ask` and a conflict has no decision yet. */
+	needsDecision: boolean,
+};
+
+export type ExtractPlan_Serialize = {
+	/**  Workspace-relative destination, including the predicted new folder. */
+	destination: string,
+	files: number,
+	folders: number,
+	/**  Sum of planned file sizes from the headers. */
+	bytes: number,
+	skipped: SkippedEntry[],
+	conflicts: ExtractConflict_Serialize[],
+	/**  True when the mode is `ask` and a conflict has no decision yet. */
+	needsDecision: boolean,
+};
+
+export type ExtractProgress = ExtractProgress_Serialize | ExtractProgress_Deserialize;
+
+export type ExtractProgress_Deserialize = {
+	filesDone: number,
+	filesTotal: number,
+	bytesDone: number,
+	bytesTotal: number,
+	/**  Entry being written, if any. */
+	current?: string | null,
+};
+
+export type ExtractProgress_Serialize = {
+	filesDone: number,
+	filesTotal: number,
+	bytesDone: number,
+	bytesTotal: number,
+	/**  Entry being written, if any. */
+	current: string | null,
+};
+
+export type ExtractReport = ExtractReport_Serialize | ExtractReport_Deserialize;
+
+export type ExtractReport_Deserialize = {
+	destination: string,
+	written: WrittenFile[],
+	foldersCreated: number,
+	skipped: SkippedEntry[],
+	conflicts: ExtractConflict_Deserialize[],
+	errors: ExtractFailure[],
+	cancelled: boolean,
+	/**  Nothing was written because an `ask` conflict has no decision. */
+	needsDecision: boolean,
+};
+
+export type ExtractReport_Serialize = {
+	destination: string,
+	written: WrittenFile[],
+	foldersCreated: number,
+	skipped: SkippedEntry[],
+	conflicts: ExtractConflict_Serialize[],
+	errors: ExtractFailure[],
+	cancelled: boolean,
+	/**  Nothing was written because an `ask` conflict has no decision. */
+	needsDecision: boolean,
 };
 
 /**  Why a delegation failed. Closed set: the lead can branch on it. */
@@ -1037,6 +1303,21 @@ export type Settings_Serialize = {
 	agents?: AgentSettings_Serialize,
 };
 
+export type SkipReason = 
+/**  Always skipped by the safety rules. */
+{ kind: "unsafe"; reason: UnsafeReason } | 
+/**  OS clutter skipped by the "Skip hidden files" option. */
+{ kind: "hidden" } | 
+/**  The target exists and the conflict mode or decision was skip. */
+{ kind: "exists" } | 
+/**  Another selected entry already maps to this target (flattened folders). */
+{ kind: "duplicateTarget" };
+
+export type SkippedEntry = {
+	entry: string,
+	reason: SkipReason,
+};
+
 /**  A slash command the agent advertises. Run it by sending `/name args` as prompt text. */
 export type SlashCommand = SlashCommand_Serialize | SlashCommand_Deserialize;
 
@@ -1196,6 +1477,55 @@ export type ToolLocation_Serialize = {
 	line: number | null,
 };
 
+/**  Why an entry is never written. Entries with a reason are always skipped and reported. */
+export type UnsafeReason = 
+/**  Empty name, or nothing left after dropping `.` components. */
+"empty" | 
+/**  Starts with `/` or `\`. */
+"absolute" | 
+/**  Starts with a drive such as `C:`. */
+"drivePrefix" | 
+/**  Starts with `\\` or `//` (UNC, device namespace). */
+"uncPrefix" | 
+/**  Contains a `..` component. */
+"parentTraversal" | 
+/**  NUL or another control character. */
+"controlCharacter" | 
+/**  One of `<>:"|?*` in a component. */
+"invalidCharacter" | 
+/**  A component ends with a dot or a space. */
+"trailingDotOrSpace" | 
+/**  A Windows device name such as `CON` or `com1.txt`. */
+"reservedName" | 
+/**  Path over 4096 bytes or a component over 255 bytes. */
+"nameTooLong" | 
+/**  Inside `.git`, `.span` or `node_modules`. */
+"protectedDirectory" | 
+/**
+ *  Same path as another entry ignoring case, an exact duplicate, or a file that
+ *  another entry needs as a folder.
+ */
+"collision" | 
+/**  A symbolic link entry. Links are never created. */
+"symlink" | 
+/**  A hard link entry. Links are never created. */
+"hardlink" | 
+/**  A device, FIFO, socket or unknown entry type. */
+"specialFile" | 
+/**  Larger than the per-entry cap. */
+"entryTooLarge" | 
+/**  Unpacks far larger than it is packed (zip bomb guard). */
+"compressionRatio" | 
+/**  Encrypted. Passwords are never tried. */
+"encrypted" | 
+/**  A compression method other than Stored or Deflate, or a sparse tar entry. */
+"unsupportedMethod" | 
+/**
+ *  A folder on disk (for example a symlink) would lead the write outside the
+ *  destination. Found while extracting.
+ */
+"escapesDestination";
+
 /**  Usage reported for a delegation. Every field is only set when reported. */
 export type UsageReport = UsageReport_Serialize | UsageReport_Deserialize;
 
@@ -1245,6 +1575,15 @@ export type Value = null | boolean | number | string | Value[] | { [key in strin
 export type Workspace = {
 	root: string,
 	name: string,
+};
+
+export type WrittenFile = {
+	entry: string,
+	/**  Workspace-relative path that was written. */
+	path: string,
+	size: number,
+	renamed: boolean,
+	replaced: boolean,
 };
 
 /* Tauri Specta runtime */

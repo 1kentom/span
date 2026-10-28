@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
+mod archive;
 mod cli;
 mod menu;
 mod services;
@@ -640,7 +641,12 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_review_hunks,
             agents::agent_delegation_status,
             agents::agent_child_permission,
-            agents::agent_cancel_task
+            agents::agent_cancel_task,
+            archive::archive_list,
+            archive::archive_read_entry,
+            archive::archive_plan_extract,
+            archive::archive_extract,
+            archive::archive_cancel
         ])
 }
 

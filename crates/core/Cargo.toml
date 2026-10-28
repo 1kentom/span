@@ -17,6 +17,11 @@ grep-searcher = "0.1"
 grep-matcher = "0.1"
 # Exact line diffs preserve independent, reviewable ACP write hunks.
 similar = "=3.2.0"
+# Archive viewing and safe extraction (docs/decisions/0007-archive-dependencies.md).
+# Same versions span-lsp already locks; pure Rust, no encryption or time features.
+zip = { version = "=2.6.1", default-features = false, features = ["deflate-flate2", "flate2"] }
+tar = { version = "=0.4.46", default-features = false }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 tempfile = "3"

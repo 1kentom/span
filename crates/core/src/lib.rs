@@ -1,5 +1,6 @@
 //! The editor's authoritative text and workspace services.
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
+mod archive;
 mod attachment;
 mod buffer;
 mod format;
@@ -13,6 +14,14 @@ mod settings;
 mod tools;
 mod workspace;
 
+pub use archive::{
+    detect_format, extract, list_archive, open_archive, plan_extract, read_archive_entry,
+    ArchiveEntry, ArchiveError, ArchiveErrorKind, ArchiveFormat, ArchiveLimits, ArchiveListing,
+    ArchiveResult, ArchiveSource, ArchiveTotals, ConflictAction, ConflictDecision, ConflictMode,
+    EntryChunk, ExistingKind, ExtractConflict, ExtractContext, ExtractFailure, ExtractOptions,
+    ExtractPlan, ExtractProgress, ExtractReport, SkipReason, SkippedEntry, UnsafeReason,
+    WrittenFile, MAX_ARCHIVE_SOURCE_BYTES, MAX_INLINE_ARCHIVE_BYTES,
+};
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
 pub use format::{

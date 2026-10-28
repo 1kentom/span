@@ -3963,6 +3963,7 @@ dependencies = [
 name = "span-core"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
@@ -3973,11 +3974,13 @@ dependencies = [
  "serde_json",
  "similar",
  "specta",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "trash",
  "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]
