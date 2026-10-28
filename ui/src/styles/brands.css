@@ -3,3 +3,4 @@
 .brand-icon>.brand-light{display:none}
 .theme-light .brand-icon>.brand-light{display:block}
 .theme-light .brand-icon>.brand-dark{display:none}
+.brand-icon>.brand-mask{width:100%;height:100%;background:currentColor;-webkit-mask:var(--brand-mask) center/contain no-repeat;mask:var(--brand-mask) center/contain no-repeat}

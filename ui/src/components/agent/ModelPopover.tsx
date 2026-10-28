@@ -5,6 +5,7 @@ import type { ConfigOptionView } from "./types";
 import { arrowFocus, useEscape } from "./util";
 import { TRAIT_INFO, chipTrait, isFastSwitchOn, modelTraits, overlayTrait, type ModelTrait } from "../../lib/model-traits";
 import type { BrandIdentity } from "../../lib/brand-icons";
+import { modelBrandFor } from "../../lib/model-brands";
 import { EffortSlider, defaultLevel, focusModelRow, modelNameOf } from "./EffortSlider";
 import { groupOptions } from "../../lib/agent-options";
 import { COST_INFO, COST_ORDER, hasCostTiers, modelCost, readFreeOnly, writeFreeOnly, type ModelCost } from "../../lib/model-cost";
@@ -42,11 +43,28 @@ export function TraitBadge(props: { trait: ModelTrait; class?: string }) {
   );
 }
 
-/** Agent brand mark with the primary trait badge at its bottom right corner. */
-export function ModelIcon(props: BrandIdentity & { traits: readonly ModelTrait[]; size?: number }) {
+/**
+ * The model's vendor mark with the agent that serves it as a small badge at the bottom left, and the primary trait
+ * badge at the bottom right. A model with no known vendor mark shows the agent mark alone, never a guessed logo.
+ */
+export function ModelIcon(props: BrandIdentity & { traits: readonly ModelTrait[]; size?: number; model?: { value: string; name: string }; agentName?: string }) {
+  const size = () => props.size ?? 16;
+  const vendor = createMemo(() => (props.model ? modelBrandFor(props.model) : undefined));
+  const agent = () => props.agentName ?? props.name ?? props.id;
+  const label = () => {
+    const where = agent() ? ` on ${agent()}` : "";
+    return vendor() ? `${vendor()!.name} model${where}` : `Model${where}`;
+  };
   return (
-    <span class="sb-model-icon">
-      <BrandIcon id={props.id} name={props.name} size={props.size ?? 16} />
+    <span class="sb-model-icon" role="img" aria-label={label()}>
+      <Show when={vendor()} fallback={<BrandIcon id={props.id} name={props.name} size={size()} />}>
+        {(mark) => (
+          <>
+            <BrandIcon id={mark().id} name={mark().name} asset={mark()} size={size()} />
+            <BrandIcon class="sb-agent-badge" id={props.id} name={props.name} size={Math.round(size() * 0.45)} />
+          </>
+        )}
+      </Show>
       <Show when={overlayTrait(props.traits)}>{(trait) => <TraitBadge trait={trait()} />}</Show>
     </span>
   );
@@ -143,7 +161,7 @@ export function ModelPopover(props: ModelPopoverProps) {
                               const traits = () => modelTraits(choice(), { fastOn: current() && fastOn() });
                               return (
                                 <button class="sb-option" role="radio" aria-checked={current()} disabled={props.busy} onClick={() => props.onSelect(option().id, choiceValue)}>
-                                  <ModelIcon id={brand().id} name={brand().name} traits={traits()} />
+                                  <ModelIcon id={brand().id} name={brand().name} agentName={props.agentName} model={choice()} traits={traits()} />
                                   <span class="sb-option-text">
                                     <span class="sb-option-line">
                                       <span class="sb-option-name" title={choice().name}>{shownName(choice())}</span>

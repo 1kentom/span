@@ -11,7 +11,8 @@ import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } f
 import { AgentPopover } from "./AgentPopover";
 import { effortColor } from "./EffortSlider";
 import { ModePopover } from "./ModePopover";
-import { ModelPopover, TraitBadge, currentModelTraits } from "./ModelPopover";
+import { ModelIcon, ModelPopover, TraitBadge, currentModelTraits } from "./ModelPopover";
+import { modelBrandFor } from "../../lib/model-brands";
 import type { Brand } from "./types";
 
 type Picker = "model" | "mode" | "agents";
@@ -26,6 +27,11 @@ export function createPickers(a: AgentController, props: { brand: Brand; label: 
   const groups = createMemo(() => groupOptions(config()));
   const effort = () => groups().effort[0];
   const modelLabel = () => currentChoice(groups().model[0])?.name ?? props.label;
+  /** The current model, only when it has a vendor mark: the chip then carries the composite avatar. */
+  const brandedModel = () => {
+    const choice = currentChoice(groups().model[0]);
+    return choice && modelBrandFor(choice) ? choice : undefined;
+  };
   const modelTrait = () => overlayTrait(currentModelTraits(config()));
   const busy = () => a.pendingAction().startsWith("config:") || a.working() || a.running();
   const select = (id: string, value: string) => void a.setConfig(id, value);
@@ -116,7 +122,9 @@ export function createPickers(a: AgentController, props: { brand: Brand; label: 
             aria-expanded={a.menu() === "model"}
             onClick={() => toggle("model", modelChip)}
           >
-            <Show when={modelTrait()}>{(trait) => <TraitBadge trait={trait()} class="inline" />}</Show>
+            <Show when={brandedModel()} fallback={<Show when={modelTrait()}>{(trait) => <TraitBadge trait={trait()} class="inline" />}</Show>}>
+              {(choice) => <ModelIcon id={props.brand.id} name={props.brand.name} agentName={props.label} model={choice()} traits={currentModelTraits(config())} size={15} />}
+            </Show>
             <span class="agent-model-name">{modelLabel()}</span>
             <Show when={levelOf(effort())}>
               {(current) => (
