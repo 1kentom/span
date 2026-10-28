@@ -255,6 +255,24 @@ impl CoreWorkspace {
         self.snapshot(&relative)
     }
 
+    /// Reads the current text of a file without opening a buffer: an open buffer is
+    /// reported as it is (unsaved edits included), anything else is read from disk and
+    /// not retained. For previews, which must have no side effects.
+    pub fn peek_buffer(&self, path: &str) -> Result<BufferSnapshot> {
+        let resolved = self.resolve(path)?;
+        let relative = self.relative(&resolved)?;
+        if let Some(buffer) = self.buffers.get(&relative) {
+            return Ok(buffer.snapshot(&relative));
+        }
+        let exists = resolved.exists();
+        let text = if exists {
+            fs::read_to_string(&resolved).map_err(|e| io_error("Read file", &resolved, e))?
+        } else {
+            String::new()
+        };
+        Ok(Buffer::new(text, exists).snapshot(&relative))
+    }
+
     pub fn buffer_snapshot(&self, path: &str) -> Result<BufferSnapshot> {
         let relative = self.relative(&self.resolve(path)?)?;
         self.snapshot(&relative)

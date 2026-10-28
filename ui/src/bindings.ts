@@ -17,6 +17,11 @@ export const commands = {
 	duplicatePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry>("duplicate_path", { from, to }),
 	trashPath: (path: string) => __TAURI_INVOKE<string[]>("trash_path", { path }),
 	openBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("open_buffer", { path }),
+	/**
+	 *  Reads a file for a preview (the Goto picker). Unlike `open_buffer` it opens no buffer
+	 *  and never reaches the language servers, so highlighting a file starts nothing.
+	 */
+	peekBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("peek_buffer", { path }),
 	editBufferDelta: (path: string, expectedRevision: number, changes: TextEdit[]) => __TAURI_INVOKE<BufferRevision>("edit_buffer_delta", { path, expectedRevision, changes }),
 	saveBuffer: (path: string, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("save_buffer", { path, expectedRevision }),
 	discardBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("discard_buffer", { path }),

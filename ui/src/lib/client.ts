@@ -170,6 +170,10 @@ export const api = {
   async openBuffer(path: string): Promise<BufferSnapshot> {
     return isDesktop ? commands.openBuffer(path) : previewBuffer(path);
   },
+  /** Reads a file for a preview. Opens no buffer and never starts a language server. */
+  async peekBuffer(path: string): Promise<BufferSnapshot> {
+    return isDesktop ? commands.peekBuffer(path) : previewBuffer(path);
+  },
   async editBuffer(path: string, expectedRevision: number, changes: TextEdit[]): Promise<BufferRevision> {
     if (isDesktop) return commands.editBufferDelta(path, expectedRevision, changes);
     const buffer = previewBuffer(path);

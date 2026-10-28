@@ -715,3 +715,25 @@ fn successful_save_rebases_exact_dirty_tracking_for_later_manual_reverts() {
     let changed = workspace.buffer_snapshot("file.txt").unwrap();
     assert_ne!(changed.revision, changed.saved_revision);
 }
+
+#[test]
+fn peek_buffer_reads_without_opening_a_buffer() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    let mut core = CoreWorkspace::open(dir.path()).unwrap();
+    let peeked = core.peek_buffer("a.rs").unwrap();
+    assert_eq!(peeked.text, "fn a() {}\n");
+    assert!(
+        matches!(
+            core.buffer_snapshot("a.rs"),
+            Err(CoreError::BufferNotOpen(_))
+        ),
+        "a peek must not leave a buffer open"
+    );
+    // An open buffer is reported as it is, unsaved edits included.
+    core.open_buffer("a.rs").unwrap();
+    core.edit_buffer("a.rs", 0, vec![edit(0, 2, "pub fn")])
+        .unwrap();
+    assert_eq!(core.peek_buffer("a.rs").unwrap().text, "pub fn a() {}\n");
+    assert!(core.peek_buffer("../outside.rs").is_err());
+}

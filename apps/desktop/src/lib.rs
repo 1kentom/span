@@ -190,6 +190,20 @@ async fn open_buffer(
     .await
 }
 
+/// Reads a file for a preview (the Goto picker). Unlike `open_buffer` it opens no buffer
+/// and never reaches the language servers, so highlighting a file starts nothing.
+#[tauri::command]
+#[specta::specta]
+async fn peek_buffer(
+    state: State<'_, DesktopState>,
+    path: String,
+) -> Result<BufferSnapshot, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.peek_buffer(&path)
+    })
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn edit_buffer_delta(
@@ -811,6 +825,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             duplicate_path,
             trash_path,
             open_buffer,
+            peek_buffer,
             edit_buffer_delta,
             save_buffer,
             discard_buffer,
