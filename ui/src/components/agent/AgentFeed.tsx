@@ -77,7 +77,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
             )}
           </Show>
           {message().text}
-          <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.setViewing(attachment.id)} />
+          <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.openAttachment(attachment)} />
         </div>
         <Show when={a.connected()}>
           <MessageActions agent={a} id={item().id} />

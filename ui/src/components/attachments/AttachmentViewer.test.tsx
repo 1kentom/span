@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'solid-js/web';
 import { Show, createSignal } from 'solid-js';
 import { readFileSync } from 'node:fs';
-import { AttachmentViewer, type AttachmentViewerProps } from './index';
+import { AttachmentView, AttachmentViewer, type AttachmentViewProps, type AttachmentViewerProps } from './index';
 import { createFileAttachment, createPastedText, createSelection, createWorkspaceFile, type Attachment } from '../../lib/attachments';
 
 const cleanup: (() => void)[] = [];
@@ -233,5 +233,41 @@ describe('narrow header', () => {
     expect(css('agent.css')).toMatch(/container: agent-header \/ inline-size/);
     expect(sheet).toMatch(/@container agent-header \(max-width: 380px\) \{[^}]*\.sb-follow\.on \{ width: 28px/);
     expect(sheet).toMatch(/\.sb-follow\.on > span:not\(\.icon\) \{ display: none/);
+  });
+});
+
+describe('inline attachment view for workbench tabs', () => {
+  const inline = (item: Attachment, props: Partial<AttachmentViewProps> = {}) => mount(() => <AttachmentView item={item} {...props} />);
+  it('renders the shared viewer in place, not as a dialog, with no close button of its own', () => {
+    const root = inline(png());
+    expect(root.querySelector('[role="dialog"]')).toBeNull();
+    expect(root.querySelector('.att-viewer-tab')).not.toBeNull();
+    expect(kind()).toBe('image');
+    expect(button('Close attachment viewer')).toBeUndefined();
+    expect(document.querySelector('.att-viewer-title')?.textContent).toBe('shot.png');
+  });
+  it('offers Save to workspace through the supplied handler', async () => {
+    const save = vi.fn(async () => undefined);
+    const item = png();
+    inline(item, { onSaveToWorkspace: save });
+    button('Save to workspace')!.click(); await settle();
+    expect(save).toHaveBeenCalledWith(item);
+  });
+  it('closes its tab after removing a composer attachment', async () => {
+    const remove = vi.fn(); const close = vi.fn();
+    const item = png();
+    inline(item, { onRemove: remove, onClose: close });
+    await openMenu();
+    ([...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent?.includes('Remove')) as HTMLElement).click(); await settle();
+    expect(remove).toHaveBeenCalledWith(item);
+    expect(close).toHaveBeenCalled();
+  });
+  it('keeps the honest unavailable state for formats whose viewer needs a backend adapter', () => {
+    for (const [name, mime] of [['report.pdf', 'application/pdf'], ['spec.docx', ''], ['deck.pptx', ''], ['data.xlsx', ''], ['bundle.zip', 'application/zip']]) {
+      document.body.replaceChildren();
+      inline(file(name, mime, new Uint8Array([80, 75, 3, 4, 1, 2])));
+      expect(kind()).toBe('unsupported');
+      expect(document.querySelector('.vw')?.textContent).toContain('cannot be previewed here yet');
+    }
   });
 });

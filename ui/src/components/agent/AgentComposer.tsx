@@ -392,7 +392,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             </For>
           </ul>
         </Show>
-        <AttachmentTray items={a.attachments()} capabilities={a.caps()} onOpen={(item) => item.status !== "loading" && a.setViewing(item.id)} onRemove={a.removeAttachment} onEmpty={() => input?.focus()} />
+        <AttachmentTray items={a.attachments()} capabilities={a.caps()} onOpen={(item) => { if (item.status !== "loading") a.openAttachment(item); }} onRemove={a.removeAttachment} onEmpty={() => input?.focus()} />
         <Show when={reportable().length}>
           <p class="agent-blocked" role="status">
             {reportable().length === 1 ? `${reportable()[0].item.name} cannot be sent: ${reportable()[0].reason}` : `${reportable().length} attachments cannot be sent to ${props.label}.`} Remove{" "}

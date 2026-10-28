@@ -10,7 +10,8 @@ import { capabilityChips, classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
 import { Icon } from "./Icon";
-import { AttachmentViewer, DropOverlay, attachmentBlockReason } from "./attachments";
+import { AttachmentViewer, DropOverlay, attachmentBlockReason, type AttachmentTabView } from "./attachments";
+import type { Attachment } from "../lib/attachments";
 import { AgentCatalog } from "./agent/AgentCatalog";
 import { AgentComposer } from "./agent/AgentComposer";
 import { AgentFeed } from "./agent/AgentFeed";
@@ -44,6 +45,49 @@ export function AgentPanel(props: AgentPanelProps) {
   const label = () => agent()?.title || agent()?.name || a.agentName();
   const brand = () => ({ id: a.agentId() ?? agent()?.name, name: label() });
   const hasAgent = () => Boolean(a.agentId() || agent());
+  /**
+   * A workbench tab view of one attachment. Every field is a getter over live panel state, so the tab
+   * follows a save (the item becomes a workspace file) and drops session actions once the message is gone.
+   * The snapshot keeps the content viewable after the chat changes.
+   */
+  function attachmentTabView(snapshot: Attachment): AttachmentTabView {
+    const id = snapshot.id;
+    const inComposer = () => a.attachments().some((item) => item.id === id);
+    const message = () => a.feed().find((entry) => entry.kind === "user" && entry.attachments?.some((attachment) => attachment.id === id));
+    return {
+      get item() { return a.findAttachment(id) ?? snapshot; },
+      get blockedReason() { return inComposer() ? a.blocked().find((entry) => entry.item.id === id)?.reason ?? attachmentBlockReason(a.findAttachment(id) ?? snapshot, a.caps()) : undefined; },
+      nativeUnavailable: isDesktop ? undefined : NATIVE_UNAVAILABLE,
+      get source() {
+        if (inComposer() || !message()) return undefined;
+        const session = a.state().sessionTitle;
+        const name = hasAgent() ? label() : undefined;
+        if (!session && !name) return undefined;
+        return { agent: hasAgent() ? { id: brand().id, name: brand().name } : undefined, verb: session ? "Sent in" : "Sent to", session: session || name };
+      },
+      get onShowInSession() {
+        const target = message();
+        if (inComposer() || !target) return undefined;
+        return () => {
+          a.setPinned(false);
+          requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
+        };
+      },
+      onShowSessionList: () => {
+        a.setView("history");
+        void a.loadSessions();
+      },
+      get onRemove() { return inComposer() ? a.removeAttachment : undefined; },
+      onSaveToWorkspace: a.saveAttachment,
+      onCopyPath: (path) => api.writeClipboard(path),
+      onOpenInEditor: (attachment) => { if (attachment.path) a.openInEditor(attachment.path); },
+      loadImage: (path) => api.readImage(path),
+    };
+  }
+  createEffect(() => {
+    const open = props.onOpenAttachment;
+    a.setAttachmentOpener(open ? (item) => open(attachmentTabView(item)) : undefined);
+  });
   const title = () => a.state().sessionTitle || (a.connected() || a.connecting() || a.state().auth ? label() : "AI Assistant");
   const busyOverlay = () => a.connected() || a.feed().length > 0;
   const body = createMemo(() => {
