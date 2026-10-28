@@ -25,9 +25,8 @@ enum FormatPreparation {
 }
 
 static NEXT_FORMAT_JOB_ID: AtomicU64 = AtomicU64::new(1);
-static FORMAT_GATES: OnceLock<
-    Mutex<std::collections::HashMap<(usize, String), Weak<tokio::sync::Mutex<()>>>>,
-> = OnceLock::new();
+type FormatGates = Mutex<std::collections::HashMap<(usize, String), Weak<tokio::sync::Mutex<()>>>>;
+static FORMAT_GATES: OnceLock<FormatGates> = OnceLock::new();
 
 async fn lock_format_path(
     workspace: &Arc<Mutex<span_core::CoreWorkspace>>,

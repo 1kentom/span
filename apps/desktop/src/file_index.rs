@@ -176,7 +176,7 @@ impl FileIndexRuntime {
         let Some(handle) = self.current_handle()? else {
             return Ok(None);
         };
-        if !same_path(&handle.root(), expected_root) {
+        if !same_path(handle.root(), expected_root) {
             return Err("File index workspace is changing. Retry shortly.".to_owned());
         }
         let snapshot = self.inner.index.snapshot(&handle).map_err(index_error)?;
@@ -204,7 +204,7 @@ impl FileIndexRuntime {
         let handle = self
             .current_handle()?
             .ok_or_else(|| "Open a folder before finding files".to_owned())?;
-        if !same_path(&handle.root(), expected_root) {
+        if !same_path(handle.root(), expected_root) {
             return Err("File index workspace is changing. Retry shortly.".to_owned());
         }
         let result = self
@@ -226,7 +226,7 @@ impl FileIndexRuntime {
         let handle = self
             .current_handle()?
             .ok_or_else(|| "Open a folder before reconciling its file index".to_owned())?;
-        if !same_path(&handle.root(), expected_root) {
+        if !same_path(handle.root(), expected_root) {
             return Err("File index workspace is changing. Retry shortly.".to_owned());
         }
         self.inner.index.start_scan(&handle).map_err(index_error)?;
@@ -254,7 +254,7 @@ impl FileIndexRuntime {
         let Some(handle) = self.current_handle()? else {
             return Ok(());
         };
-        if !same_path(&handle.root(), expected_root) {
+        if !same_path(handle.root(), expected_root) {
             return Ok(());
         }
         self.inner
@@ -287,17 +287,14 @@ impl Drop for WatchSession {
     }
 }
 
-fn prepare_watcher(
-    root: PathBuf,
-) -> Result<
-    (
-        PathBuf,
-        RecommendedWatcher,
-        Receiver<notify::Result<Event>>,
-        Arc<AtomicBool>,
-    ),
-    String,
-> {
+type PreparedWatcher = (
+    PathBuf,
+    RecommendedWatcher,
+    Receiver<notify::Result<Event>>,
+    Arc<AtomicBool>,
+);
+
+fn prepare_watcher(root: PathBuf) -> Result<PreparedWatcher, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("Could not canonicalize workspace for watching: {error}"))?;
@@ -429,10 +426,10 @@ fn process_batch(
                 }
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
-                rename_from.extend(event.paths.into_iter());
+                rename_from.extend(event.paths);
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
-                rename_to.extend(event.paths.into_iter());
+                rename_to.extend(event.paths);
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::Any)) => rescan = true,
             EventKind::Remove(_) => {
@@ -485,9 +482,11 @@ fn process_batch(
             else {
                 continue;
             };
-            if is_dir_event(index, handle, &from) || to.is_dir() {
-                rescan = true;
-            } else if ignore_config_changed(root, &from) || ignore_config_changed(root, &to) {
+            if is_dir_event(index, handle, &from)
+                || to.is_dir()
+                || ignore_config_changed(root, &from)
+                || ignore_config_changed(root, &to)
+            {
                 rescan = true;
             } else {
                 plan_event(

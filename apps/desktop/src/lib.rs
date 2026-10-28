@@ -18,6 +18,9 @@ pub mod services;
 mod startup;
 
 /// The authoritative workspace is only accessed by blocking workers.
+type FormatterJobs =
+    Arc<Mutex<std::collections::HashMap<(usize, String), (u64, Option<u64>, CancellationToken)>>>;
+
 #[derive(Clone, Default)]
 pub struct DesktopState {
     pub workspace: Arc<Mutex<Option<Arc<Mutex<CoreWorkspace>>>>>,
@@ -28,9 +31,7 @@ pub struct DesktopState {
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
-    pub formatter_jobs: Arc<
-        Mutex<std::collections::HashMap<(usize, String), (u64, Option<u64>, CancellationToken)>>,
-    >,
+    pub formatter_jobs: FormatterJobs,
     pub file_index: file_index::FileIndexRuntime,
     pub file_index_root: Arc<Mutex<Option<PathBuf>>>,
 }
