@@ -6,6 +6,9 @@
 //! - `install`: download, integrity verification, cache and updates
 //! - `manager`: lazy start, reuse, restart and shutdown on top of `LspClient`
 
+pub mod cache;
+pub mod install;
+pub mod manager;
 pub mod spec;
 
 pub use spec::{

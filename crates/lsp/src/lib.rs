@@ -16,7 +16,9 @@ mod protocol;
 pub mod servers;
 mod transport;
 
-pub use client::{LspClient, ServerEvent};
+pub use client::{
+    build_initialize_params, client_capabilities, path_to_uri, LspClient, ServerEvent,
+};
 pub use document::{DocumentRegistry, TrackedDocument};
 pub use error::{LspError, Result};
 pub use lsp_types;
