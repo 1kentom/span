@@ -11,6 +11,7 @@ mod search;
 mod session;
 mod settings;
 mod tools;
+pub mod version;
 mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
@@ -23,7 +24,7 @@ pub use recent::{RecentProject, RecentProjectStore};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use settings::{
-    AgentSettings, AutoSaveMode, DelegationSettings, Settings, SettingsScope, Theme,
+    AgentSettings, AutoSaveMode, DelegationSettings, Settings, SettingsScope, Theme, UpdateSettings,
 };
 pub use tools::{list_tools, ToolInfo};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};

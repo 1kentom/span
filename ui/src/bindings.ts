@@ -54,6 +54,17 @@ export const commands = {
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
 	agentRemove: (id: string, uninstall: boolean) => __TAURI_INVOKE<null>("agent_remove", { id, uninstall }),
+	/**
+	 *  Check-only: compares installed agents with the ACP registry and reads
+	 *  local versions through the tool probe. Nothing is installed or run to
+	 *  update (ADR 0004).
+	 */
+	agentUpdateStatus: () => __TAURI_INVOKE<AgentUpdate_Serialize[]>("agent_update_status"),
+	/**
+	 *  Check-only: reads the public GitHub release list for this build's channel.
+	 *  Opening the release page is a separate, user-initiated `open_external`.
+	 */
+	appUpdateCheck: () => __TAURI_INVOKE<AppUpdate_Serialize>("app_update_check"),
 	agentConnect: (command: AgentCommand_Deserialize, cwd: string, onEvent: Channel<AgentEvent_Deserialize>) => __TAURI_INVOKE<string>("agent_connect", { command, cwd, onEvent }),
 	/**  Start a fresh conversation on the connected agent process. */
 	agentNewSession: () => __TAURI_INVOKE<string>("agent_new_session"),
@@ -346,6 +357,82 @@ export type AgentSettings_Deserialize = {
 /**  `agents.*` settings. */
 export type AgentSettings_Serialize = {
 	delegation: DelegationSettings_Serialize,
+};
+
+export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
+
+export type AgentUpdate_Deserialize = {
+	id: string,
+	name: string,
+	installedVersion?: string | null,
+	latestVersion?: string | null,
+	status: UpdateStatus,
+	/**
+	 *  True for agents Span installed from the registry, false for programs
+	 *  found on the user's PATH that Span does not manage.
+	 */
+	managed: boolean,
+	/**  How to update, as text only. Span never runs it from this check. */
+	howToUpdate?: string | null,
+	/**  The registry's repository link for the agent, when it has one. */
+	repository?: string | null,
+	/**  Why the status is what it is, when that is not obvious. */
+	note?: string | null,
+};
+
+export type AgentUpdate_Serialize = {
+	id: string,
+	name: string,
+	installedVersion: string | null,
+	latestVersion: string | null,
+	status: UpdateStatus,
+	/**
+	 *  True for agents Span installed from the registry, false for programs
+	 *  found on the user's PATH that Span does not manage.
+	 */
+	managed: boolean,
+	/**  How to update, as text only. Span never runs it from this check. */
+	howToUpdate: string | null,
+	/**  The registry's repository link for the agent, when it has one. */
+	repository: string | null,
+	/**  Why the status is what it is, when that is not obvious. */
+	note: string | null,
+};
+
+export type AppUpdate = AppUpdate_Serialize | AppUpdate_Deserialize;
+
+export type AppUpdateStatus = "upToDate" | "updateAvailable" | "notConfigured" | "error";
+
+export type AppUpdate_Deserialize = {
+	currentVersion: string,
+	/**
+	 *  `nightly`, `preview`, `stable`, or `unknown` for a version that does not
+	 *  follow the release scheme.
+	 */
+	channel: string,
+	latestVersion?: string | null,
+	newer: boolean,
+	/**  The GitHub release page. Opened only by a user click. */
+	releaseUrl?: string | null,
+	status: AppUpdateStatus,
+	/**  The error, or the reason the check is not configured. */
+	message?: string | null,
+};
+
+export type AppUpdate_Serialize = {
+	currentVersion: string,
+	/**
+	 *  `nightly`, `preview`, `stable`, or `unknown` for a version that does not
+	 *  follow the release scheme.
+	 */
+	channel: string,
+	latestVersion: string | null,
+	newer: boolean,
+	/**  The GitHub release page. Opened only by a user click. */
+	releaseUrl: string | null,
+	status: AppUpdateStatus,
+	/**  The error, or the reason the check is not configured. */
+	message: string | null,
 };
 
 /**  A file the child produced or changed, inside the workspace. */
@@ -1009,6 +1096,8 @@ export type Settings_Deserialize = {
 	 *  a missing value means the defaults.
 	 */
 	agents?: AgentSettings_Deserialize,
+	/**  Update checks. Optional in TypeScript like `agents`. */
+	updates?: UpdateSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -1035,6 +1124,8 @@ export type Settings_Serialize = {
 	 *  a missing value means the defaults.
 	 */
 	agents?: AgentSettings_Serialize,
+	/**  Update checks. Optional in TypeScript like `agents`. */
+	updates?: UpdateSettings_Serialize,
 };
 
 /**  A slash command the agent advertises. Run it by sending `/name args` as prompt text. */
@@ -1195,6 +1286,29 @@ export type ToolLocation_Serialize = {
 	path: string,
 	line: number | null,
 };
+
+/**  `updates.*`: update checks for the app and for agents (ADR 0004). */
+export type UpdateSettings = UpdateSettings_Serialize | UpdateSettings_Deserialize;
+
+/**  `updates.*`: update checks for the app and for agents (ADR 0004). */
+export type UpdateSettings_Deserialize = {
+	/**
+	 *  Check once per launch, check-only, with a plain GET. Off by default.
+	 *  Honoured only from the user's own settings file.
+	 */
+	checkOnLaunch?: boolean,
+};
+
+/**  `updates.*`: update checks for the app and for agents (ADR 0004). */
+export type UpdateSettings_Serialize = {
+	/**
+	 *  Check once per launch, check-only, with a plain GET. Off by default.
+	 *  Honoured only from the user's own settings file.
+	 */
+	checkOnLaunch: boolean,
+};
+
+export type UpdateStatus = "upToDate" | "updateAvailable" | "unknown" | "notInstalled";
 
 /**  Usage reported for a delegation. Every field is only set when reported. */
 export type UsageReport = UsageReport_Serialize | UsageReport_Deserialize;

@@ -3,7 +3,7 @@ import type { Settings_Serialize as SettingsValue, SettingsScope } from "../bind
 import Icon from "./Icon";
 import "../styles/settings.css";
 
-type Section = "Appearance" | "Editor" | "Files" | "Keyboard Shortcuts" | "Agents" | "Tools" | "Workspace" | "JSONC";
+type Section = "Appearance" | "Editor" | "Files" | "Keyboard Shortcuts" | "Agents" | "Tools" | "Updates" | "Workspace" | "JSONC";
 export interface SettingsPageProps {
   settings: SettingsValue;
   workspaceName?: string;
@@ -24,6 +24,7 @@ export interface SettingsPageProps {
   shortcuts?: JSX.Element;
   tools?: JSX.Element;
   onOpenTools?: () => void;
+  updates?: JSX.Element;
   onOpenAgents?: () => void;
   agentStatus?: string;
 }
@@ -46,6 +47,7 @@ const sections: { name: Section; icon: string; description: string }[] = [
   { name: "Keyboard Shortcuts", icon: "Command", description: "Find commands and make their shortcuts your own." },
   { name: "Agents", icon: "collaborators", description: "Manage agent connections for this workspace." },
   { name: "Tools", icon: "Code1", description: "Inspect available command line tools on this device." },
+  { name: "Updates", icon: "Refresh2", description: "Check whether a newer Span or agent version exists. Nothing is installed automatically." },
   { name: "Workspace", icon: "Folder2", description: "Panels and the defaults for this project." },
   { name: "JSONC", icon: "Setting2", description: "Edit workspace settings with comments and trailing commas." },
 ];
@@ -126,7 +128,7 @@ export function SettingsPage(props: SettingsPageProps) {
   const visiblePreferences = createMemo(() => preferences().filter(item => (!modifiedOnly() || configured(item.key, item.defaultValue)) && (searching() ? matches(`${item.label} ${item.description} ${item.key} ${aliases[item.key] || ""} ${item.section}`) : item.section === section())));
   const showThemes = () => (!modifiedOnly() || configured("theme", "Dark")) && (searching() ? matches("color theme appearance dark light purple") : section() === "Appearance");
   const page = () => sections.find(item => item.name === section())!;
-  const matchingSections = createMemo(() => searching() && !modifiedOnly() ? sections.filter(item => ["Keyboard Shortcuts", "Agents", "Tools", "JSONC"].includes(item.name) && matches(`${item.name} ${item.description}`)) : []);
+  const matchingSections = createMemo(() => searching() && !modifiedOnly() ? sections.filter(item => ["Keyboard Shortcuts", "Agents", "Tools", "Updates", "JSONC"].includes(item.name) && matches(`${item.name} ${item.description}`)) : []);
   const disabled = () => busy() || dirty();
   async function change(patch: Partial<SettingsValue>) {
     if (disabled()) return;
@@ -192,6 +194,7 @@ export function SettingsPage(props: SettingsPageProps) {
         <Show when={!searching() && section() === "Keyboard Shortcuts"}><Show when={!dirty()} fallback={<p class="sp-help">Keyboard preferences are available after you finish reviewing the JSONC draft.</p>}>{props.shortcuts}</Show></Show>
         <Show when={!searching() && section() === "Agents"}><div class="sp-information"><Icon name="collaborators" size={25} /><h2>Agent connections</h2><p>Install and connect an Agent Client Protocol agent from the assistant panel. Agent permissions and suggested edits stay reviewable in the workspace.</p><dl><dt>Connection</dt><dd>{props.agentStatus || "Managed in the assistant panel"}</dd></dl><Show when={props.onOpenAgents}><button class="button" onClick={props.onOpenAgents}>Manage agents<Icon name="arrow-right4" size={14} /></button></Show></div></Show>
         <Show when={!searching() && section() === "Tools"}>{props.tools}</Show>
+        <Show when={!searching() && section() === "Updates"}>{props.updates}</Show>
         <Show when={!searching() && section() === "Workspace"}><div class="sp-information sp-workspace-info"><h2>Settings scope</h2><p>User settings apply across projects. Workspace settings override user values for this project. Reset removes the value in the selected scope so the inherited value takes effect. Comments and trailing commas are supported.</p><p>Current file: <code>{settingsPath()}</code></p><button class="sp-text-button" onClick={() => go("JSONC")}>Open settings JSONC<Icon name="arrow-right4" size={13} /></button></div></Show>
         <Show when={!props.onOpenJsonc && !searching() && section() === "JSONC"}><div class="sp-json-section"><div class="sp-json-path"><code>{settingsPath()}</code><span>{dirty() ? "Unsaved changes" : "Saved"}</span></div><Show when={externalChange()}><div class="sp-banner"><Icon name="Warning2" size={15} /><span>Saved settings changed while you were editing. Your draft has been kept. Reload to review the saved version.</span></div></Show><textarea class="sp-json" aria-label="Settings JSONC" aria-describedby="sp-json-help" value={json()} spellcheck={false} disabled={busy()} onInput={event => { setJson(event.currentTarget.value); setError(""); setNotice(""); }} /><p class="sp-help" id="sp-json-help">Saving validates the full settings file before applying it. An invalid draft stays here for correction. Auto Save never applies this draft.</p><Show when={reloadReview()}><div class="sp-discard-review" role="group" aria-label="Discard JSONC draft"><span>Discard your unsaved JSONC changes and load the saved file?</span><button class="button" disabled={busy()} onClick={() => setReloadReview(false)}>Keep editing</button><button class="button" disabled={busy()} onClick={() => void reload()}>Discard and reload</button></div></Show><div class="sp-json-actions"><button class="button" disabled={busy()} onClick={() => dirty() ? setReloadReview(true) : void reload()}>Reload saved</button><button class="button primary" disabled={busy() || !dirty()} onClick={() => void saveJson()}>{busy() ? "Saving…" : "Save settings"}</button></div></div></Show>
         <Show when={props.unsupportedKeys?.length}><p class="sp-help">Preserved without applying: {props.unsupportedKeys!.join(", ")}. Extension preferences and language override blocks are not implemented.</p></Show>
