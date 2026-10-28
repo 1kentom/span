@@ -71,8 +71,10 @@ describe("dock CSS frame", () => {
   it("makes every composer-adjacent dock as wide as the prompt box, with no outside margin", () => {
     const dock = rule(agent, ".agent-footer > .sb-dock");
     expect(dock).toMatch(/margin:\s*0;/);
-    expect(dock).toMatch(/border-radius:\s*7px 7px 0 0/);
-    expect(rule(agent, ".agent-composer")).toMatch(/border-radius:\s*7px/);
+    // The dock's top corners follow the prompt box's radius, whatever the composer design sets it to.
+    const composerRadius = rule(agent, ".agent-composer").match(/border-radius:\s*(\d+px);/)?.[1];
+    expect(composerRadius).toBeTruthy();
+    expect(dock).toMatch(new RegExp(`border-radius:\\s*${composerRadius} ${composerRadius} 0 0`));
   });
 
   it("does not style a separate strip beside the dock", () => {

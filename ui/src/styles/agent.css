@@ -335,7 +335,7 @@
 /* A dock is one card: same width as the prompt box below it, corners joined to it. Its question, error and Skip live inside. */
 .agent-footer > .sb-dock {
   margin: 0;
-  border-radius: 7px 7px 0 0;
+  border-radius: 20px 20px 0 0;
 }
 .sb-urlbox .sb-mono.sb-ellipsis {
   overflow: visible;
