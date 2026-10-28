@@ -9,12 +9,13 @@ import type { LanguageServerId, LanguageServerInstallProgress_Deserialize, Langu
 import type { HubPort, WorkProgressEvent } from "./hub-port";
 import { previewHoverCapabilities } from "./hover-preview";
 
-export type HubScenario = "off" | "needs-install" | "installing" | "runtime-missing" | "install-failed" | "crashed" | "needs-trust" | "ready" | "disabled" | "starting";
+export type HubScenario = "off" | "needs-install" | "installing" | "runtime-missing" | "install-failed" | "crashed" | "needs-trust" | "ready" | "disabled" | "starting"
+  | "installing-0" | "installing-100" | "verifying" | "extracting" | "indexing" | "trusted";
 const MB = 1024 * 1024;
 const caps = { ...previewHoverCapabilities, completion: true, formatting: true, typeHierarchy: true };
 const artifacts = [40 * MB, 180 * MB, 100 * MB];
 const total = artifacts.reduce((sum, size) => sum + size, 0);
-const states = ["off", "needs-install", "installing", "runtime-missing", "install-failed", "crashed", "needs-trust", "ready", "disabled", "starting"] as const;
+const states = ["off", "needs-install", "installing", "runtime-missing", "install-failed", "crashed", "needs-trust", "ready", "disabled", "starting", "installing-0", "installing-100", "verifying", "extracting", "indexing", "trusted"] as const;
 
 interface Api {
   scenario: () => HubScenario;
@@ -48,6 +49,12 @@ export function createHubPreview(root: string) {
     switch (name) {
       case "needs-install": return { state: { kind: "needsInstall", version: "1.62.0", sizeHint: 120 * MB } };
       case "installing": return { state: { kind: "installing" }, install: { phase: "downloading", overallReceived: 128 * MB, overallTotal: total, artifactIndex: 1, artifactCount: 3 } };
+      case "installing-0": return { state: { kind: "installing" }, install: { phase: "downloading", overallReceived: 0, overallTotal: total, artifactIndex: 0, artifactCount: 3 } };
+      case "installing-100": return { state: { kind: "installing" }, install: { phase: "downloading", overallReceived: total, overallTotal: total, artifactIndex: 2, artifactCount: 3 } };
+      case "verifying": return { state: { kind: "installing" }, install: { phase: "verifying", overallReceived: total, overallTotal: total, artifactIndex: 2, artifactCount: 3 } };
+      case "extracting": return { state: { kind: "installing" }, install: { phase: "extracting", overallReceived: total, overallTotal: total, artifactIndex: 2, artifactCount: 3 } };
+      case "indexing": return { ...ready, activity: [{ token: "import", title: "Indexing project", message: "Reading classes and dependencies", percentage: 35 }] };
+      case "trusted": return ready;
       case "runtime-missing": return { state: { kind: "runtimeMissing", runtime: "JDK", requiredVersion: 25, found: ["21"] }, runtime: { name: "JDK", requiredVersion: 25, foundVersion: "21", foundPath: "/Library/Java/JavaVirtualMachines/jdk-21.jdk" }, installed: true };
       case "install-failed": return { state: { kind: "installFailed", reason: "GET https://download.eclipse.org/jdtls: connection reset by peer (os error 54)", retryable: true }, failureReason: "Java support could not be downloaded. Check your internet connection and try again.", failureDetails: "GET https://download.eclipse.org/jdtls: connection reset by peer (os error 54)" };
       case "crashed": return { state: { kind: "crashed" }, installed: true };
@@ -77,7 +84,11 @@ export function createHubPreview(root: string) {
   function setScenario(name: HubScenario) {
     if (!states.includes(name)) return;
     run++; scenario = name; epoch++; jdtls = scenarioRow(name); jdkChosen = false;
+    emitWork({ token: "import", kind: "end" });
     emitState();
+    // A fixed install state also reports its progress, the way the backend event would, so a repeat visit shows the new numbers.
+    const shown = jdtls.install;
+    if (shown) emitInstall(shown.phase, shown.overallReceived ?? 0, shown.artifactIndex ?? 0, 0, 0);
   }
   const update = (patch: Partial<ServerStatusDto_Serialize>) => { jdtls = { ...jdtls, ...patch }; emitState(); };
 
