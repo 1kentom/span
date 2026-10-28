@@ -1,4 +1,5 @@
-import { LanguageDescription, LanguageSupport, StreamLanguage, type Language, type StreamParser } from "@codemirror/language";
+import { LanguageDescription, LanguageSupport, LRLanguage, StreamLanguage, type Language, type StreamParser } from "@codemirror/language";
+import { languageStyleTags } from "./syntax-highlight";
 
 export type LanguageId = "typescript" | "javascript" | "json" | "jsonc" | "markdown" | "rust" | "python" | "java" | "dotenv" | "toml" | "yaml" | "html" | "css" | "shell" | "text";
 
@@ -59,6 +60,14 @@ const dotenvParser: StreamParser<DotenvState> = {
 
 const dotenvLanguage = StreamLanguage.define(dotenvParser);
 type LoadedLanguage = LanguageSupport | Language;
+
+/** Adds the node rules that let Lezer trees colour imports, annotations and declarations like the tree-sitter layer. */
+function withTokenTags(support: LanguageSupport, rules: string): LanguageSupport {
+  const props = languageStyleTags(rules);
+  const language = support.language;
+  if (!props || !(language instanceof LRLanguage)) return support;
+  return new LanguageSupport(language.configure({ props: [props] }), support.support);
+}
 const loading = new Map<string, Promise<LoadedLanguage | null>>();
 
 /** Grammar modules load when a file or a fenced block actually uses them. */
@@ -71,17 +80,17 @@ export function loadLanguage(hint: string, path = ""): Promise<LoadedLanguage | 
   if (cached) return cached;
   const result = (async (): Promise<LoadedLanguage | null> => {
     switch (id) {
-      case "typescript": return (await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx });
-      case "javascript": return (await import("@codemirror/lang-javascript")).javascript({ jsx });
+      case "typescript": return withTokenTags((await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx }), "typescript");
+      case "javascript": return withTokenTags((await import("@codemirror/lang-javascript")).javascript({ jsx }), "typescript");
       case "json": {
         const [{ json, jsonParseLinter }, { linter }] = await Promise.all([import("@codemirror/lang-json"), import("@codemirror/lint")]);
         const support = json(); const lint = jsonParseLinter();
         return new LanguageSupport(support.language, [support.support, linter((view) => view.state.doc.length <= 2 * 1024 * 1024 ? lint(view) : [], { delay: 400 })]);
       }
       case "jsonc": return (await import("./settings-completion")).jsoncSupport(settings);
-      case "rust": return (await import("@codemirror/lang-rust")).rust();
-      case "python": return (await import("@codemirror/lang-python")).python();
-      case "java": return (await import("@codemirror/lang-java")).java();
+      case "rust": return withTokenTags((await import("@codemirror/lang-rust")).rust(), "rust");
+      case "python": return withTokenTags((await import("@codemirror/lang-python")).python(), "python");
+      case "java": return withTokenTags((await import("@codemirror/lang-java")).java(), "java");
       case "html": {
         const [{ html }, { emmetSupport }] = await Promise.all([import("@codemirror/lang-html"), import("./emmet")]);
         const support = html();
