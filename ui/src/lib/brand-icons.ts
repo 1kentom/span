@@ -1,5 +1,6 @@
 export type BrandIdentity = { id?: string; name?: string };
-export type BrandIconAsset = { id: string; light: string; dark: string };
+/** `mono` marks are single-colour currentColor art, drawn as a mask so they follow the theme text colour. */
+export type BrandIconAsset = { id: string; light: string; dark: string; mono?: boolean };
 
 const assets: Record<string, { variants?: boolean; aliases: string[] }> = {
   claude: {
