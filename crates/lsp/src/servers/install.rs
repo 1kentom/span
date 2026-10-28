@@ -1601,6 +1601,7 @@ mod tests {
 
     /// `d/` , `d/s -> ..` (the root), `x -> d/s/..` (one above the root). No
     /// entry writes through a link, so only the target check can stop it.
+    #[cfg(unix)]
     fn tar_chain_gz(prefix: &str) -> Vec<u8> {
         let mut b = tar::Builder::new(Vec::new());
         let pkg: &[u8] = br#"{"name":"p"}"#;
