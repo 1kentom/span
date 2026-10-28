@@ -1,4 +1,5 @@
 import { For, Match, Show, Switch, createMemo } from "solid-js";
+import { Icon } from "../Icon";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
@@ -22,7 +23,10 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       <Match when={item().kind === "user"}>
         <div class="agent-message user" data-feed-id={item().id} classList={{ steered: Boolean((item() as Extract<FeedItem, { kind: "user" }>).steered) }}>
           <Show when={(item() as Extract<FeedItem, { kind: "user" }>).steered}>
-            <div class="agent-steered-label">Steered</div>
+            <div class="agent-steer-tag"><Icon name="arrow-right4" size={11} /><span>Steered</span><span class="agent-steer-note"> · read after the current step</span></div>
+          </Show>
+          <Show when={!(item() as Extract<FeedItem, { kind: "user" }>).steered && a.sentNowIds().has(item().id)}>
+            <div class="agent-steer-tag"><Icon name="arrow-right4" size={11} /><span>Sent now</span><span class="agent-steer-note"> · interrupted the current step</span></div>
           </Show>
           {message().text}
           <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.setViewing(attachment.id)} />

@@ -593,4 +593,36 @@ button.sb-step-row:hover { background: var(--sb-hover); }
   .fx .fx-label-out { display: none; }
   .fx .fx-sparkle { animation: none; opacity: 0.7; transform: none; }
   .fx-dragging .fx-knob { transform: none; }
+
+/* Queue polish: design header, grip, drag reorder, inline clear confirm, steer and sent-now tags */
+.sb-queue-head .sb-queue-title { flex: none; color: var(--sb-fg); }
+.sb-queue-head .sb-queue-clear { color: var(--sb-dim); }
+.sb-queue-head .sb-queue-clear:hover:not(:disabled) { color: var(--sb-fg); }
+.sb-drawer.queue.held { border-color: var(--sb-warn-border); }
+.sb-queue { position: relative; }
+.sb-queue-row { position: relative; }
+.sb-queue-row:hover { background: var(--sb-hover); }
+.sb-queue-text { color: var(--sb-fg); }
+.sb-queue-num { color: var(--sb-dim); }
+.sb-queue-send { flex: none; gap: 4px; padding: 0 6px; font-size: 11px; }
+.sb-queue-send:hover:not(:disabled) { background: var(--sb-accent-surface); }
+.sb-queue-confirm { display: flex; align-items: center; gap: 4px; min-height: 28px; margin: 0 4px 2px; padding: 0 4px 0 6px; border-radius: 5px; background: var(--sb-error-surface); font-size: 11.5px; color: var(--sb-fg); }
+.sb-queue-grip { display: grid; place-items: center; flex: none; width: 14px; height: 22px; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--sb-faint); cursor: grab; touch-action: none; }
+.sb-queue-grip:hover:not(:disabled) { color: var(--sb-dim); }
+.sb-queue-grip:disabled { cursor: default; opacity: 0.45; }
+.sb-queue-grip:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 1px; color: var(--sb-fg); }
+.sb-queue.dragging, .sb-queue.dragging .sb-queue-grip { cursor: grabbing; user-select: none; }
+/* Six dots, two columns by three rows, drawn with a gradient so no extra asset is needed. */
+.sb-grip-dots { width: 6px; height: 10px; background: radial-gradient(circle, currentColor 0.9px, transparent 1.2px) 0 0 / 3px 3.4px repeat; }
+.sb-queue-row.dragging { z-index: 2; background: var(--sb-menu); box-shadow: 0 6px 16px var(--sb-shadow); transition: none; cursor: grabbing; }
+.sb-queue-row.pending { opacity: 0.85; }
+.sb-queue-row[data-drop]::after { content: ""; position: absolute; left: 4px; right: 4px; height: 2px; border-radius: 1px; background: var(--sb-accent); pointer-events: none; }
+.sb-queue-row[data-drop="before"]::after { top: -1px; }
+.sb-queue-row[data-drop="after"]::after { bottom: -1px; }
+.agent-steer-tag { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; font-size: 11px; color: var(--sb-dim); }
+.agent-steer-tag .icon { flex: none; color: var(--sb-accent-fg); }
+.agent-steer-tag span:first-of-type { color: var(--sb-accent-fg); }
+@media (prefers-reduced-motion: reduce) {
+  .sb-queue-row { transition: none !important; }
+  .sb-queue-row.dragging { box-shadow: 0 2px 6px var(--sb-shadow); }
 }

@@ -40,6 +40,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   const [slashClosedFor, setSlashClosedFor] = createSignal<string>();
   /** Focus is inside the open dock. The hints row lists dock keys only then. */
   const [dockFocused, setDockFocused] = createSignal(false);
+  const [editLast, setEditLast] = createSignal(0);
   /** Time of the last key or input in the prompt box, so a new dock never takes focus from someone typing. */
   let lastTypedAt = 0;
   const noteTyping = (event?: KeyboardEvent) => {
@@ -196,7 +197,11 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
       <Show when={a.queue().length}>
         <QueuePanel
           items={a.queue().map((entry) => ({ id: entry.id, text: entry.text || `${entry.items.length} attachment${entry.items.length === 1 ? "" : "s"}` }))}
-          note={a.queueHeld() ? undefined : a.online() ? "Sent when the agent is idle" : "Sent when you're back online"}
+          note={a.queueHeld() ? undefined : a.online() ? "Sends when the agent finishes" : "Sends when you're back online"}
+          pendingId={a.queueSending()}
+          editLastToken={editLast()}
+          onEmptied={() => input?.focus()}
+          onReorder={a.reorderQueue}
           held={a.queueHeld()}
           canSendAll={a.connected() && !a.running() && a.online()}
           onSendAll={a.sendQueued}
@@ -425,6 +430,12 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               // An open dock is answered from the keyboard by moving into it. Tab does not queue while one is open.
               event.preventDefault();
               focusDock(footer?.querySelector<HTMLElement>(".sb-dock") ?? undefined);
+              return;
+            }
+            // With messages queued, ArrowUp in an empty composer edits the last one instead of recalling a prompt.
+            if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && !event.isComposing && !a.prompt() && a.queue().length) {
+              event.preventDefault();
+              setEditLast((token) => token + 1);
               return;
             }
             a.recallPrompt(event);

@@ -279,7 +279,7 @@ describe("QueuePanel", () => {
     const host = mount(() => (
       <QueuePanel items={items} onEdit={(id, t) => calls.push(`edit:${id}:${t}`)} onRemove={(id) => calls.push(`rm:${id}`)} onSendNow={(id) => calls.push(`now:${id}`)} onClear={() => calls.push("clear")} />
     ));
-    expect(text(host.querySelector(".sb-queue-head"))).toContain("2 queued");
+    expect(text(host.querySelector(".sb-queue-head"))).toContain("Queued · 2");
     host.querySelector<HTMLButtonElement>("[aria-label='Remove queued message 2']")!.click();
     host.querySelector<HTMLButtonElement>("[aria-label='Send queued message 1 now']")!.click();
     host.querySelector<HTMLButtonElement>(".sb-queue-head button")!.click();
