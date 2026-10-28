@@ -77,6 +77,9 @@ while True:
             caps["definitionProvider"] = True
         reply(msg, {"capabilities": caps})
     elif method == "initialized":
+        if os.environ.get("FAKE_LSP_STDERR"):
+            sys.stderr.write("fake stderr line\n")
+            sys.stderr.flush()
         send({"id": "srv-1", "method": "workspace/configuration",
               "params": {"items": [{"section": "x"}]}})
     elif method == "textDocument/didOpen":
