@@ -10,8 +10,14 @@
 //   stubborn            never finish and ignore session/cancel for this session
 //   servers             answer with the JSON mcpServers this session received in session/new
 //   mcp <url> <token> <json>  act as a lead: POST <json> to the MCP server, answer with the body
+//   ended               answer with the JSON list of session ids closed or deleted so far
+//   prompts             answer with the number of prompts received so far
 // Flags: --name=<n>, --mcp-http, --mcp-sse, --image, --reject-session (session/new fails),
-//   --auth-required (session/new answers -32000 Authentication required).
+//   --auth-required (session/new answers -32000 Authentication required),
+//   --close, --delete, --list (advertise and answer session/close, session/delete, session/list;
+//   listed sessions are titled with their first prompt), --silent-health (never answer the
+//   Span health check prompt), --slow-health=<ms> (answer it after <ms>),
+//   --permission-health (ask for permission before answering it).
 import readline from 'node:readline';
 const input = readline.createInterface({ input: process.stdin });
 const flag = name => process.argv.includes(name);
@@ -23,6 +29,10 @@ const active = new Map();
 const servers = new Map();
 const stubborn = new Set();
 const callbacks = new Map();
+const titles = new Map();
+const ended = [];
+let prompts = 0;
+const slowHealth = Number(process.argv.find(arg => arg.startsWith('--slow-health='))?.slice(14) ?? 0);
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const update = (sessionId, update) => send({ method: 'session/update', params: { sessionId, update } });
 const say = (sessionId, text) => update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
@@ -55,6 +65,23 @@ async function prompt(message) {
   const text = prompt.find(block => block.type === 'text')?.text ?? '';
   const first = text.split('\n')[0];
   active.set(sessionId, id);
+  prompts++;
+  if (!titles.get(sessionId)) titles.set(sessionId, first);
+  if (first.startsWith('Health check')) {
+    if (flag('--silent-health')) return;
+    if (flag('--permission-health')) {
+      const answer = await call('session/request_permission', {
+        sessionId, toolCall: { toolCallId: 'health-1', title: 'Read a file', kind: 'read' },
+        options: [{ optionId: 'yes', name: 'Allow once', kind: 'allow_once' }, { optionId: 'no', name: 'Reject', kind: 'reject_once' }],
+      });
+      if (answer.outcome.outcome === 'selected' && answer.outcome.optionId === 'yes') { console.error('health permission allowed'); process.exit(7); }
+    }
+    if (slowHealth) await sleep(slowHealth);
+    say(sessionId, 'OK');
+    return finish(sessionId, id, 'end_turn');
+  }
+  if (first === 'ended') { say(sessionId, JSON.stringify(ended)); return finish(sessionId, id, 'end_turn'); }
+  if (first === 'prompts') { say(sessionId, String(prompts)); return finish(sessionId, id, 'end_turn'); }
   if (first.startsWith('mcp ')) return lead(sessionId, id, first);
   if (first === 'wait') return;
   if (first === 'stubborn') { stubborn.add(sessionId); return; }
@@ -113,6 +140,11 @@ input.on('line', line => {
       promptCapabilities: { image: flag('--image') },
       mcpCapabilities: { http: flag('--mcp-http'), sse: flag('--mcp-sse') },
     };
+    const sessionCapabilities = {};
+    if (flag('--close')) sessionCapabilities.close = {};
+    if (flag('--delete')) sessionCapabilities.delete = {};
+    if (flag('--list')) sessionCapabilities.list = {};
+    if (Object.keys(sessionCapabilities).length) agentCapabilities.sessionCapabilities = sessionCapabilities;
     send({ id: message.id, result: { protocolVersion: 1, agentCapabilities, authMethods: [], agentInfo: { name: agentName, version: '1.0.0' } } });
   } else if (message.method === 'session/new') {
     if (flag('--auth-required')) return send({ id: message.id, error: { code: -32000, message: 'Authentication required' } });
@@ -120,9 +152,15 @@ input.on('line', line => {
     cwd = message.params.cwd;
     const sessionId = `${agentName}-${++sessions}`;
     servers.set(sessionId, message.params.mcpServers ?? null);
+    titles.set(sessionId, '');
     send({ id: message.id, result: { sessionId } });
-  } else if (message.method === 'session/close') {
+  } else if (message.method === 'session/close' || (message.method === 'session/delete' && flag('--delete'))) {
+    ended.push(message.params.sessionId);
+    titles.delete(message.params.sessionId);
     send({ id: message.id, result: {} });
+  } else if (message.method === 'session/list' && flag('--list')) {
+    const listed = [...titles.keys()].map(sessionId => ({ sessionId, cwd, title: titles.get(sessionId) || null }));
+    send({ id: message.id, result: { sessions: listed } });
   } else if (message.method === 'session/prompt') {
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {

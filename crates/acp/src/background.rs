@@ -361,6 +361,21 @@ impl BackgroundAgents {
         }
     }
 
+    /// Installed agents that are running and initialized, with their
+    /// connection ids, sorted by agent id. Never starts anything.
+    pub fn connected(&self) -> Vec<(String, String)> {
+        let mut found: Vec<(String, String)> = lock(&self.inner.slots)
+            .iter()
+            .filter_map(|(id, slot)| match &slot.phase {
+                Phase::Ready(connection) => Some((id.clone(), connection.clone())),
+                _ => None,
+            })
+            .collect();
+        found.retain(|(_, connection)| self.open(connection));
+        found.sort();
+        found
+    }
+
     /// Connection ids currently running for installed agents.
     pub fn connections(&self) -> Vec<String> {
         lock(&self.inner.slots)

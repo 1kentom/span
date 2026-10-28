@@ -23,7 +23,9 @@ pub struct AgentService {
 }
 
 enum Command {
-    NewSession(Vec<Value>, Reply<String>),
+    /// MCP servers, and whether the session is a hidden Span session (see
+    /// [`AgentService::new_hidden_session`]).
+    NewSession(Vec<Value>, bool, Reply<String>),
     Prompt(String, Vec<ContentBlock>, Reply<()>),
     Authenticate(String, Option<Meta>, Reply<()>),
     Cancel(String),
@@ -94,6 +96,55 @@ struct Bridge {
     deleted_listed: HashSet<String>,
     /// Sessions whose current turn had a permission or edit rejected by the user.
     rejected: HashSet<String>,
+    /// Span's own hidden sessions on this connection and where their events go.
+    hidden: Arc<Mutex<Hidden>>,
+}
+
+/// Sessions Span opens for itself (the agent health check, ADR 0010). Their
+/// events never reach the connection's sink: they go to `sink` only, so the
+/// user's chat, the session manager and the History list never see them.
+#[derive(Default)]
+struct Hidden {
+    ids: HashSet<String>,
+    sink: Option<EventSink>,
+}
+
+/// Every hidden session id Span opened in this process, on any connection.
+/// `list_sessions` filters these out, so a hidden session never shows in
+/// History even after a reconnect of the same agent.
+static HIDDEN_SESSIONS: std::sync::LazyLock<Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(Mutex::default);
+
+/// The prompt of the health check. Agents title a session after its first
+/// prompt, so a hidden session left over from an earlier run of Span (by an
+/// agent without `session/close` or `session/delete`) is recognised by its
+/// title and kept out of History as well.
+pub const HEALTH_PROMPT: &str = "Health check. Reply with exactly one word: OK";
+
+/// True for a session Span opened for itself: one recorded in this process,
+/// or one titled with the health check prompt.
+pub fn is_hidden_session(session_id: &str, title: Option<&str>) -> bool {
+    title.is_some_and(|t| t.trim_start().starts_with(HEALTH_PROMPT))
+        || HIDDEN_SESSIONS
+            .lock()
+            .map(|ids| ids.contains(session_id))
+            .unwrap_or(false)
+}
+
+/// Wrap the connection sink so events of hidden sessions go to the hidden
+/// sink instead. The hidden set has its own lock, never held while emitting.
+fn divert_hidden(hidden: Arc<Mutex<Hidden>>, emit: EventSink) -> EventSink {
+    Arc::new(move |event: AgentEvent| {
+        let diverted = crate::manager::event_session(&event).and_then(|session| {
+            let hidden = hidden.lock().ok()?;
+            hidden.ids.contains(&session).then(|| hidden.sink.clone())
+        });
+        match diverted {
+            Some(Some(sink)) => sink(event),
+            Some(None) => {}
+            None => emit(event),
+        }
+    })
 }
 
 /// Send a request whose response is needed as raw JSON: legacy `modes` and
@@ -234,6 +285,12 @@ impl AgentService {
             return Err("Agent cwd must match the open workspace".into());
         }
         let state = Arc::new(Mutex::new(Bridge::default()));
+        let hidden = state
+            .lock()
+            .map_err(|_| "Agent state lock poisoned")?
+            .hidden
+            .clone();
+        let emit = divert_hidden(hidden, emit);
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = oneshot::channel();
         let (completion_tx, completion_rx) = watch::channel(false);
@@ -308,9 +365,43 @@ impl AgentService {
     pub async fn new_session_with(&self, mcp_servers: Vec<Value>) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(mcp_servers, tx))
+            .send(Command::NewSession(mcp_servers, false, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Create a hidden Span session (no MCP servers). Its events, from the
+    /// `Session` event on, go only to the sink set with
+    /// [`Self::set_hidden_sink`]; it is left out of [`Self::list_sessions`];
+    /// a sign-in failure is returned as an error that starts with
+    /// "Authentication required" without raising `AuthRequired` in the chat;
+    /// and a Stop it ignores ends only its turn, never the connection.
+    pub async fn new_hidden_session(&self) -> Result<String, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::NewSession(Vec::new(), true, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Where events of hidden sessions go. `None` drops them.
+    pub fn set_hidden_sink(&self, sink: Option<EventSink>) {
+        let hidden = self.state.lock().map(|bridge| bridge.hidden.clone());
+        if let Ok(hidden) = hidden {
+            if let Ok(mut hidden) = hidden.lock() {
+                hidden.sink = sink;
+            }
+        }
+    }
+    /// The agent advertised `session/close`.
+    pub fn can_close_sessions(&self) -> bool {
+        self.state.lock().is_ok_and(|bridge| bridge.can_close)
+    }
+    /// The agent advertised `session/delete`.
+    pub fn can_delete_sessions(&self) -> bool {
+        self.state.lock().is_ok_and(|bridge| bridge.can_delete)
+    }
+    /// The process is still running (no shutdown, not exited).
+    pub fn is_open(&self) -> bool {
+        !*self.completion.borrow() && self.state.lock().is_ok_and(|bridge| !bridge.closed)
     }
     /// Send a prompt. Slash commands are ordinary text such as `/web query`.
     /// Image and embedded resource attachments are rejected unless the agent advertised them.
@@ -964,7 +1055,7 @@ async fn run(
                     },
                 };
                 match command {
-                    Command::NewSession(servers, reply) => {
+                    Command::NewSession(servers, hidden, reply) => {
                         let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         let result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)).await;
@@ -977,14 +1068,21 @@ async fn run(
                             None => Err(agent_client_protocol::Error::invalid_params().data("session/new response has no sessionId")),
                         });
                         let needs_auth = result.as_ref().err().is_some_and(|e| e.code == ErrorCode::AuthRequired);
-                        if let Ok(mut bridge) = state.lock() { bridge.auth_required = needs_auth; }
-                        if let (true, Err(error)) = (needs_auth, &result) { auth_required(&state, &emit, error, None); }
+                        // A hidden session never changes what the chat shows: no sign-in card, no notice.
+                        let emit: EventSink = if hidden { Arc::new(|_| {}) } else { emit.clone() };
+                        if !hidden { if let Ok(mut bridge) = state.lock() { bridge.auth_required = needs_auth; } }
+                        if let (true, Err(error), false) = (needs_auth, &result, hidden) { auth_required(&state, &emit, error, None); }
                         // An agent without ACP sessions cannot be used at all, so its
                         // connection ends; other failures keep the connection for the
                         // remaining sessions.
                         let unsupported = result.as_ref().err().is_some_and(|e| matches!(e.code, ErrorCode::MethodNotFound));
                         let result = result.map_err(|e| if needs_auth { auth_message(&e) } else { crate::compatibility::user_error("session/new", &e, &emit) });
                         let result = result.map(|(id, response)| {
+                            if hidden {
+                                if let Ok(mut ids) = HIDDEN_SESSIONS.lock() { ids.insert(id.clone()); }
+                                let set = state.lock().map(|mut bridge| { bridge.delegated.insert(id.clone()); bridge.hidden.clone() });
+                                if let Ok(set) = set { if let Ok(mut set) = set.lock() { set.ids.insert(id.clone()); } }
+                            }
                             if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                             emit(AgentEvent::Session { session_id: id.clone() });
                             let options = adapter.session_config(&id, &response);
@@ -1048,6 +1146,8 @@ async fn run(
                                 }
                                 Err(error) => {
                                     // OpenCode reports a missing sign-in only here; any agent may.
+                                    let hidden = prompt_state.lock().ok().and_then(|bridge| bridge.hidden.lock().ok().map(|h| h.ids.contains(&id))).unwrap_or(false);
+                                    if hidden && error.code == ErrorCode::AuthRequired { let _ = reply.send(Err(auth_message(&error))); return Ok(()); }
                                     if error.code == ErrorCode::AuthRequired { auth_required(&prompt_state, &prompt_emit, &error, Some(&id)); }
                                     let message = crate::compatibility::user_error("session/prompt", &error, &prompt_emit);
                                     prompt_emit(AgentEvent::Error { session_id: Some(id.clone()), message: message.clone() }); let _ = reply.send(Err(message));
@@ -1355,8 +1455,17 @@ fn hide_deleted(
     let mut newly_seen = Vec::new();
     let kept = match state.lock() {
         Ok(mut bridge) => {
+            let span_own = bridge
+                .hidden
+                .lock()
+                .map(|h| h.ids.clone())
+                .unwrap_or_default();
             let (hidden, kept): (Vec<_>, Vec<_>) = found
                 .into_iter()
+                .filter(|summary| {
+                    !span_own.contains(&summary.session_id)
+                        && !is_hidden_session(&summary.session_id, summary.title.as_deref())
+                })
                 .partition(|summary| bridge.deleted.contains(&summary.session_id));
             for summary in hidden {
                 if bridge.deleted_listed.insert(summary.session_id.clone()) {
