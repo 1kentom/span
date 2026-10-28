@@ -69,7 +69,7 @@ function defaultValue(schema: Schema): unknown {
 function propertyCompletion(name: string, schema: Schema, hasColon: boolean): Completion {
   const value = defaultValue(schema);
   const detail = `${Array.isArray(schema.type) ? schema.type.join(" | ") : schema.type ?? "value"}${Object.hasOwn(schema, "default") ? ` · default ${JSON.stringify(schema.default)}` : ""}`;
-  const completion: Completion = { label: name, type: "property", detail, info: schema.description ?? "Built-in span setting.", boost: name.includes(".") ? 3 : 0 };
+  const completion: Completion = { label: JSON.stringify(name), displayLabel: name, type: "property", detail, info: schema.description ?? "Built-in span setting.", boost: name.includes(".") ? 3 : 0 };
   if (hasColon) return { ...completion, apply: JSON.stringify(name) };
   const valueSnippet = value !== null && typeof value === "object"
     ? Array.isArray(value) ? "[${}]" : "{\n\t${}\n}"

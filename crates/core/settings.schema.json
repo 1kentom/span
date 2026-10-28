@@ -80,6 +80,8 @@
       "propertyNames": {
         "enum": [
           "quickOpen",
+          "focusFiles",
+          "openFile",
           "commandPalette",
           "findInFile",
           "searchWorkspace",
