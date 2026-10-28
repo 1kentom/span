@@ -7,6 +7,7 @@ import type { FeedItem } from "../../lib/agent-session";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
 import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
 import { urlRecordText } from "../../lib/agent-url-request";
+import { handoffDivider } from "../../lib/agent-handoff";
 import { EditsBypassNote, ErrorCard, Notice, StopCard } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
 import { DelegationCard } from "./DelegationCard";
@@ -40,6 +41,14 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           <Show when={!(item() as Extract<FeedItem, { kind: "user" }>).steered && a.sentNowIds().has(item().id)}>
             <div class="agent-steer-tag"><Icon name="arrow-right4" size={11} /><span>Sent now</span><span class="agent-steer-note"> · interrupted the current step</span></div>
           </Show>
+          <Show when={(item() as Extract<FeedItem, { kind: "user" }>).context}>
+            {(context) => (
+              <details class="agent-summary agent-context-sent">
+                <summary><Icon name="arrow-right4" size={11} /><span>Context sent</span><span class="agent-steer-note"> · carried over from the previous agent</span></summary>
+                <pre class="agent-context-text">{context()}</pre>
+              </details>
+            )}
+          </Show>
           {message().text}
           <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.setViewing(attachment.id)} />
         </div>
@@ -60,6 +69,22 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       </Match>
       <Match when={item().kind === "note"}>
         <Notice text={message().text} />
+      </Match>
+      <Match when={item().kind === "handoff"}>
+        {(() => {
+          const switched = () => item() as Extract<FeedItem, { kind: "handoff" }>;
+          const view = () => handoffDivider(switched().from, switched().to, switched().carried);
+          return (
+            <div class="agent-handoff" role="separator" aria-label={view().text}>
+              <div class="sb-notice" aria-hidden="true">
+                <span class="sb-rule" />
+                <span class="sb-ellipsis">{view().title}</span>
+                <span class="sb-rule" />
+              </div>
+              <p class="sb-fine agent-handoff-note" aria-hidden="true">{view().note}</p>
+            </div>
+          );
+        })()}
       </Match>
       <Match when={item().kind === "signin"}>
         <UrlRecordLine record={item() as Extract<FeedItem, { kind: "signin" }>} />
