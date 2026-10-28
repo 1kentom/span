@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { AnimatedLogo } from "../AnimatedLogo";
 import { BrandIcon } from "../BrandIcon";
-import { Icon } from "../Icon";
+import { Icon, MenuIcon } from "../Icon";
 import type { AgentUpdate_Serialize as AgentUpdate } from "../../bindings";
 import type { FoundAgent, PresetRow, RegistryAgent } from "./types";
 import { UpdateBadge } from "./UpdateBadge";
@@ -29,6 +29,11 @@ type ConnectScreenProps = {
   customDraft?: { command: string };
   /** Copies a shown launch command. Without it the browser clipboard is used. */
   onCopyCommand?: (command: string) => unknown;
+  /**
+   * Asks to remove an installed agent (`uninstall` also deletes its managed files). The request only opens the
+   * confirmation; nothing is removed here. Without it the manage menu has no removal entries.
+   */
+  onRemove?: (id: string, uninstall: boolean) => void;
 };
 
 /**
@@ -78,6 +83,11 @@ export function ConnectScreen(props: ConnectScreenProps) {
     if (value) props.onCustom(value);
   };
   const updateFor = (id: string) => props.updates?.find((update) => update.id === id);
+  const [managing, setManaging] = createSignal<string>();
+  const remove = (id: string, uninstall: boolean) => {
+    setManaging(undefined);
+    props.onRemove?.(id, uninstall);
+  };
   return (
     <section class="sb-connect" aria-labelledby="sb-connect-title">
       <header class="sb-hero">
@@ -91,14 +101,50 @@ export function ConnectScreen(props: ConnectScreenProps) {
           <div class="sb-eyebrow">Found on this computer</div>
           <For each={props.found}>
             {(agent) => (
-              <div class="sb-agent-row">
-                <BrandIcon id={agent.id} name={agent.name} size={18} />
-                <span class="sb-agent-text">
-                  <span class="sb-agent-name">{agent.name}</span>
-                  <Show when={agent.subtitle}><span class="sb-sub">{agent.subtitle}</span></Show>
-                  <UpdateBadge update={updateFor(agent.id)} />
-                </span>
-                <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${agent.name}`} onClick={() => props.onConnect(agent.id)}>Connect</button>
+              <div class="sb-found-entry" data-agent-id={agent.id}>
+                <div class="sb-agent-row">
+                  <BrandIcon id={agent.id} name={agent.name} size={18} />
+                  <span class="sb-agent-text">
+                    <span class="sb-agent-name">{agent.name}</span>
+                    <span class="sb-sub sb-installed-line">
+                      <Icon name="TickCircle" size={11} />
+                      <span>Installed{agent.subtitle ? ` · ${agent.subtitle}` : ""}</span>
+                    </span>
+                    <UpdateBadge update={updateFor(agent.id)} />
+                  </span>
+                  <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${agent.name}`} onClick={() => props.onConnect(agent.id)}>Connect</button>
+                  <Show when={props.onRemove || props.onCheckUpdates}>
+                    <button
+                      type="button"
+                      class="sb-icon-btn sb-found-manage"
+                      aria-label={`Manage ${agent.name}`}
+                      aria-expanded={managing() === agent.id}
+                      onClick={() => setManaging((open) => (open === agent.id ? undefined : agent.id))}
+                    >
+                      <Icon name="3DotsMore" size={14} />
+                    </button>
+                  </Show>
+                </div>
+                <Show when={managing() === agent.id}>
+                  <div class="agent-row-management sb-found-management">
+                    <Show when={props.onRemove}>
+                      <button type="button" onClick={() => remove(agent.id, false)}>
+                        <Icon name="CloseCircle" size={14} />
+                        Remove from Span
+                      </button>
+                      <button type="button" onClick={() => remove(agent.id, true)}>
+                        <MenuIcon name="trash" size={14} />
+                        Uninstall managed adapter
+                      </button>
+                    </Show>
+                    <Show when={props.onCheckUpdates}>
+                      <button type="button" disabled={props.checkingUpdates} onClick={() => { setManaging(undefined); props.onCheckUpdates?.(); }}>
+                        <Icon name="Refresh2" size={14} />
+                        Check for updates
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
               </div>
             )}
           </For>

@@ -110,8 +110,9 @@ describe("agent panel with a workbench", () => {
     const views: AttachmentTabView[] = [];
     const host = mount(() => <AgentPanel workspacePath="/w" workspaceGeneration={1} onOpenAttachment={(view) => views.push(view)} />);
     await tick(); await tick();
-    const codex = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Codex"));
-    if (!codex) return expect.fail("the curated Codex entry is missing");
+    // An installed curated agent has one row, under Found on this computer.
+    const codex = host.querySelector<HTMLButtonElement>("[aria-label='Connect codex-acp']");
+    if (!codex) return expect.fail("the installed Codex row is missing");
     codex.click();
     await tick();
     mocks.emit({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] }, { kind: "session", sessionId: "s1" } as AgentEvent);

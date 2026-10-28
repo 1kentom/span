@@ -182,6 +182,11 @@
 .sb-agent-name { font-size: 12.5px; color: var(--sb-fg); }
 .sb-agent-text .sb-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-agent-row .sb-bar { margin-left: 28px; flex: none; }
+/* An installed agent: one row with the quiet installed check, Connect, and a manage menu under it. */
+.sb-installed-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sb-installed-line > .icon { flex: none; color: var(--sb-dim); }
+.sb-installed-line > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-found-manage { width: 24px; height: 24px; margin-left: -4px; }
 .sb-custom { border: 1px dashed var(--sb-control-border); border-radius: 7px; }
 .sb-custom-toggle { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; background: none; color: var(--sb-dim); text-align: left; cursor: pointer; }
 .sb-custom-form { display: flex; gap: 6px; padding: 0 10px 10px; }

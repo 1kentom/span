@@ -362,7 +362,6 @@ export function AgentPanel(props: AgentPanelProps) {
                 catalog={
                   <AgentCatalog
                     rows={a.catalogRows()}
-                    others={a.otherInstalled()}
                     search={a.catalogSearch()}
                     onSearch={a.setCatalogSearch}
                     installingIds={a.installingIds()}
@@ -375,7 +374,6 @@ export function AgentPanel(props: AgentPanelProps) {
                       const command = a.pickCatalog(row);
                       if (command) setCustomDraft({ command });
                     }}
-                    onRequestRemoval={props.removeAgent ? a.requestRemoval : undefined}
                     removal={a.removal()}
                     removalBlock={a.removalBlock()}
                     removalConnected={Boolean(a.state().sessionId) && a.agentId() === a.removal()?.entry.id}
@@ -385,6 +383,14 @@ export function AgentPanel(props: AgentPanelProps) {
                 }
                 customDraft={customDraft()}
                 onCopyCommand={(command) => api.writeClipboard(command)}
+                onRemove={
+                  props.removeAgent
+                    ? (id, uninstall) => {
+                        const entry = a.installed().find((agent) => agent.id === id);
+                        if (entry) a.requestRemoval(entry, uninstall);
+                      }
+                    : undefined
+                }
                 found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${leaf(entry.launch.command)}` }))}
                 presets={presetRows()}
                 updates={agentUpdates()}
