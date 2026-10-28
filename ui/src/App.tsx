@@ -289,8 +289,9 @@ export default function App() {
   createEffect(on([w.workspaceGeneration, configuredZoomLevel], ([, level], previous) => { if (level !== null) applyZoom(() => zoom.setLevel(level)); else if (previous && previous[1] !== null) applyZoom(zoom.reset); }, { defer: true }));
   createEffect(on(w.workspaceGeneration, () => { setFileAction(undefined); fileDrag.cancel(); setContext(undefined); }, { defer: true }));
   // One check per launch, only when the user turned it on in their own settings file (ADR 0004).
+  // It waits for the restored session to be on screen so the network calls never compete with startup.
   let launchChecked = false;
-  createEffect(() => { if (isDesktop && !launchChecked && w.settings().updates?.checkOnLaunch) { launchChecked = true; void checkAllUpdates(); } });
+  createEffect(() => { if (isDesktop && settingsApplied() && !launchChecked && w.settings().updates?.checkOnLaunch) { launchChecked = true; afterNextPaint(() => void checkAllUpdates()); } });
   let menuSync = 0;
   createEffect(() => { const keys = bindings(); const recording = recordingShortcut(); if (!isDesktop || !nativeReady()) return; const generation = ++menuSync; void api.syncNativeMenu(recording ? {} : nativeMenuBindings(keys)).then(owned => { if (!disposed && generation === menuSync) setNativeActions(new Set(owned as ActionId[])); }).catch(error => w.setError(String(error))); });
 
