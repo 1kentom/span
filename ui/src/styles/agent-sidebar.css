@@ -367,3 +367,9 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .agent-steered-label { margin-bottom: 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--sb-accent-fg); }
 .agent-footer .sb-hints { padding: 3px 2px 0; }
 .sb-session:has(.sb-confirm) { flex-wrap: wrap; }
+
+/* Narrow panel: the Following pill collapses to the icon-only button (state stays visible through the accent fill). */
+@container agent-header (max-width: 380px) {
+  .sb-follow.on { width: 28px; padding: 0; }
+  .sb-follow.on > span:not(.icon) { display: none; }
+}

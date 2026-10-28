@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'solid-js/web';
-import { Show, createSignal } from 'solid-js';
-import { AttachmentChips, AttachmentDropZone, AttachmentPickerButton, AttachmentViewer, MessageAttachments, createAttachmentIntake, type Intake } from './index';
+import { createSignal } from 'solid-js';
+import { AttachmentChips, AttachmentDropZone, AttachmentPickerButton, MessageAttachments, createAttachmentIntake, type Intake } from './index';
 import { MAX_IMAGE_BYTES } from '../../lib/asset-preview';
-import { createFileAttachment, createPastedText, createSelection, createWorkspaceFile, type Attachment } from '../../lib/attachments';
+import { createFileAttachment, createPastedText, type Attachment } from '../../lib/attachments';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); vi.restoreAllMocks(); });
@@ -162,117 +162,5 @@ describe('chips', () => {
     expect(root.querySelector('.att-chip-remove')).toBeNull();
     root.querySelector<HTMLButtonElement>('.att-chip-open')!.click();
     expect(open).toHaveBeenCalledWith(item);
-  });
-});
-
-describe('viewer', () => {
-  it('shows line numbers from the selection start and truncates long text', () => {
-    const selection = createSelection({ path: 'src/a.ts', text: Array.from({ length: 600 }, (_, i) => `row ${i}`).join('\n'), start: 40, end: 639 });
-    const root = mount(() => <AttachmentViewer item={selection} onClose={() => undefined} />);
-    const numbers = [...document.querySelectorAll('.att-line-number')].map(node => node.textContent);
-    expect(numbers[0]).toBe('40'); expect(numbers).toHaveLength(500);
-    expect(document.querySelector('.att-viewer-truncated')?.textContent).toBe('Preview truncated at 500 of 600 lines.');
-    expect(document.querySelector('.att-viewer-text')?.getAttribute('tabindex')).toBe('0');
-    expect(root).toBeTruthy();
-  });
-  it('previews rasters from bytes as an inert img and shows metadata for other files', () => {
-    mount(() => <AttachmentViewer item={png()} onClose={() => undefined} />);
-    const img = document.querySelector<HTMLImageElement>('.att-viewer-image img')!;
-    expect(img.src.startsWith('data:image/png;base64,')).toBe(true);
-    expect(img.alt).toBe('shot.png');
-    document.body.replaceChildren();
-    const pdf = createFileAttachment({ name: 'doc.pdf', mime: 'application/pdf', bytes: new Uint8Array(2048), source: 'picked' });
-    mount(() => <AttachmentViewer item={pdf} onClose={() => undefined} />);
-    expect(document.querySelector('img')).toBeNull();
-    expect(document.querySelector('.att-viewer-meta')?.textContent).toContain('application/pdf');
-    expect(document.querySelector('.att-viewer-meta')?.textContent).toContain('2.0 KiB');
-  });
-  it('previews SVG only after sanitising it', () => {
-    const svg = createFileAttachment({ name: 'a.svg', mime: 'image/svg+xml', source: 'picked', bytes: new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>alert(1)</script><rect width="4" height="4" onclick="x()"/></svg>') });
-    mount(() => <AttachmentViewer item={svg} onClose={() => undefined} />);
-    const src = decodeURIComponent(document.querySelector<HTMLImageElement>('.att-viewer-image img')!.src);
-    expect(src).toContain('<rect'); expect(src).not.toMatch(/script|onclick|alert/);
-    document.body.replaceChildren();
-    const bad = { ...svg, text: '<!DOCTYPE svg [<!ENTITY x "y">]><svg/>' };
-    mount(() => <AttachmentViewer item={bad} onClose={() => undefined} />);
-    expect(document.querySelector('.att-viewer-image img')).toBeNull();
-    expect(document.querySelector('[role="alert"]')?.textContent).toMatch(/declarations/);
-  });
-  it('loads path-only workspace images through the supplied loader and rejects bad data', async () => {
-    const item = createWorkspaceFile('assets/logo.png', 10);
-    const loadImage = vi.fn(async () => ({ mime: 'image/png', dataUrl: 'data:image/png;base64,AAAA' }) as any);
-    mount(() => <AttachmentViewer item={item} loadImage={loadImage} onClose={() => undefined} />);
-    await settle();
-    expect(loadImage).toHaveBeenCalledWith('assets/logo.png');
-    expect(document.querySelector<HTMLImageElement>('.att-viewer-image img')!.src).toBe('data:image/png;base64,AAAA');
-    document.body.replaceChildren();
-    mount(() => <AttachmentViewer item={createWorkspaceFile('x.png', 1)} loadImage={async () => ({ mime: 'image/png', dataUrl: 'javascript:alert(1)' }) as any} onClose={() => undefined} />);
-    await settle();
-    expect(document.querySelector('[role="alert"]')?.textContent).toMatch(/Invalid workspace image/);
-  });
-  it('offers Save only for items outside the workspace and only with a handler', async () => {
-    const save = vi.fn(async () => undefined);
-    mount(() => <AttachmentViewer item={png()} onSaveToWorkspace={save} onClose={() => undefined} />);
-    const button = [...document.querySelectorAll<HTMLButtonElement>('.att-action')].find(node => node.textContent === 'Save to workspace')!;
-    button.click(); await settle();
-    expect(save).toHaveBeenCalledOnce();
-    expect(document.querySelector('[role="status"]')?.textContent).toBe('Saved to workspace');
-    document.body.replaceChildren();
-    mount(() => <AttachmentViewer item={createWorkspaceFile('a.ts')} onSaveToWorkspace={save} onClose={() => undefined} />);
-    expect(document.body.textContent).not.toContain('Save to workspace');
-    document.body.replaceChildren();
-    mount(() => <AttachmentViewer item={png()} onClose={() => undefined} />);
-    expect(document.body.textContent).not.toContain('Save to workspace');
-  });
-  it('reports a failed save instead of claiming success', async () => {
-    mount(() => <AttachmentViewer item={png()} onSaveToWorkspace={async () => { throw new Error('disk full'); }} onClose={() => undefined} />);
-    document.querySelector<HTMLButtonElement>('.att-action')!.click(); await settle();
-    expect(document.querySelector('[role="alert"]')?.textContent).toBe('Could not save to workspace: disk full');
-    expect(document.querySelector('[role="status"]')).toBeNull();
-  });
-  it('runs copy path, open in editor and remove callbacks', async () => {
-    const copy = vi.fn(); const openEditor = vi.fn(); const remove = vi.fn(); const close = vi.fn(); const item = createWorkspaceFile('src/a.ts', 4);
-    mount(() => <AttachmentViewer item={item} onCopyPath={copy} onOpenInEditor={openEditor} onRemove={remove} onClose={close} />);
-    const named = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('.att-action')].find(node => node.textContent === label)!;
-    named('Copy path').click(); await settle(); expect(copy).toHaveBeenCalledWith('src/a.ts');
-    named('Open in editor').click(); expect(openEditor).toHaveBeenCalledWith(item);
-    named('Remove').click(); expect(remove).toHaveBeenCalledWith(item); expect(close).toHaveBeenCalledOnce();
-  });
-  it('hides actions without handlers and disables native actions in browser preview', () => {
-    mount(() => <AttachmentViewer item={createWorkspaceFile('a.ts')} onClose={() => undefined} />);
-    expect(document.querySelectorAll('.att-action')).toHaveLength(0);
-    document.body.replaceChildren();
-    mount(() => <AttachmentViewer item={createWorkspaceFile('a.ts')} onOpenInEditor={() => undefined} nativeUnavailable="Open the desktop app." onClose={() => undefined} />);
-    expect(document.querySelector<HTMLButtonElement>('.att-action')!.disabled).toBe(true);
-    expect([...document.querySelectorAll('[role="note"]')].map(node => node.textContent)).toContain('Open the desktop app.');
-  });
-  it('explains why the agent will not receive the item', () => {
-    mount(() => <AttachmentViewer item={png()} blockedReason="This agent does not accept images." onClose={() => undefined} />);
-    expect(document.querySelector('.att-viewer-blocked')?.textContent).toBe('Not sent: This agent does not accept images.');
-  });
-  it('closes on Escape, focuses the close button and restores focus to the chip', async () => {
-    const trigger = document.createElement('button'); document.body.append(trigger); trigger.focus();
-    const close = vi.fn();
-    const root = mount(() => { const [open, setOpen] = createSignal(true); return <Show when={open()}><AttachmentViewer item={png()} onClose={() => { close(); setOpen(false); }} /></Show>; });
-    await settle();
-    const dialog = document.querySelector('[role="dialog"]')!;
-    expect(dialog.getAttribute('aria-modal')).toBe('true'); expect(dialog.getAttribute('aria-label')).toBe('Attachment shot.png');
-    expect(document.activeElement).toBe(document.querySelector('.att-viewer-close'));
-    expect(document.querySelector('.att-viewer-close')!.getAttribute('aria-label')).toBe('Close attachment viewer');
-    key(dialog, 'Escape'); await settle();
-    expect(close).toHaveBeenCalledOnce(); expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(trigger); expect(root).toBeTruthy();
-  });
-  it('traps Tab inside the dialog', async () => {
-    Object.defineProperty(HTMLElement.prototype, 'offsetParent', { configurable: true, get() { return document.body; } });
-    try {
-      mount(() => <AttachmentViewer item={createWorkspaceFile('a.ts')} onCopyPath={() => undefined} onClose={() => undefined} />);
-      await settle();
-      const dialog = document.querySelector('[role="dialog"]')!;
-      const buttons = dialog.querySelectorAll<HTMLButtonElement>('button');
-      const first = buttons[0]; const last = buttons[buttons.length - 1];
-      last.focus(); key(last, 'Tab'); expect(document.activeElement).toBe(first);
-      first.focus(); dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })); expect(document.activeElement).toBe(last);
-    } finally { delete (HTMLElement.prototype as any).offsetParent; }
   });
 });

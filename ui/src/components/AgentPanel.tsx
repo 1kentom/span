@@ -361,25 +361,51 @@ export function AgentPanel(props: AgentPanelProps) {
       </Show>
       <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
       <Show when={a.viewingItem()}>
-        {(item) => (
-          <AttachmentViewer
-            item={item()}
-            onClose={() => {
-              a.setViewing(undefined);
-              a.focusPrompt();
-            }}
-            blockedReason={a.viewingInComposer() ? a.blocked().find((entry) => entry.item.id === item().id)?.reason ?? attachmentBlockReason(item(), a.caps()) : undefined}
-            nativeUnavailable={isDesktop ? undefined : NATIVE_UNAVAILABLE}
-            onRemove={a.viewingInComposer() ? a.removeAttachment : undefined}
-            onSaveToWorkspace={a.saveAttachment}
-            onCopyPath={(path) => api.writeClipboard(path)}
-            onOpenInEditor={(attachment) => {
-              if (attachment.path) a.openInEditor(attachment.path);
-              a.setViewing(undefined);
-            }}
-            loadImage={(path) => api.readImage(path)}
-          />
-        )}
+        {(item) => {
+          const closeViewer = () => {
+            a.setViewing(undefined);
+            a.focusPrompt();
+          };
+          const message = () => a.feed().find((entry) => entry.kind === "user" && entry.attachments?.some((attachment) => attachment.id === item().id));
+          /** Sent-message attachments only. Time is omitted because feed items carry no timestamp. */
+          const source = () => {
+            if (a.viewingInComposer() || !message()) return undefined;
+            const session = a.state().sessionTitle;
+            const name = hasAgent() ? label() : undefined;
+            if (!session && !name) return undefined;
+            return { agent: hasAgent() ? { id: brand().id, name: brand().name } : undefined, verb: session ? "Sent in" : "Sent to", session: session || name };
+          };
+          const showInSession = () => {
+            const target = message();
+            if (!target) return;
+            a.setViewing(undefined);
+            a.setPinned(false);
+            requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
+          };
+          return (
+            <AttachmentViewer
+              item={item()}
+              onClose={closeViewer}
+              blockedReason={a.viewingInComposer() ? a.blocked().find((entry) => entry.item.id === item().id)?.reason ?? attachmentBlockReason(item(), a.caps()) : undefined}
+              nativeUnavailable={isDesktop ? undefined : NATIVE_UNAVAILABLE}
+              source={source()}
+              onShowInSession={a.viewingInComposer() || !message() ? undefined : showInSession}
+              onShowSessionList={() => {
+                a.setViewing(undefined);
+                a.setView("history");
+                void a.loadSessions();
+              }}
+              onRemove={a.viewingInComposer() ? a.removeAttachment : undefined}
+              onSaveToWorkspace={a.saveAttachment}
+              onCopyPath={(path) => api.writeClipboard(path)}
+              onOpenInEditor={(attachment) => {
+                if (attachment.path) a.openInEditor(attachment.path);
+                a.setViewing(undefined);
+              }}
+              loadImage={(path) => api.readImage(path)}
+            />
+          );
+        }}
       </Show>
       <DropOverlay visible={a.intake.dragging()} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
       <EditorToast name={a.toast()} onDismiss={a.clearToast} />

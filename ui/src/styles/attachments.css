@@ -40,6 +40,7 @@
 .att-viewer-kind{padding:1px 6px;border-radius:4px;background:var(--pill);color:var(--dim);font-size:10.5px;flex:none}
 .att-viewer-close{margin-left:auto;width:26px;height:26px;display:grid;place-items:center;border-radius:5px;color:var(--dim);flex:none}
 .att-viewer-close:hover{background:var(--pill);color:var(--text)}
+.att-viewer-stage{display:flex;flex:0 1 auto;height:min(62vh,520px);min-height:260px;min-width:0;overflow:hidden}
 .att-viewer-body{flex:1;min-height:120px;overflow:auto;background:var(--field)}
 .att-viewer-image{display:flex;align-items:center;justify-content:center;min-height:220px;max-height:60vh;padding:16px;overflow:auto;background-color:var(--field)}
 .att-viewer-image img{display:block;max-width:100%;max-height:calc(60vh - 32px);object-fit:contain}

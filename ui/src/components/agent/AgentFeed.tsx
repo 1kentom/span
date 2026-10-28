@@ -17,7 +17,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
   return (
     <Switch>
       <Match when={item().kind === "user"}>
-        <div class="agent-message user" classList={{ steered: Boolean((item() as Extract<FeedItem, { kind: "user" }>).steered) }}>
+        <div class="agent-message user" data-feed-id={item().id} classList={{ steered: Boolean((item() as Extract<FeedItem, { kind: "user" }>).steered) }}>
           <Show when={(item() as Extract<FeedItem, { kind: "user" }>).steered}>
             <div class="agent-steered-label">Steered</div>
           </Show>
