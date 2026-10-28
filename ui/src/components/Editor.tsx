@@ -9,6 +9,7 @@ import { tags } from "@lezer/highlight";
 import type { BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEdit } from "../bindings";
 import { loadLanguage, resolveLanguageId } from "../editor/languages";
 import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/search-panel";
+import { lspExtension, type LspBinding } from "../lib/lsp-codemirror";
 import "../styles/editor.css";
 
 export interface EditorEdit {
@@ -71,6 +72,7 @@ export interface EditorProps {
   onRejectProposal?: (proposalId: string) => void;
   onCommands?: (commands: EditorCommands | undefined) => void;
   onFormat?: () => void;
+  lsp?: LspBinding;
   clipboard?: ClipboardPort;
 }
 
@@ -419,6 +421,7 @@ export default function Editor(props: EditorProps) {
       language.of([]),
       appearance.of(EditorView.theme({}, { dark: props.theme !== "light" })),
       syntaxHighlighting(codeHighlighting), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      props.lsp ? lspExtension(props.buffer.path, props.lsp) : [],
       keymap.of([
         { key: "Mod-z", run: (editor) => { if (props.onUndo) { props.onUndo(); return true; } return undo(editor); }, preventDefault: true },
         { key: "Mod-Shift-z", run: (editor) => { if (props.onRedo) { props.onRedo(); return true; } return redo(editor); }, preventDefault: true },

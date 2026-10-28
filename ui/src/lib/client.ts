@@ -2,6 +2,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
+import type { LspPort } from './lsp-client';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import { createPreviewSettings } from './preview-settings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
@@ -465,4 +466,23 @@ export const api = {
     agentListeners.add(listener);
     return () => { agentListeners.delete(listener); };
   },
+};
+
+const lspUnavailable = (): never => { throw { kind: 'unsupported', message: 'Language servers need the span desktop app.' }; };
+const noListener = async (): Promise<() => void> => () => undefined;
+
+/** Language server commands and events. Browser preview has none, so requests are unsupported and listeners are inert. */
+export const lspPort: LspPort = {
+  completion: (path, position, trigger, requestId) => isDesktop ? commands.lspCompletion(path, position, trigger, requestId) : lspUnavailable(),
+  hover: (path, position, requestId) => isDesktop ? commands.lspHover(path, position, requestId) : lspUnavailable(),
+  definition: (path, position, requestId) => isDesktop ? commands.lspDefinition(path, position, requestId) : lspUnavailable(),
+  format: (path, range, requestId) => isDesktop ? commands.lspFormat(path, range, requestId) : lspUnavailable(),
+  cancel: requestId => isDesktop ? commands.lspCancel(requestId) : Promise.resolve(null),
+  install: server => isDesktop ? commands.lspInstall(server) : lspUnavailable(),
+  restart: server => isDesktop ? commands.lspRestart(server) : lspUnavailable(),
+  status: () => isDesktop ? commands.lspStatus() : Promise.resolve([]),
+  onDiagnostics: listener => isDesktop ? events.diagnosticsPublished.listen(event => listener(event.payload)) : noListener(),
+  onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : noListener(),
+  onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : noListener(),
+  onError: listener => isDesktop ? events.languageServerError.listen(event => listener(event.payload)) : noListener(),
 };
