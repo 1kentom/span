@@ -873,6 +873,18 @@ requestKind: string } |
  */
 { kind: "detached"; lead: SessionKey } | 
 /**
+ *  Span is starting an installed agent the lead delegated to. Followed
+ *  by one `StartFinished` for the same lead and agent.
+ */
+{ kind: "starting"; lead: SessionKey; agentId: string } | 
+/**
+ *  The start a `Starting` announced ended. On success `connection_id`
+ *  and `agent_name` are set and `launched` says whether this delegation
+ *  started the process (false when another request had started it).
+ *  On failure `reason` is from the closed set and `detail` says why.
+ */
+{ kind: "startFinished"; lead: SessionKey; agentId: string; connectionId?: string | null; agentName?: string | null; launched: boolean; reason?: FailureReason | null; detail?: string | null } | 
+/**
  *  Delegation is enabled but this connection's sessions do not get the
  *  tools, with the reason to show the user.
  */
@@ -909,6 +921,18 @@ requestKind: string } |
  *  turned off); its children were cancelled.
  */
 { kind: "detached"; lead: SessionKey } | 
+/**
+ *  Span is starting an installed agent the lead delegated to. Followed
+ *  by one `StartFinished` for the same lead and agent.
+ */
+{ kind: "starting"; lead: SessionKey; agentId: string } | 
+/**
+ *  The start a `Starting` announced ended. On success `connection_id`
+ *  and `agent_name` are set and `launched` says whether this delegation
+ *  started the process (false when another request had started it).
+ *  On failure `reason` is from the closed set and `detail` says why.
+ */
+{ kind: "startFinished"; lead: SessionKey; agentId: string; connectionId: string | null; agentName: string | null; launched: boolean; reason: FailureReason | null; detail: string | null } | 
 /**
  *  Delegation is enabled but this connection's sessions do not get the
  *  tools, with the reason to show the user.

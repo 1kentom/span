@@ -21,7 +21,7 @@ pub use result::{
 pub use server::{tool_definitions, ToolServer, MCP_PROTOCOL_VERSIONS, SERVER_NAME};
 pub use tasks::DecisionRecord;
 
-use crate::{AgentFeatures, InstalledAgent, SessionKey};
+use crate::{AgentFeatures, BackgroundAgents, InstalledAgent, SessionKey};
 use serde::{Deserialize, Serialize};
 use span_core::CoreWorkspace;
 use specta::Type;
@@ -42,6 +42,10 @@ pub struct ToolPolicy {
     pub progress_interval_seconds: u64,
     /// Largest image sent inline to a lead that accepts images. Default 256 KiB.
     pub image_preview_bytes: usize,
+    /// Longest wait, in policy seconds, for an installed agent Span starts
+    /// for `delegate`. Default 25: with the child's `session/new` (at most
+    /// 30 s) the call stays near Codex's 60 s default MCP tool timeout.
+    pub launch_timeout_seconds: u64,
     /// Length of one policy second. One real second in production; tests
     /// shorten it to run a minutes long child in seconds.
     pub second: Duration,
@@ -55,6 +59,7 @@ impl Default for ToolPolicy {
             max_wait_seconds: 30,
             progress_interval_seconds: 5,
             image_preview_bytes: 256 * 1024,
+            launch_timeout_seconds: 25,
             second: Duration::from_secs(1),
         }
     }
@@ -115,6 +120,22 @@ pub enum DelegationEvent {
     /// The lead's server stopped (the session ended or delegation was
     /// turned off); its children were cancelled.
     Detached { lead: SessionKey },
+    /// Span is starting an installed agent the lead delegated to. Followed
+    /// by one `StartFinished` for the same lead and agent.
+    Starting { lead: SessionKey, agent_id: String },
+    /// The start a `Starting` announced ended. On success `connection_id`
+    /// and `agent_name` are set and `launched` says whether this delegation
+    /// started the process (false when another request had started it).
+    /// On failure `reason` is from the closed set and `detail` says why.
+    StartFinished {
+        lead: SessionKey,
+        agent_id: String,
+        connection_id: Option<String>,
+        agent_name: Option<String>,
+        launched: bool,
+        reason: Option<FailureReason>,
+        detail: Option<String>,
+    },
     /// Delegation is enabled but this connection's sessions do not get the
     /// tools, with the reason to show the user.
     Unavailable {
@@ -177,9 +198,12 @@ pub type DelegationEventSink = Arc<dyn Fn(DelegationEvent) + Send + Sync>;
 pub struct ToolServerConfig {
     pub workspace: Arc<Mutex<CoreWorkspace>>,
     pub policy: ToolPolicy,
-    /// Installed but not connected agents, listed for the lead. Starting
-    /// them stays a user action.
+    /// Installed agents, listed for the lead. With `background`, one that
+    /// is not running is started when the lead delegates to it.
     pub installed: Vec<InstalledAgent>,
+    /// Starts installed agents on demand. Without it, an installed agent
+    /// that is not running cannot be delegated to.
+    pub background: Option<BackgroundAgents>,
     pub events: Option<DelegationEventSink>,
 }
 

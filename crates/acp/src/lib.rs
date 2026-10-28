@@ -1,6 +1,7 @@
 //! Native ACP subprocess client. The agent runs with the user's OS privileges.
 //! ACP filesystem callbacks use editor buffers and require review before edits apply.
 mod adapter;
+mod background;
 mod compatibility;
 mod launch;
 mod managed;
@@ -12,6 +13,7 @@ pub mod tools;
 mod types;
 pub mod update;
 pub use adapter::agent_presets;
+pub use background::{BackgroundAgents, BackgroundState, Ensured, LaunchFn, LaunchFuture};
 pub use managed::remove_installed_agent;
 pub use manager::{
     AgentControl, ConnectionInfo, PendingKind, PendingRequest, PromptError, SessionActivity,

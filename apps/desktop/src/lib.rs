@@ -34,6 +34,9 @@ pub struct DesktopState {
     pub sessions: span_acp::SessionManager,
     /// span-agents servers of the user's lead sessions (ADR 0003).
     pub leads: span_acp::tools::LeadServers,
+    /// Installed agents Span started in the background (on demand for
+    /// delegation), created on first use. See `agents::background`.
+    pub background: Arc<Mutex<Option<span_acp::BackgroundAgents>>>,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
@@ -122,6 +125,8 @@ async fn open_workspace(
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
     agents::disconnect_and_wait(&state).await?;
+    // Background agents run in the old folder; they end with it.
+    agents::background(&state).shutdown();
     services::cancel_all_formatter_jobs(&state);
     let (result, settings, workspace) = tauri::async_runtime::spawn_blocking(move || {
         let result = workspace.workspace();
@@ -1010,6 +1015,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app.state::<DesktopState>();
             let _ = agents::disconnect(&state);
+            agents::background(&state).shutdown();
             state.file_index.shutdown();
             // Bounded: a server that ignores shutdown is killed, never waited on forever.
             app.state::<language_servers::LspService>()

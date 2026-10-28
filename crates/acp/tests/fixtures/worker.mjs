@@ -10,7 +10,8 @@
 //   stubborn            never finish and ignore session/cancel for this session
 //   servers             answer with the JSON mcpServers this session received in session/new
 //   mcp <url> <token> <json>  act as a lead: POST <json> to the MCP server, answer with the body
-// Flags: --name=<n>, --mcp-http, --mcp-sse, --image, --reject-session (session/new fails).
+// Flags: --name=<n>, --mcp-http, --mcp-sse, --image, --reject-session (session/new fails),
+//   --auth-required (session/new answers -32000 Authentication required).
 import readline from 'node:readline';
 const input = readline.createInterface({ input: process.stdin });
 const flag = name => process.argv.includes(name);
@@ -114,6 +115,7 @@ input.on('line', line => {
     };
     send({ id: message.id, result: { protocolVersion: 1, agentCapabilities, authMethods: [], agentInfo: { name: agentName, version: '1.0.0' } } });
   } else if (message.method === 'session/new') {
+    if (flag('--auth-required')) return send({ id: message.id, error: { code: -32000, message: 'Authentication required' } });
     if (flag('--reject-session')) return send({ id: message.id, error: { code: -32603, message: 'session refused by fixture' } });
     cwd = message.params.cwd;
     const sessionId = `${agentName}-${++sessions}`;

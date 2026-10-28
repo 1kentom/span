@@ -201,7 +201,8 @@ describe("delegation in the sidebar", () => {
   it("shows the status line when attached and the reason when the agent cannot get the tools", async () => {
     const { host } = await composer();
     mocks.emit({ kind: "delegation", event: { kind: "attached", lead, agentName: "Agent" } });
-    expect(text(host.querySelector(".agent-delegation-line"))).toBe("Delegation on");
+    expect(host.querySelector(".agent-delegation-line")).toBeNull();
+    expect(host.textContent).not.toContain("Delegation on");
     mocks.emit({ kind: "delegation", event: { kind: "detached", lead } }, { kind: "delegation", event: { kind: "unavailable", connectionId: "c1", agentName: "Agent", reason: "This agent does not offer MCP over HTTP" } });
     expect(text(host.querySelector(".agent-delegation-line"))).toBe("Delegation unavailable: This agent does not offer MCP over HTTP");
     expect(host.querySelector(".agent-delegation-line.warn")).not.toBeNull();
