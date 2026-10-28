@@ -537,10 +537,11 @@ export function createWorkbench() {
   }
   /** Direction names follow VS Code: "right" and "left" give side by side groups, "down" and "up" stacked ones. */
   type SplitDirection = "right" | "left" | "down" | "up";
-  function splitEditor(sourceGroup = activeGroup(), sourcePath?: string, direction: SplitDirection = "right") {
+  /** `sourcePath` null creates an empty group, undefined copies the source group's active file. */
+  function splitEditor(sourceGroup = activeGroup(), sourcePath?: string | null, direction: SplitDirection = "right") {
     if (groups().length >= 2) return;
     const source = groups().find(group => group.id === sourceGroup); if (!source) return;
-    const path = sourcePath ?? (source.active !== SETTINGS_TAB ? source.active : undefined); const id = nextGroupId++;
+    const path = sourcePath === null ? undefined : sourcePath ?? (source.active !== SETTINGS_TAB ? source.active : undefined); const id = nextGroupId++;
     const created = { id, tabs: path ? [path] : [], active: path };
     batch(() => {
       setSplitVertical(direction === "down" || direction === "up");
@@ -563,7 +564,12 @@ export function createWorkbench() {
   const zoneDirection = (zone: "left" | "right" | "top" | "bottom"): SplitDirection => zone === "top" ? "up" : zone === "bottom" ? "down" : zone;
   async function openInZone(path: string, group: number, zone: "center" | "left" | "right" | "top" | "bottom") {
     if (zone === "center") { await openFile(path, group); return; }
-    await openToSide(path, group, zoneDirection(zone));
+    const other = groups().find(item => item.id !== group);
+    if (other) { await openFile(path, other.id); return; }
+    if (!groups().some(item => item.id === group)) return;
+    // The file opens only in the new group, unlike Open to the Side which also keeps it in the source group.
+    splitEditor(group, null, zoneDirection(zone));
+    await openFile(path, activeGroup());
   }
   function moveTabToZone(path: string, fromGroup: number, toGroup: number, zone: "center" | "left" | "right" | "top" | "bottom", copy = false) {
     if (zone === "center") { moveTab(path, fromGroup, toGroup, copy); return; }
