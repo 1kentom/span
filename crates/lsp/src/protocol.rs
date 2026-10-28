@@ -140,6 +140,15 @@ impl Response {
             error: None,
         }
     }
+
+    pub fn error(id: RequestId, error: ResponseError) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id,
+            result: None,
+            error: Some(error),
+        }
+    }
 }
 
 impl Notification {
@@ -155,4 +164,19 @@ impl Notification {
         serde_json::to_value(self)
             .map_err(|e| LspError::Protocol(format!("Failed to serialize notification: {}", e)))
     }
+}
+
+impl ResponseError {
+    pub fn new(code: i64, message: String, data: Option<Value>) -> Self {
+        Self {
+            code,
+            message,
+            data,
+        }
+    }
+}
+
+// LSP standard error codes
+pub mod error_codes {
+    pub const METHOD_NOT_FOUND: i64 = -32601;
 }
