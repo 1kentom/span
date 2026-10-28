@@ -98,6 +98,9 @@ pub enum LspEvent {
     Error(LanguageServerError),
 }
 
+/// Servers that execute the project's own build code unless restricted.
+const PROJECT_CODE_SERVERS: [ServerId; 2] = [ServerId::RustAnalyzer, ServerId::Jdtls];
+
 pub type EventSink = Arc<dyn Fn(LspEvent) + Send + Sync>;
 
 pub fn tauri_sink(app: tauri::AppHandle) -> EventSink {
@@ -124,6 +127,8 @@ pub struct LspSettings {
     pub disabled: HashSet<ServerId>,
     pub java_home: Option<PathBuf>,
     pub node_path: Option<PathBuf>,
+    /// Let rust-analyzer and JDT LS run the project's own build code.
+    pub run_project_code: bool,
     pub tab_size: u32,
 }
 
@@ -134,6 +139,7 @@ impl Default for LspSettings {
             disabled: HashSet::new(),
             java_home: None,
             node_path: None,
+            run_project_code: false,
             tab_size: 2,
         }
     }
@@ -161,6 +167,7 @@ impl From<&Settings> for LspSettings {
                 .as_ref()
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
+            run_project_code: ls.run_project_code,
             tab_size: settings.tab_size,
         }
     }
@@ -341,6 +348,7 @@ impl LanguageServers {
         config: ServiceConfig,
     ) -> LspService {
         let manager = Manager::new(catalog::all_specs(), resolver, config.manager);
+        manager.set_options_provider(Arc::new(catalog::initialization_options));
         let (tx, rx) = mpsc::unbounded_channel();
         let service = Arc::new(Self {
             manager,
@@ -402,6 +410,7 @@ impl LanguageServers {
     pub fn workspace_changed(&self, root: PathBuf, settings: &Settings) {
         let new = LspSettings::from(settings);
         self.provisioner.configure(&new);
+        self.manager.set_run_project_code(new.run_project_code);
         let mut st = lock(&self.state);
         let mut keys: HashSet<(ServerId, PathBuf)> = st.states.keys().cloned().collect();
         keys.extend(st.docs.values().map(|d| (d.r.server, d.r.root.clone())));
@@ -431,6 +440,7 @@ impl LanguageServers {
     pub fn apply_settings(self: &Arc<Self>, settings: &Settings) {
         let new = LspSettings::from(settings);
         self.provisioner.configure(&new);
+        self.manager.set_run_project_code(new.run_project_code);
         let mut pending_install = Vec::new();
         {
             let mut st = lock(&self.state);
@@ -448,6 +458,18 @@ impl LanguageServers {
                     self.push(&mut st, Op::Stop { server });
                 } else if was && !now {
                     self.push(&mut st, Op::Resume { server });
+                }
+            }
+            if old.run_project_code != new.run_project_code {
+                // Running servers keep the options they were started with, so the two
+                // that execute project code are restarted with the new ones.
+                for server in PROJECT_CODE_SERVERS {
+                    let running = st.states.keys().any(|(s, _)| *s == server)
+                        || st.docs.values().any(|d| d.r.server == server);
+                    if running && !new.disabled.contains(&server) {
+                        Self::bump_epoch(&mut st, server);
+                        self.push(&mut st, Op::Restart { server });
+                    }
                 }
             }
             if new.auto_install && !old.auto_install {

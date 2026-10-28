@@ -1009,6 +1009,12 @@ export type LanguageServerSettings_Deserialize = {
 	javaHome?: string | null,
 	/**  Node.js executable used to run the npm based servers, instead of searching the host. */
 	nodePath?: string | null,
+	/**
+	 *  Let rust-analyzer and JDT LS run the project's own build code (build scripts,
+	 *  procedural macros, `cargo check` on save, Gradle and Maven import). Off by default
+	 *  because opening an untrusted project would otherwise execute its code.
+	 */
+	runProjectCode?: boolean,
 };
 
 /**  Language server behaviour, stored under the `languageServers` settings key. */
@@ -1027,6 +1033,12 @@ export type LanguageServerSettings_Serialize = {
 	javaHome: string | null,
 	/**  Node.js executable used to run the npm based servers, instead of searching the host. */
 	nodePath: string | null,
+	/**
+	 *  Let rust-analyzer and JDT LS run the project's own build code (build scripts,
+	 *  procedural macros, `cargo check` on save, Gradle and Maven import). Off by default
+	 *  because opening an untrusted project would otherwise execute its code.
+	 */
+	runProjectCode: boolean,
 };
 
 export type LanguageServerStateChanged = LanguageServerStateChanged_Serialize | LanguageServerStateChanged_Deserialize;

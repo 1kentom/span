@@ -7,7 +7,7 @@ import "../styles/language-servers.css";
 export interface LanguageServerSettingsProps {
   /** Values of the scope being edited. Used for the per server switches. */
   value: LanguageServerSettings;
-  /** Effective values. autoInstall, javaHome and nodePath are user settings, so they are read from here. Defaults to `value`. */
+  /** Effective values. autoInstall, runProjectCode, javaHome and nodePath are user settings, so they are read from here. Defaults to `value`. */
   userValue?: LanguageServerSettings;
   disabled?: boolean;
   /** Current state per server, when known. */
@@ -51,6 +51,12 @@ export function LanguageServerSettings(props: LanguageServerSettingsProps) {
       <div class="sp-preference">
         <div class="sp-preference-label"><label for="sp-lsp-auto-install">Install language servers automatically</label><p id="sp-lsp-auto-install-help">Download a missing server the first time you open a matching file. When off, nothing downloads until you choose Install in the status bar.</p><span class="sp-setting-path">languageServers.autoInstall</span> <span class="lsp-scope-note">User setting</span></div>
         <div class="sp-preference-control"><button id="sp-lsp-auto-install" class="sp-switch" role="switch" aria-label="Install language servers automatically" aria-describedby="sp-lsp-auto-install-help" aria-checked={user().autoInstall} disabled={locked()} onClick={() => void commit("autoInstall", !user().autoInstall, "user")}><span /></button></div>
+      </div>
+    </div>
+    <div class="lsp-settings-group">
+      <div class="sp-preference">
+        <div class="sp-preference-label"><label for="sp-lsp-run-project-code">Run project build code (build.rs, proc macros, Gradle and Maven import)</label><p id="sp-lsp-run-project-code-help">Lets rust-analyzer and JDT LS execute the project's own code. Opening an untrusted project with this on can run its code on your machine. When off, they start in a restricted mode and some features are missing.</p><span class="sp-setting-path">languageServers.runProjectCode</span> <span class="lsp-scope-note">User setting</span></div>
+        <div class="sp-preference-control"><button id="sp-lsp-run-project-code" class="sp-switch" role="switch" aria-label="Run project build code" aria-describedby="sp-lsp-run-project-code-help" aria-checked={user().runProjectCode} disabled={locked()} onClick={() => void commit("runProjectCode", !user().runProjectCode, "user")}><span /></button></div>
       </div>
     </div>
     <div class="lsp-settings-group">

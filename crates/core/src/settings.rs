@@ -26,11 +26,16 @@ pub struct LanguageServerSettings {
     pub java_home: Option<String>,
     /// Node.js executable used to run the npm based servers, instead of searching the host.
     pub node_path: Option<String>,
+    /// Let rust-analyzer and JDT LS run the project's own build code (build scripts,
+    /// procedural macros, `cargo check` on save, Gradle and Maven import). Off by default
+    /// because opening an untrusted project would otherwise execute its code.
+    pub run_project_code: bool,
 }
 
 /// Settings under `languageServers` that choose executables or trigger downloads. They are
 /// honoured from user settings only: a workspace file is untrusted input.
-pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] = &["autoInstall", "javaHome", "nodePath"];
+pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] =
+    &["autoInstall", "javaHome", "nodePath", "runProjectCode"];
 
 /// Absolute on any OS, judged from the text alone: `/x`, `C:\x`, `C:/x` or `\\server\share`.
 pub(crate) fn is_absolute_path_text(path: &str) -> bool {
@@ -666,7 +671,8 @@ pub(crate) fn canonical_key(key: &str) -> Option<String> {
 
 /// Edits one setting in `scope`. Besides top-level keys it accepts exactly
 /// `languageServers.enabled.<serverId>` and, in user scope only,
-/// `languageServers.autoInstall`, `languageServers.javaHome` and `languageServers.nodePath`.
+/// `languageServers.autoInstall`, `languageServers.runProjectCode`, `languageServers.javaHome`
+/// and `languageServers.nodePath`.
 /// A missing value removes the key.
 pub(crate) fn patch_in_scope(
     scope: crate::SettingsScope,
@@ -733,13 +739,13 @@ pub(crate) fn patch_in_scope(
             (_, None) => {
                 servers.remove(rest);
             }
-            ("autoInstall", Some(Value::Bool(flag))) => {
+            ("autoInstall" | "runProjectCode", Some(Value::Bool(flag))) => {
                 servers.insert(rest.into(), Value::Bool(flag));
             }
-            ("autoInstall", Some(_)) => {
-                return Err(CoreError::Settings(
-                    "languageServers.autoInstall must be true or false".into(),
-                ))
+            ("autoInstall" | "runProjectCode", Some(_)) => {
+                return Err(CoreError::Settings(format!(
+                    "languageServers.{rest} must be true or false"
+                )))
             }
             (_, Some(Value::String(path))) => {
                 let candidate = LanguageServerSettings {
@@ -1021,14 +1027,17 @@ mod language_server_tests {
     fn language_server_settings_default_to_opt_in_installs() {
         let defaults = Settings::default().language_servers;
         assert!(!defaults.auto_install);
+        assert!(!defaults.run_project_code, "project code is off by default");
         assert!(defaults.is_enabled("jdtls"));
         let value = load_with_texts(
             r#"{ "languageServers": { "autoInstall": true, "enabled": { "jdtls": false },
-                 "javaHome": "/opt/jdk", "nodePath": "/usr/bin/node" } }"#,
+                 "javaHome": "/opt/jdk", "nodePath": "/usr/bin/node",
+                 "runProjectCode": true } }"#,
             "{}",
         )
         .unwrap()
         .language_servers;
+        assert!(value.run_project_code);
         assert!(value.auto_install && !value.is_enabled("jdtls") && value.is_enabled("vtsls"));
         assert_eq!(value.java_home.as_deref(), Some("/opt/jdk"));
     }
@@ -1197,8 +1206,9 @@ mod language_server_key_tests {
     #[test]
     fn workspace_text_cannot_choose_executables_or_downloads() {
         let ws = r#"{ "languageServers": { "nodePath": "/tmp/evil", "javaHome": "/tmp/jdk",
-                 "autoInstall": true, "enabled": { "css": false } } }"#;
+                 "autoInstall": true, "runProjectCode": true, "enabled": { "css": false } } }"#;
         let loaded = load_with_texts("{}", ws).unwrap().language_servers;
+        assert!(!loaded.run_project_code);
         assert_eq!(loaded.node_path, None);
         assert_eq!(loaded.java_home, None);
         assert!(!loaded.auto_install);
@@ -1209,8 +1219,10 @@ mod language_server_key_tests {
         let err = reject_user_only(only).unwrap_err().to_string();
         assert!(err.contains("languageServers.nodePath") && err.contains("user settings only"));
         // User settings keep working, and a workspace value never overrides them.
-        let user = r#"{ "languageServers": { "nodePath": "/usr/bin/node", "autoInstall": true } }"#;
+        let user = r#"{ "languageServers": { "nodePath": "/usr/bin/node", "autoInstall": true,
+                 "runProjectCode": true } }"#;
         let merged = load_with_texts(user, ws).unwrap().language_servers;
+        assert!(merged.run_project_code);
         assert_eq!(merged.node_path.as_deref(), Some("/usr/bin/node"));
         assert!(merged.auto_install);
     }
@@ -1262,6 +1274,7 @@ mod language_server_key_tests {
             ("autoInstall", "true", 0),
             ("javaHome", "\"/opt/jdk\"", 1),
             ("nodePath", "\"/usr/bin/node\"", 2),
+            ("runProjectCode", "true", 3),
         ] {
             let full = format!("languageServers.{key}");
             let t = set(User, base, &full, Some(value)).unwrap();
@@ -1269,6 +1282,7 @@ mod language_server_key_tests {
             match check {
                 0 => assert!(s.auto_install),
                 1 => assert_eq!(s.java_home.as_deref(), Some("/opt/jdk")),
+                3 => assert!(s.run_project_code),
                 _ => assert_eq!(s.node_path.as_deref(), Some("/usr/bin/node")),
             }
             assert!(t.contains("// keep me"));
@@ -1320,6 +1334,8 @@ mod language_server_key_tests {
             (User, "languageServers.enabled.gopls", "true"),
             (User, "languageServers.enabled.css", "\"yes\""),
             (User, "languageServers.autoInstall", "1"),
+            (User, "languageServers.runProjectCode", "\"yes\""),
+            (Workspace, "languageServers.runProjectCode", "true"),
             (User, "languageServers.javaHome", "5"),
             (User, "languageServers.javaHome", "\"jdk\""),
             (User, "languageServers.nodePath", "\"\""),

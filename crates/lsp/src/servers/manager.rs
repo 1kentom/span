@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -192,7 +193,13 @@ impl Instance {
     }
 }
 
+/// Chooses the `initialize` options for a server at start time, given whether the
+/// project may run its own code (build scripts, proc macros, Gradle and Maven import).
+pub type OptionsProvider = Arc<dyn Fn(ServerId, bool) -> serde_json::Value + Send + Sync>;
+
 struct ManagerShared {
+    run_project_code: AtomicBool,
+    options_provider: StdMutex<Option<OptionsProvider>>,
     specs: HashMap<ServerId, ServerSpec>,
     resolver: Arc<dyn ErasedResolver>,
     config: ManagerConfig,
@@ -215,6 +222,8 @@ impl Manager {
         let (events, _) = broadcast::channel(256);
         Self {
             shared: Arc::new(ManagerShared {
+                run_project_code: AtomicBool::new(false),
+                options_provider: StdMutex::new(None),
                 specs: specs.into_iter().map(|s| (s.id, s)).collect(),
                 resolver,
                 config,
@@ -222,6 +231,22 @@ impl Manager {
                 events,
             }),
         }
+    }
+
+    /// Replace the per start initialization options. Without a provider each spec's own
+    /// `initialization_options` are sent.
+    pub fn set_options_provider(&self, provider: OptionsProvider) {
+        *self
+            .shared
+            .options_provider
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(provider);
+    }
+
+    /// Whether servers started from now on may run the project's own code. Defaults to
+    /// false. Running servers keep the options they were started with: restart them.
+    pub fn set_run_project_code(&self, allow: bool) {
+        self.shared.run_project_code.store(allow, Ordering::SeqCst);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ManagerEvent> {
@@ -289,9 +314,20 @@ impl Manager {
             root: root.to_path_buf(),
             state: ServerState::Starting,
         });
+        let provider = self
+            .shared
+            .options_provider
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let options = match provider {
+            Some(provider) => provider(id, self.shared.run_project_code.load(Ordering::SeqCst)),
+            None => spec.initialization_options.clone(),
+        };
         let handle = tokio::spawn(run_instance(
             inst.clone(),
             spec,
+            options,
             self.shared.resolver.clone(),
             self.shared.config.clone(),
         ));
@@ -759,6 +795,7 @@ fn map_err(client: &LspClient, e: LspError) -> ManagerError {
 async fn run_instance(
     inst: Arc<Instance>,
     spec: ServerSpec,
+    initialization_options: serde_json::Value,
     resolver: Arc<dyn ErasedResolver>,
     config: ManagerConfig,
 ) {
@@ -787,7 +824,7 @@ async fn run_instance(
     // Answer server requests from the start, including those sent during initialize.
     tokio::spawn(pump_events(inst.clone(), client.clone()));
 
-    let options = match &spec.initialization_options {
+    let options = match &initialization_options {
         serde_json::Value::Null => None,
         v => Some(v.clone()),
     };

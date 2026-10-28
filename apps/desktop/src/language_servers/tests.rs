@@ -783,3 +783,76 @@ async fn created_saved_renamed_and_trashed_files_reach_the_servers() {
         .await
         .is_err());
 }
+
+fn initialize_options(log: &Path) -> Vec<serde_json::Value> {
+    log_entries(log)
+        .iter()
+        .filter(|e| e["method"] == "initialize")
+        .map(|e| e["params"]["initializationOptions"].clone())
+        .collect()
+}
+
+async fn open_in(f: &mut Fixture, path: &str, server: ServerId) {
+    std::fs::write(f.root.join(path), "").unwrap();
+    let snapshot = f.ws.open_buffer(path).unwrap();
+    f.svc.on_snapshot(&snapshot);
+    f.svc.flush().await;
+    f.svc
+        .manager
+        .wait_ready(server, &f.root, WAIT)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn project_code_servers_start_restricted_by_default() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    open_in(&mut f, "lib.rs", ServerId::RustAnalyzer).await;
+    open_in(&mut f, "Main.java", ServerId::Jdtls).await;
+    let options = initialize_options(&f.log);
+    assert_eq!(options.len(), 2, "{options:?}");
+    let ra = &options[0];
+    assert_eq!(ra["cargo"]["buildScripts"]["enable"], false);
+    assert_eq!(ra["procMacro"]["enable"], false);
+    assert_eq!(ra["checkOnSave"], false);
+    let java = &options[1]["settings"]["java"];
+    assert_eq!(java["import"]["gradle"]["enabled"], false);
+    assert_eq!(java["import"]["gradle"]["wrapper"]["enabled"], false);
+    assert_eq!(java["import"]["maven"]["enabled"], false);
+    assert_eq!(java["autobuild"]["enabled"], false);
+}
+
+#[tokio::test]
+async fn project_code_servers_get_permissive_options_only_when_enabled() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    let mut settings = Settings::default();
+    settings.language_servers.run_project_code = true;
+    f.svc.apply_settings(&settings);
+    open_in(&mut f, "lib.rs", ServerId::RustAnalyzer).await;
+    open_in(&mut f, "Main.java", ServerId::Jdtls).await;
+    let options = initialize_options(&f.log);
+    assert_eq!(options.len(), 2, "{options:?}");
+    assert_eq!(options[0], serde_json::json!({}));
+    assert_eq!(options[1]["settings"]["java"], serde_json::json!({}));
+}
+
+#[tokio::test]
+async fn changing_run_project_code_restarts_the_running_servers() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    open_in(&mut f, "lib.rs", ServerId::RustAnalyzer).await;
+    assert_eq!(initialize_options(&f.log).len(), 1);
+    let mut settings = Settings::default();
+    settings.language_servers.run_project_code = true;
+    f.svc.apply_settings(&settings);
+    f.svc.flush().await;
+    eventually("rust-analyzer restarted with permissive options", || {
+        initialize_options(&f.log).len() == 2
+    })
+    .await;
+    assert_eq!(initialize_options(&f.log)[1], serde_json::json!({}));
+    // An unrelated settings change does not restart anything.
+    settings.tab_size = 3;
+    f.svc.apply_settings(&settings);
+    f.svc.flush().await;
+    assert_eq!(initialize_options(&f.log).len(), 2);
+}
