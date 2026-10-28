@@ -5,6 +5,7 @@ import type { AgentChoice, ConfigOptionView } from "./types";
 import { arrowFocus, useEscape } from "./util";
 import { TRAIT_INFO, chipTrait, isFastSwitchOn, modelTraits, type ModelTrait } from "../../lib/model-traits";
 import type { BrandIdentity } from "../../lib/brand-icons";
+import { EffortSlider, defaultLevel, focusModelRow, modelNameOf } from "./EffortSlider";
 
 type ModelPopoverProps = {
   agentName: string;
@@ -17,9 +18,6 @@ type ModelPopoverProps = {
   onSwitchAgent?: (agentId: string) => void;
   onClose: () => void;
 };
-
-/** Bar heights rise from a short first bar to a full last bar. Level names come from the data. */
-export const barHeight = (index: number, count: number) => `${Math.round(30 + (70 * (index + 1)) / Math.max(1, count))}%`;
 
 /** True while a boolean fast switch among the options is on. It only applies to the current model. */
 export const fastSwitchOn = (options: readonly ConfigOptionView[]) => options.some(isFastSwitchOn);
@@ -52,44 +50,6 @@ function TraitChip(props: { trait: ModelTrait }) {
       <Show when={info().icon}>{(icon) => <Icon name={icon()} size={10} />}</Show>
       {info().chip}
     </span>
-  );
-}
-
-function LevelControl(props: { option: ConfigOptionView; disabled?: boolean; onSelect: (value: string) => void }) {
-  const selected = () => Math.max(0, props.option.choices.findIndex((choice) => choice.value === props.option.currentValue));
-  const current = () => props.option.choices[selected()];
-  return (
-    <div class="sb-level">
-      <div class="sb-level-head">
-        <span class="sb-eyebrow tight">{props.option.name}</span>
-        <span class="sb-flex" />
-        <span class="sb-level-name">{current()?.name}</span>
-      </div>
-      <div class="sb-level-bars" role="radiogroup" aria-label={props.option.name}>
-        <For each={props.option.choices}>
-          {(choice, index) => (
-            <button
-              class="sb-level-bar"
-              role="radio"
-              aria-checked={choice.value === props.option.currentValue}
-              aria-label={choice.name}
-              title={choice.name}
-              disabled={props.disabled}
-              onClick={() => props.onSelect(choice.value)}
-            >
-              <span class="sb-level-fill" classList={{ on: index() <= selected() }} style={{ height: barHeight(index(), props.option.choices.length) }} />
-            </button>
-          )}
-        </For>
-      </div>
-      <Show when={props.option.choices.length > 1}>
-        <div class="sb-level-ends">
-          <span>{props.option.choices[0].name}</span>
-          <span>{props.option.choices[props.option.choices.length - 1].name}</span>
-        </div>
-      </Show>
-      <Show when={current()?.description}><div class="sb-sub wrap">{current()?.description}</div></Show>
-    </div>
   );
 }
 
@@ -141,7 +101,16 @@ export function ModelPopover(props: ModelPopoverProps) {
                 </div>
               }
             >
-              <LevelControl option={option} disabled={props.busy} onSelect={(value) => props.onSelect(option.id, value)} />
+              <EffortSlider
+                label={option.name}
+                options={option.choices}
+                value={option.currentValue}
+                defaultValue={defaultLevel(option.choices)}
+                disabled={props.busy}
+                modelName={modelNameOf(props.options)}
+                onModelClick={() => focusModelRow(root, props.options)}
+                onChange={(value) => props.onSelect(option.id, value)}
+              />
             </Show>
           </>
         )}

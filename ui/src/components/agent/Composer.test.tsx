@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
-import { ModelPopover, barHeight } from "./ModelPopover";
+import { ModelPopover } from "./ModelPopover";
 import { SlashPopover } from "./SlashPopover";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock } from "./Docks";
 import { PlanDrawer } from "./PlanDrawer";
@@ -63,13 +63,15 @@ describe("ModelPopover", () => {
       <ModelPopover agentName="Claude" options={options} agents={[{ id: "claude", name: "Claude", current: true }, { id: "gemini", name: "Gemini" }]}
         onSelect={(id, value) => picked.push(`${id}=${value}`)} onSwitchAgent={(id) => picked.push(`agent:${id}`)} onClose={closed} />
     ));
-    expect(host.querySelectorAll("[role=radiogroup]")).toHaveLength(3);
-    const bars = host.querySelectorAll<HTMLButtonElement>(".sb-level-bar");
-    expect([...bars].map((bar) => bar.getAttribute("aria-label"))).toEqual(["Brief", "Normal", "Thorough", "Exhaustive"]);
-    expect([...host.querySelectorAll(".sb-level-fill")].map((fill) => fill.classList.contains("on"))).toEqual([true, true, false, false]);
-    expect(text(host.querySelector(".sb-level-name"))).toBe("Normal");
-    bars[3].click();
-    host.querySelector<HTMLButtonElement>("[role=radio][aria-checked=false]:not(.sb-level-bar)")!.click();
+    expect(host.querySelectorAll("[role=radiogroup]")).toHaveLength(2);
+    const slider = host.querySelector<HTMLElement>("[role=slider]")!;
+    expect(slider.getAttribute("aria-label")).toBe("Reasoning");
+    expect([slider.getAttribute("aria-valuemin"), slider.getAttribute("aria-valuemax"), slider.getAttribute("aria-valuenow")]).toEqual(["0", "3", "1"]);
+    expect(slider.getAttribute("aria-valuetext")).toBe("Normal");
+    expect(text(host.querySelector(".fx-label:not(.fx-label-out)"))).toBe("Normal");
+    key("End", {}, slider);
+    host.querySelector<HTMLElement>(".fx-track")!.dispatchEvent(new KeyboardEvent("keyup", { key: "End", bubbles: true }));
+    host.querySelector<HTMLButtonElement>("[role=radio][aria-checked=false]")!.click();
     const gemini = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Gemini"))!;
     gemini.click();
     expect(picked).toEqual(["effort=d", "model=deep", "agent:gemini"]);
@@ -81,13 +83,22 @@ describe("ModelPopover", () => {
 
   it("omits the level control and agent list when the agent reports neither", () => {
     const host = mount(() => <ModelPopover agentName="A" options={[options[0]]} onSelect={() => {}} onClose={() => {}} />);
-    expect(host.querySelector(".sb-level")).toBeNull();
+    expect(host.querySelector(".fx")).toBeNull();
     expect(host.textContent).not.toContain("Agent");
   });
 
-  it("derives bar heights without naming levels", () => {
-    expect(barHeight(0, 4)).toBe("48%");
-    expect(barHeight(3, 4)).toBe("100%");
+  it("keeps arrow keys on the slider and the model line focuses the selected model", () => {
+    const host = mount(() => <ModelPopover agentName="A" options={options} onSelect={() => {}} onClose={() => {}} />);
+    const slider = host.querySelector<HTMLElement>("[role=slider]")!;
+    slider.focus();
+    key("ArrowDown", {}, slider);
+    expect(document.activeElement).toBe(slider);
+    expect(slider.getAttribute("aria-valuenow")).toBe("0");
+    const model = host.querySelector<HTMLButtonElement>(".fx-model")!;
+    expect(text(model)).toBe("Fast");
+    model.click();
+    expect(document.activeElement?.textContent).toContain("Fast");
+    expect(document.activeElement?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("moves focus with arrow keys", () => {
