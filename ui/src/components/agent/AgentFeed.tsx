@@ -10,6 +10,7 @@ import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib
 import { urlRecordText } from "../../lib/agent-url-request";
 import { handoffDivider } from "../../lib/agent-handoff";
 import { branchDivider } from "../../lib/agent-rewind";
+import { api } from "../../lib/client";
 import { EditsBypassNote, ErrorCard, Notice, StopCard, WarningNote } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
 import { DelegationCard } from "./DelegationCard";
@@ -131,7 +132,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           return (
             <Switch fallback={<Notice text={view().description ? `${view().title} · ${view().description}` : view().title} />}>
               <Match when={notice().severity === "warning"}>
-                <WarningNote title={view().title} description={view().description} />
+                <WarningNote title={view().title} description={view().description} onCopyPath={(path) => void api.writeClipboard(path).catch(() => undefined)} />
               </Match>
               <Match when={notice().severity === "error"}>
                 <ErrorCard level="error" title={view().title} text={view().description} actions={[]} />
