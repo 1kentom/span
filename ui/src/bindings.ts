@@ -155,6 +155,22 @@ export const commands = {
 	 *  active chat's lead is searched first.
 	 */
 	agentCancelTask: (taskId: string) => __TAURI_INVOKE<null>("agent_cancel_task", { taskId }),
+	uploadsList: () => __TAURI_INVOKE<Upload_Serialize[]>("uploads_list"),
+	uploadsUsage: () => __TAURI_INVOKE<UploadUsage>("uploads_usage"),
+	uploadsAdd: (name: string, dataBase64: string, source: UploadSource_Deserialize) => __TAURI_INVOKE<Upload_Serialize>("uploads_add", { name, dataBase64, source }),
+	uploadsRead: (id: string, offset: number, len: number) => __TAURI_INVOKE<UploadChunk>("uploads_read", { id, offset, len }),
+	uploadsRename: (id: string, name: string) => __TAURI_INVOKE<Upload_Serialize>("uploads_rename", { id, name }),
+	uploadsDuplicate: (id: string) => __TAURI_INVOKE<Upload_Serialize>("uploads_duplicate", { id }),
+	uploadsRemove: (id: string) => __TAURI_INVOKE<null>("uploads_remove", { id }),
+	/**  Saves into workspace-relative `dir` through `save_attachment`: never overwrites. */
+	uploadsSaveToWorkspace: (id: string, dir: string) => __TAURI_INVOKE<SavedAttachment>("uploads_save_to_workspace", { id, dir }),
+	/**
+	 *  Path of a named copy of the upload in app data, for an explicit "Copy path".
+	 *  The copy is outside the workspace and is replaced on the next open or reveal.
+	 */
+	uploadsCopyPath: (id: string) => __TAURI_INVOKE<string>("uploads_copy_path", { id }),
+	uploadsReveal: (id: string) => __TAURI_INVOKE<null>("uploads_reveal", { id }),
+	uploadsOpen: (id: string) => __TAURI_INVOKE<null>("uploads_open", { id }),
 };
 
 /** Events */
@@ -1763,6 +1779,96 @@ export type UpdateSettings_Serialize = {
 };
 
 export type UpdateStatus = "upToDate" | "updateAvailable" | "unknown" | "notInstalled";
+
+export type Upload = Upload_Serialize | Upload_Deserialize;
+
+/**  One bounded read, base64 encoded for IPC. */
+export type UploadChunk = {
+	dataBase64: string,
+	offset: number,
+	/**  Size of the whole upload. */
+	size: number,
+	eof: boolean,
+};
+
+/**  Panel grouping. Derived from the sniffed type, never used to decide execution. */
+export type UploadKind = "document" | "data" | "media" | "code" | "archive" | "image" | "font" | "other";
+
+export type UploadOrigin = "sent" | "pasted" | "dropped" | "picked" | "agent-generated";
+
+/**  Where an upload came from. Ids are opaque labels for "Show in session". */
+export type UploadSource = UploadSource_Serialize | UploadSource_Deserialize;
+
+/**  Where an upload came from. Ids are opaque labels for "Show in session". */
+export type UploadSource_Deserialize = {
+	sessionId?: string | null,
+	agentId?: string | null,
+	messageId?: string | null,
+	origin: UploadOrigin,
+};
+
+/**  Where an upload came from. Ids are opaque labels for "Show in session". */
+export type UploadSource_Serialize = {
+	sessionId: string | null,
+	agentId: string | null,
+	messageId: string | null,
+	origin: UploadOrigin,
+};
+
+export type UploadUsage = {
+	count: number,
+	totalBytes: number,
+	maxCount: number,
+	maxTotalBytes: number,
+	maxFileBytes: number,
+	/**  Blob files with no index entry, kept rather than deleted silently. */
+	orphanBlobs: number,
+	orphanBytes: number,
+	/**  Unreadable index files moved aside as `index.corrupt-*.json`. */
+	quarantinedIndexes: number,
+};
+
+export type Upload_Deserialize = {
+	/**  32 lowercase hex characters, random and opaque. */
+	id: string,
+	/**  Display name, validated with the workspace attachment rules. */
+	name: string,
+	/**  Sniffed from the extension and magic bytes. Informational only. */
+	mime: string,
+	size: number,
+	kind: UploadKind,
+	/**
+	 *  `fnv1a128:<hex>` over the bytes. A cheap non-cryptographic fingerprint for
+	 *  spotting duplicates, not an integrity or security check (ADR 0006).
+	 */
+	fingerprint: string,
+	source: UploadSource_Deserialize,
+	/**  Unix milliseconds. */
+	createdMs: number,
+	/**  True when the blob file is gone from the store. Computed on list. */
+	missing: boolean,
+};
+
+export type Upload_Serialize = {
+	/**  32 lowercase hex characters, random and opaque. */
+	id: string,
+	/**  Display name, validated with the workspace attachment rules. */
+	name: string,
+	/**  Sniffed from the extension and magic bytes. Informational only. */
+	mime: string,
+	size: number,
+	kind: UploadKind,
+	/**
+	 *  `fnv1a128:<hex>` over the bytes. A cheap non-cryptographic fingerprint for
+	 *  spotting duplicates, not an integrity or security check (ADR 0006).
+	 */
+	fingerprint: string,
+	source: UploadSource_Serialize,
+	/**  Unix milliseconds. */
+	createdMs: number,
+	/**  True when the blob file is gone from the store. Computed on list. */
+	missing: boolean,
+};
 
 /**  Usage reported for a delegation. Every field is only set when reported. */
 export type UsageReport = UsageReport_Serialize | UsageReport_Deserialize;

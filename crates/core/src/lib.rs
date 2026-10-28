@@ -13,8 +13,8 @@ mod session_meta;
 mod settings;
 mod tools;
 mod transcript_export;
-pub mod version;
 mod uploads;
+pub mod version;
 mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
@@ -38,10 +38,10 @@ pub use settings::{
 pub use tools::{list_tools, ToolInfo};
 pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};
 pub use uploads::{
-    content_fingerprint, is_valid_upload_id, open_refusal, sniff_upload, workspace_key,
-    ExternalCopy, Upload, UploadChunk, UploadKind, UploadLimits, UploadOrigin, UploadSource,
-    UploadStore, UploadUsage, MAX_UPLOADS_TOTAL_BYTES, MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT,
-    MAX_UPLOAD_READ_BYTES,
+    content_fingerprint, is_valid_upload_id, open_refusal, sniff_upload,
+    workspace_key as uploads_workspace_key, ExternalCopy, Upload, UploadChunk, UploadKind,
+    UploadLimits, UploadOrigin, UploadSource, UploadStore, UploadUsage, MAX_UPLOADS_TOTAL_BYTES,
+    MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, MAX_UPLOAD_READ_BYTES,
 };
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
 
