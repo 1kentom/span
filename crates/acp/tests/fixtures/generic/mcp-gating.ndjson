@@ -1,0 +1,4 @@
+// Every MCP server list is gated by advertised mcpCapabilities: with none advertised only stdio is sent, unchanged.
+// Protocol-conformant shapes from an unknown agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}, "authMethods": [], "agentInfo": {"name": "span-test-peer", "version": "1.0.0"}}}
+{"on": "session/new", "result": {"sessionId": "p-1"}}

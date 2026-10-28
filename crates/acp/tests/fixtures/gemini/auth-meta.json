@@ -1,0 +1,111 @@
+{
+  "quirk": "Auth failures are -32000 on session/new and session/load. API key and gateway methods carry _meta[\"api-key\"] / _meta.gateway; the value goes in authenticate _meta and never into the log.",
+  "drive": [
+    {
+      "do": "load",
+      "session": "g-old",
+      "expectError": "Authentication required"
+    },
+    {
+      "do": "newSession",
+      "expectError": "Authentication required"
+    },
+    {
+      "do": "authenticate",
+      "method": "gemini-api-key",
+      "expectError": "needs a key"
+    },
+    {
+      "do": "authenticate",
+      "method": "gemini-api-key",
+      "credential": {
+        "kind": "apiKey",
+        "key": "sk-test-secret"
+      }
+    },
+    {
+      "do": "authenticate",
+      "method": "gateway",
+      "credential": {
+        "kind": "gateway",
+        "baseUrl": "https://gw.example",
+        "headers": {
+          "x-token": "gw-secret"
+        }
+      }
+    },
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "ready",
+      "authMethods": [
+        {
+          "id": "gemini-api-key",
+          "input": "apiKey",
+          "supported": true
+        },
+        {
+          "id": "gateway",
+          "input": "gateway"
+        },
+        {
+          "id": "oauth-personal",
+          "input": null
+        }
+      ]
+    },
+    {
+      "kind": "authRequired",
+      "hint": null
+    },
+    {
+      "kind": "_step",
+      "do": "load",
+      "ok": false
+    },
+    {
+      "kind": "authRequired"
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": false
+    },
+    {
+      "kind": "session",
+      "sessionId": "g-1"
+    }
+  ],
+  "sent": [
+    {
+      "method": "authenticate",
+      "params": {
+        "methodId": "gemini-api-key",
+        "_meta": {
+          "api-key": "sk-test-secret"
+        }
+      }
+    },
+    {
+      "method": "authenticate",
+      "params": {
+        "methodId": "gateway",
+        "_meta": {
+          "gateway": {
+            "baseUrl": "https://gw.example",
+            "headers": {
+              "x-token": "gw-secret"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "logsExclude": [
+    "sk-test-secret",
+    "gw-secret"
+  ]
+}

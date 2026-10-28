@@ -1,0 +1,54 @@
+{
+  "quirk": "Replayed user_message_chunk includes resource_link, image and resource chunks: they are kept as attachment markers.",
+  "drive": [
+    {
+      "do": "load",
+      "session": "ses_old"
+    }
+  ],
+  "events": [
+    {
+      "kind": "user",
+      "text": "look at these"
+    },
+    {
+      "kind": "user",
+      "text": "",
+      "attachments": [
+        {
+          "kind": "resourceLink",
+          "uri": "file:///work/a.rs",
+          "name": "a.rs",
+          "mimeType": "text/x-rust"
+        }
+      ]
+    },
+    {
+      "kind": "user",
+      "text": "",
+      "attachments": [
+        {
+          "kind": "image",
+          "uri": null,
+          "mimeType": "image/png"
+        }
+      ]
+    },
+    {
+      "kind": "user",
+      "text": "",
+      "attachments": [
+        {
+          "kind": "resource",
+          "uri": "file:///work/b.md",
+          "mimeType": "text/markdown"
+        }
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "load",
+      "ok": true
+    }
+  ]
+}

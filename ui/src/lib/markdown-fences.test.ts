@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { languageIds } from "../editor/languages";
 import { describeMarkdownFence, markdownFenceLanguages } from "./markdown-fences";
 
 describe("Markdown fence languages and terminal eligibility", () => {
@@ -9,7 +10,9 @@ describe("Markdown fence languages and terminal eligibility", () => {
       expect(fence.detected, hint).toBe(false);
       if (language !== "shell") expect(fence.action, hint).toBeNull();
     }
-    expect(Object.keys(markdownFenceLanguages)).toEqual(["typescript", "javascript", "json", "jsonc", "markdown", "rust", "python", "dotenv", "toml", "yaml", "html", "css", "shell", "text"]);
+    expect(Object.keys(markdownFenceLanguages)).toEqual(expect.arrayContaining(["typescript", "javascript", "json", "jsonc", "markdown", "rust", "python", "java", "dotenv", "toml", "yaml", "html", "css", "shell", "text"]));
+    expect(Object.keys(markdownFenceLanguages).sort()).toEqual([...languageIds].sort());
+    expect(markdownFenceLanguages).toMatchObject({ go: "Go", cpp: "C++", csharp: "C#", dockerfile: "Dockerfile" });
     expect(describeMarkdownFence("unknown", "npm run dev")).toMatchObject({ language: "text", label: "Plain text", action: null });
     expect(describeMarkdownFence("text", "$ npm run dev")).toMatchObject({ language: "text", action: null, detected: false });
   });

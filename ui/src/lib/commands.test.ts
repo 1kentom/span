@@ -12,14 +12,16 @@ describe("central keyboard commands", () => {
     expect(normalizeShortcut("Mod+P", "linux")).toBe("Ctrl+P");
     expect(resolveKeybindings({}, "mac").quickOpen).toEqual(["Meta+P", "Ctrl+P"]);
     expect(resolveKeybindings({}, "mac").openFile).toEqual([]);
-    expect(resolveKeybindings({}, "mac").focusFiles).toEqual(["Meta+E", "Meta+Shift+E"]);
+    expect(resolveKeybindings({}, "mac").toggleFiles).toEqual(["Meta+E"]);
+    expect(resolveKeybindings({}, "mac").focusFiles).toEqual(["Meta+Shift+E"]);
     expect(formatShortcut("Mod+Shift+P", "mac")).toBe("⌘⇧P");
     expect(formatShortcut("Mod+Shift+P", "windows")).toBe("Ctrl+Shift+P");
     expect(normalizeShortcut("P")).toBeUndefined();
     expect(normalizeShortcut("Ctrl+Ctrl+P")).toBeUndefined();
     expect(normalizeShortcut("Ctrl+😀")).toBeUndefined();
     expect(normalizeShortcut("Shift+P")).toBeUndefined();
-    expect(resolveKeybindings({}, "linux").focusFiles).toEqual(["Ctrl+E", "Ctrl+Shift+E"]);
+    expect(resolveKeybindings({}, "linux").toggleFiles).toEqual(["Ctrl+E"]);
+    expect(resolveKeybindings({}, "linux").focusFiles).toEqual(["Ctrl+Shift+E"]);
   });
   it("rejects reserved editing and quit shortcuts and conflicts with inherited defaults", () => {
     expect(validateKeybindings({ closeTab: ["Mod+Q"] }, "mac")[0].message).toContain("Quit");
@@ -30,27 +32,45 @@ describe("central keyboard commands", () => {
     expect(validateKeybindings({ mystery: ["Ctrl+P"] }, "linux")[0].message).toContain("Unknown");
     expect(validateKeybindings({ save: ["Ctrl+"] }, "linux")[0].message).toContain("Invalid");
   });
-  it("separates requested Files focus from Go to and the unbound picker while preserving overrides", () => {
-    const pick = vi.fn(); const goto = vi.fn(); const files = vi.fn();
+  it("separates Files toggle and focus from Go to and the unbound picker while preserving overrides", () => {
+    const pick = vi.fn(); const goto = vi.fn(); const files = vi.fn(); const toggleFiles = vi.fn();
     const bindings = resolveKeybindings({}, "mac");
-    const options = { bindings, handlers: { openFile: pick, quickOpen: goto, focusFiles: files } };
+    const options = { bindings, handlers: { openFile: pick, quickOpen: goto, focusFiles: files, toggleFiles } };
     expect(dispatchKeyboard(key("e", { metaKey: true }), options)).toBe(true);
-    expect(files).toHaveBeenCalledOnce(); expect(pick).not.toHaveBeenCalled(); expect(goto).not.toHaveBeenCalled();
+    expect(toggleFiles).toHaveBeenCalledOnce(); expect(files).not.toHaveBeenCalled(); expect(pick).not.toHaveBeenCalled(); expect(goto).not.toHaveBeenCalled();
+    expect(dispatchKeyboard(key("e", { metaKey: true, shiftKey: true }), options)).toBe(true);
+    expect(files).toHaveBeenCalledOnce();
     expect(dispatchKeyboard(key("p", { metaKey: true }), options)).toBe(true);
     expect(goto).toHaveBeenCalledOnce();
     expect(dispatchKeyboard(key("k", { metaKey: true }), options)).toBe(false);
     const customized = resolveKeybindings({ quickOpen: ["Mod+E"] }, "mac");
     expect(customized.quickOpen).toEqual(["Meta+E"]);
     expect(customized.openFile).toEqual([]);
+    expect(customized.toggleFiles).toEqual([]);
     expect(customized.focusFiles).toEqual(["Meta+Shift+E"]);
     expect(validateKeybindings({ quickOpen: ["Mod+E"] }, "mac")).toEqual([]);
     expect(validateKeybindings({ openFile: ["Mod+P"] }, "mac")[0].message).toContain("already assigned");
-    expect(nativeMenuBindings(bindings).focusFiles).toEqual(["Meta+E"]);
+    expect(nativeMenuBindings(bindings).toggleFiles).toEqual(["Meta+E"]);
+    expect(nativeMenuBindings(bindings).focusFiles).toEqual(["Meta+Shift+E"]);
     expect(nativeMenuBindings(bindings).openFile).toEqual([]);
-    const native = { ...options, nativeActions: new Set(["focusFiles"] as const) };
+    const native = { ...options, nativeActions: new Set(["toggleFiles"] as const) };
     expect(dispatchKeyboard(key("e", { metaKey: true }), native)).toBe(false);
     expect(dispatchKeyboard(key("e", { metaKey: true, shiftKey: true }), native)).toBe(true);
-    expect(files).toHaveBeenCalledTimes(2); expect(pick).not.toHaveBeenCalled();
+    expect(files).toHaveBeenCalledTimes(2); expect(toggleFiles).toHaveBeenCalledOnce(); expect(pick).not.toHaveBeenCalled();
+  });
+  it("registers the language server format shortcut as a rebindable action", () => {
+    expect(resolveKeybindings({}, "mac").formatWithLanguageServer).toEqual(["Meta+Alt+Shift+F"]);
+    expect(resolveKeybindings({}, "linux").formatWithLanguageServer).toEqual(["Ctrl+Alt+Shift+F"]);
+    const format = vi.fn();
+    const target = document.createElement("div"); target.className = "cm-editor";
+    const defaults = resolveKeybindings({}, "linux");
+    expect(dispatchKeyboard(key("F", { ctrlKey: true, altKey: true, shiftKey: true, code: "KeyF" }, target), { bindings: defaults, handlers: { formatWithLanguageServer: format } })).toBe(true);
+    expect(format).toHaveBeenCalledOnce();
+    const rebound = resolveKeybindings({ formatWithLanguageServer: ["Mod+K"] }, "linux");
+    expect(dispatchKeyboard(key("F", { ctrlKey: true, altKey: true, shiftKey: true, code: "KeyF" }, target), { bindings: rebound, handlers: { formatWithLanguageServer: format } })).toBe(false);
+    expect(dispatchKeyboard(key("k", { ctrlKey: true }, target), { bindings: rebound, handlers: { formatWithLanguageServer: format } })).toBe(true);
+    expect(validateKeybindings({ save: ["Mod+Alt+Shift+F"] }, "linux")[0].message).toContain("already assigned");
+    expect(validateKeybindings({ formatWithLanguageServer: ["Mod+Alt+Shift+F"] }, "linux")).toEqual([]);
   });
   it("rebinds and disables actions without retaining their defaults", () => {
     const bindings = resolveKeybindings({ quickOpen: ["Mod+K"], save: [] }, "linux");

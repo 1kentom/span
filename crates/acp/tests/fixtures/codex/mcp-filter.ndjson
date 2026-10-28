@@ -1,0 +1,4 @@
+// An SSE or ACP MCP server makes the whole Codex session/new fail even when advertised: neither is sent.
+// Recorded shape from codex-acp 2.3.0 source. Not captured from a live agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true, "acp": true}}, "authMethods": [], "agentInfo": {"name": "codex-acp", "title": "Codex", "version": "2.3.0"}}}
+{"on": "session/new", "result": {"sessionId": "x-1"}}

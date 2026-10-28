@@ -1,0 +1,5 @@
+// Mode changes arrive as agent_message_chunk text `[MODE_UPDATE] <mode>`: the chunk is dropped and CurrentMode is emitted.
+// Recorded shape from gemini-cli 0.67 nightly source (registry pins 0.66.0). Not captured from a live agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "audio": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true}}, "authMethods": [{"id": "oauth-personal", "name": "Log in with Google"}], "agentInfo": {"name": "gemini-cli", "title": "Gemini CLI", "version": "0.67.0-nightly"}}}
+{"on": "session/new", "result": {"sessionId": "g-1"}}
+{"on": "session/prompt", "before": [{"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "[MODE_UPDATE] autoEdit"}}}, {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Done"}}}], "result": {"stopReason": "end_turn"}}

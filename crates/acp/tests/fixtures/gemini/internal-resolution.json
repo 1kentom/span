@@ -1,0 +1,43 @@
+{
+  "quirk": "Synthetic resolve-prompt-* permission and tool ids, and read_many_files calls while @file references resolve, are tagged internal.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "summarise @present.txt"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "resolve-prompt-1-a1",
+      "internal": true
+    },
+    {
+      "kind": "permission",
+      "toolCallId": "resolve-prompt-1-a1",
+      "internal": true
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "resolve-prompt-1-a1",
+      "status": "in_progress",
+      "internal": true
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "read_many_files-1",
+      "internal": true
+    },
+    {
+      "kind": "text"
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "read_many_files-2",
+      "internal": null
+    }
+  ]
+}

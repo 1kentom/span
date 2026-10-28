@@ -250,9 +250,10 @@ pub fn spec(id: ServerId) -> ServerSpec {
                 min_major: 0,
             },
             // rust-analyzer takes its configuration as initializationOptions
-            // (https://rust-analyzer.github.io/book/configuration.html); the
-            // defaults are used until the editor exposes settings.
-            initialization_options: json!({}),
+            // (https://rust-analyzer.github.io/book/configuration.html). The
+            // spec carries the permissive options; the manager asks
+            // `initialization_options` for the ones to send.
+            initialization_options: initialization_options(id, true),
         },
         ServerId::Basedpyright => ServerSpec {
             id,
@@ -306,8 +307,48 @@ pub fn spec(id: ServerId) -> ServerSpec {
             // https://github.com/eclipse-jdtls/eclipse.jdt.ls/wiki/Running-the-JAVA-LS-server-from-the-command-line#initialize-request
             // (`bundles`, `workspaceFolders`, `settings`). Workspace folders
             // are supplied by the client per project.
-            initialization_options: json!({ "bundles": [], "settings": { "java": {} } }),
+            initialization_options: initialization_options(id, true),
         },
+    }
+}
+
+/// Options sent in `initialize`. rust-analyzer and JDT LS execute the project's own
+/// build code as soon as they load it (build scripts, proc macros, `cargo check` on
+/// save, the Gradle wrapper, Maven import), so unless `run_project_code` is true they
+/// start in a restricted mode. Other servers ignore the flag.
+///
+/// rust-analyzer names: https://rust-analyzer.github.io/book/configuration.html
+/// (`cargo.buildScripts.enable`, `cargo.buildScripts.rebuildOnSave`, `procMacro.enable`,
+/// `checkOnSave`). JDT LS names: https://github.com/redhat-developer/vscode-java#readme
+/// (`java.import.gradle.enabled`, `java.import.gradle.wrapper.enabled`,
+/// `java.import.maven.enabled`, `java.autobuild.enabled`,
+/// `java.configuration.updateBuildConfiguration`).
+pub fn initialization_options(id: ServerId, run_project_code: bool) -> serde_json::Value {
+    match id {
+        ServerId::RustAnalyzer if !run_project_code => json!({
+            "cargo": { "buildScripts": { "enable": false, "rebuildOnSave": false } },
+            "procMacro": { "enable": false },
+            "checkOnSave": false,
+        }),
+        ServerId::RustAnalyzer => json!({}),
+        // Documented shape of the initialize options:
+        // https://github.com/eclipse-jdtls/eclipse.jdt.ls/wiki/Running-the-JAVA-LS-server-from-the-command-line#initialize-request
+        // (`bundles`, `workspaceFolders`, `settings`). Workspace folders are
+        // supplied by the client per project.
+        ServerId::Jdtls if !run_project_code => json!({
+            "bundles": [],
+            "settings": { "java": {
+                "import": {
+                    "gradle": { "enabled": false, "wrapper": { "enabled": false } },
+                    "maven": { "enabled": false },
+                },
+                "autobuild": { "enabled": false },
+                "configuration": { "updateBuildConfiguration": "disabled" },
+            } },
+        }),
+        ServerId::Jdtls => json!({ "bundles": [], "settings": { "java": {} } }),
+        // Servers whose spec options do not depend on the flag.
+        _ => spec(id).initialization_options,
     }
 }
 
@@ -754,6 +795,45 @@ mod tests {
     use super::*;
 
     const MAC_ARM: Platform = Platform::new(Os::MacOs, Arch::Aarch64);
+
+    #[test]
+    fn project_code_options_are_restricted_unless_allowed() {
+        let ra = initialization_options(ServerId::RustAnalyzer, false);
+        assert_eq!(ra["cargo"]["buildScripts"]["enable"], false);
+        assert_eq!(ra["procMacro"]["enable"], false);
+        assert_eq!(ra["checkOnSave"], false);
+        assert_eq!(
+            initialization_options(ServerId::RustAnalyzer, true),
+            json!({})
+        );
+        let java = initialization_options(ServerId::Jdtls, false);
+        assert_eq!(
+            java["settings"]["java"]["import"]["maven"]["enabled"],
+            false
+        );
+        assert_eq!(java["settings"]["java"]["autobuild"]["enabled"], false);
+        assert_eq!(
+            initialization_options(ServerId::Jdtls, true)["settings"]["java"],
+            json!({})
+        );
+        // The spec carries the permissive options; other servers ignore the flag.
+        assert_eq!(
+            spec(ServerId::RustAnalyzer).initialization_options,
+            json!({})
+        );
+        for id in [
+            ServerId::Vtsls,
+            ServerId::Html,
+            ServerId::Css,
+            ServerId::Json,
+            ServerId::Basedpyright,
+        ] {
+            assert_eq!(
+                initialization_options(id, false),
+                initialization_options(id, true)
+            );
+        }
+    }
 
     fn lang(p: &str) -> Option<(ServerId, &'static str)> {
         lookup_path(Path::new(p))

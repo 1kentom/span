@@ -1,10 +1,9 @@
-import { resolveLanguageId, type LanguageId } from "../editor/languages";
+import { languageIds, resolveLanguageId, type LanguageId } from "../editor/languages";
+import { languageDisplayName } from "../editor/language-names";
 
-export const markdownFenceLanguages: Readonly<Record<LanguageId, string>> = {
-  typescript: "TypeScript", javascript: "JavaScript", json: "JSON", jsonc: "JSON with comments",
-  markdown: "Markdown", rust: "Rust", python: "Python", dotenv: "Environment", toml: "TOML",
-  yaml: "YAML", html: "HTML", css: "CSS", shell: "Shell", text: "Plain text",
-};
+export const markdownFenceLanguages: Readonly<Record<LanguageId, string>> = Object.fromEntries(
+  languageIds.map((id) => [id, ({ jsonc: "JSON with comments", dotenv: "Environment", shell: "Shell" } as Partial<Record<LanguageId, string>>)[id] ?? languageDisplayName(id)]),
+) as Record<LanguageId, string>;
 
 export interface MarkdownFence {
   language: LanguageId;

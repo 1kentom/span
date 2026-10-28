@@ -3,5 +3,3 @@
 .brand-icon>.brand-light{display:none}
 .theme-light .brand-icon>.brand-light{display:block}
 .theme-light .brand-icon>.brand-dark{display:none}
-.agent-menu-item>span.brand-icon{flex:none;align-self:center}
-.agent-menu-item>.brand-icon+span{flex:1;min-width:0}

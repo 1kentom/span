@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
+import { createSignal } from "solid-js";
+import type { FileEntry, FileIndexStatus, Workspace } from "../bindings";
 import { Goto, type GotoProps } from "./Goto";
 const disposers: (() => void)[] = [];
 afterEach(() => { disposers.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); vi.useRealTimers(); });
@@ -103,4 +105,79 @@ describe("Goto path completion", () => {
     expect(input.getAttribute("aria-activedescendant")).toBe(selectedId); expect(preview).toHaveBeenCalledOnce(); expect(root.querySelector(".goto-preview")?.textContent).toContain("line 12");
     inputValue(input, "no result"); await settle(); expect(root.querySelector(".goto-preview")).not.toBeNull(); expect(root.querySelector(".goto-preview")?.textContent).toContain("Select a file to preview");
   });
+});
+
+
+describe("indexed Goto", () => {
+  const workspace = { root: "/project", name: "project" };
+  const status = (indexedFiles = 0): FileIndexStatus => ({ workspaceRoot: workspace.root, generation: 1, status: "scanning", indexedFiles, scannedEntries: indexedFiles * 2, errorCount: 0, lastError: null, watcherReady: true, watcherError: null });
+  const file = (path: string): FileEntry => ({ path, name: path.split("/").pop()!, isDir: false });
+  it("queries incrementally, keeps fuzzy rank and recents, and ignores older query results", async () => {
+    vi.useFakeTimers(); let old!: (files: FileEntry[]) => void;
+    const query = vi.fn((term: string) => term === "old" ? new Promise<FileEntry[]>(resolve => { old = resolve; }) : Promise.resolve(term ? [file("zebra.ts"), file("alpha.ts")] : [file("alpha.ts")]));
+    const { root, input, open } = setup({ workspace, onQueryFiles: query, recentPaths: ["recent.ts"], indexStatus: status() });
+    await settle(); await vi.advanceTimersByTimeAsync(0);
+    expect(root.querySelector('[role="option"]')?.textContent).toContain("recent.ts");
+    inputValue(input, "old"); await settle(); await vi.advanceTimersByTimeAsync(80);
+    inputValue(input, "za:12:3"); await settle(); await vi.advanceTimersByTimeAsync(80);
+    expect(query).toHaveBeenLastCalledWith("za");
+    old([file("stale.ts")]); await settle();
+    expect([...root.querySelectorAll('.goto-name')].map(node => node.textContent)).toEqual(["zebra.ts", "alpha.ts"]);
+    key(input, "Enter"); expect(open).toHaveBeenCalledWith("zebra.ts", 12, 3);
+  });
+  it("updates partial results as indexing progresses, without changing the query", async () => {
+    vi.useFakeTimers(); const [progress, setProgress] = createSignal(status());
+    const query = vi.fn(async () => progress().indexedFiles ? [file("new.ts")] : []);
+    const { root } = setup({ workspace, files: [], onQueryFiles: query, get indexStatus() { return progress(); } });
+    await settle(); await vi.advanceTimersByTimeAsync(0);
+    expect(root.textContent).toContain("Files are still being indexed"); expect(root.textContent).toContain("0 found");
+    setProgress(status(12)); await settle(); await vi.advanceTimersByTimeAsync(0);
+    expect(root.textContent).toContain("12 found"); expect(root.querySelector('.goto-name')?.textContent).toBe("new.ts");
+  });
+  it("rejects query and preview responses after switching workspace with the picker open", async () => {
+    vi.useFakeTimers(); let pending!: (files: FileEntry[]) => void;
+    const [currentWorkspace, changeWorkspace] = createSignal<Workspace>(workspace);
+    const query = vi.fn(() => new Promise<FileEntry[]>(resolve => { pending = resolve; }));
+    const { root } = setup({ files: [], get workspace() { return currentWorkspace(); }, onQueryFiles: query });
+    await settle(); await vi.advanceTimersByTimeAsync(0); const previous = pending;
+    changeWorkspace({ root: "/next", name: "next" }); await settle(); await vi.advanceTimersByTimeAsync(0);
+    pending([file("fresh.ts")]); await settle(); previous([file("stale.ts")]); await settle();
+    expect(root.textContent).toContain("fresh.ts"); expect(root.textContent).not.toContain("stale.ts");
+  });
+});
+
+
+it("keeps an indexed path available for Tab completion and disambiguates real colon filenames", async () => {
+  vi.useFakeTimers();
+  const query = vi.fn(async () => [{ path: "deep/report:12", name: "report:12", isDir: false }]);
+  const { input, open } = setup({ files: [], workspace: { root: "/project", name: "project" }, onQueryFiles: query });
+  inputValue(input, "report:12"); await settle(); await vi.advanceTimersByTimeAsync(160);
+  expect(query).toHaveBeenLastCalledWith("report:12");
+  key(input, "Tab"); await settle(); expect(input.value).toBe("deep/report:12");
+  key(input, "Enter"); expect(open).toHaveBeenLastCalledWith("deep/report:12", undefined);
+  inputValue(input, "deep/report:12:9:2"); await settle(); key(input, "Enter");
+  expect(open).toHaveBeenLastCalledWith("deep/report:12", 9, 2);
+});
+
+it("invalidates a pending preview when workspace changes but the relative path is identical", async () => {
+  vi.useFakeTimers(); const [workspace, setWorkspace] = createSignal({ root: "/first", name: "first" });
+  let resolve!: (value: string) => void;
+  const preview = vi.fn(() => new Promise<string>(done => { resolve = done; }));
+  const { root } = setup({ get workspace() { return workspace(); }, onPreview: preview });
+  await settle(); await vi.advanceTimersByTimeAsync(100); const old = resolve;
+  setWorkspace({ root: "/next", name: "next" }); await settle(); await vi.advanceTimersByTimeAsync(100);
+  resolve("current workspace preview"); await settle(); old("stale workspace preview"); await settle();
+  expect(root.textContent).toContain("current workspace preview"); expect(root.textContent).not.toContain("stale workspace preview");
+});
+
+it("keeps an in-flight file query alive while progress updates arrive", async () => {
+  vi.useFakeTimers(); const [status, setStatus] = createSignal<FileIndexStatus>({ workspaceRoot: "/project", generation: 1, status: "scanning", indexedFiles: 0, scannedEntries: 0, errorCount: 0, lastError: null, watcherReady: true, watcherError: null });
+  let resolve!: (value: FileEntry[]) => void;
+  const query = vi.fn(() => new Promise<FileEntry[]>(done => { resolve = done; }));
+  const { root } = setup({ files: [], workspace: { root: "/project", name: "project" }, get indexStatus() { return status(); }, onQueryFiles: query });
+  await settle(); await vi.advanceTimersByTimeAsync(0);
+  setStatus({ ...status(), indexedFiles: 10, scannedEntries: 20 }); await settle(); await vi.advanceTimersByTimeAsync(1000);
+  expect(query).toHaveBeenCalledTimes(1);
+  resolve([{ path: "fresh.ts", name: "fresh.ts", isDir: false }]); await settle();
+  expect(root.querySelector('.goto-name')?.textContent).toBe("fresh.ts");
 });

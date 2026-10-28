@@ -2,7 +2,10 @@ use crate::DesktopState;
 use serde::{Deserialize, Serialize};
 use span_core::{BufferSnapshot, SessionState, SessionStore};
 use specta::Type;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex, OnceLock, Weak,
+};
 use tauri::State;
 use tauri_specta::Event;
 
@@ -19,6 +22,104 @@ enum FormatPreparation {
     Saved(BufferSnapshot),
     Format(span_core::FormatRequest),
     Unformatted(String),
+}
+
+static NEXT_FORMAT_JOB_ID: AtomicU64 = AtomicU64::new(1);
+type FormatGates = Mutex<std::collections::HashMap<(usize, String), Weak<tokio::sync::Mutex<()>>>>;
+static FORMAT_GATES: OnceLock<FormatGates> = OnceLock::new();
+
+async fn lock_format_path(
+    workspace: &Arc<Mutex<span_core::CoreWorkspace>>,
+    path: &str,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    let key = (Arc::as_ptr(workspace) as usize, path.to_owned());
+    let gate = {
+        let gates = FORMAT_GATES.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+        let mut gates = gates
+            .lock()
+            .map_err(|_| "Formatter gate state is unavailable".to_owned())?;
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        match gates.get(&key).and_then(Weak::upgrade) {
+            Some(gate) => gate,
+            None => {
+                let gate = Arc::new(tokio::sync::Mutex::new(()));
+                gates.insert(key, Arc::downgrade(&gate));
+                gate
+            }
+        }
+    };
+    Ok(gate.lock_owned().await)
+}
+
+struct FormatJobGuard {
+    state: DesktopState,
+    key: (usize, String),
+    id: u64,
+}
+
+impl Drop for FormatJobGuard {
+    fn drop(&mut self) {
+        if let Ok(mut jobs) = self.state.formatter_jobs.lock() {
+            if jobs.get(&self.key).is_some_and(|(id, _, _)| *id == self.id) {
+                jobs.remove(&self.key);
+            }
+        }
+    }
+}
+
+fn start_format_job(
+    state: &DesktopState,
+    workspace: &Arc<Mutex<span_core::CoreWorkspace>>,
+    path: &str,
+    request_id: Option<u64>,
+) -> (u64, span_core::CancellationToken, FormatJobGuard) {
+    let key = (Arc::as_ptr(workspace) as usize, path.to_owned());
+    let id = NEXT_FORMAT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+    let cancellation = span_core::CancellationToken::default();
+    if let Ok(mut jobs) = state.formatter_jobs.lock() {
+        if let Some((_, _, previous)) =
+            jobs.insert(key.clone(), (id, request_id, cancellation.clone()))
+        {
+            previous.cancel();
+        }
+    }
+    (
+        id,
+        cancellation,
+        FormatJobGuard {
+            state: state.clone(),
+            key,
+            id,
+        },
+    )
+}
+
+pub fn cancel_formatter_jobs_for_path(state: &DesktopState, path: &str) {
+    if let Ok(jobs) = state.formatter_jobs.lock() {
+        for ((_, job_path), (_, _, cancellation)) in jobs.iter() {
+            if job_path == path {
+                cancellation.cancel();
+            }
+        }
+    }
+}
+
+pub fn cancel_formatter_job(state: &DesktopState, path: &str, request_id: u64) {
+    if let Ok(jobs) = state.formatter_jobs.lock() {
+        for ((_, job_path), (_, active_request_id, cancellation)) in jobs.iter() {
+            if job_path == path && *active_request_id == Some(request_id) {
+                cancellation.cancel();
+            }
+        }
+    }
+}
+
+pub fn cancel_all_formatter_jobs(state: &DesktopState) {
+    if let Ok(jobs) = state.formatter_jobs.lock() {
+        for (_, _, cancellation) in jobs.values() {
+            cancellation.cancel();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
@@ -43,7 +144,6 @@ async fn save_unformatted(
     state: DesktopState,
     workspace: Arc<Mutex<span_core::CoreWorkspace>>,
     path: String,
-    expected_revision: u64,
     message: String,
     warning: Option<FormatWarningSink>,
 ) -> Result<BufferSnapshot, String> {
@@ -52,12 +152,17 @@ async fn save_unformatted(
         if !Arc::ptr_eq(&current, &workspace) {
             return Err("Workspace changed while formatting. Run Save again.".to_owned());
         }
-        // Saving the authoritative buffer checks the original revision and disk state.
-        // A draft edited during formatter execution is never replaced or saved here.
-        workspace
+        let mut guard = workspace
             .lock()
-            .map_err(|_| "Workspace state is unavailable".to_owned())?
-            .save_buffer(&path, expected_revision)
+            .map_err(|_| "Workspace state is unavailable".to_owned())?;
+        // Formatter failure must save the current Rope draft, including edits
+        // accepted while formatting was running. Snapshot and save under the
+        // same workspace lock so the revision cannot change between them.
+        let current = guard
+            .buffer_snapshot(&path)
+            .map_err(|error| error.to_string())?;
+        guard
+            .save_buffer(&path, current.revision)
             .map_err(|error| error.to_string())
     })
     .await
@@ -78,7 +183,21 @@ pub async fn format_or_save_with_warning(
     save: bool,
     warning: Option<FormatWarningSink>,
 ) -> Result<BufferSnapshot, String> {
+    format_or_save_with_request(state, path, expected_revision, save, warning, None).await
+}
+
+async fn format_or_save_with_request(
+    state: DesktopState,
+    path: String,
+    expected_revision: u64,
+    save: bool,
+    warning: Option<FormatWarningSink>,
+    request_id: Option<u64>,
+) -> Result<BufferSnapshot, String> {
     let workspace = current_workspace(&state)?;
+    let (_format_job_id, cancellation, _format_job_guard) =
+        start_format_job(&state, &workspace, &path, request_id);
+    let _format_path_guard = lock_format_path(&workspace, &path).await?;
     let worker_workspace = workspace.clone();
     let worker_path = path.clone();
     let preparation = tauri::async_runtime::spawn_blocking(move || {
@@ -115,14 +234,17 @@ pub async fn format_or_save_with_warning(
     let request = match preparation {
         FormatPreparation::Saved(snapshot) => return Ok(snapshot),
         FormatPreparation::Unformatted(message) => {
-            return save_unformatted(state, workspace, path, expected_revision, message, warning)
-                .await
+            return save_unformatted(state, workspace, path, message, warning).await
         }
         FormatPreparation::Format(request) => request,
     };
+    let task_cancellation = cancellation.clone();
     let attempt = tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(span_core::run_formatter(request))
-            .map_err(|error| error.to_string())
+        tauri::async_runtime::block_on(span_core::run_formatter_cancellable(
+            request,
+            task_cancellation,
+        ))
+        .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("Formatter task failed: {error}"))
@@ -130,11 +252,11 @@ pub async fn format_or_save_with_warning(
     let formatted = match attempt {
         Ok(formatted) => formatted,
         Err(message) if save => {
-            return save_unformatted(state, workspace, path, expected_revision, message, warning)
-                .await
+            return save_unformatted(state, workspace, path, message, warning).await
         }
         Err(message) => return Err(message),
     };
+    let result_cancellation = cancellation.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let current = current_workspace(&state)?;
         if !Arc::ptr_eq(&current, &workspace) {
@@ -143,12 +265,17 @@ pub async fn format_or_save_with_warning(
         let mut guard = workspace
             .lock()
             .map_err(|_| "Workspace state is unavailable".to_owned())?;
+        if result_cancellation.is_cancelled() {
+            if save {
+                let saved = save_current_buffer(&mut guard, &path)?;
+                return Ok((saved, Some("Formatting request was cancelled".to_owned())));
+            }
+            return Err("Formatting request was cancelled".to_owned());
+        }
         let snapshot = match guard.apply_format_result(formatted) {
             Ok(snapshot) => snapshot,
             Err(error) if save => {
-                let saved = guard
-                    .save_buffer(&path, expected_revision)
-                    .map_err(|error| error.to_string())?;
+                let saved = save_current_buffer(&mut guard, &path)?;
                 return Ok((saved, Some(error.to_string())));
             }
             Err(error) => return Err(error.to_string()),
@@ -173,14 +300,44 @@ pub async fn format_or_save_with_warning(
     Ok(result.0)
 }
 
+fn save_current_buffer(
+    workspace: &mut span_core::CoreWorkspace,
+    path: &str,
+) -> Result<BufferSnapshot, String> {
+    let current = workspace
+        .buffer_snapshot(path)
+        .map_err(|error| error.to_string())?;
+    workspace
+        .save_buffer(path, current.revision)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn format_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, crate::language_servers::LspService>,
     path: String,
     expected_revision: u64,
+    request_id: u64,
 ) -> Result<BufferSnapshot, String> {
-    format_or_save(state.inner().clone(), path, expected_revision, false).await
+    let snapshot = format_or_save_with_request(
+        state.inner().clone(),
+        path,
+        expected_revision,
+        false,
+        None,
+        Some(request_id),
+    )
+    .await?;
+    lsp.on_snapshot(&snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn cancel_format_buffer(state: State<'_, DesktopState>, path: String, request_id: u64) {
+    cancel_formatter_job(state.inner(), &path, request_id);
 }
 
 #[tauri::command]
@@ -424,6 +581,40 @@ mod tests {
         (directory, state, edited.revision)
     }
 
+    #[test]
+    fn new_path_job_supersedes_old_one_and_path_invalidation_cancels_current_job() {
+        let (_directory, state, _) = dirty_workspace(vec!["span-test-formatter".into()]);
+        let workspace = super::current_workspace(&state).unwrap();
+        let (first_id, first_token, first_guard) =
+            super::start_format_job(&state, &workspace, "draft.ts", Some(1));
+        let (second_id, second_token, second_guard) =
+            super::start_format_job(&state, &workspace, "draft.ts", Some(2));
+        assert!(second_id > first_id);
+        assert!(first_token.is_cancelled());
+        drop(first_guard);
+        assert!(state.formatter_jobs.lock().unwrap().contains_key(&(
+            std::sync::Arc::as_ptr(&workspace) as usize,
+            "draft.ts".into()
+        )));
+        super::cancel_formatter_job(&state, "draft.ts", 1);
+        assert!(!second_token.is_cancelled());
+        super::cancel_formatter_job(&state, "draft.ts", 2);
+        assert!(second_token.is_cancelled());
+        super::cancel_formatter_jobs_for_path(&state, "draft.ts");
+        assert!(second_token.is_cancelled());
+        drop(second_guard);
+        assert!(state.formatter_jobs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn workspace_switch_cancels_all_registered_formatter_jobs() {
+        let (_directory, state, _) = dirty_workspace(vec!["span-test-formatter".into()]);
+        let workspace = super::current_workspace(&state).unwrap();
+        let (_, token, _guard) = super::start_format_job(&state, &workspace, "draft.ts", None);
+        super::cancel_all_formatter_jobs(&state);
+        assert!(token.is_cancelled());
+    }
+
     #[tokio::test]
     async fn settings_jsonc_save_preserves_comments_without_invoking_a_formatter() {
         let (directory, state, _) =
@@ -518,7 +709,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edits_during_formatter_wait_are_never_saved_by_fallback() {
+    async fn edits_during_formatter_wait_are_saved_by_fallback() {
         let (directory, state, revision) = dirty_workspace(hanging_formatter());
         let task = tokio::spawn(super::format_or_save(
             state.clone(),
@@ -541,18 +732,20 @@ mod tests {
                 }],
             )
             .unwrap();
-        let error = task.await.unwrap().unwrap_err();
-        assert!(error.contains("Expected revision"), "{error}");
+        super::cancel_formatter_jobs_for_path(&state, "draft.ts");
+        let saved = task.await.unwrap().unwrap();
+        assert_eq!(saved.revision, revision + 1);
+        assert_eq!(saved.saved_revision, saved.revision);
         assert_eq!(
             std::fs::read_to_string(directory.path().join("draft.ts")).unwrap(),
-            "const original = true;\n"
+            "// newer edit\n// unsaved draft\nconst original = true;\n"
         );
         let current = workspace
             .lock()
             .unwrap()
             .buffer_snapshot("draft.ts")
             .unwrap();
-        assert_eq!(current.saved_revision, 0);
+        assert_eq!(current.saved_revision, current.revision);
         assert!(current.text.starts_with("// newer edit"));
     }
 

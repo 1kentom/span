@@ -1,0 +1,7 @@
+// Auth failures are -32000 on session/new and session/load. API key and gateway methods carry _meta["api-key"] / _meta.gateway; the value goes in authenticate _meta and never into the log.
+// Recorded shape from gemini-cli 0.67 nightly source (registry pins 0.66.0). Not captured from a live agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "audio": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true}}, "authMethods": [{"id": "gemini-api-key", "name": "Use Gemini API key", "_meta": {"api-key": {}}}, {"id": "gateway", "name": "Use an AI gateway", "_meta": {"gateway": {}}}, {"id": "oauth-personal", "name": "Log in with Google"}], "agentInfo": {"name": "gemini-cli", "title": "Gemini CLI", "version": "0.67.0-nightly"}}}
+{"on": "session/load", "error": {"code": -32000, "message": "Authentication required"}}
+{"on": "session/new", "error": {"code": -32000, "message": "Authentication required"}}
+{"on": "session/new", "result": {"sessionId": "g-1"}}
+{"on": "authenticate", "result": {}}

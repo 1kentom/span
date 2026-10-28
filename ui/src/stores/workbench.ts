@@ -1,11 +1,13 @@
-import { batch, createEffect, createSignal, onCleanup } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { createAutoSaveController, type AutoSaveFailure } from "./autosave";
 import { createStore } from "solid-js/store";
 import { ChangeSet, Text } from "@codemirror/state";
 import { isAssetPath, isBinaryAssetPath } from "../components/AssetPreview";
+import { planTabEvictions } from "./tabLimit";
 import type { EditorEdit, EditorDocumentChange } from "../components/Editor";
 import { api, isDesktop } from "../lib/client";
-import type { BufferSnapshot, FileEntry, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
+import { fileName, normalizePath } from "../lib/navigation";
+import type { BufferSnapshot, FileEntry, FileIndexStatus, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
 
 export const SETTINGS_TAB = "span:settings";
 export function settingsBufferScope(path: string): SettingsScope | undefined { return path === "settings://user" ? "user" : path === "settings://workspace" ? "workspace" : undefined; }
@@ -26,10 +28,18 @@ export function createWorkbench() {
   const [buffers, setBuffers] = createStore<Record<string, BufferSnapshot>>({});
   const [documents, setDocuments] = createSignal<Record<string, { document: Text; change?: EditorDocumentChange }>>({});
   const [groups, setGroups] = createSignal<EditorGroup[]>([{ id: 1, tabs: [] }]);
-  const [activeGroup, setActiveGroup] = createSignal(1);
-  const [files, setFiles] = createSignal<FileEntry[]>([]);
+  const [activeGroup, setActiveGroupState] = createSignal(1);
+  const [indexStatus, setIndexStatus] = createSignal<FileIndexStatus | null>(null);
+  const [indexError, setIndexError] = createSignal("");
   const [recentPaths, setRecentPaths] = createSignal<string[]>([]);
-  const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {} });
+  // Goto can use already visible/open files before the background index finds them.
+  const files = createMemo(() => {
+    const known = new Map<string, FileEntry>();
+    for (const entries of Object.values(directories)) for (const entry of entries || []) if (!entry.isDir) known.set(entry.path, entry);
+    for (const path of recentPaths()) known.set(path, { path, name: fileName(path), isDir: false });
+    return [...known.values()];
+  });
+  const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false } });
   const [settingsScope, setSettingsScope] = createSignal<SettingsScope>("workspace");
   const [scopeSettings, setScopeSettings] = createSignal<Settings>(settings());
   const [configuredSettingsKeys, setConfiguredSettingsKeys] = createSignal<string[]>([]);
@@ -41,6 +51,7 @@ export function createWorkbench() {
   const [markdownViews, setMarkdownViews] = createSignal<Record<string, MarkdownView>>({});
   const [sessionReady, setSessionReady] = createSignal(false);
   const closedTabs: { path: string; group: number }[] = [];
+  const restoreProtectedTabs = new Set<string>();
   const [error, setError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [searchResults, setSearchResults] = createSignal<SearchMatch[]>([]);
@@ -53,16 +64,77 @@ export function createWorkbench() {
   const [pendingRecovery, setPendingRecovery] = createSignal<{ path: string; document: Text }>();
   const [failed, setFailed] = createSignal<Set<string>>(new Set());
   const accepted = new Map<string, BufferSnapshot>();
+  const openingBuffers = new Map<string, { version: number; promise: Promise<BufferSnapshot> }>();
   const writes = new Map<string, Promise<void>>();
   const pendingEdits = new Map<string, EditorEdit[]>();
   const histories = new Map<string, { undo: { forward: ChangeSet; backward: ChangeSet; time: number; origin?: object }[]; redo: { forward: ChangeSet; backward: ChangeSet; time: number; origin?: object }[] }>();
+  const activeFormatTickets = new Map<string, number>();
+  let nextFormatTicket = 1;
+  const tabRecency = new Map<string, number>();
+  let tabClock = 0;
+  const latestOpenByGroup = new Map<number, number>();
+  let openIntent = 0;
   let workspaceVersion = 0;
+  let formatWorkspaceEpoch = 0;
+  let indexTimer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
+  let indexRequest = 0;
+  const directoryLoads = new Map<string, Promise<void>>();
+  const [loadingDirectories, setLoadingDirectories] = createSignal<ReadonlySet<string>>(new Set());
+  onCleanup(() => { disposed = true; clearTimeout(indexTimer); });
+  async function refreshIndexStatus(version = workspaceVersion) {
+    const root = workspace()?.root;
+    if (!root || disposed || version !== workspaceVersion) return;
+    clearTimeout(indexTimer);
+    const request = ++indexRequest;
+    try {
+      const status = await api.fileIndexStatus();
+      if (disposed || version !== workspaceVersion || request !== indexRequest) return;
+      if (status && normalizePath(status.workspaceRoot) !== normalizePath(root)) return;
+      setIndexStatus(status); setIndexError("");
+    } catch (error) {
+      if (disposed || version !== workspaceVersion || request !== indexRequest) return;
+      setIndexError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (!disposed && version === workspaceVersion && request === indexRequest) indexTimer = setTimeout(() => void refreshIndexStatus(version), indexStatus()?.status === "scanning" ? 500 : 2000);
+    }
+  }
+  async function queryFiles(query: string): Promise<FileEntry[]> {
+    const version = workspaceVersion; const root = workspace()?.root;
+    if (!root) return [];
+    const result = await api.queryFile(query, 100);
+    if (disposed || version !== workspaceVersion || normalizePath(result.workspaceRoot) !== normalizePath(root) || (indexStatus() && result.generation < indexStatus()!.generation)) return [];
+    return result.results.map(match => ({ path: match.path, name: fileName(match.path), isDir: false }));
+  }
   let settingsRequest = 0;
   let searchVersion = 0;
   let activeSearch: { cancel: () => Promise<void> } | undefined;
   const report = (e: unknown) => setError(typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
+  const tracksTab = (path: string) => path !== SETTINGS_TAB && !isSettingsBuffer(path);
+  function rememberTab(path?: string) { if (path && tracksTab(path)) tabRecency.set(path, ++tabClock); }
+  function setActiveGroup(group: number) {
+    const changed = activeGroup() !== group;
+    setActiveGroupState(group);
+    if (changed) rememberTab(groups().find(item => item.id === group)?.active);
+  }
+  function invalidateOpenIntent(group: number) { latestOpenByGroup.set(group, ++openIntent); }
   const activeTab = () => groups().find(g => g.id === activeGroup())?.active;
   const activePath = () => activeTab() === SETTINGS_TAB ? undefined : activeTab();
+  const hasOpenEditor = (path: string) => groups().some(group => group.tabs.includes(path));
+  /** Tell the backend language servers a file is no longer shown anywhere, so they can close it. */
+  function releaseBuffer(path: string) {
+    if (!isDesktop || path === SETTINGS_TAB || isSettingsBuffer(path) || hasOpenEditor(path)) return;
+    void Promise.resolve(api.releaseBuffer(path)).catch(() => undefined);
+  }
+  function cancelFormat(path: string) {
+    const requestId = activeFormatTickets.get(path);
+    if (requestId === undefined) return;
+    activeFormatTickets.delete(path);
+    if (isDesktop) void api.cancelFormatBuffer(path, requestId).catch(() => undefined);
+  }
+  function cancelAllFormats() {
+    for (const path of [...activeFormatTickets.keys()]) cancelFormat(path);
+  }
   const isMarkdown = (path: string) => /\.(md|markdown|mdown)$/i.test(path);
   const markdownView = (path: string): MarkdownView => markdownViews()[path] || (isMarkdown(path) ? settings().markdownPreviewDefault ? "preview" : "source" : isAssetPath(path) ? "preview" : "source");
   const setMarkdownView = (path: string, view: MarkdownView) => setMarkdownViews(current => ({ ...current, [path]: view }));
@@ -83,24 +155,137 @@ export function createWorkbench() {
   onCleanup(() => { if (sessionTimer) clearTimeout(sessionTimer); });
   const dirty = (path: string) => { documents()[path]; const buffer = buffers[path]; const revision = buffer?.revision; const savedRevision = buffer?.savedRevision; return !!buffer && ((pendingEdits.get(path)?.length || 0) > 0 || revision !== savedRevision); };
   const hasDirty = () => Object.keys(buffers).some(dirty);
+  function enforceTabLimit(protectedPaths: ReadonlySet<string> = new Set()) {
+    const preferences = settings();
+    if (!preferences.tabLimitEnabled) return;
+    const paths = [...new Set(groups().flatMap(group => group.tabs).filter(tracksTab))];
+    const mostRecentFirst = paths.sort((a, b) => (tabRecency.get(b) || 0) - (tabRecency.get(a) || 0));
+    const candidates = groups().map(group => ({ ...group, tabs: group.tabs.filter(tracksTab) }));
+    const removals = planTabEvictions(candidates, preferences.tabLimit, preferences.tabLimitPerGroup, mostRecentFirst, dirty, protectedPaths);
+    if (!removals.length) return;
+    const removed = new Map<number, Set<string>>();
+    for (const item of removals) {
+      const paths = removed.get(item.group) || new Set<string>(); paths.add(item.path); removed.set(item.group, paths);
+    }
+    const remaining = new Set(groups().flatMap(group => group.tabs.filter(path => !removed.get(group.id)?.has(path))));
+    for (const item of removals) if (!remaining.has(item.path)) tabRecency.delete(item.path);
+    setGroups(current => current.map(group => {
+      const paths = removed.get(group.id);
+      if (!paths) return group;
+      const tabs = group.tabs.filter(path => !paths.has(path));
+      return { ...group, tabs, active: group.active && tabs.includes(group.active) ? group.active : tabs[0] };
+    }));
+    for (const path of new Set(removals.map(item => item.path))) releaseBuffer(path);
+  }
+
+  function applyFormatterSnapshot(path: string, snapshot: BufferSnapshot): boolean {
+    const previousDocument = documents()[path]?.document;
+    if (!previousDocument) return false;
+    const nextDocument = Text.of(snapshot.text.split("\n"));
+    accepted.set(path, snapshot);
+    setBuffers(path, snapshot);
+    if (!previousDocument.eq(nextDocument)) {
+      const changes = [{ from: 0, to: previousDocument.length, insert: nextDocument.toString() }];
+      const changeSet = ChangeSet.of(changes, previousDocument.length);
+      const history = histories.get(path) || { undo: [], redo: [] };
+      history.undo.push({ forward: changeSet, backward: changeSet.invert(previousDocument), time: Date.now() });
+      if (history.undo.length > 1000) history.undo.shift();
+      history.redo = [];
+      histories.set(path, history);
+      setDocuments(current => ({ ...current, [path]: { document: nextDocument, change: { before: previousDocument, changes: changeSet } } }));
+      setEditCounters(current => ({ ...current, [path]: (current[path] || 0) + 1 }));
+    }
+    return true;
+  }
+
+  async function reconcileLocalDraft(path: string, generation: number): Promise<void> {
+    if (generation !== workspaceVersion || !hasOpenEditor(path)) return;
+    let pendingWrite = writes.get(path);
+    if (pendingWrite) {
+      await pendingWrite;
+      while (writes.get(path) === pendingWrite) await Promise.resolve();
+    }
+    if (pendingEdits.get(path)?.length && !failed().has(path)) await flush(path);
+    if (generation !== workspaceVersion || !hasOpenEditor(path)) return;
+    const snapshot = await readBuffer(path);
+    if (generation !== workspaceVersion || !hasOpenEditor(path)) return;
+    const draft = documents()[path]?.document;
+    if (!draft) return;
+    const baseDocument = Text.of(snapshot.text.split("\n"));
+    accepted.set(path, snapshot);
+    pendingEdits.delete(path);
+    setFailed(current => { const next = new Set(current); next.delete(path); return next; });
+    setBuffers(path, snapshot);
+    if (baseDocument.eq(draft)) return;
+    // Rebase the still-visible local draft over the formatter's accepted Rope.
+    // Formatter input is bounded in core, so this recovery edit cannot become a
+    // 100 MiB renderer-to-backend source round trip.
+    const changes = [{ from: 0, to: baseDocument.length, insert: draft.toString() }];
+    edit(path, { baseRevision: snapshot.revision, changes, previousDocument: baseDocument, document: draft, changeSet: ChangeSet.of(changes, baseDocument.length) }, false);
+    await flush(path);
+  }
 
   async function loadDirectory(path: string) {
+    const pending = directoryLoads.get(path); if (pending) return pending;
     const version = workspaceVersion;
-    try { const entries = await api.listDirectory(path); if (version === workspaceVersion) setDirectories(path, entries); } catch (e) { if (version === workspaceVersion) report(e); }
+    setLoadingDirectories(current => new Set([...current, path]));
+    const operation = (async () => {
+      try { const entries = await api.listDirectory(path); if (!disposed && version === workspaceVersion) setDirectories(path, entries); }
+      catch (e) { if (!disposed && version === workspaceVersion) report(e); }
+      finally { if (version === workspaceVersion) { directoryLoads.delete(path); setLoadingDirectories(current => { const next = new Set(current); next.delete(path); return next; }); } }
+    })();
+    directoryLoads.set(path, operation);
+    return operation;
+  }
+  /** Re-reads every expanded directory and the background index status after files were written to disk. */
+  function refreshTree() {
+    void refreshFiles().catch(report);
   }
   async function toggleDirectory(path: string) {
     if (expanded().has(path)) setExpanded(current => { const next = new Set(current); next.delete(path); return next; });
-    else { if (!directories[path]) await loadDirectory(path); setExpanded(current => new Set([...current, path])); }
+    else {
+      // Expand immediately so loading is visible and a second click can collapse.
+      setExpanded(current => new Set([...current, path]));
+      await loadDirectory(path);
+    }
   }
   const readBuffer = (path: string) => { const scope = settingsBufferScope(path); return scope ? api.openSettingsBuffer(scope) : api.openBuffer(path); };
   const discardBuffer = (path: string) => { const scope = settingsBufferScope(path); return scope ? api.discardSettingsBuffer(scope) : api.discardBuffer(path); };
+  async function ensureBuffer(path: string, version: number) {
+    if (buffers[path] || isBinaryAssetPath(path)) return version === workspaceVersion;
+    let pending = openingBuffers.get(path);
+    if (!pending || pending.version !== version) {
+      pending = { version, promise: readBuffer(path) };
+      openingBuffers.set(path, pending);
+    }
+    try {
+      const buffer = await pending.promise;
+      if (version !== workspaceVersion) return false;
+      if (!buffers[path]) {
+        accepted.set(path, buffer);
+        setBuffers(path, buffer);
+        setDocuments(current => ({ ...current, [path]: { document: Text.of(buffer.text.split("\n")) } }));
+      }
+      return true;
+    } finally {
+      if (openingBuffers.get(path) === pending) openingBuffers.delete(path);
+    }
+  }
   async function openFile(path: string, group = activeGroup()) {
     const version = workspaceVersion;
+    if (!groups().some(item => item.id === group)) return;
+    const intent = ++openIntent;
+    latestOpenByGroup.set(group, intent);
+    setActiveGroup(group);
     try {
-      if (!buffers[path] && !isBinaryAssetPath(path)) { const buffer = await readBuffer(path); if (version !== workspaceVersion) return; accepted.set(path, buffer); setBuffers(path, buffer); setDocuments(current => ({ ...current, [path]: { document: Text.of(buffer.text.split("\n")) } })); }
+      if (!await ensureBuffer(path, version)) return;
+      if (version !== workspaceVersion || !groups().some(item => item.id === group)) return;
       if (!isSettingsBuffer(path)) setRecentPaths(current => [path, ...current.filter(item => item !== path)].slice(0, 50));
-      batch(() => { setGroups(current => current.map(g => g.id === group ? { ...g, tabs: g.tabs.includes(path) ? g.tabs : [...g.tabs, path], active: path } : g)); setActiveGroup(group); });
-    } catch (e) { report(e); }
+      const latestForGroup = latestOpenByGroup.get(group) === intent;
+      rememberTab(path);
+      batch(() => { setGroups(current => current.map(g => g.id === group ? { ...g, tabs: g.tabs.includes(path) ? g.tabs : [...g.tabs, path], active: latestForGroup ? path : g.active } : g)); });
+      enforceTabLimit(restoreProtectedTabs);
+    } catch (e) { if (latestOpenByGroup.get(group) === intent) report(e); }
   }
   async function openWorkspace(path?: string, restore?: SessionState) {
     if (busy()) return;
@@ -111,26 +296,43 @@ export function createWorkbench() {
       await Promise.all([...writes.values()]);
       const value = await api.openWorkspace(path);
       if (!value) return;
+      formatWorkspaceEpoch++;
+      cancelAllFormats();
       workspaceVersion++;
-      batch(() => { setWorkspaceGeneration(workspaceVersion); setWorkspace(value); setGroups([{ id: 1, tabs: [] }]); setActiveGroup(1); setExpanded(new Set([""])); setError(""); setSearchResults([]); });
+      latestOpenByGroup.clear();
+      openingBuffers.clear();
+      restoreProtectedTabs.clear();
+      tabRecency.clear(); tabClock = 0;
+      batch(() => { setWorkspaceGeneration(workspaceVersion); setWorkspace(value); setGroups([{ id: 1, tabs: [] }]); setActiveGroup(1); setExpanded(new Set([""])); setError(""); setSearchResults([]); setIndexStatus(null); setIndexError(""); });
       for (const key of Object.keys(buffers)) setBuffers(key, undefined!);
       for (const key of Object.keys(directories)) setDirectories(key, undefined!);
+      clearTimeout(indexTimer); directoryLoads.clear(); setLoadingDirectories(new Set<string>());
+      void refreshIndexStatus(workspaceVersion);
       nextGroupId = 2; accepted.clear(); pendingEdits.clear(); histories.clear(); closedTabs.length = 0; setRecentPaths([]); setDocuments({}); setEditCounters({}); setMarkdownViews(restore?.markdownViews || {});
-      const [rootFiles, allFiles, prefs, rawSettings] = await Promise.all([api.listDirectory(""), api.listFiles(), api.getSettings().catch(e => { report(e); return settings(); }), api.getSettingsJsonc()]);
-      batch(() => { setDirectories("", rootFiles); setFiles(allFiles); setSettings(prefs); setScopeSettings(prefs); setSettingsJsonc(rawSettings); });
+      // Render the first visible level independently of settings/session restoration.
+      const rootListing = loadDirectory("");
+      const preferences = Promise.all([api.getSettings(), api.getSettingsJsonc()]).then(([prefs, rawSettings]) => {
+        batch(() => { setSettings(prefs); setScopeSettings(prefs); setSettingsJsonc(rawSettings); });
+      });
+      await Promise.all([rootListing, preferences]);
       await refreshSettingsScope(settingsScope());
       if (restore) {
         setPanels(restore.panels);
         setGroups(restore.groups.slice(0, 2).map((_group, index) => ({ id: index + 1, tabs: [] })));
         if (!groups().length) setGroups([{ id: 1, tabs: [] }]);
+        for (const group of restore.groups.slice(0, 2)) if (group.activePath) restoreProtectedTabs.add(group.activePath);
         for (const [index, group] of restore.groups.slice(0, 2).entries()) {
           for (const file of group.paths) await openFile(file, index + 1);
           setGroups(current => current.map(item => item.id === index + 1 ? { ...item, active: item.tabs.includes(group.activePath || "") ? group.activePath! : item.tabs[0] } : item));
         }
         setActiveGroup(groups()[Math.min(restore.activeGroup, groups().length - 1)]?.id || 1);
+        restoreProtectedTabs.clear();
+        for (const group of groups()) rememberTab(group.active);
+        enforceTabLimit();
         nextGroupId = Math.max(...groups().map(group => group.id)) + 1;
       }
       if (!isDesktop) {
+        const allFiles = await queryFiles("");
         const sample = allFiles.find(f => f.path.endsWith("rpc-node.ts")) || allFiles.find(f => f.path.endsWith("App.tsx")) || allFiles[0];
         if (sample) {
           const parents = sample.path.split("/").slice(0, -1);
@@ -154,6 +356,7 @@ export function createWorkbench() {
     setSessionReady(true);
   }
   function edit(path: string, event: EditorEdit, recordHistory = true) {
+    cancelFormat(path);
     if (recordHistory) {
       const history = histories.get(path) || { undo: [], redo: [] };
       const backward = event.changeSet.invert(event.previousDocument);
@@ -217,15 +420,22 @@ export function createWorkbench() {
       await flush(path);
       const base = accepted.get(path);
       if (!base || failed().has(path)) return false;
+      const documentAtSave = documents()[path]?.document;
+      const editCounterAtSave = editCounters()[path] || 0;
       const scope = settingsBufferScope(path);
       const result = scope ? await api.saveSettingsBuffer(scope, base.revision) : await api.saveBuffer(path, base.revision);
       if (version !== workspaceVersion) return false;
-      if (result.revision > base.revision) await acceptAgentBuffer(path, result, true);
-      const current = accepted.get(path);
-      accepted.set(path, current && current.revision > result.revision ? { ...current, savedRevision: Math.max(current.savedRevision, result.savedRevision) } : result);
-      setBuffers(path, "savedRevision", Math.max(buffers[path].savedRevision, result.savedRevision));
-      void api.listFiles().then(setFiles).catch(report);
-      for (const directory of Object.keys(directories)) if (directories[directory]) void loadDirectory(directory);
+      const localChanged = documentAtSave !== documents()[path]?.document || editCounterAtSave !== (editCounters()[path] || 0) || !!pendingEdits.get(path)?.length;
+      if (result.revision > base.revision) {
+        if (localChanged) await reconcileLocalDraft(path, version);
+        else applyFormatterSnapshot(path, result);
+      } else {
+        const current = accepted.get(path);
+        const next = current && current.revision > result.revision ? { ...current, savedRevision: Math.max(current.savedRevision, result.savedRevision) } : result;
+        accepted.set(path, next);
+        setBuffers(path, "savedRevision", Math.max(buffers[path].savedRevision, result.savedRevision));
+      }
+      if (!dirty(path)) enforceTabLimit();
       if (isSettingsBuffer(path) || path === ".span/settings.jsonc") await refreshSettingsScope(settingsScope());
       return true;
     } catch (e) {
@@ -237,6 +447,7 @@ export function createWorkbench() {
   function openSettings() {
     const existing = groups().find(group => group.tabs.includes(SETTINGS_TAB));
     const group = existing?.id || activeGroup();
+    invalidateOpenIntent(group);
     setGroups(current => current.map(item => item.id === group ? { ...item, tabs: item.tabs.includes(SETTINGS_TAB) ? item.tabs : [...item.tabs, SETTINGS_TAB], active: SETTINGS_TAB } : item));
     setActiveGroup(group);
   }
@@ -246,23 +457,28 @@ export function createWorkbench() {
     const index = current.findIndex(item => item.id === group);
     const next = current.filter(item => item.id !== group);
     batch(() => { setGroups(next); if (activeGroup() === group) setActiveGroup(next[Math.max(0, Math.min(index, next.length - 1))].id); });
+    for (const path of current[index]?.tabs || []) if (!hasOpenEditor(path)) { cancelFormat(path); releaseBuffer(path); }
   }
   function removeTab(path: string, group: number, recordClosed = true) {
     if (recordClosed && path !== SETTINGS_TAB && !isSettingsBuffer(path)) { closedTabs.push({ path, group }); if (closedTabs.length > 20) closedTabs.shift(); }
+    if (groups().find(item => item.id === group)?.active === path) invalidateOpenIntent(group);
     setGroups(current => current.map(item => {
       if (item.id !== group) return item;
       const tabs = item.tabs.filter(tab => tab !== path);
       return { ...item, tabs, active: item.active === path ? tabs[Math.min(item.tabs.indexOf(path), tabs.length - 1)] : item.active };
     }));
     if (!groups().find(item => item.id === group)?.tabs.length) removeGroup(group);
+    if (!hasOpenEditor(path)) { cancelFormat(path); releaseBuffer(path); }
   }
   function closeGroup(group: number) {
     const current = groups().find(item => item.id === group); if (!current || groups().length <= 1) return;
+    invalidateOpenIntent(group);
     const uniqueDirty = current.tabs.find(path => dirty(path) && !groups().some(item => item.id !== group && item.tabs.includes(path)));
     if (uniqueDirty) setPendingClose({ path: uniqueDirty, group, closingGroup: true });
     else removeGroup(group);
   }
   function closeTab(path: string, group: number) {
+    if (groups().find(item => item.id === group)?.active === path) invalidateOpenIntent(group);
     const elsewhere = groups().some(item => item.id !== group && item.tabs.includes(path));
     if (dirty(path) && !elsewhere) setPendingClose({ path, group });
     else removeTab(path, group);
@@ -301,6 +517,7 @@ export function createWorkbench() {
         await writes.get(pending.path);
         if (pendingClose() !== pending || operation !== closeOperation || version !== workspaceVersion) return;
         const originalDocument = documents()[pending.path]?.document;
+        cancelFormat(pending.path);
         const base = await discardBuffer(pending.path);
         if (version !== workspaceVersion) return;
         if (pendingClose() !== pending || operation !== closeOperation || documents()[pending.path]?.document !== originalDocument) { await reconcileCanceledDiscard(pending.path, version); return; }
@@ -315,18 +532,33 @@ export function createWorkbench() {
     } catch (error) { if (version === workspaceVersion) report(error); }
     finally { if (operation === closeOperation) setCloseBusy(false); }
   }
-  function splitEditor() {
+  function splitEditor(sourceGroup = activeGroup(), sourcePath?: string) {
     if (groups().length >= 2) return;
-    const path = activePath(); const id = nextGroupId++;
+    const source = groups().find(group => group.id === sourceGroup); if (!source) return;
+    const path = sourcePath ?? (source.active !== SETTINGS_TAB ? source.active : undefined); const id = nextGroupId++;
     setGroups(current => [...current, { id, tabs: path ? [path] : [], active: path }]);
     setActiveGroup(id);
+  }
+  async function openToSide(path: string, sourceGroup = activeGroup()) {
+    if (!groups().some(group => group.id === sourceGroup)) return;
+    const other = groups().find(group => group.id !== sourceGroup);
+    if (other) { await openFile(path, other.id); return; }
+    const version = workspaceVersion;
+    const opening = openFile(path, sourceGroup);
+    const intent = latestOpenByGroup.get(sourceGroup);
+    await opening;
+    if (version !== workspaceVersion || latestOpenByGroup.get(sourceGroup) !== intent || groups().find(group => group.id === sourceGroup)?.active !== path) return;
+    splitEditor(sourceGroup, path);
   }
   function moveTab(path: string, fromGroup: number, toGroup: number, copy = false) {
     if (path === SETTINGS_TAB) copy = false;
     if (fromGroup === toGroup || !groups().some(group => group.id === toGroup)) return;
+    invalidateOpenIntent(toGroup);
     setGroups(current => current.map(group => group.id === toGroup ? { ...group, tabs: group.tabs.includes(path) ? group.tabs : [...group.tabs, path], active: path } : group));
     if (!copy) removeTab(path, fromGroup, false);
     setActiveGroup(toGroup);
+    rememberTab(path);
+    enforceTabLimit();
   }
   async function search(query: string) {
     const version = ++searchVersion;
@@ -351,6 +583,7 @@ export function createWorkbench() {
     const [selected, effective, raw, keys] = await Promise.all([api.getSettingsForScope(scope), api.getSettings(), api.getSettingsJsoncForScope(scope), api.getSettingsKeysForScope(scope)]);
     if (request !== settingsRequest || version !== workspaceVersion) return;
     batch(() => { setSettingsScope(scope); setScopeSettings(selected); setSettings(effective); setSettingsJsonc(raw); setConfiguredSettingsKeys(keys); });
+    enforceTabLimit();
   }
   async function reloadSettingsJsonc(): Promise<string> { await refreshSettingsScope(); return settingsJsonc(); }
   async function openSettingsJsonc(scope = settingsScope()) { await openFile(settingsBufferPath(scope)); }
@@ -366,9 +599,19 @@ export function createWorkbench() {
     for (const [key, value] of Object.entries(patch)) if (JSON.stringify(scopeSettings()[key as keyof Settings]) !== JSON.stringify(value)) await api.updateSetting(scope, key, JSON.stringify(value));
     await refreshSettingsScope(scope); await syncCleanSettingsBuffer(scope);
   }
+  /** Writes one (possibly dotted) key in one scope, leaving every other key of that scope alone. A null value removes the key. */
+  async function updateSettingKey(key: string, value: unknown, scope: SettingsScope = settingsScope()) {
+    guardSettingsScope(scope);
+    await api.updateSetting(scope, key, value === null || value === undefined ? null : JSON.stringify(value));
+    await refreshSettingsScope(settingsScope()); await syncCleanSettingsBuffer(scope);
+  }
   async function updateEffectiveSetting(key: keyof Settings, value: Settings[keyof Settings]) { const scope: SettingsScope = workspace() ? "workspace" : "user"; guardSettingsScope(scope); await api.updateSetting(scope, key, JSON.stringify(value)); await refreshSettingsScope(); await syncCleanSettingsBuffer(scope); }
   async function resetSetting(key: keyof Settings) { const scope = settingsScope(); guardSettingsScope(scope); await api.updateSetting(scope, key, null); await refreshSettingsScope(scope); await syncCleanSettingsBuffer(scope); }
-  async function refreshFiles() { const version = workspaceVersion; const entries = await api.listFiles(); if (version !== workspaceVersion) return; setFiles(entries); for (const directory of Object.keys(directories)) if (directories[directory]) await loadDirectory(directory); }
+  async function refreshFiles() {
+    const version = workspaceVersion;
+    await Promise.all([...expanded()].map(directory => loadDirectory(directory)));
+    if (version === workspaceVersion) void refreshIndexStatus(version);
+  }
   const inSubtree = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
   async function fileOperation<T>(operation: (assertCurrent: () => void) => Promise<T>): Promise<T> {
     if (fileOperationBusy()) throw new Error("Finish the current file operation first.");
@@ -389,6 +632,11 @@ export function createWorkbench() {
         setBuffers(previous, undefined!); setBuffers(next, snapshot);
         setDocuments(current => { const value = { ...current }; delete value[previous]; value[next] = { document }; return value; });
       }
+      const movedTabs = new Set(groups().flatMap(group => group.tabs).filter(path => inSubtree(path, from)));
+      for (const previous of movedTabs) {
+        const next = mapped(previous); const priorRecency = tabRecency.get(previous); tabRecency.delete(previous);
+        if (priorRecency !== undefined) tabRecency.set(next, Math.max(priorRecency, tabRecency.get(next) || 0));
+      }
       batch(() => { setGroups(current => current.map(group => ({ ...group, tabs: group.tabs.map(mapped), active: group.active ? mapped(group.active) : undefined }))); setRecentPaths(current => current.map(mapped)); setExpanded(current => new Set([...current].map(mapped))); setMarkdownViews(current => Object.fromEntries(Object.entries(current).map(([path, view]) => [mapped(path), view]))); setEditCounters(current => Object.fromEntries(Object.entries(current).map(([path, revision]) => [mapped(path), revision]))); });
       for (const directory of Object.keys(directories)) if (inSubtree(directory, from)) setDirectories(directory, undefined!);
       await refreshFiles(); return entry;
@@ -398,7 +646,7 @@ export function createWorkbench() {
   async function trashPath(path: string) {
     return fileOperation(async assertCurrent => {
       await api.trashPath(path); assertCurrent();
-      for (const key of Object.keys(buffers)) if (inSubtree(key, path)) { setBuffers(key, undefined!); accepted.delete(key); pendingEdits.delete(key); histories.delete(key); }
+      for (const key of Object.keys(buffers)) if (inSubtree(key, path)) { cancelFormat(key); setBuffers(key, undefined!); accepted.delete(key); pendingEdits.delete(key); histories.delete(key); }
       setDocuments(current => Object.fromEntries(Object.entries(current).filter(([key]) => !inSubtree(key, path))));
       setGroups(current => current.map(group => { const tabs = group.tabs.filter(key => !inSubtree(key, path)); return { ...group, tabs, active: group.active && tabs.includes(group.active) ? group.active : tabs[0] }; }));
       for (const group of [...groups()]) if (!group.tabs.length) removeGroup(group.id);
@@ -451,8 +699,61 @@ export function createWorkbench() {
   }
   async function format(path = activePath()) {
     if (!path || isSettingsBuffer(path)) return;
-    try { await flush(path); if (!synchronized(path) || failed().has(path)) return; const base = accepted.get(path); if (!base) return; const result = await api.formatBuffer(path, base.revision); if (result.revision !== base.revision) await acceptAgentBuffer(path, result, true); }
-    catch (e) { report(e); }
+    const generation = workspaceVersion;
+    const formatEpoch = formatWorkspaceEpoch;
+    let ticket: number | undefined;
+    let documentAtStart: Text | undefined;
+    let editCounterAtStart = 0;
+    try {
+      await flush(path);
+      if (generation !== workspaceVersion || !synchronized(path) || failed().has(path)) return;
+      const base = accepted.get(path);
+      documentAtStart = documents()[path]?.document;
+      if (!base || !documentAtStart) return;
+      editCounterAtStart = editCounters()[path] || 0;
+      ticket = nextFormatTicket++;
+      activeFormatTickets.set(path, ticket);
+      const result = await api.formatBuffer(path, base.revision, ticket);
+      if (generation !== workspaceVersion || formatEpoch !== formatWorkspaceEpoch) return;
+      const currentTicket = activeFormatTickets.get(path);
+      const localChanged = documentAtStart !== documents()[path]?.document
+        || editCounterAtStart !== (editCounters()[path] || 0)
+        || !!pendingEdits.get(path)?.length;
+      if (currentTicket !== ticket) {
+        if (currentTicket === undefined && localChanged && hasOpenEditor(path)) {
+          try { await reconcileLocalDraft(path, generation); } catch (error) { report(error); }
+        } else if (currentTicket === undefined && !localChanged) {
+          const current = accepted.get(path);
+          if (result.revision > base.revision && (!current || current.revision <= result.revision)) {
+            // The last editor may close after Rust applies a successful format
+            // but before its IPC response arrives. Refresh the hidden buffer
+            // without reopening the tab so a later open starts at this revision.
+            applyFormatterSnapshot(path, result);
+          }
+        }
+        return;
+      }
+      if (!hasOpenEditor(path)) {
+        activeFormatTickets.delete(path);
+        if (!localChanged && result.revision > base.revision) applyFormatterSnapshot(path, result);
+        return;
+      }
+      if (localChanged) {
+        if (activeFormatTickets.get(path) === ticket) activeFormatTickets.delete(path);
+        try { await reconcileLocalDraft(path, generation); } catch (error) { report(error); }
+        return;
+      }
+      if (result.revision > base.revision) applyFormatterSnapshot(path, result);
+    } catch (e) {
+      if (generation !== workspaceVersion || !hasOpenEditor(path)) return;
+      if (ticket !== undefined && activeFormatTickets.get(path) !== ticket && activeFormatTickets.has(path)) return;
+      if (documentAtStart && (documentAtStart !== documents()[path]?.document || editCounterAtStart !== (editCounters()[path] || 0))) {
+        if (activeFormatTickets.get(path) === ticket) activeFormatTickets.delete(path);
+        try { await reconcileLocalDraft(path, generation); } catch (error) { report(error); }
+      } else if (activeFormatTickets.get(path) === ticket) report(e);
+    } finally {
+      if (ticket !== undefined && activeFormatTickets.get(path) === ticket) activeFormatTickets.delete(path);
+    }
   }
   async function refreshBuffer(path: string) {
     if (dirty(path)) { setError("This file has unsaved changes. Save or close it before loading agent edits."); return; }
@@ -464,7 +765,7 @@ export function createWorkbench() {
     onFailures: setAutoSaveFailures,
   });
   createEffect(() => autosave.sync());
-  onCleanup(() => autosave.dispose());
-  return { newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, toggleDirectory, openFile, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, confirmClose, splitEditor, search, updateSettings, refreshBuffer };
+  onCleanup(() => { autosave.dispose(); cancelAllFormats(); });
+  return { indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;

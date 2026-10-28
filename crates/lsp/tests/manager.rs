@@ -624,3 +624,74 @@ async fn shutdown_all_sends_shutdown_and_exit() {
     assert_eq!(f.methods("exit").len(), 1);
     assert_eq!(f.manager.state(ID, &f.root).await, None);
 }
+
+#[tokio::test]
+async fn shutdown_all_stops_slow_servers_in_parallel() {
+    let f = fixture("slow-shutdown");
+    let other = f.root.parent().unwrap().join("project2");
+    std::fs::create_dir(&other).unwrap();
+    f.ready().await;
+    f.manager.start(ID, &other).await.unwrap();
+    f.manager.wait_ready(ID, &other, WAIT).await.unwrap();
+    let started = std::time::Instant::now();
+    f.manager.shutdown_all().await;
+    let elapsed = started.elapsed();
+    // Each server needs about 1.5 s to answer shutdown; one after the other would be 3 s.
+    assert!(elapsed < Duration::from_millis(2500), "took {elapsed:?}");
+    assert_eq!(f.manager.state(ID, &f.root).await, None);
+}
+
+#[tokio::test]
+async fn did_save_is_sent_only_when_the_server_asks_for_it() {
+    for (mode, expect, text) in [
+        ("normal", 0usize, false),
+        ("save", 1, false),
+        ("save-text", 1, true),
+    ] {
+        let f = fixture(mode);
+        f.ready().await;
+        f.manager
+            .open_document(ID, &f.root, &f.file("a.json"), "json", "{}".into())
+            .await
+            .unwrap();
+        f.manager
+            .save_document(ID, &f.root, &f.file("a.json"))
+            .await
+            .unwrap();
+        // Unknown documents and unstarted servers are quiet no-ops.
+        f.manager
+            .save_document(ID, &f.root, &f.file("other.json"))
+            .await
+            .unwrap();
+        if expect > 0 {
+            f.wait_log("textDocument/didSave", 1).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let saves = f.methods("textDocument/didSave");
+        assert_eq!(saves.len(), expect, "{mode}");
+        if expect > 0 {
+            assert_eq!(saves[0]["params"]["text"].is_string(), text, "{mode}");
+        }
+        f.manager.shutdown_all().await;
+    }
+}
+
+#[tokio::test]
+async fn reopened_documents_continue_their_version_numbers() {
+    let f = fixture("normal");
+    f.ready().await;
+    let path = f.file("a.json");
+    let v1 = f
+        .manager
+        .open_document(ID, &f.root, &path, "json", "{}".into())
+        .await
+        .unwrap();
+    f.manager.close_document(ID, &f.root, &path).await.unwrap();
+    let v2 = f
+        .manager
+        .open_document(ID, &f.root, &path, "json", "{}".into())
+        .await
+        .unwrap();
+    assert!(v2 > v1, "{v1} then {v2}");
+    f.manager.shutdown_all().await;
+}
