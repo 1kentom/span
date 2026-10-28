@@ -1417,7 +1417,7 @@ export type ModelUse_Serialize = {
 	turns: number,
 };
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
@@ -1826,6 +1826,8 @@ export type SessionState_Deserialize = {
 	activeGroup: number,
 	panels: SessionPanels_Deserialize,
 	markdownViews: { [key in string]: MarkdownView },
+	/**  Two editor groups are stacked (one above the other) instead of side by side. */
+	splitVertical?: boolean,
 };
 
 export type SessionState_Serialize = {
@@ -1834,6 +1836,8 @@ export type SessionState_Serialize = {
 	activeGroup: number,
 	panels: SessionPanels_Serialize,
 	markdownViews: { [key in string]: MarkdownView },
+	/**  Two editor groups are stacked (one above the other) instead of side by side. */
+	splitVertical: boolean,
 };
 
 /**
@@ -1987,11 +1991,21 @@ export type StartupRequestError = {
 export type StartupRequest_Deserialize = {
 	workspaceRoot?: string | null,
 	files: StartupFile_Deserialize[],
+	/**
+	 *  True when `workspace_root` was derived from the files (no folder was named). The window
+	 *  then keeps an open project and opens the files in it, instead of switching project.
+	 */
+	impliedRoot?: boolean,
 };
 
 export type StartupRequest_Serialize = {
 	workspaceRoot: string | null,
 	files: StartupFile_Serialize[],
+	/**
+	 *  True when `workspace_root` was derived from the files (no folder was named). The window
+	 *  then keeps an open project and opens the files in it, instead of switching project.
+	 */
+	impliedRoot: boolean,
 };
 
 export type StartupRequestsChanged = {
