@@ -351,17 +351,20 @@
 }
 .agent-composer {
   position: relative;
-  border: 1.5px solid var(--sb-accent);
-  border-radius: 7px;
-  background: var(--sb-surface);
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--sb-fg) 14%, transparent);
+  border-radius: 20px;
+  background: linear-gradient(180deg, color-mix(in srgb, white 5%, var(--sb-surface)), color-mix(in srgb, black 8%, var(--sb-surface)));
 }
 .agent-composer:focus-within {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sb-accent) 17%, transparent);
+  border-color: color-mix(in srgb, var(--sb-accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sb-accent) 9%, transparent);
 }
 .agent-popover-anchor {
   position: absolute;
-  left: -1.5px;
-  right: -1.5px;
+  left: -1px;
+  right: -1px;
   bottom: calc(100% + 8px);
   z-index: 31;
 }
@@ -395,16 +398,38 @@
 .agent-input {
   display: block;
   width: 100%;
-  min-height: 61px;
-  max-height: 180px;
-  overflow: auto;
+  min-height: 60px;
+  max-height: 178px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   resize: none;
-  padding: 10px 10px 8px;
+  padding: 12px 14px 8px;
   border: 0;
+  border-radius: 20px 20px 0 0;
   background: transparent;
   color: var(--sb-fg);
-  font-size: 12.5px;
-  line-height: 19px;
+  font-size: 13.5px;
+  line-height: 20px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll) transparent;
+}
+.agent-composer.expanded .agent-input {
+  max-height: none;
+}
+/* Tiles wrap onto new rows. A sideways scroller showed a thick scrollbar and left half tiles with a stray round remove button at its edge. */
+.agent-composer .att-tray {
+  flex-wrap: wrap;
+  max-height: 220px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-width: 0;
+}
+.agent-composer .att-tray:empty {
+  display: none;
 }
 .agent-input:focus-visible {
   outline: 0;
@@ -418,10 +443,14 @@
   align-items: center;
   gap: 3px;
   min-width: 0;
-  margin: 0 4px 4px;
-  padding: 2px;
-  border-radius: 4px;
-  background: var(--sb-field);
+  margin: 0 8px 8px;
+  padding: 0;
+}
+.agent-composer-toolbar > * {
+  min-width: 0;
+}
+.agent-composer-toolbar > :is(.agent-send, .agent-tool-button:not(.agent-model-button, .agent-mode-button), .sb-ring) {
+  flex: none;
 }
 .agent-tool-button {
   display: inline-flex;
@@ -491,14 +520,21 @@
   height: 27px;
   flex: none;
   padding: 0;
-  border-radius: 4px;
-  background: var(--sb-accent);
-  color: var(--sb-on-accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--sb-accent) 26%, transparent);
+  color: var(--sb-accent-fg);
+}
+.agent-send:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sb-accent) 40%, transparent);
 }
 .agent-send:disabled {
   opacity: 1;
-  background: var(--sb-control);
+  background: color-mix(in srgb, var(--sb-fg) 6%, transparent);
   color: var(--sb-faint);
+}
+.agent-expand[aria-pressed="true"] {
+  background: var(--sb-control);
+  color: var(--sb-fg);
 }
 .agent-send.stop {
   background: var(--sb-accent-surface);

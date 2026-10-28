@@ -438,3 +438,27 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-update-badge { display: inline-block; align-self: flex-start; margin-top: 2px; padding: 0 6px; border: 1px solid var(--sb-accent-fg); border-radius: 4px; font-size: 10.5px; line-height: 16px; color: var(--sb-accent-fg); }
 .sb-update-check { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0 2px; }
 .sb-update-error { color: var(--sb-error); }
+
+/* Session state from the backend: running and waiting rows stand out; attention uses the warning colour. */
+.sb-session.live { background: var(--sb-accent-surface); }
+.sb-session.attention { background: var(--sb-warn-surface); }
+.sb-session-state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--sb-accent-fg); }
+.sb-session-state.idle { color: var(--sb-faint); }
+.sb-session-state.attention { color: var(--sb-warning); font-weight: 600; }
+.sb-session-state .sb-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* Background chats waiting for the user, counted on the History button. */
+.agent-history-button { position: relative; }
+.agent-attention-badge { position: absolute; top: 0; right: 0; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--sb-warning); color: var(--sb-on-accent); font-size: 9px; font-weight: 700; line-height: 13px; text-align: center; }
+
+/* The step running now, pinned above the composer. */
+.agent-running-step { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 6px 10px; border-top: 1px solid var(--sb-border); font-size: 12px; }
+.agent-running-head { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--sb-fg); }
+.agent-running-output { max-height: 132px; overflow: auto; padding: 4px 6px; border-radius: 4px; background: var(--sb-field); color: var(--sb-dim); font-size: 11px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-running-output.full { max-height: 320px; }
+.agent-running-more { align-self: flex-start; font-size: 11px; }
+.agent-running-still { margin: 0; color: var(--sb-faint); font-size: 11px; }
+
+/* Shown while a turn runs and the user types or presses Send. */
+.agent-run-hint { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 8px; color: var(--sb-dim); font-size: 11px; }
+.agent-run-hint .sb-flex { min-width: 0; }

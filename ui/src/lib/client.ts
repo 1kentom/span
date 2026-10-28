@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import { createPreviewSettings } from './preview-settings';
+import type { PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -430,9 +431,27 @@ export const api = {
     if (generation !== agentGeneration) throw new Error('Agent connection was superseded by another connection or disconnect.');
     return session;
   },
+  /**
+   * Runs a prompt in the active session. A refusal is thrown as an Error whose `prompt` field is the typed
+   * `PromptError` (`kind` busy or failed), so callers match the kind and never the message text.
+   */
   async agentPrompt(text: string, attachments: PromptAttachment[] = []): Promise<void> {
     if (!isDesktop) nativeRequired('Sending agent prompts');
-    await commands.agentPrompt(text, attachments.length ? attachments : null);
+    try {
+      await commands.agentPrompt(text, attachments.length ? attachments : null);
+    } catch (cause) {
+      if (cause && typeof cause === 'object' && 'kind' in cause && 'message' in cause) throw Object.assign(new Error(String((cause as PromptError).message)), { prompt: cause as PromptError });
+      throw cause;
+    }
+  },
+  /** Runtime state of every session on the active connection. */
+  async agentSessionStates(): Promise<SessionStates> {
+    if (!isDesktop) return { connectionId: null, sessions: [] };
+    return commands.agentSessionStates();
+  },
+  /** Session states as the backend publishes them, whenever they change. */
+  async onAgentSessionStates(listener: (states: SessionStates) => void): Promise<() => void> {
+    return isDesktop ? events.agentSessionStatesChanged.listen(event => listener(event.payload.states)) : () => undefined;
   },
   /** Sign in with an advertised method, then the blocked session is created. Returns the session id. */
   async agentAuthenticate(methodId: string): Promise<string> {

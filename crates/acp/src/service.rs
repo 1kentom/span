@@ -547,6 +547,12 @@ impl AgentService {
             bridge.delegated.insert(session_id.to_owned());
         }
     }
+    /// True while a turn of `session_id` is in flight on the agent.
+    pub fn is_running(&self, session_id: &str) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|bridge| bridge.running.contains(session_id))
+    }
     pub fn cancel(&self, session_id: String) -> Result<(), String> {
         {
             let mut bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
@@ -1000,7 +1006,7 @@ async fn run(
                             if bridge.closed || !bridge.sessions.contains(&id) { return Err("Unknown session".to_string()); }
                             // Gemini silently aborts the running turn when a second prompt arrives, so none is ever sent.
                             if bridge.replaying.contains_key(&id) { return Err("The session is still being restored".to_string()); }
-                            if !bridge.running.insert(id.clone()) { return Err("A prompt is already running in this session".to_string()); }
+                            if !bridge.running.insert(id.clone()) { return Err(crate::manager::PROMPT_ALREADY_RUNNING.to_string()); }
                             bridge.cancelled.remove(&id); bridge.rejected.remove(&id); Ok(())
                         }).unwrap_or_else(|_| Err("Agent state lock poisoned".into()));
                         if let Err(error) = valid { let _ = reply.send(Err(error)); continue; }

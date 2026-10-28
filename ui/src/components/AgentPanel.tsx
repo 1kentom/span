@@ -91,7 +91,9 @@ export function AgentPanel(props: AgentPanelProps) {
       updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
       inWorkspace: true,
       current: session.sessionId === a.state().sessionId,
-      locked: !a.state().canLoad,
+      // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
+      locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
+      status: a.rowStatus(session.sessionId),
     })),
   );
   const recents = createMemo(() =>
@@ -178,6 +180,8 @@ export function AgentPanel(props: AgentPanelProps) {
       onDragLeave={a.intake.onDragLeave}
       onDrop={a.intake.onDrop}
     >
+      {/* Read once when a background chat newly waits for the user. Elapsed timers never reach it. */}
+      <p class="sb-visually-hidden" aria-live="polite" aria-atomic="true">{a.attentionAnnouncement()}</p>
       <header class="agent-header">
         <Show when={hasAgent()} fallback={<span class="agent-logo" aria-hidden="true" />}>
           <BrandIcon id={brand().id} name={brand().name} size={15} />
@@ -196,8 +200,16 @@ export function AgentPanel(props: AgentPanelProps) {
           <FollowPill following={a.following()} onToggle={a.toggleFollow} />
         </Show>
         <Show when={a.connected() && a.state().canList && a.view() !== "history"}>
-          <button class="agent-icon-button" aria-label="Earlier sessions" title="Earlier sessions" onClick={openHistory}>
+          <button
+            class="agent-icon-button agent-history-button"
+            aria-label={a.attentionCount() ? `Earlier sessions, ${a.attentionCount()} waiting for you` : "Earlier sessions"}
+            title={a.attentionCount() ? `${a.attentionCount()} background ${a.attentionCount() === 1 ? "chat waits" : "chats wait"} for you` : "Earlier sessions"}
+            onClick={openHistory}
+          >
             <Icon name="Clock" size={15} />
+            <Show when={a.attentionCount()}>
+              <span class="agent-attention-badge" aria-hidden="true">{a.attentionCount()}</span>
+            </Show>
           </button>
         </Show>
         <Show when={isDesktop}>
@@ -205,7 +217,7 @@ export function AgentPanel(props: AgentPanelProps) {
             class="agent-icon-button"
             aria-label={a.connected() ? "New chat" : "Connect an agent"}
             title={a.connected() ? "New chat" : "Connect an agent"}
-            disabled={a.working() || a.running()}
+            disabled={a.working()}
             onClick={() => (a.connected() ? void a.newChat() : a.setView("connect"))}
           >
             <Icon name="Add" size={16} />

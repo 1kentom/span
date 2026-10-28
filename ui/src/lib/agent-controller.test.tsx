@@ -599,7 +599,9 @@ describe("queued messages after errors and reconnects", () => {
     expect(a.queueHeld()).toBe(false);
   });
 
-  it("keeps queued messages across a reconnect and a new chat, held until the user sends them", async () => {
+  // A reconnect carries the open chat's queue over (its connection ended); a new chat does not take it: the queue stays
+  // with the chat it was written for, which keeps it in the background store (see agent-chats.test.tsx).
+  it("keeps queued messages across a reconnect, held until the user sends them, and leaves them with their chat on a new chat", async () => {
     controllablePrompts();
     const a = await connected();
     a.setPrompt("first");
@@ -611,9 +613,9 @@ describe("queued messages after errors and reconnects", () => {
     await reconnectWith(a);
     expect(a.connected()).toBe(true);
     expect(a.queue().map((entry) => entry.text)).toEqual(["second"]);
-    await a.newChat();
-    expect(a.queue().map((entry) => entry.text)).toEqual(["second"]);
     expect(a.queueHeld()).toBe(true);
+    await a.newChat();
+    expect(a.queue()).toEqual([]);
     expect(sent()).toEqual(["first"]);
   });
 

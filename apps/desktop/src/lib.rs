@@ -569,7 +569,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             services::FormatWarning,
             menu::NativeActionEvent,
             startup::StartupRequestsChanged,
-            startup::StartupRequestError
+            startup::StartupRequestError,
+            agents::AgentSessionStatesChanged
         ])
         .commands(collect_commands![
             open_workspace,
@@ -630,6 +631,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_close_session,
             agents::agent_delete_session,
             agents::agent_prompt,
+            agents::agent_session_states,
             agents::agent_authenticate,
             agents::agent_authenticate_with,
             agents::agent_presets,
@@ -679,6 +681,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            agents::watch_session_states(app.handle());
             menu::install(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
