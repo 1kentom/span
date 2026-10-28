@@ -156,9 +156,9 @@ describe("history delete confirm", () => {
     const onClose = vi.fn();
     const host = mount(() => <HistoryList {...base} rows={rows} onDelete={onDelete} onClose={onClose} />);
     host.querySelector<HTMLButtonElement>("[aria-label='Actions for Chat A']")!.click();
-    expect([...host.querySelectorAll("[role=menuitem]")].map((item) => text(item))).toEqual(["Resume", "Close session", "Delete"]);
+    expect([...host.querySelectorAll("[role=menuitem] .sb-menu-label")].map((item) => text(item))).toEqual(["Close session", "Delete"]);
     host.querySelector<HTMLButtonElement>("[aria-label='Actions for Chat B']")!.click();
-    expect([...host.querySelectorAll("[role=menuitem]")].map((item) => text(item))).toEqual(["Resume", "Delete"]);
+    expect([...host.querySelectorAll("[role=menuitem] .sb-menu-label")].map((item) => text(item))).toEqual(["Delete"]);
     host.querySelector<HTMLButtonElement>("[role=menuitem].danger")!.click();
     expect(onDelete).not.toHaveBeenCalled();
     expect(host.querySelector(".sb-confirm")).not.toBeNull();

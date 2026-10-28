@@ -107,7 +107,7 @@ describe("groupSessions", () => {
 describe("HistoryList", () => {
   const noon = new Date(2026, 9, 28, 12, 0).getTime();
   const rows: SessionRow[] = [
-    { id: "s1", title: "Fix parser", updatedAt: noon - 1000, inWorkspace: true, current: true, models: ["opus"], meta: "12 msgs" },
+    { id: "s1", title: "Fix parser", updatedAt: noon - 1000, inWorkspace: true, current: true, models: ["opus"], files: 12 },
     { id: "s2", title: "Other repo chat", updatedAt: noon - 864e5 * 3, inWorkspace: false },
     { id: "s3", title: "Locked chat", updatedAt: noon - 2000, inWorkspace: true, locked: true },
   ];
@@ -134,7 +134,7 @@ describe("HistoryList", () => {
     expect(host.querySelectorAll(".sb-session")).toHaveLength(1);
     search.value = "zzz";
     search.dispatchEvent(new InputEvent("input", { bubbles: true }));
-    expect(host.textContent).toContain("No sessions found.");
+    expect(host.textContent).toContain("No sessions match \u201czzz\u201d.");
   });
   it("hides the scope control when no unfiltered list exists, and shows every row it is given", () => {
     const host = mount(() => <HistoryList rows={rows} now={noon} query="" onQuery={() => undefined} formatTime={() => "t"} onOpen={() => undefined} />);
@@ -151,16 +151,15 @@ describe("HistoryList", () => {
     expect(buttons[1].disabled).toBe(true);
     expect(host.textContent).toContain("Read-only. This agent doesn't support session/load.");
   });
-  it("offers Resume on openable rows, no menu on a locked row without actions, and only the supported actions", () => {
+  it("offers no menu without actions, and only the supported actions", () => {
     const bare = view().host;
     expect(bare.querySelector("[aria-label='Actions for Locked chat']")).toBeNull();
-    bare.querySelector<HTMLButtonElement>("[aria-label='Actions for Fix parser']")!.click();
-    expect([...bare.querySelectorAll("[role=menuitem]")].map((el) => text(el))).toEqual(["Resume"]);
+    expect(bare.querySelector("[aria-label='Actions for Fix parser']")).toBeNull();
     const calls: string[] = [];
     const { host } = view({ onCopyId: (id) => calls.push(`copy:${id}`) });
     host.querySelector<HTMLButtonElement>(".row-menu")!.click();
-    expect([...host.querySelectorAll("[role=menuitem]")].map((el) => text(el))).toEqual(["Resume", "Copy session ID"]);
-    host.querySelectorAll<HTMLButtonElement>("[role=menuitem]")[1].click();
+    expect([...host.querySelectorAll("[role=menuitem]")].map((el) => text(el))).toEqual(["Copy session ID"]);
+    host.querySelectorAll<HTMLButtonElement>("[role=menuitem]")[0].click();
     expect(calls).toEqual(["copy:s1"]);
     expect(host.querySelector("[role=menu]")).toBeNull();
   });
@@ -173,7 +172,7 @@ describe("HistoryList", () => {
     key("Escape");
     expect(host.querySelector("[role=menu]")).toBeNull();
     trigger.click();
-    [...host.querySelectorAll<HTMLButtonElement>("[role=menuitem]")].find((el) => text(el) === "Rename")!.click();
+    [...host.querySelectorAll<HTMLButtonElement>("[role=menuitem]")].find((el) => text(el.querySelector(".sb-menu-label")) === "Rename")!.click();
     const input = host.querySelector<HTMLInputElement>("[aria-label='Session name']")!;
     expect(input.value).toBe("Fix parser");
     input.value = "Parser fix";

@@ -137,8 +137,11 @@ export function AgentPanel(props: AgentPanelProps) {
         id: session.sessionId,
         brand: brand(),
         title: stored.title || session.title || "Untitled chat",
-        agents: stored.agents,
+        // The connected agent listed the session, so it is the one agent known even without stored metadata.
+        agents: stored.agents.length ? stored.agents : hasAgent() ? [{ id: brand().id ?? brand().name, name: brand().name }] : [],
         models: stored.models,
+        files: stored.files,
+        delta: stored.delta,
         updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
         inWorkspace: true,
         current: session.sessionId === a.state().sessionId,
@@ -337,7 +340,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 {a.sessionsError()}
               </p>
             </Show>
-            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
+            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} onOpen={(id) => void a.resumeChat(id)} onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
               <p class="sb-fine agent-pad" role="status">
                 Loading chats…
               </p>

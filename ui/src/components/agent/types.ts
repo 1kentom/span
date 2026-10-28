@@ -126,10 +126,12 @@ export type SessionRow = {
   updatedAt: number;
   inWorkspace: boolean;
   current?: boolean;
-  /** Agents Span's stored metadata names for the session. Absent or empty shows no agent chip. */
+  /** Agents of the session, drawn as stacked avatars. Absent or empty falls back to `brand`. */
   agents?: { id: string; name: string }[];
   models?: string[];
-  meta?: string;
+  /** Files the session changed, from stored metadata. Absent means unknown and shows nothing. */
+  files?: number;
+  /** Lines added and removed, from stored metadata. Absent means unknown and shows nothing. */
   delta?: { add: number; del: number };
   /** True when the agent lacks session/load, so the row cannot be reopened. */
   locked?: boolean;
