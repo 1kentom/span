@@ -65,6 +65,10 @@ function TraitChip(props: { trait: ModelTrait }) {
 /** A provider-prefixed model reads without its prefix inside a cost tier ("opencode/Beam Free" becomes "Beam Free"); the full name stays in the tooltip. */
 const shownName = (choice: { value: string; name: string }) => (modelCost(choice) ? choice.name.replace(/^[^/\s]+\//, "") : choice.name);
 
+/** True when another model has the same name once provider prefixes are dropped, so the row needs its provider to tell them apart. */
+const ambiguous = (choices: readonly { value: string; name: string }[], choice: { value: string; name: string }) =>
+  Boolean(modelCost(choice)) && choices.some((other) => other.value !== choice.value && modelCost(other) && shownName(other) === shownName(choice));
+
 /** The model popover: a provider row that opens the agent popover, the agent's model list, then the effort slider. */
 export function ModelPopover(props: ModelPopoverProps) {
   let root: HTMLDivElement | undefined;
@@ -143,6 +147,7 @@ export function ModelPopover(props: ModelPopoverProps) {
                                   <span class="sb-option-text">
                                     <span class="sb-option-line">
                                       <span class="sb-option-name" title={choice().name}>{shownName(choice())}</span>
+                                      <Show when={ambiguous(option().choices, choice())}><span class="sb-provider-tag">{choice().value.split("/")[0]}</span></Show>
                                       <Show when={chipTrait(traits(), choice().name)}>{(trait) => <TraitChip trait={trait()} />}</Show>
                                     </span>
                                     <Show when={choice().description}><span class="sb-sub wrap">{choice().description}</span></Show>

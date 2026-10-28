@@ -697,3 +697,4 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 @media (prefers-reduced-motion: reduce) {
   .sb-switch, .sb-switch-knob { transition: none; }
 }
+.sb-provider-tag { flex: none; padding: 0 5px; border-radius: 4px; background: var(--sb-field); color: var(--sb-faint); font-size: 10.5px; line-height: 16px; }

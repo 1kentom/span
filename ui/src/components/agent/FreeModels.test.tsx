@@ -34,3 +34,17 @@ describe("free models in the model popover", () => {
     expect(host.querySelector(".sb-free-toggle")).toBeNull();
   });
 });
+
+describe("provider prefixes", () => {
+  it("drops the prefix and tags the provider only where two models would read the same", () => {
+    const dup = [{ id: "model", name: "Model", description: null, category: "model", currentValue: "opencode/beam-free", choices: [
+      { value: "opencode/beam-free", name: "opencode/Beam Free", description: null },
+      { value: "opencode-go/beam-free", name: "opencode-go/Beam Free", description: null },
+      { value: "opencode/big-pickle", name: "opencode/Big Pickle", description: null },
+      { value: "opencode/claude-opus-5-5", name: "opencode/Claude Opus 5.5", description: null },
+    ] }] as never;
+    const host = mount(() => <ModelPopover agentName="OpenCode" options={dup} onSelect={() => undefined} onClose={() => undefined} />);
+    expect(names(host)).toEqual(["Beam Free", "Beam Free", "Big Pickle"]);
+    expect([...host.querySelectorAll(".sb-provider-tag")].map((node) => node.textContent)).toEqual(["opencode", "opencode-go"]);
+  });
+});
