@@ -29,6 +29,7 @@ pub enum NativeAction {
     ToggleWordWrap,
     MarkdownPreview,
     FormatDocument,
+    FormatWithLanguageServer,
     GoToLine,
     ZoomIn,
     ZoomOut,
@@ -85,6 +86,11 @@ const ACTIONS: &[(&str, &str, NativeAction)] = &[
         "formatDocument",
         "Format Document",
         NativeAction::FormatDocument,
+    ),
+    (
+        "formatWithLanguageServer",
+        "Format with Language Server",
+        NativeAction::FormatWithLanguageServer,
     ),
     ("goToLine", "Go to Line...", NativeAction::GoToLine),
     (
@@ -155,6 +161,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["findInFile"],
             &items["searchWorkspace"],
             &items["formatDocument"],
+            &items["formatWithLanguageServer"],
         ],
     )?;
     let view = Submenu::with_items(
@@ -233,4 +240,46 @@ pub fn sync_native_menu(
         .filter(|(id, _, _)| bindings.get(*id).is_some_and(|keys| !keys.is_empty()))
         .map(|(id, _, _)| (*id).to_owned())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_menu_actions_match_the_frontend_command_registry() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../ui/src/lib/commands.ts"
+        ));
+        let definitions = source.split("] as const").next().unwrap();
+        let frontend = definitions
+            .split("id: \"")
+            .skip(1)
+            .map(|entry| entry.split('"').next().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let native = ACTIONS
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(!frontend.is_empty());
+        assert_eq!(
+            native, frontend,
+            "Native menu must accept every action sent by nativeMenuBindings"
+        );
+        span_core::Settings {
+            keybindings: ACTIONS
+                .iter()
+                .map(|(id, _, _)| ((*id).to_owned(), Vec::new()))
+                .collect(),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
+        for (id, _, action) in ACTIONS {
+            assert_eq!(
+                serde_json::to_value(action).unwrap(),
+                serde_json::Value::String((*id).into())
+            );
+        }
+    }
 }
