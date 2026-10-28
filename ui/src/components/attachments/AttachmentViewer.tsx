@@ -33,6 +33,9 @@ export interface AttachmentViewerProps {
   onShowSessionList?: () => void;
 }
 
+/** Props of the inline view. Without `onClose` there is no close button: a workbench tab closes from its own tab strip. */
+export type AttachmentViewProps = Omit<AttachmentViewerProps, 'onClose'> & { onClose?: () => void };
+
 const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 
 function dataUrlBytes(url: string): Uint8Array {
@@ -53,6 +56,19 @@ function dataUrlBytes(url: string): Uint8Array {
  * is for URLs only), so it needs a backend command first.
  */
 export function AttachmentViewer(props: AttachmentViewerProps) {
+  return <Modal label={`Attachment ${props.item.name}`} class="att-viewer" onClose={props.onClose}>
+    <AttachmentBody {...props} closable />
+  </Modal>;
+}
+
+/** The same viewer laid out inside a workbench tab instead of a dialog. */
+export function AttachmentView(props: AttachmentViewProps) {
+  return <section class="att-viewer att-viewer-tab" aria-label={`Attachment ${props.item.name}`}>
+    <AttachmentBody {...props} closable={false} />
+  </section>;
+}
+
+function AttachmentBody(props: AttachmentViewProps & { closable: boolean }) {
   const [loaded, setLoaded] = createSignal<ViewerContent>({ status: 'loading' });
   const hasData = () => props.item.bytes !== undefined || props.item.text !== undefined;
   // Path-only workspace rasters are fetched through the supplied loader. Nothing else is read lazily.
@@ -85,12 +101,12 @@ export function AttachmentViewer(props: AttachmentViewerProps) {
   const canOpen = () => !!props.onOpenInEditor && isInWorkspace(props.item);
   const nativeNotice = () => props.nativeUnavailable && ((props.onSaveToWorkspace && !isInWorkspace(props.item)) || canOpen()) ? props.nativeUnavailable : undefined;
 
-  return <Modal label={`Attachment ${props.item.name}`} class="att-viewer" onClose={props.onClose}>
+  return <>
     <header class="att-viewer-header">
       <AttachmentIcon kind={props.item.kind} size={14} />
       <strong class="att-viewer-title" title={props.item.name}>{props.item.name}</strong>
       <span class="att-viewer-kind">{kindLabels[props.item.kind]}</span>
-      <button type="button" class="att-viewer-close" autofocus aria-label="Close attachment viewer" onClick={props.onClose}><Icon name="CloseCircle" size={14} /></button>
+      <Show when={props.closable && props.onClose}>{close => <button type="button" class="att-viewer-close" autofocus aria-label="Close attachment viewer" onClick={() => close()()}><Icon name="CloseCircle" size={14} /></button>}</Show>
     </header>
     <Show when={props.blockedReason}><div class="att-viewer-notice att-viewer-blocked" role="note">Not sent: {props.blockedReason}</div></Show>
     <div class="att-viewer-stage">
@@ -104,7 +120,7 @@ export function AttachmentViewer(props: AttachmentViewerProps) {
         onSaveToWorkspace={canSave() ? () => props.onSaveToWorkspace!(props.item) : undefined}
         onCopyPath={props.onCopyPath && props.item.path ? () => props.onCopyPath!(props.item.path!) : undefined}
         onShowInSession={props.onShowInSession ? () => props.onShowInSession!(props.item) : undefined}
-        onRemove={props.onRemove ? () => { props.onRemove!(props.item); props.onClose(); } : undefined}
+        onRemove={props.onRemove ? () => { props.onRemove!(props.item); props.onClose?.(); } : undefined}
         onShowSessionList={props.onShowSessionList}
       />
     </div>
@@ -114,5 +130,5 @@ export function AttachmentViewer(props: AttachmentViewerProps) {
         <button type="button" class="att-action" disabled={!!props.nativeUnavailable} title={props.nativeUnavailable} onClick={() => props.onOpenInEditor!(props.item)}><Icon name="Code1" size={13} />Open in editor</button>
       </footer>
     </Show>
-  </Modal>;
+  </>;
 }
