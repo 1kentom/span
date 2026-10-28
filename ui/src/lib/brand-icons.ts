@@ -107,3 +107,12 @@ export function brandIconSource(
 ) {
   return theme === "Light" ? asset.light : asset.dark;
 }
+
+/** Last resort when the agent identity is unknown: the family named by its own model list (Opus, GPT, Gemini). */
+export function brandFromModelNames(names: readonly string[]): BrandIdentity | undefined {
+  const text = names.join(" ").toLowerCase();
+  if (/\b(opus|sonnet|haiku|fable|claude)\b/.test(text)) return { id: "claude", name: "Claude" };
+  if (/\b(gpt|codex)\b|\bo[1-9]\b/.test(text)) return { id: "codex", name: "Codex" };
+  if (/\bgemini\b/.test(text)) return { id: "gemini", name: "Gemini" };
+  return undefined;
+}

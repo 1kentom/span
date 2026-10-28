@@ -490,6 +490,14 @@
 .agent-mode-button.warn {
   flex: none;
   gap: 4px;
+  margin-left: 4px;
+}
+.agent-mode-button.warn > .sb-glyph {
+  flex: none;
+}
+/* The model chip gives way first, and clips rather than spilling its chevron over the mode chip. */
+.agent-composer-toolbar > .agent-model-button {
+  overflow: hidden;
 }
 .agent-mode-button.warn .agent-model-name {
   max-width: none;
@@ -561,6 +569,12 @@
 }
 .agent-panel .sb-ring {
   flex: none;
+}
+/* "Bypass permissions" when the toolbar has room, "Bypass" when it does not. */
+@container (max-width: 460px) {
+  .agent-mode-suffix {
+    display: none;
+  }
 }
 @container (max-width: 340px) {
   .agent-model-button .agent-model-name {

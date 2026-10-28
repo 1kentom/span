@@ -13,12 +13,13 @@ import { api, isDesktop } from "../../lib/client";
 import { BYPASS_MODE_EXPLANATION } from "../../lib/agent-hint-text";
 import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } from "../../lib/updates";
 import { URL_COPY, parseUrlRequest, withBrowserWait, type UrlRequestView } from "../../lib/agent-url-request";
-import { ContextBanner, PermissionBypassNote } from "./Banners";
+import { ContextBanner } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
 import { RunningStep } from "./RunningStep";
 import { RUN_TEXT } from "../../lib/agent-hint-text";
 import { ModelIcon, ModelPopover, currentModelTraits } from "./ModelPopover";
+import { brandFromModelNames, brandIconFor } from "../../lib/brand-icons";
 import { effortColor } from "./EffortSlider";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
@@ -33,6 +34,9 @@ const BANNER_AT = 85;
 /** Everything below the conversation: banners, plan, queue, docks, the prompt box and its toolbar. */
 export function AgentComposer(props: { agent: AgentController; brand: Brand; label: string }) {
   const a = props.agent;
+  const modelNames = () => (config().find((option) => option.category === "model")?.choices ?? []).map((choice) => choice.name);
+  /** The panel's brand, or the family its model list names when the agent identity is not resolved (no agent id yet). */
+  const brand = (): Brand => (brandIconFor(props.brand) ? props.brand : brandFromModelNames(modelNames()) ?? props.brand);
   let input: HTMLTextAreaElement | undefined;
   let plus: HTMLButtonElement | undefined;
   let uploadInput!: HTMLInputElement;
@@ -208,9 +212,6 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           </div>
         )}
       </Show>
-      <Show when={a.state().sessionId ? a.state().permissionBypass : undefined}>
-        {(bypass) => <PermissionBypassNote agent={a.agentLabel()} mode={bypass().mode} />}
-      </Show>
       <Show when={showBanner()}>
         <ContextBanner
           used={usage()!.used}
@@ -254,7 +255,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         {(request) => (
           <PermissionDock
             title={request.event.title}
-            brand={props.brand}
+            brand={brand()}
             details={permissionView(request.event)}
             options={request.event.options}
             busy={Boolean(a.pendingAction())}
@@ -286,7 +287,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               <Show when={`${request().requestId}:${a.form()?.index ?? 0}`} keyed>
                 {(_key) => (
                   <QuestionDock
-                    asker={{ ...props.brand, label: props.label }}
+                    asker={{ ...brand(), label: props.label }}
                     step={a.fields().length > 1 ? `${(a.form()?.index ?? 0) + 1} of ${a.fields().length}` : undefined}
                     prompt={
                       !field()
@@ -313,7 +314,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             <UrlDock
               title={urlView().title}
               text={`${urlView().text} ${URL_COPY.consent}`.trim()}
-              brand={props.brand}
+              brand={brand()}
               href={request().url ?? ""}
               code={urlView().code}
               autoFocus={dockFocusProps.autoFocus}
@@ -334,7 +335,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             waiting
             title={step().view.title}
             text={step().view.text}
-            brand={props.brand}
+            brand={brand()}
             href={step().url}
             code={step().view.code}
             autoFocus={dockFocusProps.autoFocus}
@@ -356,7 +357,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           <Show when={a.menu() === "model"}>
             <ModelPopover
               agentName={props.label}
-              brand={props.brand}
+              brand={brand()}
               options={config()}
               agents={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: entry.version, current: entry.id === a.agentId() }))}
               busy={a.pendingAction().startsWith("config:") || a.working() || a.running()}
@@ -530,7 +531,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             aria-expanded={a.menu() === "model" || a.menu() === "agents"}
             onClick={() => toggle(a.connected() ? "model" : "agents")}
           >
-            <ModelIcon id={props.brand.id} name={props.brand.name} size={15} traits={a.connected() ? currentModelTraits(config()) : []} />
+            <ModelIcon id={brand().id} name={brand().name} size={15} traits={a.connected() ? currentModelTraits(config()) : []} />
             <span class="agent-model-name">{a.connected() ? modelLabel() : "No agent"}</span>
             <Show when={a.connected() && level()}>
               {(current) => (
@@ -560,7 +561,12 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
                   <Show when={bypass()}>
                     <Icon name="Warning2" size={11} class="sb-glyph warn" />
                   </Show>
-                  <span class="agent-model-name">{name()}</span>
+                  <span class="agent-model-name">
+                    <Show when={bypass() && /\s+permissions$/i.test(name())} fallback={name()}>
+                      {name().replace(/\s+permissions$/i, "")}
+                      <span class="agent-mode-suffix"> permissions</span>
+                    </Show>
+                  </span>
                   <Icon name="arrow-down4" size={10} />
                 </button>
               );
