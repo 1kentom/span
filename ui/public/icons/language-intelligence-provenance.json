@@ -1,0 +1,32 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Language intelligence button and the Go to group of the editor context menu. Original SVG bytes and geometry are preserved.",
+  "processing": "SVG XML inspected for active content and external references. Application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied from the user-provided local icon library at the user\u2019s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "language-intelligence.svg",
+      "source": "programming2new/iconsax-code-chip-9948a7a45267-.svg",
+      "sourceSha256": "c23b5cbcc7edfc69a385abccf9df880ec63698bf553c6ff1dcc957fe6049c59c",
+      "assetSha256": "c23b5cbcc7edfc69a385abccf9df880ec63698bf553c6ff1dcc957fe6049c59c"
+    },
+    {
+      "asset": "goto-definition.svg",
+      "source": "programming2new/iconsax-code-search-73fc18898bdc-.svg",
+      "sourceSha256": "f6af1f7f424575a5834c18a013d58d30543491ed2ee1275fa60b072133eee6fc",
+      "assetSha256": "f6af1f7f424575a5834c18a013d58d30543491ed2ee1275fa60b072133eee6fc"
+    },
+    {
+      "asset": "goto-type-definition.svg",
+      "source": "programming/iconsax-code-circle-21c5b18b5949-.svg",
+      "sourceSha256": "5572f209772798094d23c79454015937d3c1a17c1e75431216d25fd22d0caf1a",
+      "assetSha256": "5572f209772798094d23c79454015937d3c1a17c1e75431216d25fd22d0caf1a"
+    },
+    {
+      "asset": "goto-implementations.svg",
+      "source": "video/iconsax-layers-1dccd45a616e-.svg",
+      "sourceSha256": "41ded23eb4d79d0efb4e2e7bdaded8532643690a8d2186e1c131cf5af58fbc22",
+      "assetSha256": "41ded23eb4d79d0efb4e2e7bdaded8532643690a8d2186e1c131cf5af58fbc22"
+    }
+  ]
+}
