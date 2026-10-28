@@ -22,13 +22,13 @@ pub struct AgentService {
 }
 
 enum Command {
-    NewSession(Reply<String>),
+    NewSession(Vec<Value>, Reply<String>),
     Prompt(String, Vec<ContentBlock>, Reply<()>),
     Authenticate(String, Option<Meta>, Reply<()>),
     Cancel(String),
     SetConfig(String, String, String, Reply<()>),
     ListSessions(Reply<Vec<SessionSummary>>),
-    LoadSession(String, Reply<()>),
+    LoadSession(String, Vec<Value>, Reply<()>),
     CloseSession(String, Reply<()>),
     DeleteSession(String, Reply<()>),
     Shutdown,
@@ -76,8 +76,6 @@ struct Bridge {
     auth_required: bool,
     /// Normalises this agent's quirks; generic until `initialize` names the agent.
     adapter: Arc<Adapter>,
-    /// MCP servers offered in `session/new` and `session/load`, before gating.
-    mcp_servers: Vec<Value>,
     mcp_caps: McpCaps,
     /// Sessions whose replay may still be streaming, with the last update time.
     replaying: HashMap<String, tokio::time::Instant>,
@@ -95,22 +93,80 @@ async fn raw_request(
         .await
 }
 
-/// Debug lines go to the UI log. Secrets passed to `authenticate` never do.
+const REDACTED: &str = "[redacted]";
+/// Methods whose `params.mcpServers` may carry credentials.
+const MCP_SERVER_METHODS: &[&str] = &["session/new", "session/load", "session/resume"];
+
+/// Debug lines go to the UI log. Secrets never do: `authenticate` `_meta`,
+/// and the header values (HTTP, SSE) and environment values (stdio) of
+/// every MCP server offered in `session/new`, `session/load` and
+/// `session/resume`, such as the span-agents bearer token. A line that
+/// mentions one of these methods but does not parse is dropped whole.
 fn redact_log(line: &str) -> String {
-    if !line.contains("authenticate") {
+    let sensitive = line.contains("authenticate")
+        || line.contains("mcpServers")
+        || MCP_SERVER_METHODS.iter().any(|m| line.contains(m));
+    if !sensitive {
         return line.chars().take(16_384).collect();
     }
-    match serde_json::from_str::<Value>(line) {
-        Ok(mut message)
-            if message.get("method").and_then(Value::as_str) == Some("authenticate") =>
-        {
-            if let Some(meta) = message.pointer_mut("/params/_meta") {
-                *meta = json!("[redacted]");
-            }
-            message.to_string()
+    let Ok(mut message) = serde_json::from_str::<Value>(line) else {
+        return "[message redacted]".into();
+    };
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if method.as_deref() == Some("authenticate") {
+        if let Some(meta) = message.pointer_mut("/params/_meta") {
+            *meta = json!(REDACTED);
         }
-        Ok(_) => line.chars().take(16_384).collect(),
-        Err(_) => "[authenticate message redacted]".into(),
+    }
+    // Redact any `mcpServers` list wherever it appears in params, whatever
+    // the method, so an unexpected shape cannot carry a secret through.
+    if let Some(servers) = message
+        .pointer_mut("/params/mcpServers")
+        .and_then(Value::as_array_mut)
+    {
+        for server in servers {
+            redact_mcp_server(server);
+        }
+    }
+    // Secrets are gone at this point, so truncation is safe.
+    message.to_string().chars().take(16_384).collect()
+}
+
+/// Replace every header and environment value of one ACP `McpServer`.
+fn redact_mcp_server(server: &mut Value) {
+    for key in ["headers", "env"] {
+        match server.get_mut(key) {
+            Some(Value::Array(entries)) => {
+                for entry in entries {
+                    match entry.as_object_mut() {
+                        Some(pair) => {
+                            if let Some(value) = pair.get_mut("value") {
+                                *value = json!(REDACTED);
+                            }
+                        }
+                        None => *entry = json!(REDACTED),
+                    }
+                }
+            }
+            Some(Value::Object(map)) => {
+                for value in map.values_mut() {
+                    *value = json!(REDACTED);
+                }
+            }
+            Some(Value::Null) | None => {}
+            Some(other) => *other = json!(REDACTED),
+        }
+    }
+    // A URL may embed credentials (userinfo or a query string token).
+    if let Some(url) = server.get_mut("url") {
+        if let Some(text) = url.as_str() {
+            if text.contains('@') || text.contains('?') {
+                *url = json!(REDACTED);
+            }
+        }
     }
 }
 
@@ -198,10 +254,20 @@ impl AgentService {
         })
     }
 
+    /// Create a session with no MCP servers.
     pub async fn new_session(&self) -> Result<String, String> {
+        self.new_session_with(Vec::new()).await
+    }
+    /// Create a session offering `mcp_servers` (ACP `McpServer` JSON) in this
+    /// one `session/new` only. Nothing is kept on the connection, so later
+    /// sessions on the same agent process (other user sessions, delegated
+    /// children) never receive these entries or their credentials. The
+    /// request carries only the servers whose transport the agent
+    /// advertised, after agent specific rules.
+    pub async fn new_session_with(&self, mcp_servers: Vec<Value>) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(tx))
+            .send(Command::NewSession(mcp_servers, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -287,16 +353,6 @@ impl AgentService {
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
-    /// MCP servers (ACP `McpServer` JSON) to offer in later `session/new`
-    /// and `session/load` requests. Each request only carries the servers
-    /// whose transport the agent advertised, after agent specific rules.
-    pub fn set_mcp_servers(&self, servers: Vec<Value>) -> Result<(), String> {
-        self.state
-            .lock()
-            .map_err(|_| "Agent state lock poisoned")?
-            .mcp_servers = servers;
-        Ok(())
-    }
     /// True when the last session creation failed because the agent wants authentication.
     pub fn auth_required(&self) -> bool {
         self.state.lock().map(|b| b.auth_required).unwrap_or(false)
@@ -367,9 +423,19 @@ impl AgentService {
     /// Ask the agent to restore an earlier session. The agent replays the
     /// conversation as notifications before this resolves.
     pub async fn load_session(&self, session_id: String) -> Result<(), String> {
+        self.load_session_with(session_id, Vec::new()).await
+    }
+    /// [`Self::load_session`] offering `mcp_servers` in this one
+    /// `session/load`. ACP does not carry MCP servers across a load, so a
+    /// restored session only has the servers passed here.
+    pub async fn load_session_with(
+        &self,
+        session_id: String,
+        mcp_servers: Vec<Value>,
+    ) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::LoadSession(session_id, tx))
+            .send(Command::LoadSession(session_id, mcp_servers, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -775,9 +841,9 @@ async fn run(
                     },
                 };
                 match command {
-                    Command::NewSession(reply) => {
+                    Command::NewSession(servers, reply) => {
                         let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
-                        params["mcpServers"] = json!(mcp_servers(&state));
+                        params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         let result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)).await;
                         let result = match result {
                             Ok(result) => result,
@@ -892,12 +958,12 @@ async fn run(
                             Ok(())
                         })?;
                     }
-                    Command::LoadSession(id, reply) => {
+                    Command::LoadSession(id, servers, reply) => {
                         if !can_load { let _ = reply.send(Err("This agent cannot restore earlier sessions".into())); continue; }
                         if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                         let load_cx = cx.clone(); let load_emit = emit.clone(); let load_cwd = cwd.clone(); let load_state = state.clone(); let load_adapter = adapter.clone();
                         let mut params = serde_json::to_value(LoadSessionRequest::new(id.clone(), load_cwd)).unwrap_or_default();
-                        params["mcpServers"] = json!(mcp_servers(&state));
+                        params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         if profile.replay_quiet.is_some() {
                             if let Ok(mut bridge) = state.lock() { bridge.replaying.insert(id.clone(), tokio::time::Instant::now()); }
                         }
@@ -989,15 +1055,14 @@ fn forget_session(state: &Arc<Mutex<Bridge>>, id: &str) {
     }
 }
 
-/// The MCP servers this agent may receive.
-fn mcp_servers(state: &Arc<Mutex<Bridge>>) -> Vec<Value> {
+/// The subset of one request's MCP servers this agent may receive.
+fn gated_mcp_servers(state: &Arc<Mutex<Bridge>>, servers: &[Value]) -> Vec<Value> {
+    if servers.is_empty() {
+        return Vec::new();
+    }
     state
         .lock()
-        .map(|bridge| {
-            bridge
-                .adapter
-                .mcp_servers(bridge.mcp_caps, &bridge.mcp_servers)
-        })
+        .map(|bridge| bridge.adapter.mcp_servers(bridge.mcp_caps, servers))
         .unwrap_or_default()
 }
 
@@ -1297,4 +1362,54 @@ fn enum_string<T: serde::Serialize>(value: &T) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET: &str = "s3cr3t-token-value";
+
+    fn servers() -> Value {
+        json!([
+            {"type": "http", "name": "span-agents", "url": "http://127.0.0.1:1/mcp",
+             "headers": [{"name": "Authorization", "value": format!("Bearer {SECRET}")}]},
+            {"type": "sse", "name": "events", "url": "https://sse.example",
+             "headers": [{"name": "X-Key", "value": SECRET}]},
+            {"name": "local", "command": "node", "args": [], "env": [{"name": "TOKEN", "value": SECRET}]},
+            {"type": "http", "name": "query", "url": format!("https://mcp.example/?key={SECRET}"), "headers": []},
+        ])
+    }
+
+    #[test]
+    fn mcp_server_secrets_are_redacted_for_every_session_method() {
+        for method in ["session/new", "session/load", "session/resume"] {
+            let line = json!({"jsonrpc": "2.0", "id": 1, "method": method,
+                "params": {"sessionId": "s", "cwd": "/w", "mcpServers": servers()}})
+            .to_string();
+            let redacted = redact_log(&line);
+            assert!(!redacted.contains(SECRET), "{method}: {redacted}");
+            let parsed: Value = serde_json::from_str(&redacted).unwrap();
+            let list = &parsed["params"]["mcpServers"];
+            assert_eq!(list[0]["name"], "span-agents");
+            assert_eq!(list[0]["headers"][0]["name"], "Authorization");
+            assert_eq!(list[0]["headers"][0]["value"], REDACTED);
+            assert_eq!(list[1]["headers"][0]["value"], REDACTED);
+            assert_eq!(list[2]["env"][0]["name"], "TOKEN");
+            assert_eq!(list[2]["env"][0]["value"], REDACTED);
+            assert_eq!(list[3]["url"], REDACTED);
+            assert_eq!(list[0]["url"], "http://127.0.0.1:1/mcp");
+        }
+    }
+
+    #[test]
+    fn unparseable_session_lines_are_dropped_and_others_pass() {
+        let broken =
+            format!("{{\"method\":\"session/new\",\"params\":{{\"mcpServers\":[\"{SECRET}\"");
+        assert_eq!(redact_log(&broken), "[message redacted]");
+        let auth = json!({"method": "authenticate", "params": {"methodId": "k", "_meta": {"api-key": SECRET}}}).to_string();
+        assert!(!redact_log(&auth).contains(SECRET));
+        let plain = json!({"method": "session/prompt", "params": {"sessionId": "s"}}).to_string();
+        assert_eq!(redact_log(&plain), plain);
+    }
 }

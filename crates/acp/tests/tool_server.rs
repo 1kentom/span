@@ -7,7 +7,7 @@
 //! `ToolPolicy::second` to 10 ms, so one policy second (the unit of
 //! `waitSeconds`, budgets and progress intervals) is 10 ms of real time.
 use serde_json::{json, Value};
-use span_acp::tools::{ToolEvent, ToolPolicy, ToolServer, ToolServerConfig};
+use span_acp::tools::{DelegationEvent, ToolPolicy, ToolServer, ToolServerConfig};
 use span_acp::{AgentCommand, AgentEvent, SessionEvent, SessionKey, SessionManager, SessionOrigin};
 use span_core::CoreWorkspace;
 use std::collections::BTreeMap;
@@ -20,7 +20,7 @@ struct Harness {
     workspace: Arc<Mutex<CoreWorkspace>>,
     manager: SessionManager,
     events: mpsc::UnboundedReceiver<SessionEvent>,
-    tool_events: Arc<Mutex<Vec<ToolEvent>>>,
+    tool_events: Arc<Mutex<Vec<DelegationEvent>>>,
 }
 
 fn harness() -> Harness {
@@ -99,7 +99,12 @@ impl Harness {
             .expect("start span-agents");
         let lead = self
             .manager
-            .open_session(connection, None, SessionOrigin::User)
+            .open_session_with(
+                connection,
+                None,
+                SessionOrigin::User,
+                vec![server.mcp_server_json()],
+            )
             .await
             .expect("lead session");
         server.bind(&self.manager, lead.clone()).expect("bind lead");
@@ -410,6 +415,137 @@ async fn the_server_is_only_attached_to_agents_that_advertise_http() {
     assert!(server.running());
 }
 
+impl Harness {
+    /// Prompt `servers` in a session and return the `mcpServers` its
+    /// `session/new` carried, as the fixture agent recorded them.
+    async fn servers_of(&mut self, key: &SessionKey) -> Value {
+        let manager = self.manager.clone();
+        let target = key.clone();
+        let turn =
+            tokio::spawn(async move { manager.prompt(&target, "servers".into(), vec![]).await });
+        let event = self
+            .next(|e| {
+                e.connection_id == key.connection_id
+                    && e.session_id.as_deref() == Some(key.session_id.as_str())
+                    && matches!(e.event, AgentEvent::Text { .. })
+            })
+            .await;
+        turn.await.unwrap().expect("servers turn");
+        let AgentEvent::Text { text, .. } = event.event else {
+            unreachable!()
+        };
+        serde_json::from_str(&text).expect("fixture answered with JSON")
+    }
+}
+
+#[tokio::test]
+async fn only_the_lead_session_receives_the_server_entry_and_token() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let (lead, server) = h.lead(&lead_connection, scaled()).await;
+    let token = token_of(&server);
+
+    let lead_servers = h.servers_of(&lead).await;
+    assert_eq!(lead_servers[0]["name"], "span-agents");
+    assert_eq!(
+        lead_servers[0]["headers"][0]["value"],
+        format!("Bearer {token}")
+    );
+
+    // Another user session on the same agent process gets nothing.
+    let other = h
+        .manager
+        .open_session(&lead_connection, None, SessionOrigin::User)
+        .await
+        .unwrap();
+    assert_eq!(h.servers_of(&other).await, json!([]));
+
+    // A child the lead delegates to its own connection gets nothing either.
+    let mut client = Client::new(&server);
+    let started = client
+        .tool("delegate", json!({"agent": "lead", "task": "servers"}))
+        .await;
+    assert_eq!(structured(&started)["connectionId"], lead_connection);
+    let task = structured(&started)["taskId"].as_str().unwrap().to_owned();
+    let result = client.until_finished(&task).await;
+    assert_eq!(structured(&result)["status"], "completed");
+    let summary = result["content"][0]["text"].as_str().unwrap();
+    assert!(summary.contains("[]"), "{summary}");
+    assert!(!result.to_string().contains(&token));
+    assert!(!summary.contains("span-agents"), "{summary}");
+}
+
+fn drain(events: &mut mpsc::UnboundedReceiver<SessionEvent>) -> Vec<SessionEvent> {
+    let mut seen = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        seen.push(event);
+    }
+    seen
+}
+
+#[tokio::test]
+async fn the_token_never_reaches_logs_debug_output_or_errors() {
+    let mut h = harness();
+    let accepting = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let rejecting = h
+        .connect(&["--name=rejecting", "--mcp-http", "--reject-session"])
+        .await;
+    let (lead, server) = h.lead(&accepting, scaled()).await;
+    let token = token_of(&server);
+    let rejected_server = ToolServer::start(&h.manager, &rejecting, h.config(scaled()))
+        .await
+        .unwrap();
+    let rejected_token = token_of(&rejected_server);
+    let error = h
+        .manager
+        .open_session_with(
+            &rejecting,
+            None,
+            SessionOrigin::User,
+            vec![rejected_server.mcp_server_json()],
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("session refused by fixture"), "{error}");
+    // Let the debug callbacks for both requests arrive.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let events = drain(&mut h.events);
+    let logs: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match &e.event {
+            AgentEvent::Log { line, .. } => Some(line),
+            _ => None,
+        })
+        .collect();
+    let new_session_lines: Vec<&&String> = logs
+        .iter()
+        .filter(|line| line.contains("\"session/new\""))
+        .collect();
+    assert_eq!(new_session_lines.len(), 2, "{logs:?}");
+    for line in &new_session_lines {
+        assert!(line.contains("span-agents"), "{line}");
+        assert!(line.contains("[redacted]"), "{line}");
+    }
+    for secret in [&token, &rejected_token] {
+        for event in &events {
+            assert!(!serde_json::to_string(event)
+                .unwrap()
+                .contains(secret.as_str()));
+            assert!(!format!("{event:?}").contains(secret.as_str()));
+        }
+        for text in [
+            format!("{server:?}"),
+            format!("{rejected_server:?}"),
+            format!("{error:?}"),
+            error.clone(),
+            format!("{lead:?}"),
+        ] {
+            assert!(!text.contains(secret.as_str()), "{text}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn delegate_returns_at_once_and_get_result_follows_a_three_minute_child() {
     let mut h = harness();
@@ -501,8 +637,8 @@ async fn delegate_returns_at_once_and_get_result_follows_a_three_minute_child() 
     let events = h.tool_events.lock().unwrap().clone();
     assert!(events
         .iter()
-        .any(|e| matches!(e, ToolEvent::Delegated { task_id, .. } if *task_id == task)));
-    assert!(events.iter().any(|e| matches!(e, ToolEvent::TaskFinished { task_id, status, .. } if *task_id == task && status == "completed")));
+        .any(|e| matches!(e, DelegationEvent::Delegated { task_id, .. } if *task_id == task)));
+    assert!(events.iter().any(|e| matches!(e, DelegationEvent::TaskFinished { task_id, status, .. } if *task_id == task && status == "completed")));
 }
 
 #[tokio::test]
@@ -1006,7 +1142,7 @@ async fn record_decision_stores_a_record_and_emits_an_event_only() {
     assert_eq!(decisions.len(), 1);
     assert_eq!(decisions[0].alternatives, ["xi-rope", "String"]);
     let events = h.tool_events.lock().unwrap().clone();
-    assert!(events.iter().any(|e| matches!(e, ToolEvent::Decision { lead: l, decision } if *l == lead && decision.chosen == "ropey")));
+    assert!(events.iter().any(|e| matches!(e, DelegationEvent::Decision { lead: l, decision } if *l == lead && decision.chosen == "ropey")));
     assert_eq!(h.manager.sessions().len(), before, "no side effects");
     let missing = client
         .rpc(

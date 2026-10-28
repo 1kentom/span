@@ -4,7 +4,7 @@
 //!
 //! Expected file keys:
 //! - `drive`: client actions, in order (see `Step`).
-//! - `mcpServers`: offered before the first step.
+//! - `mcpServers`: offered in every `newSession` and `load` step.
 //! - `events`: events that must appear in this order. Objects match as a
 //!   subset; `null` also matches an absent key; `$ROOT` is the workspace.
 //!   A `{"kind": "_step", "do": ...}` entry marks where a drive step ended.
@@ -162,9 +162,11 @@ async fn replay(agent: &str, name: &str) {
     .await
     .expect("start replay agent");
     let _ = service_slot.set(service.clone());
-    if let Some(servers) = expected.get("mcpServers").and_then(Value::as_array) {
-        service.set_mcp_servers(servers.clone()).unwrap();
-    }
+    let mcp_servers: Vec<Value> = expected
+        .get("mcpServers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     let mut session = String::new();
     let empty = Vec::new();
@@ -176,7 +178,10 @@ async fn replay(agent: &str, name: &str) {
         let action = step["do"].as_str().unwrap();
         let text = |key: &str| step[key].as_str().unwrap_or_default().to_owned();
         let result: Result<(), String> = match action {
-            "newSession" => service.new_session().await.map(|id| session = id),
+            "newSession" => service
+                .new_session_with(mcp_servers.clone())
+                .await
+                .map(|id| session = id),
             "prompt" => {
                 *policy.lock().unwrap() = step["permission"].as_str().unwrap_or("allow").into();
                 service.prompt(session.clone(), text("text"), vec![]).await
@@ -200,7 +205,9 @@ async fn replay(agent: &str, name: &str) {
             }
             "load" => {
                 session = text("session");
-                service.load_session(session.clone()).await
+                service
+                    .load_session_with(session.clone(), mcp_servers.clone())
+                    .await
             }
             "promptDuringLoad" => {
                 session = text("session");

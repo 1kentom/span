@@ -7,8 +7,9 @@
 //   reply:<text>        answer <text>
 //   refuse | limit      stop with refusal | max_tokens
 //   wait                wait for Stop
+//   servers             answer with the JSON mcpServers this session received in session/new
 //   mcp <url> <token> <json>  act as a lead: POST <json> to the MCP server, answer with the body
-// Flags: --name=<n>, --mcp-http, --mcp-sse, --image.
+// Flags: --name=<n>, --mcp-http, --mcp-sse, --image, --reject-session (session/new fails).
 import readline from 'node:readline';
 const input = readline.createInterface({ input: process.stdin });
 const flag = name => process.argv.includes(name);
@@ -17,6 +18,7 @@ let cwd = '';
 let sessions = 0;
 let sequence = 500;
 const active = new Map();
+const servers = new Map();
 const callbacks = new Map();
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const update = (sessionId, update) => send({ method: 'session/update', params: { sessionId, update } });
@@ -52,6 +54,7 @@ async function prompt(message) {
   active.set(sessionId, id);
   if (first.startsWith('mcp ')) return lead(sessionId, id, first);
   if (first === 'wait') return;
+  if (first === 'servers') { say(sessionId, JSON.stringify(servers.get(sessionId) ?? null)); return finish(sessionId, id, 'end_turn'); }
   if (first === 'refuse') return finish(sessionId, id, 'refusal');
   if (first === 'limit') return finish(sessionId, id, 'max_tokens');
   if (first.startsWith('reply:')) { say(sessionId, first.slice(6)); return finish(sessionId, id, 'end_turn'); }
@@ -108,8 +111,11 @@ input.on('line', line => {
     };
     send({ id: message.id, result: { protocolVersion: 1, agentCapabilities, authMethods: [], agentInfo: { name: agentName, version: '1.0.0' } } });
   } else if (message.method === 'session/new') {
+    if (flag('--reject-session')) return send({ id: message.id, error: { code: -32603, message: 'session refused by fixture' } });
     cwd = message.params.cwd;
-    send({ id: message.id, result: { sessionId: `${agentName}-${++sessions}` } });
+    const sessionId = `${agentName}-${++sessions}`;
+    servers.set(sessionId, message.params.mcpServers ?? null);
+    send({ id: message.id, result: { sessionId } });
   } else if (message.method === 'session/close') {
     send({ id: message.id, result: {} });
   } else if (message.method === 'session/prompt') {

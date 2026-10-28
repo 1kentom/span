@@ -521,6 +521,11 @@ pub enum AgentEvent {
     Error {
         message: String,
     },
+    /// span-agents delegation activity (tool server attached or not, tasks
+    /// started and finished, decisions). Session identity is inside `event`.
+    Delegation {
+        event: crate::tools::DelegationEvent,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

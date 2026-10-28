@@ -3918,6 +3918,7 @@ name = "span-acp"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "getrandom 0.4.3",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

@@ -12,6 +12,7 @@
 //! docs/decisions/0001-session-manager.md.
 use crate::{AgentCommand, AgentEvent, AgentFeatures, AgentService, EventSink, PromptAttachment};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use span_core::CoreWorkspace;
 use specta::Type;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -290,7 +291,8 @@ fn event_session(event: &AgentEvent) -> Option<String> {
         | ElicitationResolved { .. }
         | ElicitationComplete { .. }
         | Log { .. }
-        | Error { .. } => None,
+        | Error { .. }
+        | Delegation { .. } => None,
     }
 }
 
@@ -546,6 +548,20 @@ impl SessionManager {
         parent: Option<SessionKey>,
         origin: SessionOrigin,
     ) -> Result<SessionKey, String> {
+        self.open_session_with(connection_id, parent, origin, Vec::new())
+            .await
+    }
+
+    /// [`Self::open_session`] offering `mcp_servers` in this session's
+    /// `session/new` only (see [`AgentService::new_session_with`]). Delegated
+    /// children are always opened without servers.
+    pub async fn open_session_with(
+        &self,
+        connection_id: &str,
+        parent: Option<SessionKey>,
+        origin: SessionOrigin,
+        mcp_servers: Vec<Value>,
+    ) -> Result<SessionKey, String> {
         let (service, depth) = {
             let state = self.state();
             let service = state
@@ -567,7 +583,7 @@ impl SessionManager {
             };
             (service, depth)
         };
-        let session_id = service.new_session().await?;
+        let session_id = service.new_session_with(mcp_servers).await?;
         let key = SessionKey::new(connection_id, session_id);
         let registered = {
             let mut state = self.state();

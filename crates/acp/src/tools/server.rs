@@ -13,7 +13,9 @@
 //! dual-era clients treat as a legacy server).
 use super::result::{self, inside_workspace, FailureReason, ResultInput};
 use super::tasks::{DecisionRecord, Registry, TaskStatus};
-use super::{hints_for, transport_for, BudgetRequest, ToolEvent, ToolServerConfig};
+use super::{
+    hints_for, transport_for, BudgetRequest, DelegationEvent, DelegationTask, ToolServerConfig,
+};
 use crate::{
     AgentControl, PromptAttachment, SessionEvent, SessionKey, SessionManager, Subscription,
 };
@@ -103,6 +105,8 @@ impl ToolServer {
             .features
             .ok_or("The lead agent has not finished initialize")?;
         transport_for(&features)?;
+        // Before binding, so a missing random source leaves no open port.
+        let token = random_hex(32)?;
         let root = PathBuf::from(
             config
                 .workspace
@@ -124,7 +128,7 @@ impl ToolServer {
             lead_name: connection.agent_name,
             lead_accepts_images: features.image,
             port,
-            token: random_hex(32),
+            token,
             root,
             config,
             registry: Registry::default(),
@@ -196,6 +200,42 @@ impl ToolServer {
         self.shared.registry.decisions()
     }
 
+    /// The event sink this server reports to.
+    pub fn events(&self) -> Option<super::DelegationEventSink> {
+        self.shared.config.events.clone()
+    }
+
+    /// The bound lead session, if any.
+    pub fn lead(&self) -> Option<SessionKey> {
+        lock(&self.shared.control)
+            .as_ref()
+            .map(|c| c.caller().clone())
+    }
+
+    /// Every task this server started, oldest first.
+    pub fn tasks(&self) -> Vec<DelegationTask> {
+        let Some(lead) = self.lead() else {
+            return Vec::new();
+        };
+        let second = self.shared.second();
+        self.shared
+            .registry
+            .task_ids()
+            .into_iter()
+            .filter_map(|id| self.shared.registry.view(&id, second).map(|v| (v, id)))
+            .map(|(view, task_id)| DelegationTask {
+                task_id,
+                lead: lead.clone(),
+                child: view.task.key,
+                agent_name: view.task.agent,
+                status: view.task.status.as_str().into(),
+                stop_reason: view.task.stop_reason,
+                reason: view.task.reason,
+                detail: view.task.detail,
+            })
+            .collect()
+    }
+
     /// False once the server stopped (explicitly, or because the lead ended).
     pub fn running(&self) -> bool {
         !*self.shared.shutdown.borrow()
@@ -225,7 +265,7 @@ impl Shared {
         self.config.policy.second
     }
 
-    fn emit(&self, event: ToolEvent) {
+    fn emit(&self, event: DelegationEvent) {
         if let Some(sink) = &self.config.events {
             sink(event);
         }
@@ -304,7 +344,7 @@ impl Shared {
             };
             shared.registry.finish(&id, result);
             if let Some(view) = shared.registry.view(&id, shared.second()) {
-                shared.emit(ToolEvent::TaskFinished {
+                shared.emit(DelegationEvent::TaskFinished {
                     lead,
                     child,
                     task_id: id,
@@ -1061,7 +1101,7 @@ async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, Rpc
             ))
         }
     };
-    shared.emit(ToolEvent::Delegated {
+    shared.emit(DelegationEvent::Delegated {
         lead: control.caller().clone(),
         child: child.clone(),
         task_id: task_id.clone(),
@@ -1280,7 +1320,7 @@ fn record_decision(shared: &Arc<Shared>, args: DecisionArgs) -> Result<Value, Rp
             .unwrap_or(0),
     };
     shared.registry.record_decision(decision.clone());
-    shared.emit(ToolEvent::Decision {
+    shared.emit(DelegationEvent::Decision {
         lead: control.caller().clone(),
         decision: decision.clone(),
     });
@@ -1425,30 +1465,15 @@ pub fn tool_definitions() -> Value {
     ])
 }
 
-/// Random hex for bearer tokens. Reads the OS generator where there is a
-/// device for it; otherwise derives bytes from std's randomly keyed
-/// SipHash (no random number crate is a direct dependency).
-fn random_hex(bytes: usize) -> String {
+/// Random hex for bearer tokens, from the OS CSPRNG through `getrandom`.
+/// There is no fallback: when the OS cannot supply randomness the server
+/// does not start.
+fn random_hex(bytes: usize) -> Result<String, String> {
     let mut out = vec![0u8; bytes];
-    let filled = std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut out))
-        .is_ok();
-    if !filled {
-        use std::hash::{BuildHasher, Hasher};
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        for (index, chunk) in out.chunks_mut(8).enumerate() {
-            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-            hasher.write_usize(index);
-            hasher.write_u128(nanos);
-            hasher.write_u32(std::process::id());
-            let value = hasher.finish().to_le_bytes();
-            chunk.copy_from_slice(&value[..chunk.len()]);
-        }
-    }
-    out.iter().map(|b| format!("{b:02x}")).collect()
+    getrandom::fill(&mut out).map_err(|error| {
+        format!("span-agents could not read the OS random source for its token: {error}")
+    })?;
+    Ok(out.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[cfg(test)]
@@ -1457,8 +1482,8 @@ mod tests {
 
     #[test]
     fn tokens_are_long_and_distinct() {
-        let a = random_hex(32);
-        let b = random_hex(32);
+        let a = random_hex(32).unwrap();
+        let b = random_hex(32).unwrap();
         assert_eq!(a.len(), 64);
         assert_ne!(a, b);
         assert!(tokens_match(&a, &a.clone()));

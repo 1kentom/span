@@ -2,7 +2,8 @@
 
 Status: proposed for issue #52 (tool server) with the guardrails of #53 and
 the `record_decision` tool of #54. Builds on 0001 (session manager).
-Not yet attached to real agents: see "Blocked" below.
+Wired into the desktop behind `agents.delegation.enabled` (section 6);
+not yet run against real agents (see UNVERIFIED).
 
 ## Context
 
@@ -40,15 +41,14 @@ Security:
 
 - Binds `127.0.0.1` only and drops non-loopback peers.
 - 32 random bytes (64 hex chars) per server, so per lead session. Source:
-  `/dev/urandom`; where that device does not exist (Windows) a fallback
-  derives bytes from std's randomly keyed SipHash `RandomState`. That
-  fallback is weaker than an OS CSPRNG call (UNVERIFIED on Windows; see
-  Blocked).
+  the OS CSPRNG through `getrandom`. Without it the server does not
+  start; there is no weaker fallback.
 - Every request needs the exact `Bearer` token (constant time compare),
   else 401. A present `Origin` other than the server's own is 403, and
   `Host` must be `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding).
 - The token is never logged by the server and `Debug` hides it. It does
-  travel inside `session/new`; see Blocked for the protocol log.
+  travel inside `session/new` and `session/load`; `redact_log` removes
+  `mcpServers` from the protocol log the UI receives.
 - Nothing is written to disk. Tokens, tasks and decisions live in memory
   and die with the server.
 
@@ -119,7 +119,7 @@ use `additionalProperties: false` and unknown arguments are rejected.
 - `cancel {taskId | sessionId, connectionId?}`: `AgentControl::cancel`,
   which cascades to everything below the child and drops its queue.
 - `record_decision {chosen, why, alternatives[]}`: stores a
-  `DecisionRecord` in memory and emits `ToolEvent::Decision`. No other
+  `DecisionRecord` in memory and emits `DelegationEvent::Decision`. No other
   effect (tested: no session is created).
 
 Session ids are only unique per agent process, so results carry both
@@ -217,31 +217,55 @@ the order the manager runs them), rejection tracking in
 `enqueue`, `prompt`, `depth`, `session`, `agents`, `permission_rejected`,
 `on_caller_end`, `on_session_end`. None of them answers a request.
 
-## Blocked
+### 6. Desktop wiring and settings
 
-1. Attaching the server to a real lead session needs the service to send
-   the entry in that session's `session/new`. The concurrent adapter work
-   adds `AgentService::set_mcp_servers(Vec<Value>)`, which applies to every
-   later `session/new` and `session/load` on the connection. Used as is,
-   children created on the lead's own connection, and other user sessions
-   on it, would receive the lead's server and token. Recommendation for
-   the owner of `service.rs`: add `new_session_with(mcp_servers:
-   Vec<Value>)` (per request), and keep the service-wide list for user
-   configured servers only. Until then the desktop is not wired: the
-   server is complete and tested in `crates/acp`, and
-   `apps/desktop/src/agents.rs` is unchanged.
-2. Token in the protocol log: `service.rs` emits every JSON-RPC line as an
-   `AgentEvent::Log` and `redact_log` only redacts `authenticate`. A
-   `session/new` carrying the entry would put the bearer token in the
-   Log events the UI receives. Recommendation: redact
-   `params.mcpServers[*].headers[*].value` for `session/new` and
-   `session/load` in `redact_log` before wiring.
-3. No OS random call on Windows without a dependency. Options:
-   (a) keep the SipHash fallback (weaker, no dependency);
-   (b) add `getrandom` (already in Cargo.lock transitively) as a direct
-   dependency of `span-acp`; (c) call `BCryptGenRandom` through a
-   `windows-sys` binding (also transitive only). Recommendation: (b),
-   approved by a human, before shipping on Windows.
+- Setting: `agents.delegation.enabled`, default false. It is honoured only
+  from the user's own settings file (`~/.config/span/settings.jsonc`). A
+  workspace `.span/settings.jsonc` arrives with a cloned repository, so it
+  must not be able to switch delegation on: core settings merging drops
+  the key from workspace settings before merging (a workspace `false`
+  does not override a user `true` either), and typed saves leave it out
+  of the workspace file. Unknown keys next to it are still rejected.
+  Tested in `crates/core/tests/preferences.rs`
+  (`agent_delegation_is_off_by_default_and_honoured_only_from_user_settings`).
+- `LeadServers` (`crates/acp/src/tools/host.rs`) owns one server per lead
+  session. The desktop opens every user session through it (connect,
+  new chat, sign in): with delegation on and an agent that advertises
+  `mcpCapabilities.http`, a server is started, its entry is offered in
+  that one `session/new` via `new_session_with`, and it is bound once the
+  session id is known. Delegated children and other sessions on the
+  connection never get the entry. Otherwise the session opens without it
+  and `DelegationEvent::Unavailable` carries the reason.
+- Load and resume: ACP does not keep MCP servers across `session/load`,
+  so restoring a chat with delegation on offers a fresh server and token
+  in that load only. If the session already has a running server (loaded
+  again while still open), that same entry is offered again so the
+  agent's MCP connection keeps working. Turning delegation on applies to
+  sessions started or restored afterwards; the status reason says so.
+- The server stops when its lead leaves the manager (close, delete,
+  disconnect, process exit) and on app exit (`shutdown_all`).
+- Commands: `agent_delegation_status` returns `DelegationStatus`
+  (setting, availability and reason, lead, attached, tasks, decisions).
+  `agent_child_permission(connectionId, sessionId, requestId, optionId)`
+  answers a delegated child's permission request through
+  `SessionManager::respond_permission`; it refuses sessions whose origin
+  is not `Delegated`. It is a Tauri command the UI calls on the user's
+  choice; no agent-callable path exists, since the tool server holds only
+  an `AgentControl`. Delegation events reach the UI on the agent channel
+  as `AgentEvent::Delegation`, so `DelegationEvent` is now in the
+  generated bindings.
+
+## Resolved blockers
+
+1. Per-session MCP entry: `AgentService::new_session_with` and
+   `load_session_with` send the entry in one request only; the desktop
+   uses them through `LeadServers`.
+2. Token in the protocol log: `redact_log` redacts `mcpServers` in
+   `session/new` and `session/load` params.
+3. Random source: `getrandom` 0.4.3 (already in Cargo.lock through
+   `agent-client-protocol`) is a direct dependency of `span-acp`, approved
+   by the user on 2026-10-28. Token creation fails rather than falling
+   back when the OS source is unavailable.
 
 ## Consequences
 
@@ -250,9 +274,11 @@ the order the manager runs them), rejection tracking in
   from its own process.
 - The HTTP layer is minimal and hand written; anything beyond the subset
   above (sessions, resumability, the 2026-07-28 revision) is new work.
-- `ToolEvent` (decision, delegated, finished) is not registered with
-  tauri-specta yet; generated bindings are unchanged. Register it when the
-  UI renders decision and nested agent cards (#54).
+- The UI wrappers (`agentDelegationStatus`, `agentChildPermission` in
+  `ui/src/lib/client.ts`) exist; rendering decision and nested agent
+  cards is #54.
+- There is no UI to edit user settings yet, so delegation is turned on by
+  editing `~/.config/span/settings.jsonc`.
 
 ## UNVERIFIED
 
@@ -263,7 +289,8 @@ the order the manager runs them), rejection tracking in
 - Codex `tool_timeout_sec` default 60 s and Claude's idle timeout values
   come from the issue and vendor docs, not from runs.
 - The `codex -> image_generation` hint.
-- The SipHash token fallback on Windows.
+- The desktop wiring was not exercised in a running app with a real agent;
+  it is covered by `cargo check`, clippy and the crate tests only.
 - Time scaling: the "3 minute child" test runs 180 policy seconds with one
   policy second = 10 ms (`ToolPolicy::second`). A real 3 minute wall clock
   run was not done.

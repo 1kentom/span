@@ -21,7 +21,7 @@ pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
-pub use settings::{Settings, Theme};
+pub use settings::{AgentSettings, DelegationSettings, Settings, Theme};
 pub use tools::{list_tools, ToolInfo};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
 

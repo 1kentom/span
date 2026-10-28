@@ -19,6 +19,8 @@ pub struct DesktopState {
     pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
     /// Every agent connection. The single agent commands use its primary one.
     pub sessions: span_acp::SessionManager,
+    /// span-agents servers of the user's lead sessions (ADR 0003).
+    pub leads: span_acp::tools::LeadServers,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
@@ -388,7 +390,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_disconnect,
             agents::agent_permission,
             agents::agent_review,
-            agents::agent_review_hunks
+            agents::agent_review_hunks,
+            agents::agent_delegation_status,
+            agents::agent_child_permission
         ])
 }
 
@@ -441,6 +445,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app.state::<DesktopState>();
             let _ = agents::disconnect(&state);
+            state.leads.shutdown_all();
             if let Ok(searches) = state.searches.lock() {
                 for cancellation in searches.values() {
                     cancellation.cancel();

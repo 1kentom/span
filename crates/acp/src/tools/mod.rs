@@ -8,11 +8,13 @@
 //! a permission, an elicitation or an edit review: those stay with the user.
 //! See docs/decisions/0003-span-agents-tool-server.md.
 mod budget;
+mod host;
 mod result;
 mod server;
 mod tasks;
 
 pub use budget::{Budget, BudgetRequest, Meter};
+pub use host::{LeadDelegation, LeadServers};
 pub use result::{
     base64, file_uri, inside_workspace, mime_type, sha256_hex, Artifact, FailureReason, UsageReport,
 };
@@ -58,15 +60,16 @@ impl Default for ToolPolicy {
     }
 }
 
-/// Events for the UI. Not yet registered with tauri-specta: no command or
-/// channel carries them until the UI renders delegation and decision cards.
+/// Delegation events for the UI. The desktop forwards them on the agent
+/// event channel as `AgentEvent::Delegation`. Named so it does not clash
+/// with the UI's own `ToolEvent` (an ACP tool call).
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub enum ToolEvent {
+pub enum DelegationEvent {
     /// The lead recorded a decision (`record_decision`, #54).
     Decision {
         lead: SessionKey,
@@ -87,9 +90,56 @@ pub enum ToolEvent {
         status: String,
         reason: Option<FailureReason>,
     },
+    /// The delegation tools were offered to this lead session.
+    Attached {
+        lead: SessionKey,
+        agent_name: String,
+    },
+    /// The lead's server stopped (the session ended or delegation was
+    /// turned off); its children were cancelled.
+    Detached { lead: SessionKey },
+    /// Delegation is enabled but this connection's sessions do not get the
+    /// tools, with the reason to show the user.
+    Unavailable {
+        connection_id: String,
+        agent_name: String,
+        reason: String,
+    },
 }
 
-pub type ToolEventSink = Arc<dyn Fn(ToolEvent) + Send + Sync>;
+/// Delegation state of the active connection and lead session, for the UI.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationStatus {
+    /// The `agents.delegation.enabled` setting.
+    pub enabled: bool,
+    /// The connected agent advertises MCP over HTTP.
+    pub available: bool,
+    /// Why the tools are not offered, when they are not.
+    pub reason: Option<String>,
+    pub lead: Option<SessionKey>,
+    /// The lead session has a running span-agents server.
+    pub attached: bool,
+    pub tasks: Vec<DelegationTask>,
+    pub decisions: Vec<DecisionRecord>,
+}
+
+/// One delegated task, for listing.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationTask {
+    pub task_id: String,
+    pub lead: SessionKey,
+    pub child: SessionKey,
+    pub agent_name: String,
+    /// `queued`, `running`, `completed` or `failed`.
+    pub status: String,
+    pub stop_reason: Option<String>,
+    pub reason: Option<FailureReason>,
+    pub detail: Option<String>,
+}
+
+pub type DelegationEventSink = Arc<dyn Fn(DelegationEvent) + Send + Sync>;
 
 /// What a server needs besides the session manager.
 #[derive(Clone)]
@@ -99,7 +149,7 @@ pub struct ToolServerConfig {
     /// Installed but not connected agents, listed for the lead. Starting
     /// them stays a user action.
     pub installed: Vec<InstalledAgent>,
-    pub events: Option<ToolEventSink>,
+    pub events: Option<DelegationEventSink>,
 }
 
 /// How the server would reach the lead agent.

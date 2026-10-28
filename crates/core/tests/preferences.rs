@@ -319,3 +319,73 @@ async fn available_rustfmt_receives_unsaved_buffer_text_on_stdin() {
         "fn main(){}"
     );
 }
+
+#[test]
+fn agent_delegation_is_off_by_default_and_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(!Settings::default().agents.delegation.enabled);
+    assert!(!workspace.get_settings().unwrap().agents.delegation.enabled);
+
+    // A workspace file (it comes with a cloned repository) cannot switch it on.
+    let merged = workspace
+        .update_settings_jsonc("{ \"agents\": { \"delegation\": { \"enabled\": true } } }")
+        .unwrap();
+    assert!(!merged.agents.delegation.enabled);
+    assert!(!workspace.get_settings().unwrap().agents.delegation.enabled);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"delegation\": { \"enabled\": true } }, \"fontSize\": 15 }",
+    )
+    .unwrap();
+    let read = workspace.get_settings().unwrap();
+    assert!(!read.agents.delegation.enabled);
+    assert_eq!(read.font_size, 15);
+
+    // The user's own settings file can, and a workspace false does not override it.
+    fs::write(
+        &user,
+        "{ \"agents\": { \"delegation\": { \"enabled\": true } } }",
+    )
+    .unwrap();
+    assert!(workspace.get_settings().unwrap().agents.delegation.enabled);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"delegation\": { \"enabled\": false } } }",
+    )
+    .unwrap();
+    assert!(workspace.get_settings().unwrap().agents.delegation.enabled);
+
+    // Typed saves go to the workspace file and leave the user-only key out.
+    let mut typed = workspace.get_settings().unwrap();
+    typed.agents.delegation.enabled = false;
+    assert!(
+        workspace
+            .update_settings(typed)
+            .unwrap()
+            .agents
+            .delegation
+            .enabled
+    );
+    let written = fs::read_to_string(directory.path().join(".span/settings.jsonc")).unwrap();
+    assert!(!written.contains("\"enabled\""), "{written}");
+
+    // Unknown keys next to it are still rejected.
+    assert!(workspace
+        .update_settings_jsonc("{ \"agents\": { \"delegation\": { \"on\": true } } }")
+        .is_err());
+    // A settings object without `agents` (older UI literals) keeps the default.
+    let legacy: Settings = serde_json::from_value(serde_json::json!({ "fontSize": 14 })).unwrap();
+    assert!(!legacy.agents.delegation.enabled);
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    assert_eq!(
+        schema["properties"]["agents"]["properties"]["delegation"]["properties"]["enabled"]
+            ["default"],
+        false
+    );
+}

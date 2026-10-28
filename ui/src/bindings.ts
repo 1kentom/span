@@ -75,6 +75,21 @@ export const commands = {
 	agentPermission: (requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_permission", { requestId, optionId }),
 	agentReview: (proposalId: string, accept: boolean, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("agent_review", { proposalId, accept, expectedRevision }),
 	agentReviewHunks: (proposalId: string, acceptedHunkIds: string[], expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("agent_review_hunks", { proposalId, acceptedHunkIds, expectedRevision }),
+	/**
+	 *  Delegation state of the active connection and its current lead session:
+	 *  whether `agents.delegation.enabled` is on (user settings only), whether
+	 *  the agent can use the span-agents server and why not, and the lead's
+	 *  tasks and decisions.
+	 */
+	agentDelegationStatus: () => __TAURI_INVOKE<DelegationStatus_Serialize>("agent_delegation_status"),
+	/**
+	 *  The user's answer to a permission request from a delegated child
+	 *  session, keyed by its connection and session. Only the UI calls this:
+	 *  the span-agents tools hold an `AgentControl`, which has no permission
+	 *  path, so no agent can answer for the user. User sessions keep using
+	 *  `agent_permission`.
+	 */
+	agentChildPermission: (connectionId: string, sessionId: string, requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_child_permission", { connectionId, sessionId, requestId, optionId }),
 };
 
 /** Events */
@@ -146,7 +161,12 @@ meta?: Value | null; internal?: boolean | null } | { kind: "permissionResolved";
 /**  Token usage from the prompt response, when the agent sent it. */
 usage?: Value | null; 
 /**  The prompt response `_meta`, when the agent sent it. */
-meta?: Value | null; hint?: AgentHint | null } | { kind: "error"; message: string };
+meta?: Value | null; hint?: AgentHint | null } | { kind: "error"; message: string } | 
+/**
+ *  span-agents delegation activity (tool server attached or not, tasks
+ *  started and finished, decisions). Session identity is inside `event`.
+ */
+{ kind: "delegation"; event: DelegationEvent_Deserialize };
 
 export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string; messageId?: string; 
 /**  Start a new bubble instead of appending to the previous one. */
@@ -194,7 +214,12 @@ meta?: Value; internal?: boolean } | { kind: "permissionResolved"; sessionId: st
 /**  Token usage from the prompt response, when the agent sent it. */
 usage?: Value; 
 /**  The prompt response `_meta`, when the agent sent it. */
-meta?: Value; hint?: AgentHint } | { kind: "error"; message: string };
+meta?: Value; hint?: AgentHint } | { kind: "error"; message: string } | 
+/**
+ *  span-agents delegation activity (tool server attached or not, tasks
+ *  started and finished, decisions). Session identity is inside `event`.
+ */
+{ kind: "delegation"; event: DelegationEvent_Serialize };
 
 /**  What the agent said it supports during `initialize`. */
 export type AgentFeatures = AgentFeatures_Serialize | AgentFeatures_Deserialize;
@@ -278,6 +303,19 @@ export type AgentPreset_Serialize = {
 	description: string,
 	/**  The executable must already be on the user's PATH. */
 	launch: AgentCommand_Serialize,
+};
+
+/**  `agents.*` settings. */
+export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
+
+/**  `agents.*` settings. */
+export type AgentSettings_Deserialize = {
+	delegation?: DelegationSettings_Deserialize,
+};
+
+/**  `agents.*` settings. */
+export type AgentSettings_Serialize = {
+	delegation: DelegationSettings_Serialize,
 };
 
 /**
@@ -418,12 +456,165 @@ export type ConfigOption_Serialize = {
 	groups: ConfigGroup_Serialize[],
 };
 
+/**  A decision the lead recorded with `record_decision` (#54). */
+export type DecisionRecord = {
+	id: string,
+	chosen: string,
+	why: string,
+	alternatives: string[],
+	/**  Milliseconds since the Unix epoch. */
+	recordedAt: number,
+};
+
+/**
+ *  Delegation events for the UI. The desktop forwards them on the agent
+ *  event channel as `AgentEvent::Delegation`. Named so it does not clash
+ *  with the UI's own `ToolEvent` (an ACP tool call).
+ */
+export type DelegationEvent = DelegationEvent_Serialize | DelegationEvent_Deserialize;
+
+/**
+ *  Delegation events for the UI. The desktop forwards them on the agent
+ *  event channel as `AgentEvent::Delegation`. Named so it does not clash
+ *  with the UI's own `ToolEvent` (an ACP tool call).
+ */
+export type DelegationEvent_Deserialize = 
+/**  The lead recorded a decision (`record_decision`, #54). */
+{ kind: "decision"; lead: SessionKey; decision: DecisionRecord } | 
+/**  The lead started a child. */
+{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string } | 
+/**  A task finished, successfully or not. */
+{ kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason?: FailureReason | null } | 
+/**  The delegation tools were offered to this lead session. */
+{ kind: "attached"; lead: SessionKey; agentName: string } | 
+/**
+ *  The lead's server stopped (the session ended or delegation was
+ *  turned off); its children were cancelled.
+ */
+{ kind: "detached"; lead: SessionKey } | 
+/**
+ *  Delegation is enabled but this connection's sessions do not get the
+ *  tools, with the reason to show the user.
+ */
+{ kind: "unavailable"; connectionId: string; agentName: string; reason: string };
+
+/**
+ *  Delegation events for the UI. The desktop forwards them on the agent
+ *  event channel as `AgentEvent::Delegation`. Named so it does not clash
+ *  with the UI's own `ToolEvent` (an ACP tool call).
+ */
+export type DelegationEvent_Serialize = 
+/**  The lead recorded a decision (`record_decision`, #54). */
+{ kind: "decision"; lead: SessionKey; decision: DecisionRecord } | 
+/**  The lead started a child. */
+{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string } | 
+/**  A task finished, successfully or not. */
+{ kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason: FailureReason | null } | 
+/**  The delegation tools were offered to this lead session. */
+{ kind: "attached"; lead: SessionKey; agentName: string } | 
+/**
+ *  The lead's server stopped (the session ended or delegation was
+ *  turned off); its children were cancelled.
+ */
+{ kind: "detached"; lead: SessionKey } | 
+/**
+ *  Delegation is enabled but this connection's sessions do not get the
+ *  tools, with the reason to show the user.
+ */
+{ kind: "unavailable"; connectionId: string; agentName: string; reason: string };
+
+/**  `agents.delegation.*`: the span-agents tool server (#52). */
+export type DelegationSettings = DelegationSettings_Serialize | DelegationSettings_Deserialize;
+
+/**  `agents.delegation.*`: the span-agents tool server (#52). */
+export type DelegationSettings_Deserialize = {
+	/**
+	 *  Offer the delegation tools to new lead sessions of agents that
+	 *  advertise MCP over HTTP. Off by default.
+	 */
+	enabled?: boolean,
+};
+
+/**  `agents.delegation.*`: the span-agents tool server (#52). */
+export type DelegationSettings_Serialize = {
+	/**
+	 *  Offer the delegation tools to new lead sessions of agents that
+	 *  advertise MCP over HTTP. Off by default.
+	 */
+	enabled: boolean,
+};
+
+/**  Delegation state of the active connection and lead session, for the UI. */
+export type DelegationStatus = DelegationStatus_Serialize | DelegationStatus_Deserialize;
+
+/**  Delegation state of the active connection and lead session, for the UI. */
+export type DelegationStatus_Deserialize = {
+	/**  The `agents.delegation.enabled` setting. */
+	enabled: boolean,
+	/**  The connected agent advertises MCP over HTTP. */
+	available: boolean,
+	/**  Why the tools are not offered, when they are not. */
+	reason?: string | null,
+	lead?: SessionKey | null,
+	/**  The lead session has a running span-agents server. */
+	attached: boolean,
+	tasks: DelegationTask_Deserialize[],
+	decisions: DecisionRecord[],
+};
+
+/**  Delegation state of the active connection and lead session, for the UI. */
+export type DelegationStatus_Serialize = {
+	/**  The `agents.delegation.enabled` setting. */
+	enabled: boolean,
+	/**  The connected agent advertises MCP over HTTP. */
+	available: boolean,
+	/**  Why the tools are not offered, when they are not. */
+	reason: string | null,
+	lead: SessionKey | null,
+	/**  The lead session has a running span-agents server. */
+	attached: boolean,
+	tasks: DelegationTask_Serialize[],
+	decisions: DecisionRecord[],
+};
+
+/**  One delegated task, for listing. */
+export type DelegationTask = DelegationTask_Serialize | DelegationTask_Deserialize;
+
+/**  One delegated task, for listing. */
+export type DelegationTask_Deserialize = {
+	taskId: string,
+	lead: SessionKey,
+	child: SessionKey,
+	agentName: string,
+	/**  `queued`, `running`, `completed` or `failed`. */
+	status: string,
+	stopReason?: string | null,
+	reason?: FailureReason | null,
+	detail?: string | null,
+};
+
+/**  One delegated task, for listing. */
+export type DelegationTask_Serialize = {
+	taskId: string,
+	lead: SessionKey,
+	child: SessionKey,
+	agentName: string,
+	/**  `queued`, `running`, `completed` or `failed`. */
+	status: string,
+	stopReason: string | null,
+	reason: FailureReason | null,
+	detail: string | null,
+};
+
 export type EditProposal = {
 	id: string,
 	path: string,
 	baseRevision: number,
 	hunks: ProposalHunk[],
 };
+
+/**  Why a delegation failed. Closed set: the lead can branch on it. */
+export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout";
 
 export type FileEntry = {
 	path: string,
@@ -611,6 +802,15 @@ export type SessionGroup_Serialize = {
 	activePath: string | null,
 };
 
+/**
+ *  Identifies a session across connections. Session ids are only unique
+ *  within one agent process, so the connection id is always part of the key.
+ */
+export type SessionKey = {
+	connectionId: string,
+	sessionId: string,
+};
+
 export type SessionPanels = SessionPanels_Serialize | SessionPanels_Deserialize;
 
 export type SessionPanels_Deserialize = {
@@ -681,6 +881,11 @@ export type Settings_Deserialize = {
 	formatOnSave?: boolean,
 	keybindings?: { [key in string]: string[] },
 	formatters?: { [key in string]: string[] },
+	/**
+	 *  Agent features. Optional in TypeScript so existing literals stay valid;
+	 *  a missing value means the defaults.
+	 */
+	agents?: AgentSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -696,6 +901,11 @@ export type Settings_Serialize = {
 	formatOnSave: boolean,
 	keybindings: { [key in string]: string[] },
 	formatters: { [key in string]: string[] },
+	/**
+	 *  Agent features. Optional in TypeScript so existing literals stay valid;
+	 *  a missing value means the defaults.
+	 */
+	agents?: AgentSettings_Serialize,
 };
 
 /**  A slash command the agent advertises. Run it by sending `/name args` as prompt text. */

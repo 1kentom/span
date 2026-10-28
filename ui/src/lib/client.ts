@@ -424,3 +424,15 @@ export async function agentAuthenticateWith(methodId: string, credential: import
 export async function agentPresets(): Promise<import('../bindings').AgentPreset_Serialize[]> {
   return isDesktop ? commands.agentPresets() : [];
 }
+
+/** Delegation state of the connected agent and its current chat: whether `agents.delegation.enabled` is on (honoured from user settings only), whether the agent can use span-agents and why not, and the lead's tasks and decisions. */
+export async function agentDelegationStatus(): Promise<import('../bindings').DelegationStatus_Serialize> {
+  if (!isDesktop) nativeRequired('Agent delegation');
+  return commands.agentDelegationStatus();
+}
+
+/** Answer a permission request from a delegated child session. Only for the user's own choice in the UI; user sessions use `api.agentPermission`. */
+export async function agentChildPermission(connectionId: string, sessionId: string, requestId: string, optionId: string | null): Promise<void> {
+  if (!isDesktop) nativeRequired('Responding to agent permissions');
+  await commands.agentChildPermission(connectionId, sessionId, requestId, optionId);
+}

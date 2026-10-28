@@ -512,6 +512,25 @@ impl Registry {
         }
     }
 
+    /// Every task id, oldest first (ids are `task-<n>`).
+    pub fn task_ids(&self) -> Vec<String> {
+        let mut ids: Vec<(u64, String)> = self
+            .inner()
+            .tasks
+            .keys()
+            .map(|id| {
+                let n = id
+                    .rsplit('-')
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(u64::MAX);
+                (n, id.clone())
+            })
+            .collect();
+        ids.sort();
+        ids.into_iter().map(|(_, id)| id).collect()
+    }
+
     pub fn task_key(&self, task_id: &str) -> Option<SessionKey> {
         self.inner().tasks.get(task_id).map(|t| t.key.clone())
     }

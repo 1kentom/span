@@ -506,8 +506,13 @@ impl CoreWorkspace {
                 .map_err(|e| io_error("Create settings directory", &directory, e))?;
         }
         let path = self.resolve(".span/settings.jsonc")?;
-        let text = serde_json::to_string_pretty(&settings)
+        // User-only keys would be ignored on read, so they are not written
+        // into the workspace file either.
+        let value = serde_json::to_value(&settings)
+            .map(crate::settings::without_user_only)
             .map_err(|e| CoreError::Settings(e.to_string()))?;
+        let text =
+            serde_json::to_string_pretty(&value).map_err(|e| CoreError::Settings(e.to_string()))?;
         atomic_write(&path, text.as_bytes())?;
         self.get_settings()
     }
