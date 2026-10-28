@@ -17,6 +17,8 @@ mod startup;
 pub struct DesktopState {
     pub workspace: Arc<Mutex<Option<Arc<Mutex<CoreWorkspace>>>>>,
     pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
+    /// Every agent connection. The single agent commands use its primary one.
+    pub sessions: span_acp::SessionManager,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,

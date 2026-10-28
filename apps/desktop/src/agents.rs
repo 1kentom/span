@@ -1,6 +1,7 @@
 use crate::DesktopState;
 use span_acp::{
     AgentCommand, AgentEvent, AgentService, InstalledAgent, PromptAttachment, RegistryAgent,
+    SessionKey, SessionOrigin,
 };
 use span_core::BufferSnapshot;
 use tauri::{ipc::Channel, Manager, State};
@@ -8,7 +9,22 @@ use tauri::{ipc::Channel, Manager, State};
 #[derive(Clone)]
 pub struct ActiveAgent {
     service: AgentService,
+    connection: String,
     session: String,
+}
+
+impl ActiveAgent {
+    fn key(&self, session: &str) -> SessionKey {
+        SessionKey::new(self.connection.clone(), session)
+    }
+}
+
+/// Track a session created on the primary connection so that cascades
+/// (cancel, close, disconnect) reach any children delegated from it.
+fn adopt(state: &DesktopState, agent: &ActiveAgent, session: &str) -> Result<(), String> {
+    state
+        .sessions
+        .adopt(agent.key(session), SessionOrigin::User)
 }
 
 fn switch_session(state: &DesktopState, session: &str) -> Result<(), String> {
@@ -58,7 +74,7 @@ pub fn disconnect(state: &DesktopState) -> Result<(), String> {
         .map_err(|_| "Agent state is unavailable".to_owned())?
         .take()
     {
-        active.service.shutdown()?;
+        state.sessions.disconnect(&active.connection)?;
     }
     Ok(())
 }
@@ -110,18 +126,23 @@ pub async fn agent_connect(
         .clone()
         .ok_or_else(|| "Open a folder before connecting an agent".to_owned())?;
     disconnect(&state)?;
-    let service = tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(AgentService::start(
+    let sessions = state.sessions.clone();
+    let connection = tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(sessions.connect(
             command,
             cwd,
             workspace,
-            std::sync::Arc::new(move |event| {
+            Some(std::sync::Arc::new(move |event| {
                 let _ = on_event.send(event);
-            }),
+            })),
         ))
     })
     .await
     .map_err(|error| format!("Agent connection task failed: {error}"))??;
+    let service: AgentService = state
+        .sessions
+        .service(&connection)
+        .ok_or_else(|| "Agent disconnected".to_owned())?;
     let session =
         match tokio::time::timeout(std::time::Duration::from_secs(45), service.new_session()).await
         {
@@ -134,12 +155,13 @@ pub async fn agent_connect(
                     .lock()
                     .map_err(|_| "Agent state is unavailable".to_owned())? = Some(ActiveAgent {
                     service,
+                    connection,
                     session: String::new(),
                 });
                 return Ok(String::new());
             }
             result => {
-                let _ = service.shutdown();
+                let _ = state.sessions.disconnect(&connection);
                 return Err(match result {
                     Ok(Err(error)) => error,
                     Err(_) => "Agent session creation timed out after 45 seconds".to_owned(),
@@ -147,13 +169,16 @@ pub async fn agent_connect(
                 });
             }
         };
+    let agent = ActiveAgent {
+        service,
+        connection,
+        session: session.clone(),
+    };
+    adopt(&state, &agent, &session)?;
     *state
         .agent
         .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())? = Some(ActiveAgent {
-        service,
-        session: session.clone(),
-    });
+        .map_err(|_| "Agent state is unavailable".to_owned())? = Some(agent);
     Ok(session)
 }
 
@@ -163,6 +188,7 @@ pub async fn agent_connect(
 pub async fn agent_new_session(state: State<'_, DesktopState>) -> Result<String, String> {
     let agent = active(state.inner())?;
     let session = agent.service.new_session().await?;
+    adopt(state.inner(), &agent, &session)?;
     switch_session(state.inner(), &session)?;
     Ok(session)
 }
@@ -183,6 +209,7 @@ pub async fn agent_resume_session(
 ) -> Result<String, String> {
     let agent = active(state.inner())?;
     agent.service.load_session(session_id.clone()).await?;
+    adopt(state.inner(), &agent, &session_id)?;
     switch_session(state.inner(), &session_id)?;
     Ok(session_id)
 }
@@ -196,7 +223,7 @@ pub async fn agent_close_session(
     session_id: String,
 ) -> Result<(), String> {
     let agent = active(state.inner())?;
-    agent.service.close_session(session_id.clone()).await?;
+    state.sessions.close(&agent.key(&session_id)).await?;
     clear_if_active(state.inner(), &session_id)
 }
 
@@ -209,7 +236,7 @@ pub async fn agent_delete_session(
     session_id: String,
 ) -> Result<(), String> {
     let agent = active(state.inner())?;
-    agent.service.delete_session(session_id.clone()).await?;
+    state.sessions.delete(&agent.key(&session_id)).await?;
     clear_if_active(state.inner(), &session_id)
 }
 
@@ -241,6 +268,7 @@ pub async fn agent_authenticate(
         return Ok(agent.session);
     }
     let session = agent.service.new_session().await?;
+    adopt(state.inner(), &agent, &session)?;
     switch_session(state.inner(), &session)?;
     Ok(session)
 }
@@ -278,7 +306,7 @@ pub async fn agent_set_config(
 #[specta::specta]
 pub async fn agent_cancel(state: State<'_, DesktopState>) -> Result<(), String> {
     let agent = active_session(state.inner())?;
-    agent.service.cancel(agent.session)
+    state.sessions.cancel(&agent.key(&agent.session))
 }
 
 #[tauri::command]

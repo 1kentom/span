@@ -4,14 +4,20 @@ const input = readline.createInterface({ input: process.stdin });
 let cwd = '';
 let sequence = 100;
 let sessions = 0;
-let activePrompt;
-let ignoreCancel = false;
+// Active prompt request id and Stop handling are tracked per session so one
+// process can run turns in several sessions at once.
+const activePrompts = new Map();
+const stubborn = new Set();
 let authenticated = false;
 const rich = process.argv.includes('--rich');
 const needsAuth = process.argv.includes('--auth');
+const agentName = process.argv.find(arg => arg.startsWith('--name='))?.slice(7) ?? 'span-test-peer';
 const callbacks = new Map();
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
-const result = (id, value) => { if (id === activePrompt) activePrompt = undefined; send({ id, result: value }); };
+const result = (id, value) => {
+  for (const [session, active] of activePrompts) if (active === id) activePrompts.delete(session);
+  send({ id, result: value });
+};
 const update = (sessionId, update) => send({ method: 'session/update', params: { sessionId, update } });
 const call = (method, params) => new Promise((resolve, reject) => {
   const id = sequence++;
@@ -21,11 +27,20 @@ const call = (method, params) => new Promise((resolve, reject) => {
 async function prompt(message) {
   const { sessionId, prompt } = message.params;
   const text = prompt.find(block => block.type === 'text')?.text ?? '';
-  activePrompt = message.id;
-  ignoreCancel = text === 'stubborn';
+  activePrompts.set(sessionId, message.id);
+  if (text === 'stubborn') stubborn.add(sessionId); else stubborn.delete(sessionId);
   if (text === 'crash') { console.error('fixture process failure'); process.exit(7); }
   if (text === 'truncated') { process.stdout.write('{"jsonrpc":"2.0","id":'); process.exit(0); }
   if (text === 'wait' || text === 'stubborn') return;
+  if (text.startsWith('stream:')) {
+    // Interleaves with other sessions: each chunk names the agent and session.
+    for (let i = 0; i < Number(text.slice(7)); i++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      if (!activePrompts.has(sessionId)) return;
+      update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `${agentName}:${sessionId}:${i}` } });
+    }
+    result(message.id, { stopReason: 'end_turn' }); return;
+  }
   if (text.startsWith('stop:')) { result(message.id, { stopReason: text.slice(5) }); return; }
   if (text === 'echo' || text.startsWith('/') || prompt.some(block => block.type !== 'text')) {
     update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(prompt) } });
@@ -80,7 +95,7 @@ input.on('line', line => {
     if (process.argv.includes('--delete')) extra.delete = {};
     if (Object.keys(extra).length) agentCapabilities = { ...agentCapabilities, sessionCapabilities: { list: {}, ...(agentCapabilities.sessionCapabilities ?? {}), ...extra } };
     const authMethods = needsAuth ? [{ id: 'token', name: 'Token', description: 'API token' }, { type: 'terminal', id: 'tui', name: 'Terminal login', args: ['login'] }] : [];
-    result(message.id, { protocolVersion: 1, agentCapabilities, authMethods, agentInfo: { name: 'span-test-peer', title: 'Span Test Peer', version: '1.0.0' } });
+    result(message.id, { protocolVersion: 1, agentCapabilities, authMethods, agentInfo: { name: agentName, title: 'Span Test Peer', version: '1.0.0' } });
   } else if (message.method === 'authenticate') {
     if (message.params.methodId === 'token') { authenticated = true; result(message.id, {}); }
     else send({ id: message.id, error: { code: -32602, message: 'Unknown method' } });
@@ -112,11 +127,12 @@ input.on('line', line => {
     if (process.argv.includes('--close-gone')) send({ id: message.id, error: { code: -32002, message: 'Session not found' } });
     else result(message.id, {});
   } else if (message.method === 'session/delete') {
-    if (activePrompt !== undefined) send({ id: message.id, error: { code: -32603, message: 'delete arrived while a prompt was active' } });
+    if (activePrompts.has(message.params.sessionId)) send({ id: message.id, error: { code: -32603, message: 'delete arrived while a prompt was active' } });
     else result(message.id, {});
   } else if (message.method === 'session/prompt') {
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {
-    if (activePrompt !== undefined && !ignoreCancel) result(activePrompt, { stopReason: 'cancelled' });
+    const sessionId = message.params.sessionId;
+    if (activePrompts.has(sessionId) && !stubborn.has(sessionId)) result(activePrompts.get(sessionId), { stopReason: 'cancelled' });
   }
 });
