@@ -39,13 +39,15 @@ export function AgentStatusBar(props: AgentStatusBarProps) {
   const state = () => markState({ ...props.input, running: props.running, justFinished: justFinished() });
   return (
     <div class="agent-statusbar" data-state={state()}>
-      <AgentMark state={state()} />
+      <span class="agent-mark-wrap">
+        <AgentMark state={state()} />
+        <Show when={props.delegating}>
+          <span class="agent-delegating" classList={{ active: props.delegationActive }} role="img" aria-label="Agents work together" title="Agents work together">
+            <Icon name="Shuffle" size={9} />
+          </span>
+        </Show>
+      </span>
       <span class="agent-statusbar-text">{props.text}</span>
-      <Show when={props.delegating}>
-        <span class="agent-delegating" classList={{ active: props.delegationActive }} role="img" aria-label="Agents work together" title="Agents work together">
-          <Icon name="Shuffle" size={14} />
-        </span>
-      </Show>
       <ComposerHints {...props.hints} />
     </div>
   );
