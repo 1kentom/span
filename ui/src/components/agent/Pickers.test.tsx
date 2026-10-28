@@ -72,14 +72,14 @@ describe("ModelPopover", () => {
 describe("ModePopover", () => {
   it("lists the mode and every other non-model option under its own heading, with descriptions", () => {
     const host = mount(() => <ModePopover agentName="Codex" options={codex} onSelect={() => {}} onClose={() => {}} />);
-    expect(groupNames(host)).toEqual(["Mode", "Collaboration mode", "Fast mode"]);
-    expect([...host.querySelectorAll(".sb-eyebrow")].map((heading) => text(heading))).toEqual(["Mode", "Collaboration mode", "Fast mode"]);
+    expect(groupNames(host)).toEqual(["Mode", "Collaboration mode"]);
+    expect([...host.querySelectorAll(".sb-eyebrow")].map((heading) => text(heading))).toEqual(["Mode", "Collaboration mode"]);
     expect(text(host)).toContain("Only ask for actions detected as potentially unsafe");
-    expect(text(host)).toContain("1.5x speed, increased usage");
+    expect(text(host)).toContain("Default speed, normal usage");
     expect(text(host)).not.toContain("6.1 Sol");
     expect(host.querySelector("[role=slider]")).toBeNull();
     const checked = [...host.querySelectorAll("[aria-checked=true]")].map((row) => text(row.querySelector(".sb-option-name")));
-    expect(checked).toEqual(["Auto review", "Default", "Off"]);
+    expect(checked).toEqual(["Auto review", "Default"]);
   });
 
   it("applies a pick through onSelect, focuses the current mode first, moves with arrows and closes on Escape", async () => {
@@ -90,7 +90,7 @@ describe("ModePopover", () => {
     expect(text(document.activeElement?.querySelector(".sb-option-name"))).toBe("Auto review");
     key("ArrowDown", {}, document.activeElement!);
     expect(text(document.activeElement?.querySelector(".sb-option-name"))).toBe("Full access");
-    byText(host, "1.5x speed").click();
+    host.querySelector<HTMLButtonElement>("[role=switch]")!.click();
     byText(host, "Plan before making changes").click();
     expect(picked).toEqual(["fast_mode=on", "collaboration_mode=plan"]);
     key("Escape");
@@ -101,12 +101,85 @@ describe("ModePopover", () => {
     const fresh = (current: string) => codex.map((option) => ({ ...option, choices: option.choices.map((choice) => ({ ...choice })), currentValue: option.id === "fast_mode" ? current : option.currentValue }));
     const [list, setList] = createSignal(fresh("off"));
     const host = mount(() => <ModePopover agentName="Codex" options={list()} onSelect={() => {}} onClose={() => {}} />);
-    const on = byText(host, "1.5x speed");
+    const on = host.querySelector<HTMLButtonElement>("[role=switch]")!;
     on.focus();
     setList(fresh("on"));
-    expect(byText(host, "1.5x speed")).toBe(on);
+    expect(host.querySelector("[role=switch]")).toBe(on);
     expect(document.activeElement).toBe(on);
     expect(on.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("ModePopover fast mode switch and row icons", () => {
+  const sw = (host: Element) => host.querySelector<HTMLButtonElement>("[role=switch]")!;
+  const withFast = (current: string, choices = codex.find((option) => option.id === "fast_mode")!.choices) => codex.map((option) => (option.id === "fast_mode" ? { ...option, currentValue: current, choices } : option));
+
+  it("draws the two-choice on/off option as one switch row with the current description", () => {
+    const off = mount(() => <ModePopover agentName="Codex" options={withFast("off")} onSelect={() => {}} onClose={() => {}} />);
+    expect(off.querySelectorAll("[role=switch]")).toHaveLength(1);
+    expect(sw(off).getAttribute("aria-checked")).toBe("false");
+    const row = sw(off).closest(".sb-switch-row")!;
+    expect(text(row.querySelector(".sb-switch-title"))).toBe("Fast mode");
+    expect(text(row.querySelector(".sb-switch-sub"))).toBe("Default speed, normal usage");
+    expect(text(row)).not.toContain("1.5x");
+    expect(sw(off).getAttribute("aria-labelledby")).toBe(row.querySelector(".sb-switch-title")!.id);
+    expect(sw(off).getAttribute("aria-describedby")).toBe(row.querySelector(".sb-switch-sub")!.id);
+    expect(row.querySelector(".sb-switch-knob")).not.toBeNull();
+  });
+
+  it("shows the on description and applies at once for click, Space and Enter", () => {
+    const picked: string[] = [];
+    const [list, setList] = createSignal(withFast("off"));
+    const host = mount(() => <ModePopover agentName="Codex" options={list()} onSelect={(id, value) => picked.push(`${id}=${value}`)} onClose={() => {}} />);
+    sw(host).click();
+    key(" ", {}, sw(host));
+    key("Enter", {}, sw(host));
+    expect(picked).toEqual(["fast_mode=on", "fast_mode=on", "fast_mode=on"]);
+    setList(withFast("on"));
+    expect(sw(host).getAttribute("aria-checked")).toBe("true");
+    expect(text(host.querySelector(".sb-switch-sub"))).toBe("1.5x speed, increased usage");
+    sw(host).click();
+    expect(picked.at(-1)).toBe("fast_mode=off");
+  });
+
+  it("does not invent a description and ignores input while busy", () => {
+    const picked: string[] = [];
+    const bare = [{ value: "off", name: "Off" }, { value: "on", name: "On" }];
+    const host = mount(() => <ModePopover agentName="Codex" busy options={withFast("off", bare)} onSelect={(id, value) => picked.push(`${id}=${value}`)} onClose={() => {}} />);
+    expect(host.querySelector(".sb-switch-sub")).toBeNull();
+    expect(sw(host).hasAttribute("aria-describedby")).toBe(false);
+    expect(sw(host).disabled).toBe(true);
+    sw(host).click();
+    expect(picked).toEqual([]);
+  });
+
+  it("keeps a non-boolean select with two choices as a list", () => {
+    const speed: ConfigOptionView = { id: "speed", name: "Speed", currentValue: "slow", choices: [{ value: "slow", name: "Slow" }, { value: "quick", name: "Quick" }] };
+    const host = mount(() => <ModePopover agentName="Codex" options={[speed]} onSelect={() => {}} onClose={() => {}} />);
+    expect(host.querySelector("[role=switch]")).toBeNull();
+    expect(groupNames(host)).toEqual(["Speed"]);
+  });
+
+  it("gives every Mode and Collaboration mode row a leading icon, danger rows in the warning colour", () => {
+    const host = mount(() => <ModePopover agentName="Codex" options={codex} onSelect={() => {}} onClose={() => {}} />);
+    const rows = [...host.querySelectorAll<HTMLElement>("[role=radio]")];
+    expect(rows).toHaveLength(6);
+    const lead = (label: string) => byText(host, label).querySelector<HTMLElement>(".sb-option-lead")!;
+    for (const row of rows) expect(row.querySelector(".sb-option-lead .icon")).not.toBeNull();
+    const maskOf = (label: string) => lead(label).querySelector<HTMLElement>(".icon")!.style.maskImage;
+    expect(maskOf("Read-only")).toContain("/icons/ModeReadOnly.svg");
+    expect(maskOf("Workspace access")).toContain("/icons/ModeWorkspace.svg");
+    expect(maskOf("Auto review")).toContain("/icons/ModeAuto.svg");
+    expect(maskOf("Full access")).toContain("/icons/ModeDanger.svg");
+    expect(maskOf("Plan")).toContain("/icons/ModePlan.svg");
+    expect(lead("Full access").classList.contains("warn")).toBe(true);
+    expect(lead("Read-only").classList.contains("warn")).toBe(false);
+  });
+
+  it("falls back to a neutral icon for an unknown value", () => {
+    const odd: ConfigOptionView = { id: "mode", name: "Mode", category: "mode", currentValue: "zz", choices: [{ value: "zz", name: "Zed" }, { value: "yy", name: "Why" }, { value: "xx", name: "Ex" }] };
+    const host = mount(() => <ModePopover agentName="X" options={[odd]} onSelect={() => {}} onClose={() => {}} />);
+    for (const row of host.querySelectorAll("[role=radio]")) expect((row.querySelector(".sb-option-lead .icon") as HTMLElement).style.maskImage).toContain("/icons/ModeOther.svg");
   });
 });
 

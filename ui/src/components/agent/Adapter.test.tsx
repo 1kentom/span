@@ -530,7 +530,7 @@ describe("composer pickers", () => {
     await tick();
     expect(dialogs(host)).toEqual(["Codex mode"]);
     expect([modelChip.getAttribute("aria-expanded"), modeChip.getAttribute("aria-expanded")]).toEqual(["false", "true"]);
-    expect([...host.querySelectorAll("[role=dialog] [role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Mode", "Collaboration mode", "Fast mode"]);
+    expect([...host.querySelectorAll("[role=dialog] [role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Mode", "Collaboration mode"]);
     click(agentChip);
     await tick();
     expect(dialogs(host)).toEqual(["Agents"]);
@@ -543,7 +543,7 @@ describe("composer pickers", () => {
     const { host, modeChip } = await codexComposer();
     click(modeChip);
     await tick();
-    click([...host.querySelectorAll("[role=dialog] [role=radio]")].find((row) => row.textContent?.includes("1.5x speed")));
+    click(host.querySelector("[role=dialog] [role=switch]"));
     await tick();
     expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("fast_mode", "on");
   });
