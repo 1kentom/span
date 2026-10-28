@@ -6,6 +6,8 @@ import type {
 } from "../bindings";
 import { createLspSession, describeLspError, runtimeMissingMessage, serverForBuffer, serverLabels, type LspPort } from "../lib/lsp-client";
 import type { LspBinding } from "../lib/lsp-codemirror";
+import { readHubFields, readInstallExt, type HubActivity, type HubPort, type HubRowFields, type WorkProgressEvent } from "../lib/lsp-hub-types";
+import { percentOf } from "../lib/language-intelligence-copy";
 
 export type BufferLspState =
   | { kind: "unsupported" }
@@ -13,7 +15,7 @@ export type BufferLspState =
   | { kind: "disabled"; server: LanguageServerId }
   | { kind: "idle"; server: LanguageServerId }
   | { kind: "starting"; server: LanguageServerId }
-  | { kind: "installing"; server: LanguageServerId; phase?: string; received?: number | null; total?: number | null }
+  | { kind: "installing"; server: LanguageServerId; phase?: string; received?: number | null; total?: number | null; overallReceived?: number; overallTotal?: number | null; artifactIndex?: number; artifactCount?: number; percent?: number }
   | { kind: "ready"; server: LanguageServerId; capabilities?: CapabilitiesDto | null }
   | { kind: "needs-install"; server: LanguageServerId; version: string; sizeHint?: number | null }
   | { kind: "install-failed"; server: LanguageServerId; reason: string; retryable: boolean }
@@ -30,12 +32,20 @@ export interface ServerEntry {
   version: string;
   epoch: number;
   capabilities?: CapabilitiesDto | null;
+  /** Fields the language intelligence hub reads, with safe defaults when the backend sent none. */
+  hub: HubRowFields;
 }
 
-export interface InstallProgress { phase: string; received?: number | null; total?: number | null; message?: string | null }
+export interface InstallProgress {
+  phase: string; received?: number | null; total?: number | null; message?: string | null;
+  /** Bytes across every file of the install. Never decreases while the install runs. */
+  overallReceived?: number; overallTotal?: number | null; artifactIndex?: number; artifactCount?: number;
+  /** Whole percent of the overall bytes. Never decreases while the install runs. Undefined while the total is unknown. */
+  percent?: number;
+}
 
 /** Maps one server state, plus any live install progress, to what a buffer should show. */
-export function deriveBufferState(server: LanguageServerId, entry: Pick<ServerEntry, "state" | "capabilities" | "enabled"> | undefined, progress?: InstallProgress): BufferLspState {
+export function deriveBufferState(server: LanguageServerId, entry: (Pick<ServerEntry, "state" | "capabilities" | "enabled"> & { hub?: HubRowFields }) | undefined, progress?: InstallProgress): BufferLspState {
   if (!entry) return { kind: "unknown", server };
   if (!entry.enabled) return { kind: "disabled", server };
   const state = entry.state;
@@ -44,7 +54,15 @@ export function deriveBufferState(server: LanguageServerId, entry: Pick<ServerEn
     case "notStarted":
     case "stopped": return { kind: "idle", server };
     case "starting": return { kind: "starting", server };
-    case "installing": return { kind: "installing", server, phase: progress?.phase, received: progress?.received, total: progress?.total };
+    case "installing": {
+      const seeded = !progress && entry.hub?.install ? entry.hub.install : undefined;
+      return {
+        kind: "installing", server, phase: progress?.phase ?? seeded?.phase, received: progress?.received, total: progress?.total,
+        overallReceived: progress?.overallReceived ?? seeded?.overallReceived, overallTotal: progress?.overallTotal ?? seeded?.overallTotal,
+        artifactIndex: progress?.artifactIndex ?? seeded?.artifactIndex, artifactCount: progress?.artifactCount ?? seeded?.artifactCount,
+        percent: progress?.percent ?? (seeded ? percentOf(seeded.overallReceived, seeded.overallTotal) : undefined),
+      };
+    }
     case "ready": return { kind: "ready", server, capabilities: entry.capabilities };
     case "needsInstall": return { kind: "needs-install", server, version: state.version, sizeHint: state.sizeHint };
     case "installFailed": return { kind: "install-failed", server, reason: state.reason, retryable: state.retryable };
@@ -84,7 +102,7 @@ export function describeBufferState(state: BufferLspState): string {
     case "disabled": return `${serverLabels[state.server]} is turned off in settings.`;
     case "idle": return `${serverLabels[state.server]} starts when a file is opened.`;
     case "starting": return `${serverLabels[state.server]} is starting.`;
-    case "installing": return `Installing ${serverLabels[state.server]}${state.total ? ` (${Math.round(((state.received ?? 0) / state.total) * 100)}%)` : ""}.`;
+    case "installing": { const percent = state.percent ?? (state.total ? Math.round(((state.received ?? 0) / state.total) * 100) : undefined); return `Installing ${serverLabels[state.server]}${percent !== undefined ? ` (${percent}%)` : ""}.`; }
     case "ready": return `${serverLabels[state.server]} is running.`;
     case "needs-install": return `${serverLabels[state.server]} ${state.version} is not installed.`;
     case "install-failed": return `Installing ${serverLabels[state.server]} failed: ${state.reason}`;
@@ -118,6 +136,12 @@ export interface LanguageServers {
   entryFor: (server: LanguageServerId, absolutePath?: string) => ServerEntry | undefined;
   bufferState: (path: string, workspaceRoot?: string) => BufferLspState;
   progress: (server: LanguageServerId) => InstallProgress | undefined;
+  /** Work the server reports for one project folder (indexing, importing), newest data from events and status. */
+  work: (server: LanguageServerId, root: string | null | undefined) => HubActivity[];
+  /** Stops a running install. The state returns to "not installed" without an error. */
+  cancelInstall: (server: LanguageServerId) => Promise<void>;
+  /** Trusts or stops trusting the open folder for servers that run its build tools. */
+  trustWorkspace: (trusted: boolean) => Promise<void>;
   binding: (path: string, context: BindingContext) => LspBinding | undefined;
   /** Remembers the state implied by a failed command until the next status change. */
   noteError: (path: string, error: LspErrorDto) => void;
@@ -133,6 +157,8 @@ export interface LanguageServers {
 export interface LanguageServersOptions {
   /** Called for every new background failure so the app can show a toast. */
   onError?: (message: string) => void;
+  /** Commands and events newer than the generated bindings, see lsp-hub-types.ts. Without it cancel, trust and work progress are inert. */
+  hub?: HubPort;
 }
 
 const MAX_CACHED_DIAGNOSTICS = 200;
@@ -157,6 +183,8 @@ const normalizePath = (value: string) => value.replace(/\\/g, "/").replace(/\/+$
 export function createLanguageServers(port: LspPort, options: LanguageServersOptions = {}): LanguageServers {
   const [entries, setEntries] = createStore<Record<string, ServerEntry[]>>({});
   const [progress, setProgress] = createStore<Record<string, InstallProgress | undefined>>({});
+  const [work, setWork] = createStore<Record<string, HubActivity[]>>({});
+  const workKey = (server: string, root: string | null | undefined) => `${server}\u0000${root ?? ""}`;
   const [bufferErrors, setBufferErrors] = createStore<Record<string, BufferLspState | undefined>>({});
   const [loaded, setLoaded] = createSignal(false);
   const [error, setErrorText] = createSignal("");
@@ -199,7 +227,7 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
   function applyStatus(rows: ServerStatusDto_Serialize[]) {
     const next: Record<string, ServerEntry[]> = {};
     for (const row of rows) {
-      (next[row.server] ??= []).push({ server: row.server, root: row.root, state: row.state, installed: row.installed, enabled: row.enabled, version: row.version, epoch: row.epoch, capabilities: row.capabilities });
+      (next[row.server] ??= []).push({ server: row.server, root: row.root, state: row.state, installed: row.installed, enabled: row.enabled, version: row.version, epoch: row.epoch, capabilities: row.capabilities, hub: readHubFields(row) });
     }
     const restarted: { server: LanguageServerId; root: string | null }[] = [];
     for (const [server, list] of Object.entries(next)) {
@@ -209,6 +237,11 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
       }
     }
     setEntries(reconcile(next, { merge: false }));
+    for (const list of Object.values(next)) for (const row of list) {
+      if (row.hub.activity.length) setWork(workKey(row.server, row.root), row.hub.activity);
+      else if (row.state.kind !== "ready") setWork(workKey(row.server, row.root), undefined as unknown as HubActivity[]);
+      if (row.state.kind === "installing" && row.hub.install && !progress[row.server]) advance(row.server, { phase: row.hub.install.phase, overallReceived: row.hub.install.overallReceived, overallTotal: row.hub.install.overallTotal, artifactIndex: row.hub.install.artifactIndex, artifactCount: row.hub.install.artifactCount });
+    }
     for (const { server, root } of restarted) { dropHints(server); dropCachedDiagnostics(server); fireReset(server, root); }
   }
 
@@ -250,10 +283,12 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
             rows.forEach((row, index) => { if (exact ? row.root === event.root : row.root === null) setEntries(event.server, index, "state", event.state); });
           }
           if (event.state.kind !== "installing") setProgress(event.server, undefined);
+          if (event.state.kind !== "ready") setWork(workKey(event.server, event.root), undefined as unknown as HubActivity[]);
           if (event.state.kind !== "ready") { dropHints(event.server); dropCachedDiagnostics(event.server); fireReset(event.server, event.root); }
           void refresh();
         }),
         subscribe(port.onInstallProgress, event => handleProgress(event)),
+        ...(options.hub ? [subscribe(options.hub.onWorkProgress, handleWork)] : []),
         subscribe(port.onError, event => fail(`${serverLabels[event.server]}: ${event.message}`, event.server)),
         subscribe(port.onDiagnostics, event => {
           cacheDiagnostics(event);
@@ -272,13 +307,36 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
     while (diagnosticsCache.size > MAX_CACHED_DIAGNOSTICS) diagnosticsCache.delete(diagnosticsCache.keys().next().value as string);
   }
 
+  /** Applies one progress event, keeping the overall bytes and the percent from ever going backwards during an install. */
+  function advance(server: LanguageServerId, next: Omit<InstallProgress, "percent">) {
+    const prev = progress[server];
+    const hasOverall = next.overallReceived !== undefined;
+    const overallReceived = hasOverall ? Math.max(prev?.overallReceived ?? 0, next.overallReceived!) : undefined;
+    const overallTotal = hasOverall ? (next.overallTotal ?? prev?.overallTotal ?? null) : undefined;
+    const raw = hasOverall ? percentOf(overallReceived, overallTotal) : percentOf(next.received, next.total);
+    const percent = raw === undefined ? prev?.percent : Math.max(prev?.percent ?? 0, raw);
+    setProgress(server, { phase: next.phase, received: next.received, total: next.total, message: next.message, overallReceived, overallTotal, artifactIndex: next.artifactIndex, artifactCount: next.artifactCount, percent });
+  }
+
   function handleProgress(event: LanguageServerInstallProgress_Deserialize) {
-    if (event.phase === "finished" || event.phase === "failed" || event.phase === "alreadyInstalled") {
+    if (event.phase === "finished" || event.phase === "failed" || event.phase === "alreadyInstalled" || (event.phase as string) === "cancelled") {
       setProgress(event.server, undefined);
       void refresh();
       return;
     }
-    setProgress(event.server, { phase: event.phase, received: event.received, total: event.total, message: event.message });
+    const ext = readInstallExt(event);
+    advance(event.server, { phase: event.phase, received: event.received, total: event.total, message: event.message, ...ext });
+  }
+
+  function handleWork(event: WorkProgressEvent) {
+    const key = workKey(event.server, event.root);
+    const current = work[key] ?? [];
+    if (event.kind === "end") { setWork(key, current.filter(item => item.token !== event.token)); return; }
+    const earlier = current.find(entry => entry.token === event.token);
+    const percentage = event.percentage === undefined || event.percentage === null ? earlier?.percentage : Math.min(100, Math.max(0, event.percentage));
+    // A report that leaves out the title or message keeps the ones the work began with.
+    const item: HubActivity = { token: event.token, title: event.title ?? earlier?.title, message: event.message ?? earlier?.message, percentage };
+    setWork(key, earlier ? current.map(entry => entry.token === event.token ? item : entry) : [...current, item]);
   }
 
   function dispose() {
@@ -371,6 +429,20 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
       return command(server, install ? "Installing" : "Restarting", () => install ? port.install(server) : port.restart(server));
     },
     entryFor, bufferState, progress: server => progress[server], binding,
+    work: (server, root) => work[workKey(server, root)] ?? [],
+    cancelInstall: async server => {
+      if (!options.hub) return;
+      try { await options.hub.cancelInstall(server); clearError(); }
+      catch (cause) { fail(`Cancelling the ${serverLabels[server]} install failed: ${errorText(cause)}`, server); }
+      setProgress(server, undefined);
+      await refresh();
+    },
+    trustWorkspace: async trusted => {
+      if (!options.hub) return;
+      try { await options.hub.trustWorkspace(trusted); clearError(); }
+      catch (cause) { fail(`Changing folder trust failed: ${errorText(cause)}`); }
+      await refresh();
+    },
     noteError,
     onDiagnostics: listener => { diagnosticListeners.add(listener); return () => { diagnosticListeners.delete(listener); }; },
     onReset,
