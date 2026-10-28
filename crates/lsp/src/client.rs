@@ -242,6 +242,17 @@ impl LspClient {
         params: Option<Value>,
         timeout_duration: Duration,
     ) -> Result<Value> {
+        self.send_request_with_timeout_and_cancel(method, params, timeout_duration, None)
+            .await
+    }
+
+    async fn send_request_with_timeout_and_cancel(
+        &self,
+        method: String,
+        params: Option<Value>,
+        timeout_duration: Duration,
+        cancel_token: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<Value> {
         if *self.shutdown_flag.read().await {
             return Err(LspError::Shutdown);
         }
@@ -269,7 +280,19 @@ impl LspClient {
             return Err(e);
         }
 
-        let result = timeout(timeout_duration, rx).await;
+        let result = if let Some(cancel_token) = cancel_token {
+            tokio::select! {
+                result = timeout(timeout_duration, rx) => result,
+                _ = cancel_token.cancelled() => {
+                    self.pending_requests.write().await.remove(&id);
+                    let cancel_params = serde_json::json!({ "id": id });
+                    let _ = self.send_notification("$/cancelRequest".to_string(), Some(cancel_params)).await;
+                    return Err(LspError::Cancelled);
+                }
+            }
+        } else {
+            timeout(timeout_duration, rx).await
+        };
 
         match result {
             Ok(Ok(res)) => res,
@@ -430,17 +453,18 @@ impl LspClient {
     ) -> Result<Option<CompletionResponse>> {
         let value = serde_json::to_value(params)?;
 
-        tokio::select! {
-            result = self.send_request("textDocument/completion".to_string(), Some(value)) => {
-                let result = result?;
-                if result.is_null() {
-                    return Ok(None);
-                }
-                Ok(Some(serde_json::from_value(result)?))
-            }
-            _ = cancel_token.cancelled() => {
-                Err(LspError::Cancelled)
-            }
+        let result = self
+            .send_request_with_timeout_and_cancel(
+                "textDocument/completion".to_string(),
+                Some(value),
+                DEFAULT_REQUEST_TIMEOUT,
+                Some(cancel_token),
+            )
+            .await?;
+        if result.is_null() {
+            Ok(None)
+        } else {
+            Ok(Some(serde_json::from_value(result)?))
         }
     }
 
@@ -451,17 +475,18 @@ impl LspClient {
     ) -> Result<Option<Hover>> {
         let value = serde_json::to_value(params)?;
 
-        tokio::select! {
-            result = self.send_request("textDocument/hover".to_string(), Some(value)) => {
-                let result = result?;
-                if result.is_null() {
-                    return Ok(None);
-                }
-                Ok(Some(serde_json::from_value(result)?))
-            }
-            _ = cancel_token.cancelled() => {
-                Err(LspError::Cancelled)
-            }
+        let result = self
+            .send_request_with_timeout_and_cancel(
+                "textDocument/hover".to_string(),
+                Some(value),
+                DEFAULT_REQUEST_TIMEOUT,
+                Some(cancel_token),
+            )
+            .await?;
+        if result.is_null() {
+            Ok(None)
+        } else {
+            Ok(Some(serde_json::from_value(result)?))
         }
     }
 
