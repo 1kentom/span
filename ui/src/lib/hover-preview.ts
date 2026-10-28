@@ -63,5 +63,5 @@ export function previewHover(path: string, position: PositionDto): LspResponse<H
 /** The sample type error in api.ts, shown with the hover on `"2"`. */
 export function previewDiagnostics(path: string, revision: number): DiagnosticsPublished_Deserialize | undefined {
   if (path !== "src/hover-sample/api.ts") return undefined;
-  return { path, revision, diagnostics: [{ severity: "error", message: "Argument of type 'string' is not assignable to parameter of type 'number'.", source: "ts", code: "2345", range: { start: { line: 8, character: 31 }, end: { line: 8, character: 34 } } }] } as DiagnosticsPublished_Deserialize;
+  return { path, revision, diagnostics: [{ severity: "error", message: "Argument of type 'string' is not assignable to parameter of type 'number'.", source: "ts", code: "2345", range: { start: { line: 8, character: 28 }, end: { line: 8, character: 31 } } }] } as DiagnosticsPublished_Deserialize;
 }

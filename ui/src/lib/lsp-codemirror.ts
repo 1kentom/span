@@ -466,6 +466,7 @@ class HoverPlugin {
   linkTimer: ReturnType<typeof setTimeout> | undefined;
   pointer: { x: number; y: number } | undefined;
   modifier = false;
+  chorded = false;
   overTip = false;
   linkKey: string | undefined;
   linkCache = new Map<string, LocationDto | false>();
@@ -476,7 +477,13 @@ class HoverPlugin {
     this.runtime = view.state.facet(runtimeFacet)!;
     liveHovers.add(this);
     if (!unregisterQuickInfo) unregisterQuickInfo = registerNavigationHandler("quickInfo", quickInfo);
-    const key = (event: KeyboardEvent) => this.modifierChanged(event);
+    const key = (event: KeyboardEvent) => {
+      // Escape closes a popup the pointer is resting on even though the editor has no focus.
+      if (event.type === "keydown" && event.key === "Escape" && this.view.state.field(tipField, false) && !completionStatus(this.view.state)) { this.hide(); this.seq++; clearTimeout(this.showTimer); return; }
+      // A modifier chord (Cmd+Shift+I, Cmd+S) is not a request to follow a link.
+      if (event.type === "keydown" && !["Meta", "Control", "Alt", "Shift"].includes(event.key)) { this.chorded = true; this.clearLink(); return; }
+      this.modifierChanged(event);
+    };
     const blur = () => this.modifierChanged(undefined);
     window.addEventListener("keydown", key, true);
     window.addEventListener("keyup", key, true);
@@ -526,6 +533,8 @@ class HoverPlugin {
   private tipEvents(dom: HTMLElement) {
     dom.addEventListener("mouseenter", () => { this.overTip = true; clearTimeout(this.closeTimer); });
     dom.addEventListener("mouseleave", () => { this.overTip = false; this.scheduleClose(); });
+    // Focus that moves out of a focused popup (a click elsewhere) closes it.
+    dom.addEventListener("focusout", event => { if (!(event.relatedTarget instanceof Node && dom.contains(event.relatedTarget))) this.hide(); });
   }
 
   private show(spec: Omit<TipSpec, "tooltip"> & { token: TokenAt; dom: HTMLElement; ready?: Promise<void>; focus?: boolean }) {
@@ -659,7 +668,8 @@ class HoverPlugin {
   isModifier(event: { metaKey: boolean; ctrlKey: boolean }) { return isMac() ? event.metaKey || event.ctrlKey : event.ctrlKey; }
 
   modifierChanged(event: KeyboardEvent | undefined) {
-    const held = event ? this.isModifier(event) : false;
+    if (!event || !this.isModifier(event)) this.chorded = false;
+    const held = event ? this.isModifier(event) && !this.chorded : false;
     if (held === this.modifier) return;
     this.modifier = held;
     if (!held) { this.clearLink(); return; }
@@ -704,7 +714,7 @@ class HoverPlugin {
       if (this.linkKey !== token.key || !this.modifier || this.runtime.destroyed) return;
       const lines = snippet.text.replace(/\n+$/, "").split("\n");
       const first = Math.max(0, target.range.start.line - snippet.startLine);
-      const window = lines.slice(Math.max(0, first - 1), first + 8).join("\n");
+      const window = lines.slice(first, first + 7).join("\n");
       const language = resolveLanguageId("", snippet.path || target.path);
       const built = buildHoverContent({
         markdown: `\`\`\`${language === "text" ? "" : language}\n${window.replace(/`{3,}/g, "``")}\n\`\`\``, diagnostics: [], actions: [],
@@ -783,7 +793,7 @@ const hoverPlugin = ViewPlugin.fromClass(HoverPlugin, {
     mousedown(event) { return this.mousedown(event); },
     contextmenu(event) { return this.contextmenu(event); },
     keydown(event) { return this.keydown(event); },
-    blur() { if (!this.overTip) this.hide(); },
+    blur(event) { if (!this.overTip && !(event.relatedTarget instanceof Node && this.view.dom.querySelector(".cm-lsp-hover")?.contains(event.relatedTarget))) this.hide(); },
   },
 });
 
