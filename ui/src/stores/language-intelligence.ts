@@ -15,28 +15,30 @@ export type HubStateKind =
   | "unknown" | "unavailable" | "disabled" | "idle" | "needs-install" | "installing" | "starting" | "working"
   | "ready" | "runtime-missing" | "install-failed" | "failed" | "crashed";
 export type HubTone = "ok" | "busy" | "warn" | "bad" | "off";
-export type HubActionId = "install" | "cancel" | "restart" | "start" | "retry" | "settings" | "chooseRuntime" | "checkAgain" | "turnOn" | "trust" | "stopTrusting" | "refresh";
+export type HubActionId = "install" | "cancel" | "restart" | "start" | "retry" | "settings" | "chooseRuntime" | "checkAgain" | "turnOn" | "trust" | "stopTrusting" | "refresh" | "copyDetails";
+/** At most two per state: the primary one first, then an optional quieter one. */
 export interface HubAction { id: HubActionId; label: string; primary?: boolean }
-export interface FeatureChip { id: string; label: string; on: boolean; tooltip: string }
 export interface ProgressView { percent?: number; indeterminate: boolean; ariaLabel: string }
 
 export interface CardView {
   server: LanguageServerId;
   language: string;
+  /** "Eclipse JDT LS 1.62": the technical name, without a build number. */
   technical: string;
   kind: HubStateKind;
   tone: HubTone;
-  /** One or two words, for example "Installing". */
+  /** The full state name, for the dot's label and tooltip. */
   stateLabel: string;
-  /** The line under the name: a phase while installing, otherwise the main sentence. */
-  headline: string;
-  detail?: string;
-  note?: string;
+  /** One short word next to the dot, empty when the state adds nothing (for example Ready). */
+  stateWord: string;
+  /** The one status line (two lines at most on screen). Never repeats the header. */
+  status: string;
+  /** Longer text for the status tooltip. */
+  statusTip?: string;
   progress?: ProgressView;
-  chips: FeatureChip[];
   actions: HubAction[];
   failure?: { reason: string; details?: string };
-  trust?: { needsTrust: boolean; trusted: boolean; text: string; restarting?: string };
+  trust?: { needsTrust: boolean; trusted: boolean; label: string; tip: string; restarting?: string };
 }
 
 export interface RowView {
@@ -44,6 +46,7 @@ export interface RowView {
   name: string;
   kind: HubStateKind;
   tone: HubTone;
+  /** A word only when the row is not ready, for example "Not installed" or "Installing 40%". */
   stateText: string;
   version?: string;
   size?: string;
@@ -52,22 +55,21 @@ export interface RowView {
   action?: HubAction;
 }
 
-export interface BannerView { server: LanguageServerId; root: string; title: string; body: string; more: string; restarting?: string }
+/** The prompt over the editor when the open folder needs trust. */
+export interface BannerView { server: LanguageServerId; root: string; title: string; explain: string; restarting?: string }
 
 export interface HubView {
   title: string;
-  subtitle: string;
   preview: boolean;
   hasFile: boolean;
   card?: CardView;
-  /** Shown instead of the card when the file has no language server. */
+  /** Shown in the status zone instead of the card when the file has no language server. */
   noCardText: string;
   rows: RowView[];
   banner?: BannerView;
   button: {
     tone: HubTone;
     ring: { kind: "none" | "determinate" | "indeterminate"; percent?: number };
-    check: boolean;
     badge?: "attention" | "restricted";
     label: string;
     tooltip: string;
@@ -134,29 +136,29 @@ function capabilityOn(id: string, caps: CapabilitiesDto | undefined | null): boo
   }
 }
 
-function chipsFor(id: LanguageServerId, kind: HubStateKind, caps: CapabilitiesDto | undefined | null): FeatureChip[] {
-  const live = kind === "ready" || kind === "working";
-  return copy.featureChipSpecs.map(spec => {
-    const on = live && capabilityOn(spec.id, caps);
-    return { id: spec.id, label: spec.label, on, tooltip: !live ? copy.chipsWaiting(id) : on ? spec.on : spec.off };
-  });
+function featuresOn(kind: HubStateKind, caps: CapabilitiesDto | undefined | null): string[] {
+  if (kind !== "ready" && kind !== "working") return [];
+  return copy.featureSpecs.filter(spec => capabilityOn(spec.id, caps)).map(spec => spec.id);
 }
 
 const act = (id: HubActionId, label: string, primary = false): HubAction => ({ id, label, primary: primary || undefined });
 
-function actionsFor(id: LanguageServerId, kind: HubStateKind, entry: ServerEntry | undefined, state: BufferLspState): HubAction[] {
+function actionsFor(id: LanguageServerId, kind: HubStateKind, state: BufferLspState, hasDetails: boolean): HubAction[] {
   switch (kind) {
-    case "needs-install": return [act("install", copy.installLabel(id), true)];
+    case "needs-install": return [act("install", "Install", true)];
     case "installing": return [act("cancel", "Cancel")];
-    case "ready": case "working": return [act("restart", "Restart"), act("settings", "Settings")];
+    case "ready": case "working": return [act("restart", "Restart")];
     case "runtime-missing": return [act("chooseRuntime", copy.chooseRuntimeLabel(id), true), act("checkAgain", "Check again")];
-    case "install-failed": return state.kind === "install-failed" && state.retryable ? [act("retry", "Retry", true)] : [act("restart", "Restart", true), act("settings", "Settings")];
+    case "install-failed":
+      return state.kind === "install-failed" && state.retryable
+        ? [act("retry", "Retry", true), ...(hasDetails ? [act("copyDetails", copy.hubText.copyDetails)] : [])]
+        : [act("restart", "Restart", true), act("settings", "Settings")];
     case "failed": return [act("restart", "Restart", true), act("settings", "Settings")];
     case "crashed": return [act("restart", "Restart", true)];
     case "disabled": return [act("turnOn", "Turn on", true)];
     case "idle": return [act("start", "Start")];
     case "unavailable": return [act("refresh", "Retry", true)];
-    default: return entry ? [] : [];
+    default: return [];
   }
 }
 
@@ -171,64 +173,67 @@ function buildCard(snapshot: HubServerSnapshot, input: HubSnapshot, kind: HubSta
   const entry = snapshot.entry;
   const percent = percentFor(snapshot, kind);
   const state = snapshot.state;
+  const failureRaw = state.kind === "install-failed" || state.kind === "start-failed" ? state.reason : undefined;
+  const failureReason = entry?.hub.failureReason ?? snapshot.error ?? (kind === "install-failed" ? copy.installFailedLine(true) : copy.startFailedLine);
+  const failureDetails = entry?.hub.failureDetails ?? (failureRaw && failureRaw !== failureReason ? failureRaw : undefined);
   const card: CardView = {
     server: id, language: copy.languageNames[id], technical: copy.technicalLabel(id, entry?.version), kind, tone: tones[kind],
-    stateLabel: copy.rowStateText(kind, percent), headline: "", chips: chipsFor(id, kind, entry?.capabilities), actions: actionsFor(id, kind, entry, state),
+    stateLabel: copy.stateName(kind), stateWord: copy.headerWord(kind), status: "", actions: actionsFor(id, kind, state, Boolean(failureDetails)),
   };
   switch (kind) {
     case "needs-install":
-      card.headline = copy.rowStateText(kind);
-      card.detail = copy.needsInstallDetail(id, state.kind === "needs-install" ? state.sizeHint : undefined, input.autoInstall);
+      card.status = copy.needsInstallLine(state.kind === "needs-install" ? state.sizeHint : undefined);
+      card.statusTip = copy.needsInstallTip(input.autoInstall);
       break;
     case "installing": {
       const s = state.kind === "installing" ? state : undefined;
       const overall = s?.overallReceived !== undefined;
-      card.headline = copy.installPhaseLine(s?.phase, overall ? s?.overallReceived : s?.received, overall ? s?.overallTotal : s?.total);
-      card.detail = copy.installingKeepEditing(id);
-      card.progress = { percent, indeterminate: percent === undefined, ariaLabel: `Installing ${copy.supportName(id)}` };
+      card.status = copy.installPhaseLine(s?.phase, overall ? s?.overallReceived : s?.received, overall ? s?.overallTotal : s?.total);
+      card.statusTip = copy.startingTip;
+      card.progress = { percent, indeterminate: percent === undefined, ariaLabel: `Installing ${copy.shortLanguageNames[id]}` };
       break;
     }
-    case "starting": card.headline = "Starting…"; card.detail = copy.startingDetail(id); card.progress = { indeterminate: true, ariaLabel: `Starting ${copy.supportName(id)}` }; break;
+    case "starting": card.status = copy.startingLine; card.statusTip = copy.startingTip; card.progress = { indeterminate: true, ariaLabel: `Starting ${copy.shortLanguageNames[id]}` }; break;
     case "working": {
       const first = snapshot.activity.find(item => typeof item.percentage === "number") ?? snapshot.activity[0];
-      card.headline = copy.workHeadline(first?.title, percent);
-      card.detail = first?.message ?? copy.workDetail(id);
-      card.note = first?.message ? copy.workDetail(id) : undefined;
+      card.status = first?.message ?? copy.workLine;
+      card.statusTip = copy.workTip;
       card.progress = { percent, indeterminate: percent === undefined, ariaLabel: "Indexing your project" };
       break;
     }
-    case "ready": card.headline = "Ready"; card.detail = copy.readyDetail; break;
+    case "ready": card.status = copy.featuresLine(featuresOn(kind, entry?.capabilities)); break;
     case "runtime-missing": {
       const facts = runtimeFacts(snapshot);
-      card.headline = "Needs a runtime";
-      card.detail = facts ? copy.runtimeMissingDetail(id, facts) : `${copy.supportName(id)} needs a newer runtime.`;
+      card.status = facts ? copy.runtimeMissingLine(id, facts) : `Needs a newer ${id === "jdtls" ? "JDK" : "Node.js"}`;
+      card.statusTip = facts ? copy.runtimeMissingTip(id, facts) : undefined;
       break;
     }
     case "install-failed": case "failed": {
-      const raw = state.kind === "install-failed" || state.kind === "start-failed" ? state.reason : undefined;
-      const reason = entry?.hub.failureReason ?? snapshot.error ?? (kind === "install-failed" ? copy.installFailedFallback(id) : copy.startFailedFallback(id));
-      const details = entry?.hub.failureDetails ?? (raw && raw !== reason ? raw : undefined);
-      card.headline = kind === "install-failed" ? "Install failed" : "Did not start";
-      card.detail = reason;
-      card.failure = { reason, details };
-      if (state.kind === "install-failed" && !state.retryable) card.note = copy.nonRetryable;
+      const retryable = state.kind === "install-failed" ? state.retryable : true;
+      card.status = kind === "install-failed" ? copy.installFailedLine(retryable) : copy.startFailedLine;
+      card.statusTip = [failureReason !== card.status ? failureReason : "", failureDetails ?? "", state.kind === "install-failed" && !state.retryable ? copy.nonRetryable : ""].filter(Boolean).join(" ");
+      card.failure = { reason: failureReason, details: failureDetails };
       break;
     }
-    case "crashed": card.headline = "Stopped"; card.detail = copy.crashedDetail(id); break;
-    case "disabled": card.headline = "Off"; card.detail = copy.disabledDetail(id); break;
-    case "idle": card.headline = "Not started"; card.detail = copy.idleDetail(id); break;
-    case "unavailable": card.headline = copy.hubText.unavailableShort; card.detail = copy.hubText.unavailable; card.note = input.statusError; break;
-    default: card.headline = "Checking…"; card.detail = copy.checkingDetail(id);
+    case "crashed": card.status = copy.crashedLine; break;
+    case "disabled": card.status = copy.disabledLine; break;
+    case "idle": card.status = copy.idleLine; break;
+    case "unavailable": card.status = copy.hubText.unavailable; card.statusTip = input.statusError; break;
+    default: card.status = copy.checkingLine;
   }
   const trust = entry?.hub.trust;
   if (trust && copy.projectCodeServers.has(id) && (kind === "ready" || kind === "working" || kind === "starting" || kind === "idle")) {
-    if (input.trustRestarting) card.trust = { needsTrust: false, trusted: true, text: copy.trustBanner.body, restarting: copy.hubText.restarting(copy.supportName(id)) };
-    else if (trust.needsTrust) {
-      card.trust = { needsTrust: true, trusted: false, text: `${copy.trustBanner.body}` };
-      card.actions = [act("trust", copy.hubText.trustThisFolder, true), ...card.actions.filter(item => item.id !== "settings"), ...card.actions.filter(item => item.id === "settings")];
+    if (input.trustRestarting) {
+      const text = copy.hubText.restarting(copy.shortLanguageNames[id]);
+      card.trust = { needsTrust: false, trusted: true, label: copy.hubText.trustedFolder, tip: copy.trustPrompt.explain, restarting: text };
+      card.status = text;
+      card.statusTip = undefined;
+      card.actions = [];
+    } else if (trust.needsTrust) {
+      card.trust = { needsTrust: true, trusted: false, label: copy.hubText.untrustedFolder, tip: copy.trustPrompt.explain };
+      card.actions = [act("trust", copy.hubText.trustFolder, true), ...card.actions.filter(item => item.id === "restart").map(item => ({ ...item, primary: undefined }))].slice(0, 2);
     } else if (trust.workspaceTrusted) {
-      card.trust = { needsTrust: false, trusted: true, text: copy.hubText.trustedLine };
-      card.actions = [...card.actions, act("stopTrusting", copy.hubText.stopTrusting)];
+      card.trust = { needsTrust: false, trusted: true, label: copy.hubText.trustedFolder, tip: copy.trustPrompt.explain };
     }
   }
   return card;
@@ -243,13 +248,12 @@ function buildRow(snapshot: HubServerSnapshot, input: HubSnapshot): RowView {
       case "needs-install": return act("install", "Install");
       case "install-failed": return snapshot.state.kind === "install-failed" && snapshot.state.retryable ? act("retry", "Retry") : act("restart", "Restart");
       case "failed": case "crashed": return act("restart", "Restart");
-      case "ready": case "working": return act("restart", "Restart");
       default: return undefined;
     }
   })();
   return {
-    server: snapshot.id, name: copy.languageNames[snapshot.id], kind, tone: tones[kind], stateText: copy.rowStateText(kind, percent),
-    version: entry?.version ? entry.version.replace(/^v/i, "") : undefined,
+    server: snapshot.id, name: copy.shortLanguageNames[snapshot.id], kind, tone: tones[kind], stateText: copy.rowWord(kind, percent),
+    version: entry?.version ? copy.shortVersion(entry.version) : undefined,
     size: entry?.installed && entry.hub.installedSizeBytes ? copy.formatBytes(entry.hub.installedSizeBytes) : undefined,
     enabled: entry ? entry.enabled : true, current: input.fileServer === snapshot.id, action,
   };
@@ -274,7 +278,6 @@ export function buildHubView(input: HubSnapshot): HubView {
   const button: HubView["button"] = {
     tone: focusKind ? tones[focusKind] : "off",
     ring: busy ? (focusKind === "starting" || percent === undefined ? { kind: "indeterminate" } : { kind: "determinate", percent }) : { kind: "none" },
-    check: focusKind === "ready" && !restricted,
     badge: focusKind && attention.has(focusKind) ? "attention" : restricted ? "restricted" : undefined,
     label: `${copy.hubText.title}. ${summary}.`,
     tooltip: summary,
@@ -285,12 +288,12 @@ export function buildHubView(input: HubSnapshot): HubView {
   const root = trustKey(entry);
   let banner: BannerView | undefined;
   if (file && entry && copy.projectCodeServers.has(file.id) && (fileKind === "ready" || fileKind === "working" || fileKind === "starting")) {
-    if (input.trustRestarting) banner = { server: file.id, root, title: copy.trustBanner.title, body: copy.trustBanner.body, more: copy.trustBanner.more, restarting: copy.hubText.restarting(copy.supportName(file.id)) };
-    else if (entry.hub.trust.needsTrust && !input.dismissedTrust.has(root)) banner = { server: file.id, root, title: copy.trustBanner.title, body: copy.trustBanner.body, more: copy.trustBanner.more };
+    if (input.trustRestarting) banner = { server: file.id, root, title: copy.trustPrompt.question, explain: copy.trustPrompt.explain, restarting: copy.hubText.restarting(copy.shortLanguageNames[file.id]) };
+    else if (entry.hub.trust.needsTrust && !input.dismissedTrust.has(root)) banner = { server: file.id, root, title: copy.trustPrompt.question, explain: copy.trustPrompt.explain };
   }
 
   return {
-    title: copy.hubText.title, subtitle: copy.hubText.subtitle, preview: input.preview, hasFile: input.hasFile, card,
+    title: copy.hubText.title, preview: input.preview, hasFile: input.hasFile, card,
     noCardText: input.hasFile ? copy.hubText.noServer : copy.hubText.noFile,
     rows, banner, button,
     statusBar: file && fileKind

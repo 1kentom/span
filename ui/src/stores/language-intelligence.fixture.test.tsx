@@ -63,12 +63,12 @@ describe("fixture: one view model drives every surface", () => {
       seen.push(percent);
       expect(percent).toBe(expected);
       // The same number in the button, the status bar and the panel text.
-      expect(m.root.querySelector(".hub-button")!.getAttribute("aria-label")).toBe(`Language intelligence. Installing Java support (${percent}%).`);
+      expect(m.root.querySelector(".hub-button")!.getAttribute("aria-label")).toBe(`Language intelligence. Installing Java (${percent}%).`);
       expect(m.root.querySelector(".hub-button")!.getAttribute("data-percent")).toBe(String(percent));
-      expect(text(m.root, ".lsp-status-text")).toBe(`Java: installing ${percent}%`);
+      expect(text(m.root, ".lsp-status-text")).toBe(`Java ${percent}%`);
       expect(text(m.root, "[data-testid=hub-percent]")).toBe(`${percent}%`);
-      expect(text(m.root, ".hub-state")).toBe(`Installing ${percent}%`);
-      expect(text(m.root, ".hub-headline")).toBe(`Downloading… ${Math.round(step.overall / MB)} MB of 320 MB`);
+      expect(text(m.root, ".hub-state-word")).toBe("Installing");
+      expect(text(m.root, ".hub-status-text")).toBe(`Downloading ${Math.round(step.overall / MB)} of 320 MB`);
       expect(m.root.querySelector(".lsp-status-button")!.getAttribute("aria-label")).toBe(m.root.querySelector(".hub-button")!.getAttribute("aria-label"));
     }
     for (let index = 1; index < seen.length; index++) expect(seen[index]).toBeGreaterThanOrEqual(seen[index - 1]);
@@ -86,32 +86,36 @@ describe("fixture: one view model drives every surface", () => {
   it("moves through the later phases, then returns to needs install on cancel without an error", async () => {
     const m = await setup([row()]);
     m.listeners.progress(progress(320 * MB, 2, 100 * MB, 100 * MB));
-    for (const [phase, line] of [["verifying", "Checking the download…"], ["extracting", "Unpacking…"], ["finalizing", "Finishing…"]]) {
+    for (const [phase, line] of [["verifying", "Checking the download"], ["extracting", "Unpacking"], ["finalizing", "Finishing"]]) {
       m.listeners.progress(progress(320 * MB, 2, 0, 0, phase));
-      expect(text(m.root, ".hub-headline")).toBe(line);
+      expect(text(m.root, ".hub-status-text")).toBe(line);
       expect(text(m.root, "[data-testid=hub-percent]")).toBe("100%");
     }
     (m.port.status as any).mockResolvedValue([row({ state: { kind: "needsInstall", version: "1.62.0", sizeHint: 120 * MB } })]);
     click(m.root, '[data-action="cancel"]');
     expect(m.hubPort.cancelInstall).toHaveBeenCalledWith("jdtls");
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(text(m.root, ".hub-state")).toBe("Not installed");
+    expect(text(m.root, ".hub-status-text")).toBe("Install for completions and errors (about 120 MB)");
     expect(m.root.querySelector('[data-action="install"]')).not.toBeNull();
     expect(m.servers.error()).toBe("");
     expect(m.root.querySelector("[role=progressbar]")).toBeNull();
   });
   it("shows indexing from work progress and ends with ready", async () => {
     const m = await setup([row({ state: { kind: "ready" }, installed: true, capabilities: caps })]);
-    expect(text(m.root, ".hub-state")).toBe("Ready");
+    expect(m.root.querySelector(".hub-panel")!.getAttribute("data-kind")).toBe("ready");
+    expect(text(m.root, ".hub-state-word")).toBe("");
+    expect(text(m.root, ".hub-status-text")).toMatch(/^Completions, errors, hover/);
     const work = (event: Partial<WorkProgressEvent>) => m.listeners.work({ server: "jdtls", root: "/w", token: "t", kind: "report", ...event });
     work({ kind: "begin", title: "Indexing project", message: "Reading classes", percentage: 0 });
     work({ percentage: 35 });
-    expect(text(m.root, ".hub-headline")).toBe("Indexing your project… 35%");
-    expect(text(m.root, ".hub-card .hub-detail")).toBe("Reading classes");
+    expect(text(m.root, ".hub-state-word")).toBe("Indexing");
+    expect(text(m.root, "[data-testid=hub-percent]")).toBe("35%");
+    expect(text(m.root, ".hub-status-text")).toBe("Reading classes");
     expect(m.root.querySelector(".hub-button")!.getAttribute("data-percent")).toBe("35");
-    expect(text(m.root, ".lsp-status-text")).toBe("Java: indexing 35%");
+    expect(text(m.root, ".lsp-status-text")).toBe("Java 35%");
     work({ kind: "end" });
-    expect(text(m.root, ".hub-state")).toBe("Ready");
+    expect(m.root.querySelector(".hub-panel")!.getAttribute("data-kind")).toBe("ready");
+    expect(text(m.root, "[data-testid=hub-percent]")).toBe("");
   });
   it("trust: restarts with a message, then clears it when the folder restarted and is ready", async () => {
     const needs = row({ state: { kind: "ready" }, installed: true, capabilities: caps, trust: { workspaceTrusted: false, needsTrust: true } });
@@ -121,12 +125,12 @@ describe("fixture: one view model drives every surface", () => {
     click(m.root, '[data-action="trust"]');
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(m.hubPort.trustWorkspace).toHaveBeenCalledWith(true);
-    expect(text(m.root, ".hub-trust")).toBe("Restarting Java support with project dependencies…");
-    expect(m.hub.view().banner?.restarting).toBe("Restarting Java support with project dependencies…");
+    expect(text(m.root, ".hub-status-text")).toBe("Restarting Java with its dependencies");
+    expect(m.hub.view().banner?.restarting).toBe("Restarting Java with its dependencies");
     (m.port.status as any).mockResolvedValue([row({ state: { kind: "ready" }, epoch: 2, installed: true, capabilities: caps, trust: { workspaceTrusted: true, needsTrust: false } })]);
     await m.servers.refresh();
     expect(m.hub.view().banner).toBeUndefined();
-    expect(m.root.querySelector(".hub-trust")!.textContent).toContain("This folder is trusted");
+    expect(m.root.querySelector(".hub-trust")!.textContent).toBe("Trusted folder");
   });
   it("trust: does not stay on the restarting message when nothing restarted", async () => {
     const needs = row({ state: { kind: "ready" }, installed: true, capabilities: caps, trust: { workspaceTrusted: false, needsTrust: true } });
@@ -158,7 +162,7 @@ describe("fixture: one view model drives every surface", () => {
   it("choosing a JDK writes the user setting and restarts, and a cancelled dialog does nothing", async () => {
     const missing = row({ state: { kind: "runtimeMissing", runtime: "Java", requiredVersion: 25, found: ["21"] }, installed: true, runtime: { name: "JDK", requiredVersion: 25, foundVersion: "21", foundPath: "/jdks/21" } });
     const m = await setup([missing]);
-    expect(text(m.root, ".hub-card .hub-detail")).toContain("Found: JDK 21 at /jdks/21");
+    expect(text(m.root, ".hub-status-text")).toBe("Needs JDK 25 or newer. Found JDK 21");
     click(m.root, '[data-action="chooseRuntime"]');
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(m.hubPort.pickPath).toHaveBeenCalledWith("folder", "Choose a JDK folder");
