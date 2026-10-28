@@ -166,13 +166,13 @@ export function createWorkbench() {
     if (busy()) return;
     setBusy(true);
     try {
-      formatWorkspaceEpoch++;
-      cancelAllFormats();
       if (activeSearch) await activeSearch.cancel().catch(() => undefined);
       searchVersion++;
       await Promise.all([...writes.values()]);
       const value = await api.openWorkspace(path);
       if (!value) return;
+      formatWorkspaceEpoch++;
+      cancelAllFormats();
       workspaceVersion++;
       batch(() => { setWorkspaceGeneration(workspaceVersion); setWorkspace(value); setGroups([{ id: 1, tabs: [] }]); setActiveGroup(1); setExpanded(new Set([""])); setError(""); setSearchResults([]); });
       for (const key of Object.keys(buffers)) setBuffers(key, undefined!);

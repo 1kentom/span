@@ -300,6 +300,25 @@ describe("workspace views and session state", () => {
     expect(workbench.pendingRecovery()).toBeUndefined();
   });
 
+  it("keeps a completed format revision when the native folder picker is canceled", async () => {
+    const workbench = await setup();
+    const response = deferred<BufferSnapshot>();
+    client.formatBuffer.mockReturnValue(response.promise);
+    const formatting = workbench.format("src/file.ts");
+    await vi.waitFor(() => expect(client.formatBuffer).toHaveBeenCalled());
+    client.openWorkspace.mockResolvedValueOnce(null);
+    await workbench.openWorkspace();
+    const formatted = { ...initial(), text: "FORMATTED_RESULT\n", revision: 1 };
+    server.set(formatted.path, formatted);
+    response.resolve(formatted);
+    await formatting;
+    expect(workbench.workspace()?.root).toBe("/workspace");
+    expect(workbench.documents()[formatted.path].document.toString()).toBe(formatted.text);
+    append(workbench, "// edit after picker cancellation\n");
+    await vi.waitFor(() => expect(workbench.buffers[formatted.path].revision).toBe(2));
+    expect(await workbench.save(formatted.path)).toBe(true);
+  });
+
   it("records format-on-save output as one shared undo step", async () => {
     const workbench = await setup();
     const formatted = { ...initial(), text: "const value = 1;\n\n", revision: 1, savedRevision: 1 };
