@@ -509,12 +509,35 @@ impl LanguageServers {
     /// with the saved snapshot so a formatted save is sent first.
     pub fn on_saved(&self, snapshot: &BufferSnapshot) {
         let mut st = lock(&self.state);
+        self.saved_locked(&mut st, snapshot);
+    }
+
+    /// The workspace generation. It changes whenever a workspace is opened, so a caller
+    /// that awaits something can tell afterwards that the workspace moved underneath it.
+    pub fn generation(&self) -> u64 {
+        lock(&self.state).generation
+    }
+
+    /// `on_snapshot` followed by `on_saved` for a snapshot produced while the workspace
+    /// generation was `generation`. Dropped (returns false) when another workspace has
+    /// been opened since, so one workspace's text never reaches another's servers.
+    pub fn after_save(&self, generation: u64, snapshot: &BufferSnapshot) -> bool {
+        let mut st = lock(&self.state);
+        if st.generation != generation {
+            return false;
+        }
+        self.sync_locked(&mut st, snapshot, false);
+        self.saved_locked(&mut st, snapshot);
+        true
+    }
+
+    fn saved_locked(&self, st: &mut Shared, snapshot: &BufferSnapshot) {
         let Some(root) = st.root.clone() else { return };
         let abs = paths::join_normalized(&root, &snapshot.path);
         let Some(d) = st.docs.get(&abs).map(|doc| doc.r.clone()) else {
             return;
         };
-        self.push(&mut st, Op::Save { d });
+        self.push(st, Op::Save { d });
     }
 
     /// A file or folder left its path (deleted, trashed or renamed away): close every
@@ -547,6 +570,10 @@ impl LanguageServers {
 
     fn sync_snapshot(&self, snapshot: &BufferSnapshot, reopen: bool) {
         let mut st = lock(&self.state);
+        self.sync_locked(&mut st, snapshot, reopen);
+    }
+
+    fn sync_locked(&self, st: &mut Shared, snapshot: &BufferSnapshot, reopen: bool) {
         let Some(workspace) = st.root.clone() else {
             return;
         };
@@ -573,13 +600,13 @@ impl LanguageServers {
         let known = st.docs.contains_key(&abs);
         if reopen && known {
             st.versions.remove(&abs);
-            let seq = self.push(&mut st, Op::Close { d: r.clone() });
+            let seq = self.push(st, Op::Close { d: r.clone() });
             if let Some(doc) = st.docs.get_mut(&abs) {
                 doc.seq = seq;
             }
         }
         let seq = self.push(
-            &mut st,
+            st,
             Op::Open {
                 d: r.clone(),
                 text: snapshot.text.clone(),

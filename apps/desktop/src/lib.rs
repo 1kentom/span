@@ -256,6 +256,8 @@ async fn save_buffer(
         .lock()
         .map_err(|_| "Workspace state is unavailable".to_owned())?
         .clone();
+    // The workspace may be switched while the save runs; remember which one this is.
+    let generation = lsp.generation();
     // Saving never waits for a language server: the hooks below only queue.
     let snapshot = services::format_or_save_with_warning(
         state.inner().clone(),
@@ -271,9 +273,8 @@ async fn save_buffer(
             span_file_index::FileEvent::Upsert(PathBuf::from(&snapshot.path)),
         );
     }
-    lsp.on_snapshot(&snapshot);
-    lsp.on_saved(&snapshot);
-    if snapshot.path.ends_with(".span/settings.jsonc") {
+    let same_workspace = lsp.after_save(generation, &snapshot);
+    if same_workspace && snapshot.path.ends_with(".span/settings.jsonc") {
         if let Ok(settings) = with_workspace(state.inner().clone(), |w| w.get_settings()).await {
             lsp.inner().apply_settings(&settings);
         }

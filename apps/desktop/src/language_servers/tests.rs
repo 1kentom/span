@@ -895,3 +895,39 @@ async fn releasing_a_buffer_closes_it_and_a_reopen_keeps_versions_rising() {
     // Releasing a path nothing tracks is a no-op.
     assert!(f.svc.on_closed("never-opened.json").is_empty());
 }
+
+#[tokio::test]
+async fn a_save_finishing_after_a_workspace_switch_is_not_sent_to_the_new_workspace() {
+    let mut f = fixture(true, "normal", Duration::from_secs(5));
+    let snapshot = f.ws.open_buffer("a.json").unwrap();
+
+    // Same workspace: the snapshot is opened.
+    let generation = f.svc.generation();
+    assert!(f.svc.after_save(generation, &snapshot));
+    f.svc.flush().await;
+    f.svc.manager.wait_ready(ID, &f.root, WAIT).await.unwrap();
+    eventually("didOpen", || {
+        methods(&f.log).iter().any(|m| m == "textDocument/didOpen")
+    })
+    .await;
+
+    // A save that started before the switch finishes after it: dropped.
+    let started = f.svc.generation();
+    let other = tempfile::tempdir().unwrap();
+    f.svc
+        .workspace_changed(other.path().canonicalize().unwrap(), &Settings::default());
+    f.svc.flush().await;
+    let before = log_entries(&f.log).len();
+    assert!(!f.svc.after_save(started, &snapshot));
+    f.svc.flush().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        log_entries(&f.log).len(),
+        before,
+        "nothing reaches a server"
+    );
+    assert!(
+        f.svc.on_closed("a.json").is_empty(),
+        "no document is tracked"
+    );
+}
