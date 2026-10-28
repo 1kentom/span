@@ -1,3 +1,5 @@
+import { isDangerKey, normaliseChoice } from "./danger-choice";
+
 /** Icon names (files in public/icons, recorded in mode-provenance.json) for the rows of the composer Mode popover. */
 export const MODE_ICON_NAMES = ["ModeReadOnly", "ModeWorkspace", "ModeAuto", "ModeDanger", "ModePlan", "ModeDefault", "ModeOther"] as const;
 export type ModeIconName = (typeof MODE_ICON_NAMES)[number];
@@ -10,11 +12,10 @@ const TABLE: Record<string, ModeIconName> = {
   default: "ModeDefault",
   plan: "ModePlan",
 };
-const DANGER = /full-access|bypass|danger/;
 
 /** The icon for a mode choice, picked from its value (the ACP choice id) alone. Unknown values get the neutral icon. */
 export function modeIconFor(value: string): { icon: ModeIconName; danger: boolean } {
-  const key = value.trim().toLowerCase().replace(/[\s_]+/g, "-");
-  if (DANGER.test(key)) return { icon: "ModeDanger", danger: true };
+  const key = normaliseChoice(value);
+  if (isDangerKey(key)) return { icon: "ModeDanger", danger: true };
   return { icon: TABLE[key] ?? "ModeOther", danger: false };
 }
