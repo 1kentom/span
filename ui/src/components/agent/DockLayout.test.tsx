@@ -107,3 +107,15 @@ describe("other docks share the frame", () => {
     expect(url.querySelector(".sb-dock .sb-actions")).not.toBeNull();
   });
 });
+
+describe("dock fields", () => {
+  it("draws no border inside the dock card: the command, link box and input preview use the field background", () => {
+    const source = css("agent-sidebar.css");
+    const inner = rule(source, ".sb-dock .sb-code, .sb-dock .sb-urlbox, .sb-dock .sb-dock-input pre");
+    expect(inner).toContain("border: 0");
+    expect(inner).toContain("background: var(--sb-field)");
+    // The override comes after both base rules, so it wins at equal or higher specificity.
+    expect(source.indexOf(".sb-dock .sb-code, .sb-dock .sb-urlbox")).toBeGreaterThan(source.indexOf(".sb-dock-input pre {"));
+  });
+});
+
