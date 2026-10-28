@@ -198,6 +198,8 @@ export const commands = {
 	uploadsCopyPath: (id: string) => __TAURI_INVOKE<string>("uploads_copy_path", { id }),
 	uploadsReveal: (id: string) => __TAURI_INVOKE<null>("uploads_reveal", { id }),
 	uploadsOpen: (id: string) => __TAURI_INVOKE<null>("uploads_open", { id }),
+	/**  Logs the webview's startup marks next to the time since the process started. */
+	reportStartupTimings: (timings: StartupTimings_Deserialize) => __TAURI_INVOKE<void>("report_startup_timings", { timings }),
 };
 
 /** Events */
@@ -1996,6 +1998,25 @@ export type StartupRequest_Serialize = {
 
 export type StartupRequestsChanged = {
 	pending: boolean,
+};
+
+/**  Startup marks measured by the webview, in milliseconds since its navigation started. */
+export type StartupTimings = StartupTimings_Serialize | StartupTimings_Deserialize;
+
+/**  Startup marks measured by the webview, in milliseconds since its navigation started. */
+export type StartupTimings_Deserialize = {
+	firstPaintMs?: number | null,
+	entryEvaluatedMs?: number | null,
+	shellRenderedMs?: number | null,
+	sessionReadyMs?: number | null,
+};
+
+/**  Startup marks measured by the webview, in milliseconds since its navigation started. */
+export type StartupTimings_Serialize = {
+	firstPaintMs: number | null,
+	entryEvaluatedMs: number | null,
+	shellRenderedMs: number | null,
+	sessionReadyMs: number | null,
 };
 
 export type SyntaxSnapshot = {

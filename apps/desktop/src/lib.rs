@@ -19,6 +19,7 @@ pub mod services;
 pub mod session_meta;
 mod startup;
 mod uploads;
+mod window;
 
 /// The authoritative workspace is only accessed by blocking workers.
 type FormatterJobs =
@@ -929,7 +930,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             uploads::uploads_save_to_workspace,
             uploads::uploads_copy_path,
             uploads::uploads_reveal,
-            uploads::uploads_open
+            uploads::uploads_open,
+            window::report_startup_timings
         ])
 }
 
@@ -940,6 +942,7 @@ pub fn export_bindings() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    window::mark_process_start();
     let action = cli::parse_args(std::env::args().skip(1), &std::env::current_dir()?)?;
     let request = match action {
         cli::CliAction::Help => {

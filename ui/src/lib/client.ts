@@ -3,6 +3,7 @@ import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import type { LspPort } from './lsp-client';
+import type { StartupTimings } from './startup';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
@@ -368,6 +369,9 @@ export const api = {
     if (isDesktop) { await commands.writeClipboard(text); return; }
     if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
     await navigator.clipboard.writeText(text);
+  },
+  async reportStartupTimings(timings: StartupTimings): Promise<void> {
+    if (isDesktop) await commands.reportStartupTimings(timings);
   },
   async nativeWindowState(): Promise<NativeWindowState> {
     return isDesktop ? commands.nativeWindowState() : { fullscreen: false, maximized: false, hasNativeTrafficLights: false };
