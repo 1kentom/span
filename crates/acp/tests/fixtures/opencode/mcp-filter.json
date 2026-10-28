@@ -1,0 +1,46 @@
+{
+  "quirk": "mcpCapabilities is sse:false, http:true and one SSE server fails the whole session/new: SSE servers are removed before session/new.",
+  "mcpServers": [
+    {
+      "name": "local",
+      "command": "node",
+      "args": [
+        "server.js"
+      ],
+      "env": []
+    },
+    {
+      "type": "http",
+      "name": "remote",
+      "url": "https://mcp.example",
+      "headers": []
+    },
+    {
+      "type": "sse",
+      "name": "events",
+      "url": "https://sse.example",
+      "headers": []
+    }
+  ],
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/new",
+      "params": {
+        "mcpServers": [
+          {
+            "name": "local"
+          },
+          {
+            "type": "http",
+            "name": "remote"
+          }
+        ]
+      }
+    }
+  ]
+}

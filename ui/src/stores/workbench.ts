@@ -231,6 +231,10 @@ export function createWorkbench() {
     directoryLoads.set(path, operation);
     return operation;
   }
+  /** Re-reads every expanded directory and the background index status after files were written to disk. */
+  function refreshTree() {
+    void refreshFiles().catch(report);
+  }
   async function toggleDirectory(path: string) {
     if (expanded().has(path)) setExpanded(current => { const next = new Set(current); next.delete(path); return next; });
     else {
@@ -426,6 +430,7 @@ export function createWorkbench() {
         setBuffers(path, "savedRevision", Math.max(buffers[path].savedRevision, result.savedRevision));
       }
       if (!dirty(path)) enforceTabLimit();
+      refreshTree();
       if (isSettingsBuffer(path) || path === ".span/settings.jsonc") await refreshSettingsScope(settingsScope());
       return true;
     } catch (e) {
@@ -756,6 +761,6 @@ export function createWorkbench() {
   });
   createEffect(() => autosave.sync());
   onCleanup(() => { autosave.dispose(); cancelAllFormats(); });
-  return { indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
+  return { indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;

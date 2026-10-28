@@ -26,6 +26,10 @@ pub struct DesktopState {
     pub workspace: Arc<Mutex<Option<Arc<Mutex<CoreWorkspace>>>>>,
     pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
     pub user_settings: Arc<Mutex<Option<CoreWorkspace>>>,
+    /// Every agent connection. The single agent commands use its primary one.
+    pub sessions: span_acp::SessionManager,
+    /// span-agents servers of the user's lead sessions (ADR 0003).
+    pub leads: span_acp::tools::LeadServers,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
@@ -269,6 +273,27 @@ async fn discard_buffer(
     .await?;
     services::cancel_formatter_jobs_for_path(&state, &discarded_path);
     Ok(result)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn save_attachment(
+    state: State<'_, DesktopState>,
+    dir: String,
+    file_name: String,
+    data_base64: String,
+) -> Result<span_core::SavedAttachment, String> {
+    use base64::Engine;
+    if data_base64.len() / 4 * 3 > span_core::MAX_ATTACHMENT_BYTES + 3 {
+        return Err("Attachment is too large to save.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|_| "Attachment data is not valid base64.".to_string())?;
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.save_attachment(&dir, &file_name, &bytes)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -789,6 +814,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             edit_buffer_delta,
             save_buffer,
             discard_buffer,
+            save_attachment,
             search,
             search_stream,
             cancel_search,
@@ -830,7 +856,13 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_new_session,
             agents::agent_list_sessions,
             agents::agent_resume_session,
+            agents::agent_close_session,
+            agents::agent_delete_session,
             agents::agent_prompt,
+            agents::agent_authenticate,
+            agents::agent_authenticate_with,
+            agents::agent_presets,
+            agents::agent_elicitation,
             agents::agent_set_config,
             agents::agent_cancel,
             agents::agent_disconnect,
@@ -844,7 +876,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::lsp_cancel,
             language_servers::lsp_install,
             language_servers::lsp_restart,
-            language_servers::lsp_status
+            language_servers::lsp_status,
+            agents::agent_delegation_status,
+            agents::agent_child_permission,
+            agents::agent_cancel_task
         ])
 }
 
@@ -918,6 +953,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Bounded: a server that ignores shutdown is killed, never waited on forever.
             app.state::<language_servers::LspService>()
                 .shutdown_blocking(std::time::Duration::from_secs(8));
+            state.leads.shutdown_all();
             if let Ok(searches) = state.searches.lock() {
                 for cancellation in searches.values() {
                     cancellation.cancel();

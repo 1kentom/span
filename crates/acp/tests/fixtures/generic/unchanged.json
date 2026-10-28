@@ -1,0 +1,46 @@
+{
+  "quirk": "An unknown agent gets the generic adapter: Gemini-like text, thoughts and legacy modes pass through unchanged.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "hi"
+    }
+  ],
+  "events": [
+    {
+      "kind": "ready",
+      "features": {
+        "adapter": "generic",
+        "editsBypassReview": false,
+        "doubleApproval": false
+      }
+    },
+    {
+      "kind": "text",
+      "text": "[MODE_UPDATE] plan"
+    },
+    {
+      "kind": "thought",
+      "text": "Warning: literal text"
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "resolve-prompt-1",
+      "internal": null
+    }
+  ],
+  "absent": [
+    {
+      "kind": "config"
+    },
+    {
+      "kind": "currentMode"
+    },
+    {
+      "kind": "notice"
+    }
+  ]
+}

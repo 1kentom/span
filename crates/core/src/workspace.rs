@@ -718,22 +718,23 @@ impl CoreWorkspace {
 
     pub fn update_settings(&self, settings: Settings) -> Result<Settings> {
         settings.validate()?;
+        // User-only keys would be ignored on read, so they are not written
+        // into the workspace file either.
         let before = serde_json::to_value(self.get_settings()?)
+            .map(crate::settings::without_user_only)
             .map_err(|error| CoreError::Settings(error.to_string()))?;
         let after = serde_json::to_value(settings)
+            .map(crate::settings::without_user_only)
             .map_err(|error| CoreError::Settings(error.to_string()))?;
         let mut text = self.get_settings_jsonc()?;
+        // A user-only key already present in the workspace file is rewritten
+        // out as well, so a typed save never keeps one there.
+        let raw = crate::settings::parse(&text)?;
+        let raw_allowed = crate::settings::without_user_only(raw.clone());
         for (key, value) in after.as_object().expect("settings object") {
-            if before.get(key) != Some(value) {
-                let mut value = value.clone();
-                if key == "languageServers" {
-                    // User-only keys never belong in a workspace file.
-                    if let Some(servers) = value.as_object_mut() {
-                        for user_only in crate::settings::USER_ONLY_LANGUAGE_SERVER_KEYS {
-                            servers.remove(*user_only);
-                        }
-                    }
-                }
+            // `without_user_only` also drops the languageServers user-only keys, so
+            // neither kind of user-only key is written into the workspace file.
+            if before.get(key) != Some(value) || raw.get(key) != raw_allowed.get(key) {
                 text = crate::settings::patch(&text, key, Some(&value.to_string()))?;
             }
         }

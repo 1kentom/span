@@ -1,0 +1,47 @@
+{
+  "quirk": "Diff paths may be basenames: resolved against the workspace root, else a matching location, else marked unresolved. oldText null is an add, \"\" a modify; _meta.kind is ignored.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "write"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "write-1",
+      "locations": [
+        {
+          "path": "$ROOT/src/lib.rs",
+          "line": null
+        }
+      ],
+      "diffs": [
+        {
+          "path": "$ROOT/present.txt",
+          "resolved": true,
+          "change": "modify",
+          "oldText": "",
+          "newText": "x"
+        },
+        {
+          "path": "$ROOT/src/lib.rs",
+          "resolved": true,
+          "change": "add",
+          "oldText": null,
+          "newText": "y"
+        },
+        {
+          "path": "ghost.rs",
+          "resolved": false,
+          "change": "add",
+          "oldText": null,
+          "newText": "z"
+        }
+      ]
+    }
+  ]
+}

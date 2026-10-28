@@ -7,11 +7,15 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-specta.workspace = true
+specta = { workspace = true, features = ["serde_json"] }
 thiserror.workspace = true
-tokio.workspace = true
+# `net` is already compiled into the workspace through reqwest; declared for the span-agents server.
+tokio = { workspace = true, features = ["net"] }
 agent-client-protocol = { version = "=3.5.0", features = ["process"] }
 span-core.workspace = true
+# OS CSPRNG for span-agents bearer tokens. Approved by the user on 2026-10-28;
+# 0.4.3 was already in Cargo.lock through agent-client-protocol -> uuid.
+getrandom = "0.4.3"
 
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 

@@ -1,0 +1,26 @@
+{
+  "quirk": "A shell result can arrive with empty content (AnsiOutput is not converted): the event carries the outputUnavailable hint.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "list"
+    }
+  ],
+  "events": [
+    {
+      "kind": "tool",
+      "toolCallId": "shell-1",
+      "status": "pending",
+      "hint": null
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "shell-1",
+      "status": "completed",
+      "hint": "outputUnavailable"
+    }
+  ]
+}

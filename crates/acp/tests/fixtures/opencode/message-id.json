@@ -1,0 +1,37 @@
+{
+  "quirk": "agent_message_chunk and agent_thought_chunk carry messageId: it is forwarded and a change starts a new bubble.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "hi"
+    }
+  ],
+  "events": [
+    {
+      "kind": "text",
+      "text": "Hello ",
+      "messageId": "msg_1",
+      "newBlock": true
+    },
+    {
+      "kind": "text",
+      "text": "world",
+      "messageId": "msg_1",
+      "newBlock": null
+    },
+    {
+      "kind": "thought",
+      "messageId": "msg_2",
+      "newBlock": true
+    },
+    {
+      "kind": "text",
+      "text": "Second",
+      "messageId": "msg_3",
+      "newBlock": true
+    }
+  ]
+}

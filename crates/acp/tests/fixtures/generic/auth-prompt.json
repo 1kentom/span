@@ -1,0 +1,22 @@
+{
+  "quirk": "AuthRequired is emitted from the prompt path for every agent, without a hint for unknown agents.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "hi",
+      "expectError": "Session expired"
+    }
+  ],
+  "events": [
+    {
+      "kind": "authRequired",
+      "hint": null
+    },
+    {
+      "kind": "error"
+    }
+  ]
+}

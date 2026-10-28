@@ -1,0 +1,5 @@
+// AuthRequired is emitted from the prompt path for every agent, without a hint for unknown agents.
+// Protocol-conformant shapes from an unknown agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}, "authMethods": [], "agentInfo": {"name": "span-test-peer", "version": "1.0.0"}}}
+{"on": "session/new", "result": {"sessionId": "p-1"}}
+{"on": "session/prompt", "before": [], "error": {"code": -32000, "message": "Session expired, sign in again"}}

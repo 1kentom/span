@@ -135,6 +135,26 @@ pub struct Settings {
     pub keybindings: HashMap<String, Vec<String>>,
     pub formatters: HashMap<String, Vec<String>>,
     pub language_servers: LanguageServerSettings,
+    /// Agent features. Optional in TypeScript so existing literals stay valid;
+    /// a missing value means the defaults.
+    #[specta(optional)]
+    pub agents: AgentSettings,
+}
+
+/// `agents.*` settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentSettings {
+    pub delegation: DelegationSettings,
+}
+
+/// `agents.delegation.*`: the span-agents tool server (#52).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct DelegationSettings {
+    /// Offer the delegation tools to new lead sessions of agents that
+    /// advertise MCP over HTTP. Off by default.
+    pub enabled: bool,
 }
 
 impl Default for Settings {
@@ -159,6 +179,7 @@ impl Default for Settings {
             keybindings: HashMap::new(),
             formatters: HashMap::new(),
             language_servers: LanguageServerSettings::default(),
+            agents: AgentSettings::default(),
         }
     }
 }
@@ -484,10 +505,36 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
     let mut value = serde_json::to_value(Settings::default())
         .map_err(|e| CoreError::Settings(e.to_string()))?;
     if let Some(path) = user {
-        merge_file(&mut value, path, false)?;
+        merge_file(&mut value, path)?;
     }
-    merge_file(&mut value, workspace, true)?;
+    if let Some(workspace) = read_file(workspace)? {
+        merge(&mut value, without_user_only(workspace));
+    }
     decode(value)
+}
+
+/// Settings honoured only from the user's own settings file. A workspace
+/// `.span/settings.jsonc` arrives with the repository, so a cloned project
+/// must not be able to switch these on: `agents.delegation.enabled` lets an
+/// agent start other agents (ADR 0003). The key is dropped from workspace
+/// settings before merging; unknown sibling keys are still rejected.
+const USER_ONLY: &[&[&str]] = &[&["agents", "delegation", "enabled"]];
+
+pub(crate) fn without_user_only(mut value: Value) -> Value {
+    drop_user_only(&mut value);
+    for path in USER_ONLY {
+        let Some((last, parents)) = path.split_last() else {
+            continue;
+        };
+        let mut node = Some(&mut value);
+        for key in parents {
+            node = node.and_then(|n| n.get_mut(*key));
+        }
+        if let Some(object) = node.and_then(Value::as_object_mut) {
+            object.remove(*last);
+        }
+    }
+    value
 }
 
 fn decode(value: Value) -> Result<Settings> {
@@ -497,20 +544,22 @@ fn decode(value: Value) -> Result<Settings> {
     Ok(settings)
 }
 
-fn merge_file(target: &mut Value, path: &Path, workspace: bool) -> Result<()> {
+fn merge_file(target: &mut Value, path: &Path) -> Result<()> {
+    if let Some(value) = read_file(path)? {
+        merge(target, value);
+    }
+    Ok(())
+}
+
+fn read_file(path: &Path) -> Result<Option<Value>> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(io_error("Read settings", path, e)),
     };
     let value =
         parse(&text).map_err(|e| CoreError::Settings(format!("{}: {e}", path.display())))?;
-    let mut value = normalize(value)?;
-    if workspace {
-        drop_user_only(&mut value);
-    }
-    merge(target, value);
-    Ok(())
+    normalize(value).map(Some)
 }
 
 /// A workspace settings file can be written by anyone who can put files in a repository,
@@ -600,9 +649,7 @@ pub(crate) fn load_with_texts(user: &str, workspace: &str) -> Result<Settings> {
     let mut value = serde_json::to_value(Settings::default())
         .map_err(|error| CoreError::Settings(error.to_string()))?;
     merge(&mut value, normalize(parse(user)?)?);
-    let mut workspace = normalize(parse(workspace)?)?;
-    drop_user_only(&mut workspace);
-    merge(&mut value, workspace);
+    merge(&mut value, without_user_only(normalize(parse(workspace)?)?));
     decode(value)
 }
 

@@ -1,0 +1,5 @@
+// authenticate is a no-op for opencode-login and a missing sign-in appears only on session/prompt as -32000: AuthRequired is emitted from the prompt path with the runOpencodeAuthLogin hint, and authenticate is never sent.
+// Recorded shape from anomalyco/opencode 2.2.0 source. Not captured from a live agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": false}}, "authMethods": [{"id": "opencode-login", "name": "Login with opencode", "description": "Run `opencode auth login` in the terminal"}], "agentInfo": {"name": "OpenCode", "version": "2.2.0"}}}
+{"on": "session/new", "result": {"sessionId": "ses_1"}}
+{"on": "session/prompt", "before": [], "error": {"code": -32000, "message": "Unauthorized: no provider credentials"}}

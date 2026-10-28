@@ -1,0 +1,4 @@
+// OpenCode ignores the client fs capability and edits on disk itself: Ready marks editsBypassReview so the UI can say review does not apply.
+// Recorded shape from anomalyco/opencode 2.2.0 source. Not captured from a live agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": false}}, "authMethods": [{"id": "opencode-login", "name": "Login with opencode", "description": "Run `opencode auth login` in the terminal"}], "agentInfo": {"name": "OpenCode", "version": "2.2.0"}}}
+{"on": "session/new", "result": {"sessionId": "ses_1"}}

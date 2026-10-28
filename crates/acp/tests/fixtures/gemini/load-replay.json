@@ -1,0 +1,40 @@
+{
+  "quirk": "session/load responds before the replay ends and nothing marks the end: the load call resolves after 750 ms without updates, and prompts are refused until then.",
+  "drive": [
+    {
+      "do": "promptDuringLoad",
+      "session": "g-old",
+      "text": "too soon"
+    }
+  ],
+  "events": [
+    {
+      "kind": "user",
+      "text": "earlier question"
+    },
+    {
+      "kind": "_step",
+      "do": "earlyPrompt",
+      "ok": false,
+      "error": "The session is still being restored"
+    },
+    {
+      "kind": "text",
+      "text": "earlier answer"
+    },
+    {
+      "kind": "tool",
+      "toolCallId": "old-1"
+    },
+    {
+      "kind": "_step",
+      "do": "promptDuringLoad",
+      "ok": true
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/prompt"
+    }
+  ]
+}

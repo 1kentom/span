@@ -1,0 +1,5 @@
+// Subagent tool calls carry _meta.claudeCode.parentToolUseId: mapped to parentToolCallId.
+// Recorded shape from claude-agent-acp 0.98.0 source. Not captured from a live agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true}}, "authMethods": [], "agentInfo": {"name": "@zed-industries/claude-agent-acp", "title": "Claude Code", "version": "0.98.0"}}}
+{"on": "session/new", "result": {"sessionId": "c-1"}}
+{"on": "session/prompt", "before": [{"update": {"sessionUpdate": "tool_call", "toolCallId": "toolu_child", "title": "Read file", "kind": "read", "status": "in_progress", "_meta": {"claudeCode": {"parentToolUseId": "toolu_task"}}}}], "result": {"stopReason": "end_turn"}}

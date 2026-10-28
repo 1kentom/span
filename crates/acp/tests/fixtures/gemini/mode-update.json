@@ -1,0 +1,41 @@
+{
+  "quirk": "Mode changes arrive as agent_message_chunk text `[MODE_UPDATE] <mode>`: the chunk is dropped and CurrentMode is emitted.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "switch"
+    }
+  ],
+  "events": [
+    {
+      "kind": "ready",
+      "agentName": "gemini-cli",
+      "features": {
+        "adapter": "gemini",
+        "doubleApproval": true,
+        "editsBypassReview": false
+      }
+    },
+    {
+      "kind": "currentMode",
+      "modeId": "autoEdit"
+    },
+    {
+      "kind": "text",
+      "text": "Done"
+    },
+    {
+      "kind": "complete",
+      "stopReason": "end_turn"
+    }
+  ],
+  "absent": [
+    {
+      "kind": "text",
+      "text": "[MODE_UPDATE] autoEdit"
+    }
+  ]
+}

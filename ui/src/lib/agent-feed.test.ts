@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ToolEvent } from "./agent-feed";
-import { formatElapsed, isNearBottom, isNestedTool, relativeTime, sortPermissionOptions, subagentChildren, toolSummary } from "./agent-feed";
+import { formatElapsed, isNearBottom, isNestedTool, permissionScope, relativeTime, sortPermissionOptions, subagentChildren, toolSummary } from "./agent-feed";
 
 const tool = (id: string, parent?: string): ToolEvent => ({ kind: "tool", sessionId: "s", toolCallId: id, title: id, status: "pending", toolKind: null, parentToolCallId: parent ?? null, contentJson: "{}" });
 const item = (event: ToolEvent) => ({ kind: "tool", event });
@@ -14,6 +14,12 @@ describe("agent feed helpers", () => {
       { optionId: "o", name: "Once", kind: "allow_once" },
     ]);
     expect(sorted.map((option) => option.optionId)).toEqual(["o", "a", "r", "x"]);
+  });
+
+  it("names Span as the holder of a standing permission choice", () => {
+    expect(permissionScope("allow_always")).toBe("Remembered by Span for this session");
+    expect(permissionScope("reject_always")).toBe("Remembered by Span for this session");
+    expect(permissionScope("allow_once")).toBe("");
   });
 
   it("summarizes the target of a tool call", () => {
