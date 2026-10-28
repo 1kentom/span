@@ -1,6 +1,8 @@
-import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { PLAYBACK_SPEEDS, SEEK_SECONDS, formatDuration } from '../../lib/viewer';
 import Icon from '../Icon';
-import { PLAYBACK_SPEEDS, SEEK_SECONDS, clampVolume, formatDuration, mediaKeyAction, seekTarget } from '../../lib/viewer';
+import { AudioView } from './AudioView';
+import { createMediaControls } from './media-controls';
 
 export interface MediaPlayerProps {
   kind: 'audio' | 'video';
@@ -13,91 +15,65 @@ export interface MediaPlayerProps {
 }
 
 /**
- * Custom controls over a native audio or video element. The source is a Blob object URL that is
- * revoked on cleanup. Never autoplays. Codec support depends on the platform webview.
+ * Video player with custom controls over a native video element: play and pause, seek with the buffered
+ * range, 10 second skips, speed, loop, volume and mute, and full screen on the player. Audio is delegated to
+ * AudioView. Never autoplays. Codec support depends on the platform webview.
  */
 export function MediaPlayer(props: MediaPlayerProps) {
-  let media!: HTMLMediaElement;
-  const [src, setSrc] = createSignal('');
-  const [time, setTime] = createSignal(0);
-  const [duration, setDuration] = createSignal(0);
-  const [paused, setPaused] = createSignal(true);
-  const [rate, setRate] = createSignal(1);
-  const [loop, setLoop] = createSignal(false);
-  const [volume, setVolume] = createSignal(1);
-  const [muted, setMuted] = createSignal(false);
-  const [problem, setProblem] = createSignal('');
+  return <Show when={props.kind === 'video'} fallback={<AudioView bytes={props.bytes} mime={props.mime} name={props.name} onDuration={props.onDuration} onDamaged={props.onDamaged} />}>
+    <VideoPlayer {...props} />
+  </Show>;
+}
 
-  createEffect(() => {
-    const url = URL.createObjectURL(new Blob([props.bytes as BlobPart], { type: props.mime }));
-    setSrc(url); setTime(0); setDuration(0); setPaused(true); setProblem('');
-    onCleanup(() => URL.revokeObjectURL(url));
+function VideoPlayer(props: MediaPlayerProps) {
+  let root!: HTMLDivElement;
+  const media = createMediaControls(() => ({ bytes: props.bytes, mime: props.mime }));
+  const [fullscreen, setFullscreen] = createSignal(false);
+  onMount(() => {
+    const sync = () => setFullscreen(document.fullscreenElement === root);
+    document.addEventListener('fullscreenchange', sync);
+    onCleanup(() => document.removeEventListener('fullscreenchange', sync));
   });
-  createEffect(() => { if (media) { media.playbackRate = rate(); media.loop = loop(); media.volume = volume(); media.muted = muted(); } });
-
-  const toggle = () => {
-    if (!media) return;
-    if (!media.paused) { media.pause(); return; }
-    setProblem('');
-    // Rejections (autoplay policy, unsupported codec) are shown, never swallowed.
-    Promise.resolve(media.play()).catch(cause => setProblem(`Playback could not start: ${cause instanceof Error ? cause.message : String(cause)}`));
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement === root) void document.exitFullscreen?.();
+    else Promise.resolve(root.requestFullscreen?.()).catch(() => undefined);
   };
-  const seekBy = (delta: number) => { if (media) media.currentTime = seekTarget(media.currentTime || 0, delta, media.duration); };
-  const volumeBy = (delta: number) => { setMuted(false); setVolume(clampVolume(volume() + delta)); };
+  const cycleSpeed = () => { const at = PLAYBACK_SPEEDS.indexOf(media.rate() as typeof PLAYBACK_SPEEDS[number]); media.setRate(PLAYBACK_SPEEDS[(at + 1) % PLAYBACK_SPEEDS.length]); };
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
-    const target = event.target as HTMLElement;
-    if (target.closest('[data-keys="native"]')) return;
-    const action = mediaKeyAction(event.key);
-    if (!action) return;
-    // Space on a focused button or select keeps its native meaning.
-    if (action.type === 'toggle' && target.closest('button,select')) return;
-    event.preventDefault();
-    if (action.type === 'toggle') toggle();
-    else if (action.type === 'seek') seekBy(action.delta);
-    else if (action.type === 'volume') volumeBy(action.delta);
-    else setMuted(!muted());
+    if ((event.key === 'f' || event.key === 'F') && !event.metaKey && !event.ctrlKey && !event.altKey && !(event.target as HTMLElement).closest('input')) { event.preventDefault(); toggleFullscreen(); return; }
+    media.onKeyDown(event);
   };
-  const events = {
-    onLoadedMetadata: () => {
-      setDuration(Number.isFinite(media.duration) ? media.duration : 0);
-      props.onDuration?.(media.duration);
-      const video = media as HTMLVideoElement;
-      if (props.kind === 'video' && video.videoWidth) props.onVideoSize?.(video.videoWidth, video.videoHeight);
-    },
-    onDurationChange: () => setDuration(Number.isFinite(media.duration) ? media.duration : 0),
-    onTimeUpdate: () => setTime(media.currentTime),
-    onPlay: () => setPaused(false),
-    onPause: () => setPaused(true),
-    onEnded: () => setPaused(true),
-    onError: () => props.onDamaged('The webview could not decode this file. It may be damaged, or its codec may not be supported on this platform.'),
-  };
-  const mediaElement = () => props.kind === 'video'
-    ? <video ref={media as HTMLVideoElement} class="vw-video" src={src()} preload="metadata" playsinline aria-label={props.name} onClick={toggle} {...events} />
-    : <audio ref={media as HTMLAudioElement} src={src()} preload="metadata" aria-label={props.name} {...events} />;
-
-  return <div class="vw-player" classList={{ 'vw-player-video': props.kind === 'video' }} role="group" aria-label={`${props.kind === 'video' ? 'Video' : 'Audio'} player`} tabIndex={0} onKeyDown={onKeyDown}>
-    <Show when={props.kind === 'video'} fallback={<><div class="vw-audio-card"><strong>{props.name}</strong></div>{mediaElement()}</>}>
-      <div class="vw-video-stage">{mediaElement()}</div>
-    </Show>
-    <Show when={problem()}><p class="vw-note vw-note-error" role="alert">{problem()}</p></Show>
-    <div class="vw-controls">
-      <input class="vw-seek" type="range" min="0" max={duration() || 0} step="0.1" value={Math.min(time(), duration() || 0)} disabled={!duration()} aria-label="Seek"
-        aria-valuetext={`${formatDuration(time())} of ${formatDuration(duration())}`} onInput={event => { media.currentTime = Number(event.currentTarget.value); setTime(media.currentTime); }} />
-      <div class="vw-control-row">
-        <button type="button" class="vw-btn" aria-label={`Back ${SEEK_SECONDS} seconds`} title={`Back ${SEEK_SECONDS} seconds (Left arrow)`} onClick={() => seekBy(-SEEK_SECONDS)}>−{SEEK_SECONDS} s</button>
-        <button type="button" class="vw-btn vw-btn-primary vw-play" aria-label={paused() ? 'Play' : 'Pause'} title="Play or pause (Space)" onClick={toggle}>
-          <Show when={paused()} fallback="Pause"><Icon name="u-play" size={12} />Play</Show>
-        </button>
-        <button type="button" class="vw-btn" aria-label={`Forward ${SEEK_SECONDS} seconds`} title={`Forward ${SEEK_SECONDS} seconds (Right arrow)`} onClick={() => seekBy(SEEK_SECONDS)}>+{SEEK_SECONDS} s</button>
-        <span class="vw-time" role="timer" aria-label="Elapsed time">{formatDuration(time())} / {formatDuration(duration())}</span>
-        <div class="vw-group" role="group" aria-label="Playback speed">
-          <For each={PLAYBACK_SPEEDS}>{speed => <button type="button" class="vw-btn" aria-pressed={rate() === speed} aria-label={`Speed ${speed} times`} onClick={() => setRate(speed)}>{speed}×</button>}</For>
+  const played = () => media.duration() ? Math.min(100, media.time() / media.duration() * 100) : 0;
+  return <div ref={root} class="vw-player vw-player-video" role="group" aria-label="Video player" tabIndex={0} onKeyDown={onKeyDown}>
+    <div class="vw-video-stage">
+      <video ref={media.bind} class="vw-video" src={media.src()} preload="metadata" playsinline aria-label={props.name} onClick={media.toggle}
+        {...media.events({
+          onDuration: props.onDuration, onDamaged: props.onDamaged, message: 'The webview could not decode this file. It may be damaged, or its codec may not be supported on this platform.',
+          onLoaded: element => { const video = element as HTMLVideoElement; if (video.videoWidth) props.onVideoSize?.(video.videoWidth, video.videoHeight); },
+        })} />
+      <Show when={media.paused()}><span class="vw-video-overlay" aria-hidden="true" onClick={media.toggle}><Icon name="u-play" size={22} /></span></Show>
+    </div>
+    <Show when={media.problem()}><p class="vw-note vw-note-error" role="alert">{media.problem()}</p></Show>
+    <div class="vw-video-bar">
+      <button type="button" class="vw-btn vw-btn-icon" aria-label={media.paused() ? 'Play' : 'Pause'} title="Play or pause (Space)" onClick={media.toggle}><Icon name={media.paused() ? 'u-play' : 'Pause'} size={14} /></button>
+      <button type="button" class="vw-btn vw-btn-icon" aria-label={`Back ${SEEK_SECONDS} seconds`} title={`Back ${SEEK_SECONDS} seconds (Left arrow)`} onClick={() => media.seekBy(-SEEK_SECONDS)}><Icon name="Back10" size={15} /></button>
+      <button type="button" class="vw-btn vw-btn-icon" aria-label={`Forward ${SEEK_SECONDS} seconds`} title={`Forward ${SEEK_SECONDS} seconds (Right arrow)`} onClick={() => media.seekBy(SEEK_SECONDS)}><Icon name="Fwd10" size={15} /></button>
+      <span class="vw-time" role="timer" aria-label="Elapsed time">{formatDuration(media.time())} / {formatDuration(media.duration())}</span>
+      <div class="vw-seek-wrap">
+        <div class="vw-seek-track" aria-hidden="true">
+          <For each={media.buffered()}>{([start, end]) => <span class="vw-seek-buffered" style={{ left: `${start * 100}%`, width: `${Math.max(0, end - start) * 100}%` }} />}</For>
+          <span class="vw-seek-played" style={{ width: `${played()}%` }} />
         </div>
-        <button type="button" class="vw-btn" aria-pressed={loop()} onClick={() => setLoop(!loop())}>Loop</button>
-        <button type="button" class="vw-btn" aria-pressed={muted()} title="Mute (M)" onClick={() => setMuted(!muted())}>{muted() ? 'Unmute' : 'Mute'}</button>
-        <input class="vw-volume" type="range" min="0" max="1" step="0.05" value={muted() ? 0 : volume()} aria-label="Volume" data-keys="native" onInput={event => { setMuted(false); setVolume(Number(event.currentTarget.value)); }} />
+        <input class="vw-seek" type="range" min="0" max={media.duration() || 0} step="0.1" value={Math.min(media.time(), media.duration() || 0)} disabled={!media.duration()} aria-label="Seek"
+          aria-valuetext={`${formatDuration(media.time())} of ${formatDuration(media.duration())}`} onInput={event => media.seekTo(Number(event.currentTarget.value))} />
       </div>
+      <button type="button" class="vw-chip-btn" aria-label={`Playback speed ${media.rate()} times, change`} title="Playback speed" onClick={cycleSpeed}>{media.rate()}×</button>
+      <button type="button" class="vw-btn vw-btn-icon" aria-label="Loop" aria-pressed={media.loop()} title="Loop" onClick={() => media.setLoop(!media.loop())}><Icon name="Repeat" size={13} /></button>
+      <span class="vw-volume-wrap">
+        <button type="button" class="vw-btn vw-btn-icon" aria-label={media.muted() ? 'Unmute' : 'Mute'} title="Mute (M)" onClick={() => media.setMuted(!media.muted())}><Icon name={media.muted() ? 'VolumeMute' : 'Volume'} size={14} /></button>
+        <input class="vw-volume" type="range" min="0" max="1" step="0.05" value={media.muted() ? 0 : media.volume()} aria-label="Volume" data-keys="native" onInput={event => { media.setMuted(false); media.setVolume(Number(event.currentTarget.value)); }} />
+      </span>
+      <button type="button" class="vw-btn vw-btn-icon" aria-label={fullscreen() ? 'Exit full screen' : 'Full screen'} aria-pressed={fullscreen()} title="Full screen (F)" onClick={toggleFullscreen}><Icon name="Maximize4" size={12} /></button>
     </div>
   </div>;
 }
