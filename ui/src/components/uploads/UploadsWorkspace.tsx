@@ -24,6 +24,8 @@ export interface UploadsWorkspaceProps {
   onShowSessionList?: () => void;
   /** Clock for relative times (tests). */
   now?: () => number;
+  /** Host navigation back to the file explorer, shown as a tab in the rail head. */
+  onShowExplorer?: () => void;
 }
 
 type ViewAs = 'preview' | 'hex';
@@ -173,7 +175,7 @@ export function UploadsWorkspace(props: UploadsWorkspaceProps) {
       onOpen={open} onMenu={(id, at) => setMenu({ kind: 'file', id, ...at })} onAdd={caps().add ? () => void add() : undefined} onRetry={() => { setStatus('loading'); void refresh(); }}
       onRenameStart={setRenaming} onRenameCancel={() => setRenaming(null)} onRenameCommit={rename}
       onRemoveRequest={setConfirmRemove} onRemoveCancel={() => setConfirmRemove(null)} onRemoveConfirm={id => void remove(id)}
-      onReveal={caps().reveal ? id => { const entry = byId().get(id); if (entry) void actions(entry).reveal(); } : undefined} />
+      onReveal={caps().reveal ? id => { const entry = byId().get(id); if (entry) void actions(entry).reveal(); } : undefined} onShowExplorer={props.onShowExplorer} />
     <section class="up-main" aria-label="Upload viewer">
       <div class="up-tabbar">
         <div class="up-tabs" role="tablist" aria-label="Open uploads">
