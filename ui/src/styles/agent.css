@@ -332,17 +332,10 @@
 .agent-footer > :is(.sb-drawer, .sb-activity) + :is(.sb-drawer, .sb-activity, .sb-dock) {
   border-radius: 0;
 }
-.agent-dock-note,
-.agent-dock-error {
-  margin: 0 6px;
-  padding: 0 12px 8px;
-  border: 1px solid var(--sb-accent-border);
-  border-top: 0;
-  border-bottom: 0;
-  background: var(--sb-accent-surface);
-}
-.agent-dock-error {
-  color: var(--sb-error);
+/* A dock is one card: same width as the prompt box below it, corners joined to it. Its question, error and Skip live inside. */
+.agent-footer > .sb-dock {
+  margin: 0;
+  border-radius: 7px 7px 0 0;
 }
 .sb-urlbox .sb-mono.sb-ellipsis {
   overflow: visible;

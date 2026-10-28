@@ -238,6 +238,12 @@
 .sb-dock-meta { display: flex; align-items: center; gap: 6px; padding: 0 0 0 0; font-size: 11.5px; color: var(--sb-dim); }
 .sb-dock-prompt { font-size: 13px; font-weight: 500; line-height: 19px; color: var(--sb-strong); text-wrap: pretty; }
 .sb-dock-head { display: flex; align-items: center; gap: 8px; }
+.sb-dock-scroll { display: flex; flex-direction: column; gap: 8px; min-width: 0; max-height: min(320px, 45vh); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; margin: -2px; padding: 2px; }
+.sb-dock-scroll > * { flex: none; }
+.sb-dock-question { font-size: 13px; font-weight: 500; line-height: 19px; color: var(--sb-strong); overflow-wrap: anywhere; text-wrap: pretty; }
+.sb-dock-error { margin: 0; color: var(--sb-error); overflow-wrap: anywhere; }
+.sb-dock-prompt { overflow-wrap: anywhere; }
+.sb-dock > .sb-btn.ghost { align-self: flex-start; }
 .sb-dock-title { font-size: 12.5px; font-weight: 500; color: var(--sb-strong); }
 .sb-q-option { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 7px 6px; border: 0; border-radius: 6px; background: none; color: var(--sb-fg); text-align: left; cursor: pointer; }
 .sb-q-option:hover { background: var(--sb-hover); }

@@ -228,33 +228,27 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             fallback={
               <Show when={`${request().requestId}:${a.form()?.index ?? 0}`} keyed>
                 {(_key) => (
-                  <>
-                    <QuestionDock
-                      asker={{ ...props.brand, label: props.label }}
-                      step={a.fields().length > 1 ? `${(a.form()?.index ?? 0) + 1} of ${a.fields().length}` : undefined}
-                      prompt={
-                        !field()
-                          ? request().message
-                          : field()!.type === "unsupported"
-                            ? `${request().message} (${field()!.label}: Span cannot answer this kind of question)`
-                            : a.fields().length === 1
-                              ? request().message
-                              : `${request().message} (${field()!.label})`
-                      }
-                      options={field() ? field()!.options : [{ id: "accept", label: "Continue" }]}
-                      allowText={Boolean(field() && !field()!.options.length && field()!.type !== "unsupported")}
-                      autoFocus={dockFocusProps.autoFocus}
-                      onFocusChange={dockFocusProps.onFocusChange}
-                      onAnswer={(answer) => void a.answerForm(answer)}
-                      onCancel={() => void a.respondElicitation(request().requestId, "decline")}
-                    />
-                    <Show when={field()?.description}>
-                      <p class="sb-fine agent-dock-note">{field()!.description}</p>
-                    </Show>
-                    <Show when={a.form()?.error}>
-                      <p class="sb-fine agent-dock-error" role="alert">{a.form()!.error}</p>
-                    </Show>
-                  </>
+                  <QuestionDock
+                    asker={{ ...props.brand, label: props.label }}
+                    step={a.fields().length > 1 ? `${(a.form()?.index ?? 0) + 1} of ${a.fields().length}` : undefined}
+                    prompt={
+                      !field()
+                        ? request().message
+                        : field()!.type === "unsupported"
+                          ? `${request().message} (${field()!.label}: Span cannot answer this kind of question)`
+                          : a.fields().length === 1
+                            ? request().message
+                            : `${request().message} (${field()!.label})`
+                    }
+                    detail={field()?.description}
+                    error={a.form()?.error}
+                    options={field() ? field()!.options : [{ id: "accept", label: "Continue" }]}
+                    allowText={Boolean(field() && !field()!.options.length && field()!.type !== "unsupported")}
+                    autoFocus={dockFocusProps.autoFocus}
+                    onFocusChange={dockFocusProps.onFocusChange}
+                    onAnswer={(answer) => void a.answerForm(answer)}
+                    onCancel={() => void a.respondElicitation(request().requestId, "decline")}
+                  />
                 )}
               </Show>
             }
