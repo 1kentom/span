@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import { hasGrammar, languageIds, loadLanguage, noHighlightingYet, resolveLanguageId } from "./languages";
 import { languageDisplayName, languageNames } from "./language-names";
 
-const source = readFileSync(resolve(process.cwd(), "../crates/core/src/buffer.rs"), "utf8");
+// Windows checkouts use CRLF line endings; the parser below splits on "\n".
+const source = readFileSync(resolve(process.cwd(), "../crates/core/src/buffer.rs"), "utf8").replace(/\r\n/g, "\n");
 const body = (name: string) => {
   const start = source.indexOf(`fn ${name}(`);
   const end = source.indexOf("\n}\n", start);
