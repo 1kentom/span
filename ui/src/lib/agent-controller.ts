@@ -28,6 +28,7 @@ import {
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
 import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
 import { moveItem } from "./agent-queue";
+import { readLastSession, writeLastSession } from "./last-session";
 
 const DELEGATION_POLL_MS = 3000;
 const NO_STATES: SessionStates = { connectionId: null, sessions: [] };
@@ -216,6 +217,14 @@ export function createAgentController(props: AgentPanelProps) {
   createEffect(on(proposals, (list) => props.onProposalsChange?.(list)));
   createEffect(on(() => Boolean(pendingAction()), (busy) => props.onReviewBusyChange?.(busy)));
   createEffect(on(() => elicitation()?.requestId, (requestId) => setForm(requestId ? { requestId, index: 0, values: {} } : undefined)));
+  /** True while the app reopens the last chat, so the fresh session it connects with is not remembered over it. */
+  let restoringLast = false;
+  createEffect(() => {
+    const workspace = props.workspacePath;
+    const agent = agentId();
+    const id = sessionId();
+    if (workspace && agent && id && !restoringLast) writeLastSession(workspace, { agentId: agent, sessionId: id });
+  });
   createEffect(on(sessionId, (id) => {
     setBannerDismissed(false);
     if (id && state().canList) void loadSessions();
@@ -456,7 +465,7 @@ export function createAgentController(props: AgentPanelProps) {
           else unsubscribeStates = cleanup;
         })
         .catch(() => undefined);
-      void loadAgents();
+      void loadAgents().then(restoreLastSession);
     }
     const goOnline = () => {
       setOnline(true);
@@ -509,6 +518,25 @@ export function createAgentController(props: AgentPanelProps) {
     if (remote.status === "fulfilled") setRegistry(remote.value);
     else fail({ phase: "connect", message: `Could not load the ACP registry: ${errorText(remote.reason)}` });
     setRegistryBusy(false);
+  }
+  /** On app open: reconnect the agent that had the last chat in this workspace and resume that chat when the agent can. */
+  async function restoreLastSession() {
+    const workspace = props.workspacePath;
+    if (!workspace || disposed || sessionId() || launch()) return;
+    const last = readLastSession(workspace);
+    const entry = last && installed().find((agent) => agent.id === last.agentId);
+    if (!last || !entry) return;
+    restoringLast = true;
+    try {
+      await connect(entry.launch, registryName(entry.id) || entry.id, entry.id);
+      if (disposed || !sessionId() || sessionId() === last.sessionId || !state().canLoad) return;
+      await resumeChat(last.sessionId);
+    } finally {
+      restoringLast = false;
+      const id = sessionId();
+      const agent = agentId();
+      if (id && agent) writeLastSession(workspace, { agentId: agent, sessionId: id });
+    }
   }
   const registryName = (id: string) => registry().find((agent) => agent.id === id)?.name;
 

@@ -100,6 +100,7 @@ function mount() {
 }
 const listener = () => mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
 beforeEach(() => {
+  window.localStorage.clear();
   vi.clearAllMocks();
   HTMLElement.prototype.scrollTo = vi.fn();
   mocks.installed.mockResolvedValue([managed]);
