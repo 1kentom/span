@@ -1,0 +1,7 @@
+{
+  "origin": "Original Span artwork, created for the user-requested document view controls.",
+  "design": "Shared 24-unit viewBox, rounded 19-unit frame and 1.5-unit stroke matching the existing custom split-editor control. Source combines a filled side panel and code chevrons; Preview shows rendered page content; Both combines source and rendered panes.",
+  "rendering": "Theme-neutral currentColor artwork rendered through the existing Icon alpha mask.",
+  "preservation": "The earlier supplied markdown-source.svg, markdown-preview.svg and markdown-both.svg remain unchanged with their original provenance, but are no longer used by SourcePreviewToggle.",
+  "assets": ["markdown-view-source.svg", "markdown-view-preview.svg", "markdown-view-both.svg"]
+}
