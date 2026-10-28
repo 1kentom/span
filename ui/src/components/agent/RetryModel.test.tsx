@@ -2,8 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, AgentFeatures } from "../../bindings";
 import { createAgentController, type AgentController } from "../../lib/agent-controller";
-import { AgentFeed } from "./AgentFeed";
-import { mount, text } from "./test-utils";
+import { mount } from "./test-utils";
 
 const mocks = vi.hoisted(() => {
   const listeners: ((event: AgentEvent) => void)[] = [];
