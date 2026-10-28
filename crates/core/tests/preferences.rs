@@ -964,3 +964,45 @@ fn settings_files_with_keys_from_a_newer_build_load_and_keep_them_on_typed_saves
     // The user's file was not rewritten by a workspace save.
     assert!(fs::read_to_string(&user).unwrap().contains("newerKnob"));
 }
+
+#[test]
+fn agent_run_tools_are_off_by_default_and_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+
+    assert!(!workspace.run_tools_enabled().unwrap());
+    workspace
+        .update_settings_jsonc(r#"{"agents":{"runTools":{"enabled":true}}}"#)
+        .unwrap();
+    assert!(!workspace.run_tools_enabled().unwrap());
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        r#"{"agents":{"runTools":{"enabled":true}}}"#,
+    )
+    .unwrap();
+    assert!(!workspace.run_tools_enabled().unwrap());
+
+    assert!(!workspace.get_settings().unwrap().agents.run_tools.enabled);
+    workspace.set_run_tools_enabled(true).unwrap();
+    assert!(workspace.get_settings().unwrap().agents.run_tools.enabled);
+    assert!(workspace.run_tools_enabled().unwrap());
+    let user_text = fs::read_to_string(user).unwrap();
+    assert!(user_text.contains("\"runTools\""));
+    let workspace_text = fs::read_to_string(directory.path().join(".span/settings.jsonc")).unwrap();
+    assert_eq!(
+        workspace_text,
+        r#"{"agents":{"runTools":{"enabled":true}}}"#
+    );
+
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    assert_eq!(
+        schema["properties"]["agents"]["properties"]["runTools"]["properties"]["enabled"]
+            ["default"],
+        false
+    );
+}

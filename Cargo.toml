@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/syntax", "crates/acp", "crates/lsp", "crates/file-index", "apps/desktop"]
+members = ["crates/core", "crates/syntax", "crates/acp", "crates/lsp", "crates/file-index", "crates/terminal", "apps/desktop"]
 resolver = "2"
 
 [workspace.package]
@@ -21,6 +21,7 @@ span-syntax = { path = "crates/syntax" }
 span-acp = { path = "crates/acp" }
 span-lsp = { path = "crates/lsp" }
 span-file-index = { path = "crates/file-index" }
+span-terminal = { path = "crates/terminal" }
 ignore = "0.4"
 nucleo-matcher = "0.3.1"
 

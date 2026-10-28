@@ -1759,10 +1759,8 @@ async fn save_writes_draft_when_formatter_is_broken() {
     assert!(!edits.is_empty());
 
     // Save through the same service the command uses, with the external formatter broken.
-    let state = DesktopState {
-        workspace: Arc::new(StdMutex::new(Some(env.ws.clone()))),
-        ..Default::default()
-    };
+    let state = DesktopState::default();
+    *state.workspace.lock().unwrap() = Some(env.ws.clone());
     let warnings: Arc<StdMutex<Vec<String>>> = Arc::default();
     let sink_warnings = warnings.clone();
     let snapshot = services::format_or_save_with_warning(

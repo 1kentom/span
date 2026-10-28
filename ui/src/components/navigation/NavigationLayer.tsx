@@ -26,12 +26,12 @@ export function NavigationLayer(props: { line: number; column: number }) {
 
 const tabs: { id: BottomTab; label: string }[] = [{ id: "references", label: "References" }, { id: "hierarchy", label: "Hierarchy" }];
 
-/** Extra tabs next to Terminal. A tab appears once its feature has been used. */
+/** Extra tabs next to Terminal and Run. A tab appears once its feature has been used. */
 export function NavigationTabs(props: { showPanel: () => void }) {
   const visible = createMemo(() => tabs.filter(tab => tab.id === "references" ? navigationState.references.status !== "idle" : navigationState.hierarchy.status !== "idle"));
   return <>{visibleTabs(visible())}</>;
   function visibleTabs(list: typeof tabs) {
-    return list.map(tab => <button class={`panel-tab ${navigationState.bottomTab() === tab.id ? "selected" : ""}`} role="tab" aria-selected={navigationState.bottomTab() === tab.id} onClick={() => { navigationState.setBottomTab(tab.id); props.showPanel(); }}>{tab.label}</button>);
+    return list.map(tab => <button role="tab" aria-selected={navigationState.bottomTab() === tab.id} onClick={() => { navigationState.setBottomTab(tab.id); props.showPanel(); }}>{tab.label}</button>);
   }
 }
 

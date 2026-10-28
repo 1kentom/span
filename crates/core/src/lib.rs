@@ -8,6 +8,8 @@ mod fs_ops;
 mod images;
 mod proposal_diff;
 mod recent;
+mod run_config;
+mod run_detection;
 mod search;
 mod session;
 mod session_meta;
@@ -26,6 +28,7 @@ pub use format::{
 };
 pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
+pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use session_meta::{
@@ -35,9 +38,9 @@ pub use session_meta::{
     SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS, SESSION_META_SCHEMA_VERSION,
 };
 pub use settings::{
-    AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, Settings,
-    SettingsScope, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS, SYNTAX_THEMES,
-    SYNTAX_TOKEN_IDS,
+    AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, RunToolsSettings,
+    Settings, SettingsScope, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
+    SYNTAX_THEMES, SYNTAX_TOKEN_IDS,
 };
 pub use tools::{list_tools, ToolInfo};
 pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};
@@ -79,6 +82,8 @@ pub enum CoreError {
     Settings(String),
     #[error("Formatter: {0}")]
     Formatter(String),
+    #[error("Run configuration: {0}")]
+    RunConfiguration(String),
     #[error("Search: {0}")]
     Search(String),
     #[error("Attachment rejected: {0}")]

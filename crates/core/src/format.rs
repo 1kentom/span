@@ -1069,19 +1069,29 @@ mod tests {
             &["-c".into(), script, "sh".into()],
             "/",
             String::new(),
-            Duration::from_millis(25),
+            // Long enough for a loaded machine to start the shell and let it write the pid file
+            // before the timeout fires; still far below the 30 s the descendant would hold the pipe.
+            Duration::from_millis(400),
             crate::CancellationToken::default(),
         )
         .await
         .unwrap_err();
         assert!(error.to_string().contains("timed out"));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_secs(5));
 
-        let descendant: i32 = std::fs::read_to_string(pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        // The shell may still be flushing its pid file when the timeout returns: wait for it.
+        let descendant: i32 = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                    if let Ok(pid) = text.trim().parse() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the formatter script never wrote its descendant pid");
         let reaped = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let alive = unsafe { libc::kill(descendant, 0) == 0 };

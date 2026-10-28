@@ -14,10 +14,14 @@ mod file_index;
 #[doc(hidden)]
 pub mod language_servers;
 mod menu;
+mod run_approval;
+mod run_tools;
+mod runs;
 #[doc(hidden)]
 pub mod services;
 pub mod session_meta;
 mod startup;
+mod terminals;
 mod uploads;
 
 /// The authoritative workspace is only accessed by blocking workers.
@@ -27,6 +31,9 @@ type FormatterJobs =
 #[derive(Clone, Default)]
 pub struct DesktopState {
     pub workspace: Arc<Mutex<Option<Arc<Mutex<CoreWorkspace>>>>>,
+    pub(crate) terminals: terminals::TerminalState,
+    pub(crate) runs: runs::RunService,
+    pub(crate) run_approvals: run_approval::RunApprovalState,
     pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
     pub user_settings: Arc<Mutex<Option<CoreWorkspace>>>,
     /// Every agent connection. The single agent commands use its primary one.
@@ -73,6 +80,20 @@ where
     T: Send + 'static,
     F: FnOnce(&mut CoreWorkspace) -> span_core::Result<T> + Send + 'static,
 {
+    with_settings_context(state, scope, operation, CoreWorkspace::for_user_settings).await
+}
+
+async fn with_settings_context<T, F, C>(
+    state: DesktopState,
+    scope: SettingsScope,
+    operation: F,
+    context_factory: C,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut CoreWorkspace) -> span_core::Result<T> + Send + 'static,
+    C: FnOnce() -> span_core::Result<CoreWorkspace> + Send + 'static,
+{
     tauri::async_runtime::spawn_blocking(move || {
         let workspace = state
             .workspace
@@ -90,8 +111,7 @@ where
                 .lock()
                 .map_err(|_| "User settings state is unavailable".to_owned())?;
             if context.is_none() {
-                *context =
-                    Some(CoreWorkspace::for_user_settings().map_err(|error| error.to_string())?);
+                *context = Some(context_factory().map_err(|error| error.to_string())?);
             }
             let context = context
                 .as_mut()
@@ -132,6 +152,12 @@ async fn open_workspace(
     state
         .file_index
         .activate(PathBuf::from(&result.root))
+        .await?;
+    state.run_approvals.cancel_all();
+    state.runs.shutdown().await?;
+    state
+        .terminals
+        .replace_workspace(std::path::Path::new(&result.root))
         .await?;
     let worker_state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -843,6 +869,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         .dangerously_cast_bigints_to_number()
         .events(collect_events![
             services::FormatWarning,
+            runs::RunEvent,
+            run_approval::RunApprovalsChanged,
             menu::NativeActionEvent,
             startup::StartupRequestsChanged,
             language_servers::LanguageServerStateChanged,
@@ -856,6 +884,29 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ])
         .commands(collect_commands![
             open_workspace,
+            runs::run_configurations,
+            runs::run_context,
+            run_approval::pending_run_approvals,
+            run_tools::run_tools_enabled,
+            run_tools::run_tools_set_enabled,
+            run_approval::resolve_run_approval,
+            runs::save_run_configuration,
+            runs::delete_run_configuration,
+            runs::duplicate_run_configuration,
+            runs::start_run,
+            runs::stop_run,
+            runs::restart_run,
+            runs::list_runs,
+            runs::run_output,
+            runs::acknowledge_run,
+            terminals::terminal_create,
+            terminals::terminal_write,
+            terminals::terminal_resize,
+            terminals::terminal_interrupt,
+            terminals::terminal_close,
+            terminals::terminal_list,
+            terminals::terminal_scrollback,
+            terminals::terminal_acknowledge,
             list_directory,
             list_files,
             file_index::file_index_status,
@@ -984,7 +1035,16 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
 
 pub fn export_bindings() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/bindings.ts");
-    ipc_builder().export(specta_typescript::Typescript::default(), path)?;
+    ipc_builder().export(specta_typescript::Typescript::default(), &path)?;
+    // Specta's multiline union comments can leave spaces at line endings.
+    let generated = std::fs::read_to_string(&path)?;
+    let normalized = generated
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(path, normalized)?;
     Ok(())
 }
 
@@ -1053,6 +1113,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app.state::<DesktopState>();
+            state.run_approvals.cancel_all();
+            if let Err(error) = tauri::async_runtime::block_on(state.runs.shutdown()) {
+                eprintln!("Could not stop run processes: {error}");
+            }
+            if let Err(error) = tauri::async_runtime::block_on(state.terminals.shutdown()) {
+                eprintln!("Could not close interactive terminals: {error}");
+            }
             let _ = agents::disconnect(&state);
             state.file_index.shutdown();
             // Bounded: a server that ignores shutdown is killed, never waited on forever.
@@ -1071,6 +1138,29 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn fresh_user_settings_are_initialized_without_reading_or_writing_real_preferences() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("user-settings.json");
+        let state = super::DesktopState::default();
+        let context_path = path.clone();
+        let enabled = super::with_settings_context(
+            state.clone(),
+            span_core::SettingsScope::User,
+            |context| context.run_tools_enabled(),
+            move || {
+                Ok(span_core::CoreWorkspace::for_user_settings()?
+                    .with_user_settings(Some(context_path)))
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!enabled);
+        assert!(state.user_settings.lock().unwrap().is_some());
+        assert!(state.workspace.lock().unwrap().is_none());
+        assert!(!path.exists());
+    }
+
     #[tokio::test]
     async fn user_settings_context_works_without_exposing_a_workspace() {
         let directory = tempfile::tempdir().unwrap();

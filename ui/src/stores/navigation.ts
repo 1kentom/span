@@ -15,7 +15,7 @@ import {
 } from "../lib/navigation-context";
 import { NAVIGATION_UNAVAILABLE_MESSAGE, registerNavigationHandler, type NavigationActionId } from "../lib/navigation-actions";
 
-export type BottomTab = "terminal" | "references" | "hierarchy";
+export type BottomTab = "terminal" | "run" | "references" | "hierarchy";
 
 /** All navigation state lives in one root so it is shared between the editor extensions and the panels. */
 const state = createRoot(() => {
