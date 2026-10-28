@@ -6,6 +6,7 @@ import type { LspPort } from './lsp-client';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import type { NavigationPort } from './lsp-navigation';
 import { createPreviewNavigationPort, previewNavigationFiles } from './navigation-preview';
+import { previewHover, previewHoverFiles } from './hover-preview';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
@@ -21,6 +22,7 @@ function nativeRequired(action: string): never {
 const fixture: Record<string, string> = {
   ...previewAssetFiles,
   ...previewNavigationFiles,
+  ...previewHoverFiles,
   '.env.local': 'SPAN_ENV=preview\nPORT=1420\nSPAN_SAMPLE_ONLY=true\n',
   'community/platform/node-rpc-client/src/rpc-node.ts': `import { JsonRpc } from './rpc';
 import { SocketTransport } from './socket-transport';
@@ -526,8 +528,8 @@ const noListener = async (): Promise<() => void> => () => undefined;
 /** Language server commands and events. Browser preview has none, so requests are unsupported and listeners are inert. */
 export const lspPort: LspPort = {
   completion: (path, position, trigger, requestId) => isDesktop ? commands.lspCompletion(path, position, trigger, requestId) : lspUnavailable(),
-  hover: (path, position, requestId) => isDesktop ? commands.lspHover(path, position, requestId) : lspUnavailable(),
-  definition: (path, position, requestId) => isDesktop ? commands.lspDefinition(path, position, requestId) : lspUnavailable(),
+  hover: (path, position, requestId) => isDesktop ? commands.lspHover(path, position, requestId) : Promise.resolve(previewHover(path, position)),
+  definition: (path, position, requestId) => isDesktop ? commands.lspDefinition(path, position, requestId) : previewNavigation.definition(path, position, requestId).then(reply => ({ ...reply, revision: 0, epoch: 0 })),
   format: (path, range, requestId) => isDesktop ? commands.lspFormat(path, range, requestId) : lspUnavailable(),
   cancel: requestId => isDesktop ? commands.lspCancel(requestId) : Promise.resolve(null),
   install: server => isDesktop ? commands.lspInstall(server) : lspUnavailable(),
