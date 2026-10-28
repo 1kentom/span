@@ -44,7 +44,7 @@ async function pickFile(page: Page) {
   await expect(palette).toBeHidden();
 }
 
-test("Cmd+E shows and focuses Files from Search or a collapsed sidebar without picking", async ({ page }) => {
+test("Cmd+E toggles Files, while Cmd+Shift+E always focuses it without picking", async ({ page }) => {
   await fixture(page);
   const editor = page.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true });
   await editor.focus(); await page.keyboard.insertText("// preserved sidebar draft\n");
@@ -55,8 +55,12 @@ test("Cmd+E shows and focuses Files from Search or a collapsed sidebar without p
   await expect(project.getByRole("tree", { name: "Workspace files" })).toBeVisible();
   expect(await project.getByRole("tree").evaluate(tree => tree.contains(document.activeElement))).toBe(true);
   await page.keyboard.press(`${modifier}+e`);
+  await expect(project).toBeHidden();
+  await page.keyboard.press(`${modifier}+e`);
   await expect(project).toBeVisible();
-  await page.getByRole("button", { name: "Toggle project panel", exact: true }).click();
+  await expect(project.getByRole("button", { name: "Files", exact: true })).toHaveAttribute("aria-pressed", "true");
+  expect(await project.getByRole("tree").evaluate(tree => tree.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press(`${modifier}+e`);
   await expect(project).toBeHidden();
   await page.keyboard.press(`${modifier}+Shift+e`);
   await expect(project).toBeVisible();

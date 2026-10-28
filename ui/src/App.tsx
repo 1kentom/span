@@ -122,14 +122,23 @@ export default function App() {
   let pickingFile = false;
   function focusFiles() {
     batch(() => { setLeftView("Files"); setShowLeft(true); });
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
+      if (disposed) return;
+      if (w.workspace() && !w.expanded().has("")) await w.toggleDirectory("");
       if (disposed) return;
       const tree = document.querySelector<HTMLElement>('.explorer-panel [role="tree"]');
       const target = tree?.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"]') || tree?.querySelector<HTMLElement>('[role="treeitem"]');
       if (target) target.focus();
-      else if (tree) { tree.tabIndex = -1; tree.focus(); }
-      else document.querySelector<HTMLElement>('.explorer-panel .panel-empty button')?.focus();
+      else if (w.workspace()) {
+        const newFile = document.querySelector<HTMLButtonElement>('.explorer-header [aria-label="New file"]');
+        if (newFile && !newFile.disabled) newFile.focus();
+        else if (tree) { tree.tabIndex = -1; tree.focus(); }
+      } else document.querySelector<HTMLElement>('.explorer-panel .panel-empty button')?.focus();
     });
+  }
+  function toggleFiles() {
+    if (showLeft() && leftView() === "Files") setShowLeft(false);
+    else focusFiles();
   }
   async function openFilePicker() {
     if (pickingFile) return;
@@ -212,7 +221,7 @@ export default function App() {
     queueMicrotask(() => editorCommands.get(`${w.activeGroup()}:${path}`)?.[command]());
   }
   const handlers: ActionHandlers = {
-    quickOpen: () => setQuickOpen(true), focusFiles, openFile: () => { void openFilePicker(); }, commandPalette: () => setPaletteOpen(true), findInFile: () => runEditor("find"), searchWorkspace: openSearch,
+    quickOpen: () => setQuickOpen(true), toggleFiles, focusFiles, openFile: () => { void openFilePicker(); }, commandPalette: () => setPaletteOpen(true), findInFile: () => runEditor("find"), searchWorkspace: openSearch,
     settings: openSettings, closeTab: () => { const path = w.activeTab(); if (path) requestCloseTab(path, w.activeGroup()); else requestCloseGroup(w.activeGroup()); }, save: saveActive, openFolder: requestWorkspace,
     splitEditor: w.splitEditor, toggleProject: () => setShowLeft(!showLeft()), toggleAssistant: () => setShowRight(!showRight()), toggleTerminal: () => setShowBottom(!showBottom()),
     markdownPreview: () => { const path = w.activePath(); if (path && w.isMarkdown(path)) w.setMarkdownView(path, w.markdownView(path) === "preview" ? "source" : "preview"); },

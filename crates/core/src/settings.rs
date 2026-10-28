@@ -178,6 +178,7 @@ impl Settings {
 
 const COMMAND_IDS: &[&str] = &[
     "quickOpen",
+    "toggleFiles",
     "focusFiles",
     "openFile",
     "commandPalette",
@@ -345,7 +346,8 @@ fn shortcut_conflict_key(shortcut: &str) -> Result<String> {
 fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Result<()> {
     let defaults = [
         ("quickOpen", vec!["Mod+P"]),
-        ("focusFiles", vec!["Mod+E", "Mod+Shift+E"]),
+        ("toggleFiles", vec!["Mod+E"]),
+        ("focusFiles", vec!["Mod+Shift+E"]),
         ("openFile", vec![]),
         ("commandPalette", vec!["Mod+Shift+P"]),
         ("findInFile", vec!["Mod+F"]),
@@ -373,7 +375,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         .collect::<Result<std::collections::HashSet<_>>>()?;
     let mut assigned = HashMap::new();
     for (command, mut defaults) in defaults {
-        if command == "focusFiles" {
+        if command == "toggleFiles" || command == "focusFiles" {
             defaults.retain(|shortcut| {
                 !claimed.contains(&shortcut_conflict_key(shortcut).expect("valid default shortcut"))
             });
@@ -748,7 +750,13 @@ mod file_open_shortcut_tests {
     #[test]
     fn picker_command_validates_and_preserves_existing_explicit_keys() {
         Settings::default().validate().unwrap();
-        for command in ["openFile", "focusFiles", "quickOpen", "settings"] {
+        for command in [
+            "openFile",
+            "toggleFiles",
+            "focusFiles",
+            "quickOpen",
+            "settings",
+        ] {
             let settings = Settings {
                 keybindings: HashMap::from([(command.into(), vec!["Mod+E".into()])]),
                 ..Default::default()
@@ -766,7 +774,7 @@ mod file_open_shortcut_tests {
             .contains("conflicts"));
         let explicit_collision = Settings {
             keybindings: HashMap::from([
-                ("focusFiles".into(), vec!["Mod+E".into()]),
+                ("toggleFiles".into(), vec!["Mod+E".into()]),
                 ("openFile".into(), vec!["Mod+E".into()]),
             ]),
             ..Default::default()
@@ -779,7 +787,29 @@ mod file_open_shortcut_tests {
             .unwrap()
             .iter()
             .any(|id| id == "openFile"));
+        assert!(schema["properties"]["keybindings"]["propertyNames"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == "toggleFiles"));
         assert!(COMMAND_IDS.contains(&"focusFiles"));
+        assert!(COMMAND_IDS.contains(&"toggleFiles"));
+    }
+
+    #[test]
+    fn explorer_defaults_do_not_conflict_and_overrides_claim_their_defaults() {
+        for keybindings in [
+            HashMap::from([("quickOpen".into(), vec!["Mod+E".into()])]),
+            HashMap::from([("focusFiles".into(), vec!["Mod+E".into()])]),
+            HashMap::from([("toggleFiles".into(), vec!["Mod+E".into()])]),
+        ] {
+            Settings {
+                keybindings,
+                ..Default::default()
+            }
+            .validate()
+            .unwrap();
+        }
     }
 }
 
