@@ -8,6 +8,11 @@ export const commands = {
 	openWorkspace: (path: string) => __TAURI_INVOKE<Workspace>("open_workspace", { path }),
 	listDirectory: (path: string) => __TAURI_INVOKE<FileEntry[]>("list_directory", { path }),
 	listFiles: () => __TAURI_INVOKE<FileEntry[]>("list_files"),
+	newFile: (path: string) => __TAURI_INVOKE<BufferSnapshot>("new_file", { path }),
+	newDirectory: (path: string) => __TAURI_INVOKE<FileEntry>("new_directory", { path }),
+	renamePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry>("rename_path", { from, to }),
+	duplicatePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry>("duplicate_path", { from, to }),
+	trashPath: (path: string) => __TAURI_INVOKE<string[]>("trash_path", { path }),
 	openBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("open_buffer", { path }),
 	editBufferDelta: (path: string, expectedRevision: number, changes: TextEdit[]) => __TAURI_INVOKE<BufferRevision>("edit_buffer_delta", { path, expectedRevision, changes }),
 	saveBuffer: (path: string, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("save_buffer", { path, expectedRevision }),
@@ -16,6 +21,15 @@ export const commands = {
 	searchStream: (id: string, query: SearchQuery_Deserialize, onMatch: Channel<SearchMatch>) => __TAURI_INVOKE<number>("search_stream", { id, query, onMatch }),
 	cancelSearch: (id: string) => __TAURI_INVOKE<null>("cancel_search", { id }),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
+	getSettingsForScope: (scope: SettingsScope) => __TAURI_INVOKE<Settings_Serialize>("get_settings_for_scope", { scope }),
+	openSettingsBuffer: (scope: SettingsScope) => __TAURI_INVOKE<BufferSnapshot>("open_settings_buffer", { scope }),
+	editSettingsBuffer: (scope: SettingsScope, expectedRevision: number, changes: TextEdit[]) => __TAURI_INVOKE<BufferRevision>("edit_settings_buffer", { scope, expectedRevision, changes }),
+	saveSettingsBuffer: (scope: SettingsScope, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("save_settings_buffer", { scope, expectedRevision }),
+	discardSettingsBuffer: (scope: SettingsScope) => __TAURI_INVOKE<BufferSnapshot>("discard_settings_buffer", { scope }),
+	getSettingsJsoncForScope: (scope: SettingsScope) => __TAURI_INVOKE<string>("get_settings_jsonc_for_scope", { scope }),
+	getSettingsKeysForScope: (scope: SettingsScope) => __TAURI_INVOKE<string[]>("get_settings_keys_for_scope", { scope }),
+	updateSettingsJsoncForScope: (scope: SettingsScope, text: string) => __TAURI_INVOKE<Settings_Serialize>("update_settings_jsonc_for_scope", { scope, text }),
+	updateSetting: (scope: SettingsScope, key: string, valueJson: string | null) => __TAURI_INVOKE<Settings_Serialize>("update_setting", { scope, key, valueJson }),
 	updateSettings: (settings: Settings_Deserialize) => __TAURI_INVOKE<Settings_Serialize>("update_settings", { settings }),
 	updateSettingsJsonc: (text: string) => __TAURI_INVOKE<Settings_Serialize>("update_settings_jsonc", { text }),
 	getSettingsJsonc: () => __TAURI_INVOKE<string>("get_settings_jsonc"),
@@ -30,6 +44,7 @@ export const commands = {
 	readClipboard: () => __TAURI_INVOKE<string>("read_clipboard"),
 	writeClipboard: (text: string) => __TAURI_INVOKE<null>("write_clipboard", { text }),
 	takeStartupRequests: () => __TAURI_INVOKE<StartupRequest_Serialize[]>("take_startup_requests"),
+	enqueueDroppedPaths: (paths: string[], cwd: string | null) => __TAURI_INVOKE<null>("enqueue_dropped_paths", { paths, cwd }),
 	openExternal: (url: string) => __TAURI_INVOKE<null>("open_external", { url }),
 	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
@@ -37,6 +52,7 @@ export const commands = {
 	agentRegistry: () => __TAURI_INVOKE<RegistryAgent_Serialize[]>("agent_registry"),
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
+	agentRemove: (id: string, uninstall: boolean) => __TAURI_INVOKE<null>("agent_remove", { id, uninstall }),
 	agentConnect: (command: AgentCommand_Deserialize, cwd: string, onEvent: Channel<AgentEvent_Deserialize>) => __TAURI_INVOKE<string>("agent_connect", { command, cwd, onEvent }),
 	agentPrompt: (text: string) => __TAURI_INVOKE<null>("agent_prompt", { text }),
 	agentCancel: () => __TAURI_INVOKE<null>("agent_cancel"),
@@ -48,7 +64,9 @@ export const commands = {
 
 /** Events */
 export const events = {
+	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
+	startupRequestError: makeEvent<StartupRequestError, StartupRequestError>("startup-request-error"),
 	startupRequestsChanged: makeEvent<StartupRequestsChanged, StartupRequestsChanged>("startup-requests-changed"),
 };
 
@@ -73,10 +91,13 @@ export type AgentEvent_Deserialize = { kind: "status"; state: string; message: s
 
 export type AgentEvent_Serialize = { kind: "status"; state: string; message: string } | { kind: "session"; sessionId: string } | { kind: "text"; sessionId: string; text: string } | { kind: "thought"; sessionId: string; text: string } | { kind: "plan"; sessionId: string; entries: PlanEntry[] } | { kind: "tool"; sessionId: string; toolCallId: string; title: string | null; status: string | null; contentJson: string } | { kind: "permission"; sessionId: string; requestId: string; toolCallId: string; title: string; options: PermissionOption[] } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string } | { kind: "error"; message: string };
 
+export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
+
 /**  A transaction acknowledgement without materializing the complete document. */
 export type BufferRevision = {
 	path: string,
 	revision: number,
+	/**  Latest revision whose text equals the loaded or successfully saved baseline. */
 	savedRevision: number,
 };
 
@@ -84,6 +105,7 @@ export type BufferSnapshot = {
 	path: string,
 	text: string,
 	revision: number,
+	/**  Latest revision whose text equals the loaded or successfully saved baseline. */
 	savedRevision: number,
 	language: string,
 };
@@ -104,6 +126,11 @@ export type FileEntry = {
 export type FoldRange = {
 	from: number,
 	to: number,
+};
+
+export type FormatWarning = {
+	path: string,
+	message: string,
 };
 
 export type HighlightSpan = {
@@ -141,7 +168,7 @@ export type InstalledAgent_Serialize = {
 
 export type MarkdownView = "source" | "preview" | "both";
 
-export type NativeAction = "quickOpen" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "markdownPreview" | "formatDocument" | "goToLine" | "quit";
+export type NativeAction = "quickOpen" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
@@ -292,6 +319,8 @@ export type SessionState_Serialize = {
 
 export type Settings = Settings_Serialize | Settings_Deserialize;
 
+export type SettingsScope = "user" | "workspace";
+
 export type Settings_Deserialize = {
 	theme?: Theme,
 	fontSize?: number,
@@ -303,6 +332,12 @@ export type Settings_Deserialize = {
 	collapsePanelsOnDrag?: boolean,
 	markdownPreviewDefault?: boolean,
 	formatOnSave?: boolean,
+	autoSave?: AutoSaveMode,
+	autoSaveDelay?: number,
+	tabLimitEnabled?: boolean,
+	tabLimit?: number,
+	tabLimitPerGroup?: boolean,
+	zoomLevel?: number | null,
 	keybindings?: { [key in string]: string[] },
 	formatters?: { [key in string]: string[] },
 };
@@ -318,6 +353,12 @@ export type Settings_Serialize = {
 	collapsePanelsOnDrag: boolean,
 	markdownPreviewDefault: boolean,
 	formatOnSave: boolean,
+	autoSave: AutoSaveMode,
+	autoSaveDelay: number,
+	tabLimitEnabled: boolean,
+	tabLimit: number,
+	tabLimitPerGroup: boolean,
+	zoomLevel: number | null,
 	keybindings: { [key in string]: string[] },
 	formatters: { [key in string]: string[] },
 };
@@ -339,6 +380,10 @@ export type StartupFile_Serialize = {
 };
 
 export type StartupRequest = StartupRequest_Serialize | StartupRequest_Deserialize;
+
+export type StartupRequestError = {
+	message: string,
+};
 
 export type StartupRequest_Deserialize = {
 	workspaceRoot?: string | null,

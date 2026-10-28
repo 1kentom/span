@@ -16,8 +16,15 @@ import type {
   InstalledAgent,
   RegistryAgent,
 } from "../bindings";
+import {
+  buildAgentCatalog,
+  curatedAgent,
+  agentFailureMessage,
+  removalBlockReason,
+  type CatalogRow,
+} from "../lib/acp-catalog";
 import { api, isDesktop } from "../lib/client";
-import { FileIcon, Icon } from "./Icon";
+import { FileIcon, Icon, MenuIcon } from "./Icon";
 import { BrandIcon } from "./BrandIcon";
 import "../styles/agent.css";
 
@@ -33,6 +40,7 @@ type AgentPanelProps = {
   };
   onBufferChanged?: (path: string, snapshot?: BufferSnapshot) => void;
   onOpenSettings?: () => void;
+  removeAgent?: (id: string, uninstall: boolean) => Promise<void>;
   onProposalsChange?: (proposals: EditProposal[]) => void;
   onReviewBusyChange?: (busy: boolean) => void;
   onReviewInEditor?: (path: string) => void;
@@ -54,7 +62,14 @@ type FeedItem =
       proposal: EditProposal;
       resolution?: "accepted" | "rejected";
     };
-type Menu = "agent" | "session" | "context" | "custom" | "commands" | null;
+type Menu =
+  | "agent"
+  | "session"
+  | "context"
+  | "custom"
+  | "commands"
+  | "remove"
+  | null;
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const leaf = (path: string) => path.split("/").pop() || path;
@@ -76,9 +91,18 @@ export function AgentPanel(props: AgentPanelProps) {
   );
   const [sessionId, setSessionId] = createSignal<string>();
   const [agentName, setAgentName] = createSignal("Select agent");
+  const [activeAgentId, setActiveAgentId] = createSignal<string>();
+  const [catalogSearch, setCatalogSearch] = createSignal("");
+  const [managementId, setManagementId] = createSignal<string>();
+  const [removal, setRemoval] = createSignal<{
+    entry: InstalledAgent;
+    uninstall: boolean;
+  }>();
   const [running, setRunning] = createSignal(false);
   const [stopRequested, setStopRequested] = createSignal(false);
   const [working, setWorking] = createSignal(false);
+  const [installingIds, setInstallingIds] = createSignal<string[]>([]);
+  const [installErrors, setInstallErrors] = createSignal<Record<string, string>>({});
   const [error, setError] = createSignal("");
   const [installed, setInstalled] = createSignal<InstalledAgent[]>([]);
   const [registry, setRegistry] = createSignal<RegistryAgent[]>([]);
@@ -95,6 +119,8 @@ export function AgentPanel(props: AgentPanelProps) {
   let menuElement: HTMLDivElement | undefined;
   let disposed = false;
   let agentEpoch = 0;
+  let installedReadGeneration = 0;
+  let installedMutationGeneration = 0;
   let unsubscribe: (() => void) | undefined;
   const selectionKey = createMemo(
     () => `${props.selectionContext?.path}:${props.selectionContext?.text}`,
@@ -142,6 +168,20 @@ export function AgentPanel(props: AgentPanelProps) {
       (busy) => props.onReviewBusyChange?.(busy),
     ),
   );
+  const catalogRows = createMemo(() =>
+    buildAgentCatalog(registry(), installed(), catalogSearch()),
+  );
+  const otherInstalled = createMemo(() =>
+    installed().filter((entry) => !curatedAgent(entry.id)),
+  );
+  const removalBlock = createMemo(() =>
+    removalBlockReason(
+      Boolean(sessionId()) && activeAgentId() === removal()?.entry.id,
+      running(),
+      unresolvedProposals().length,
+      feed().some((item) => item.kind === "permission" && !item.resolved),
+    ),
+  );
   const addItem = (item: FeedItem) =>
     setFeed((previous) => [...previous, item].slice(-FEED_LIMIT));
   const note = (text: string) => addItem({ id: ++nextId, kind: "note", text });
@@ -151,6 +191,42 @@ export function AgentPanel(props: AgentPanelProps) {
     setShowLogs(false);
     input?.focus();
   };
+  function beginInstalledRead() {
+    return {
+      read: ++installedReadGeneration,
+      mutation: installedMutationGeneration,
+    };
+  }
+  function applyInstalledSnapshot(
+    token: ReturnType<typeof beginInstalledRead>,
+    snapshot: InstalledAgent[],
+  ) {
+    if (
+      disposed ||
+      token.read !== installedReadGeneration ||
+      token.mutation !== installedMutationGeneration
+    )
+      return false;
+    setInstalled(snapshot);
+    return true;
+  }
+  function commitInstalledMutation(
+    update: (current: InstalledAgent[]) => InstalledAgent[],
+  ) {
+    installedMutationGeneration += 1;
+    installedReadGeneration += 1;
+    setInstalled(update(installed()));
+  }
+  function upsertInstalled(
+    current: InstalledAgent[],
+    incoming: InstalledAgent,
+  ) {
+    const index = current.findIndex((entry) => entry.id === incoming.id);
+    if (index < 0) return [...current, incoming];
+    return current.map((entry, currentIndex) =>
+      currentIndex === index ? incoming : entry,
+    );
+  }
 
   createEffect(
     on(
@@ -161,6 +237,9 @@ export function AgentPanel(props: AgentPanelProps) {
         agentEpoch += 1;
         setSessionId(undefined);
         setAgentName("Select agent");
+        setActiveAgentId(undefined);
+        setRemoval(undefined);
+        setManagementId(undefined);
         setRunning(false);
         setStopRequested(false);
         setWorking(false);
@@ -290,7 +369,7 @@ export function AgentPanel(props: AgentPanelProps) {
         setStatus("ready");
         setStatusMessage("The last agent operation failed");
       }
-      setError(event.message);
+      setError(agentFailureMessage(event.message));
     }
   }
 
@@ -388,11 +467,13 @@ export function AgentPanel(props: AgentPanelProps) {
     if (!isDesktop || registryBusy()) return;
     setRegistryBusy(true);
     setError("");
+    const installedRead = beginInstalledRead();
     const results = await Promise.allSettled([
       api.agentInstalled(),
       api.agentRegistry(),
     ]);
-    if (results[0].status === "fulfilled") setInstalled(results[0].value);
+    if (results[0].status === "fulfilled")
+      applyInstalledSnapshot(installedRead, results[0].value);
     else fail("Could not read installed agents", results[0].reason);
     if (results[1].status === "fulfilled") setRegistry(results[1].value);
     else fail("Could not load the ACP registry", results[1].reason);
@@ -403,7 +484,11 @@ export function AgentPanel(props: AgentPanelProps) {
     setMenu((current) => (current === next ? null : next));
     if (next === "agent" && !registryLoaded()) void loadAgents();
   }
-  async function connect(command: AgentCommand, name: string) {
+  async function connect(
+    command: AgentCommand,
+    name: string,
+    identity?: string,
+  ) {
     const epoch = ++agentEpoch;
     const current = () => !disposed && epoch === agentEpoch;
     if (!props.workspacePath) {
@@ -422,6 +507,7 @@ export function AgentPanel(props: AgentPanelProps) {
       setFeed([]);
       setSessionId(undefined);
       setAgentName(name);
+      setActiveAgentId(identity);
       const id = await api.agentConnect(command, cwd);
       if (!current()) return;
       setSessionId(id);
@@ -432,7 +518,73 @@ export function AgentPanel(props: AgentPanelProps) {
       if (!current()) return;
       setStatus("error");
       setStatusMessage("Connection failed");
-      fail(`Could not connect ${name}`, cause);
+      fail(`Could not connect ${name}`, agentFailureMessage(errorText(cause)));
+    } finally {
+      if (current()) setWorking(false);
+    }
+  }
+  function pickCatalog(row: CatalogRow) {
+    if (row.installed) {
+      void connect(
+        row.installed.launch,
+        row.definition.name,
+        row.definition.id,
+      );
+      return;
+    }
+    if (row.action === "install" && row.registry) {
+      void install(row.registry);
+      return;
+    }
+    if (row.action === "local" && row.definition.localCommand) {
+      setExecutable(row.definition.localCommand.command);
+      setArgumentsJson(JSON.stringify(row.definition.localCommand.args));
+      setMenu("custom");
+    }
+  }
+  function requestRemoval(entry: InstalledAgent, uninstall: boolean) {
+    setRemoval({ entry, uninstall });
+    setManagementId(undefined);
+    setMenu("remove");
+  }
+  async function confirmRemoval() {
+    const choice = removal();
+    const removeAgent = props.removeAgent;
+    if (!choice || !removeAgent || removalBlock() || working()) return;
+    // Invalidate an in-flight connection to the adapter being removed. Leave
+    // unrelated active sessions and their async work alone.
+    const isActiveTarget = activeAgentId() === choice.entry.id;
+    if (isActiveTarget) agentEpoch += 1;
+    const epoch = agentEpoch;
+    const current = () => !disposed && epoch === agentEpoch;
+    setWorking(true);
+    setError("");
+    try {
+      if (sessionId() && activeAgentId() === choice.entry.id) {
+        await api.agentDisconnect();
+        if (!current()) return;
+        setSessionId(undefined);
+        setActiveAgentId(undefined);
+        setRunning(false);
+        setStatus("disconnected");
+        setStatusMessage("No agent connected");
+      }
+      await removeAgent(choice.entry.id, choice.uninstall);
+      if (!current()) return;
+      commitInstalledMutation((currentAgents) =>
+        currentAgents.filter((entry) => entry.id !== choice.entry.id),
+      );
+      setRemoval(undefined);
+      setMenu("agent");
+      const installedRead = beginInstalledRead();
+      try {
+        const remaining = await api.agentInstalled();
+        if (current()) applyInstalledSnapshot(installedRead, remaining);
+      } catch (cause) {
+        if (current()) fail("Could not refresh installed agents", cause);
+      }
+    } catch (cause) {
+      if (current()) fail("Could not remove agent", cause);
     } finally {
       if (current()) setWorking(false);
     }
@@ -459,24 +611,35 @@ export function AgentPanel(props: AgentPanelProps) {
     }
   }
   async function install(entry: RegistryAgent) {
-    const epoch = agentEpoch;
-    const current = () => !disposed && epoch === agentEpoch;
-    setWorking(true);
+    if (installingIds().includes(entry.id)) return;
+    setInstallingIds((previous) => [...previous, entry.id]);
+    setInstallErrors((previous) => {
+      const next = { ...previous };
+      delete next[entry.id];
+      return next;
+    });
     setError("");
     try {
-      await api.agentInstall(entry.id);
-      if (!current()) return;
-      const agents = await api.agentInstalled();
-      if (!current()) return;
-      setInstalled(agents);
+      const installedAgent = await api.agentInstall(entry.id);
+      if (disposed) return;
+      commitInstalledMutation((currentAgents) =>
+        upsertInstalled(currentAgents, installedAgent),
+      );
       note(
-        `${entry.name} installed. Choose it under Installed agents to connect.`,
+        `${curatedAgent(entry.id)?.name || entry.name} installed. Choose it in the agent list to connect.`,
       );
     } catch (cause) {
-      if (!current()) return;
+      if (disposed) return;
+      setInstallErrors((previous) => ({
+        ...previous,
+        [entry.id]: errorText(cause),
+      }));
       fail(`Could not install ${entry.name}`, cause);
     } finally {
-      if (current()) setWorking(false);
+      if (!disposed)
+        setInstallingIds((previous) =>
+          previous.filter((installingId) => installingId !== entry.id),
+        );
     }
   }
   async function disconnect() {
@@ -491,6 +654,7 @@ export function AgentPanel(props: AgentPanelProps) {
       setRunning(false);
       setStatus("disconnected");
       setStatusMessage("No agent connected");
+      setActiveAgentId(undefined);
       note("Agent disconnected.");
     } catch (cause) {
       if (!current()) return;
@@ -1096,111 +1260,302 @@ export function AgentPanel(props: AgentPanelProps) {
               aria-label={`${menu()} options`}
             >
               <Show when={menu() === "agent"}>
-                <div class="agent-menu-title">Installed agents</div>
-                <Show
-                  when={installed().length}
-                  fallback={
-                    <div class="agent-menu-note">
-                      {registryBusy()
-                        ? "Reading installed agents…"
-                        : isDesktop
-                          ? "No managed agents installed. Use a custom command or install from the registry."
-                          : "Open span desktop to connect an ACP agent."}
-                    </div>
-                  }
-                >
-                  <For each={installed()}>
-                    {(entry) => (
-                      <button
-                        class="agent-menu-item"
-                        disabled={working()}
-                        onClick={() =>
-                          void connect(
-                            entry.launch,
-                            registry().find((agent) => agent.id === entry.id)
-                              ?.name || entry.id,
-                          )
-                        }
-                      >
-                        <BrandIcon id={entry.id} name={registry().find((agent) => agent.id === entry.id)?.name} size={17} />
-                        <span>
-                          <strong>
-                            {registry().find((agent) => agent.id === entry.id)
-                              ?.name || entry.id}
-                          </strong>
-                          <small>
-                            {entry.version} · {entry.launch.command}
-                          </small>
-                        </span>
-                        <Icon name="arrow-right4" size={12} />
-                      </button>
-                    )}
-                  </For>
-                </Show>
-                <button
-                  class="agent-menu-item"
-                  onClick={() => setMenu("custom")}
-                >
-                  <Icon name="Code1" size={16} />
-                  <span>
-                    <strong>Custom ACP command</strong>
-                    <small>Use an executable already on your computer</small>
-                  </span>
-                  <Icon name="arrow-right4" size={12} />
-                </button>
-                <div class="agent-menu-divider" />
-                <div class="agent-menu-title">ACP registry</div>
-                <For each={registry()}>
-                  {(entry) => (
-                    <button
-                      class="agent-menu-item"
-                      disabled={
-                        working() ||
-                        !entry.installable ||
-                        installed().some((agent) => agent.id === entry.id)
-                      }
-                      onClick={() => void install(entry)}
-                    >
-                      <BrandIcon id={entry.id} name={entry.name} size={17} />
-                      <span>
-                        <strong>{entry.name}</strong>
-                        <small>{entry.description}</small>
-                      </span>
-                      <small>
-                        {installed().some((agent) => agent.id === entry.id)
-                          ? "Installed"
-                          : entry.installable
-                            ? "Install"
-                            : "Unsupported distribution"}
-                      </small>
-                    </button>
-                  )}
-                </For>
-                <Show when={isDesktop}>
+                <div class="agent-menu-heading">
+                  <span>Agents</span>
                   <button
-                    class="agent-menu-item"
+                    class="agent-icon-button"
+                    aria-label="Refresh agent registry"
                     disabled={registryBusy()}
                     onClick={() => void loadAgents()}
                   >
-                    <span>
-                      {registryBusy()
-                        ? "Loading registry…"
-                        : "Refresh registry"}
-                    </span>
+                    <Icon name="Refresh" size={14} />
                   </button>
+                </div>
+                <label class="agent-catalog-search">
+                  <Icon name="SearchNormal1" size={14} />
+                  <span class="agent-sr-only">Search curated agents</span>
+                  <input
+                    placeholder="Search agents"
+                    value={catalogSearch()}
+                    onInput={(event) =>
+                      setCatalogSearch(event.currentTarget.value)
+                    }
+                  />
+                </label>
+                <Show when={!isDesktop}>
+                  <div class="agent-menu-note">
+                    Open span desktop to install or connect an ACP agent.
+                  </div>
+                </Show>
+                <Show
+                  when={catalogRows().length}
+                  fallback={
+                    <div class="agent-menu-note">
+                      No curated agents match this search.
+                    </div>
+                  }
+                >
+                  <For each={catalogRows()}>
+                    {(row) => (
+                      <div
+                        class="agent-catalog-entry"
+                        aria-busy={installingIds().includes(row.definition.id)}
+                      >
+                        <button
+                          class="agent-menu-item agent-catalog-row"
+                          classList={{
+                            "is-installing": installingIds().includes(
+                              row.definition.id,
+                            ),
+                          }}
+                          disabled={
+                            !isDesktop ||
+                            (row.action === "connect" && working()) ||
+                            (row.action === "local" && working()) ||
+                            (row.action === "install" &&
+                              installingIds().includes(row.definition.id)) ||
+                            row.action === "unavailable"
+                          }
+                          onClick={() => pickCatalog(row)}
+                        >
+                          <Show
+                            when={row.definition.brand === "glm"}
+                            fallback={
+                              <BrandIcon id={row.definition.brand} size={20} />
+                            }
+                          >
+                            <span class="agent-glm-mark" aria-hidden="true" />
+                          </Show>
+                          <span class="agent-menu-copy">
+                            <strong>{row.definition.name}</strong>
+                            <small>
+                              {row.installed
+                                ? `Installed · ${row.installed.version}`
+                                : installErrors()[row.definition.id]
+                                  ? "Installation failed. Retry."
+                                  : row.definition.detail}
+                            </small>
+                            <Show when={installErrors()[row.definition.id]}>
+                              {(message) => (
+                                <small
+                                  class="agent-install-error"
+                                  role="status"
+                                  title={message()}
+                                >
+                                  {message()}
+                                </small>
+                              )}
+                            </Show>
+                          </span>
+                          <span class="agent-menu-trailing">
+                            {installingIds().includes(row.definition.id) ? (
+                              <span class="agent-install-progress" role="status">
+                                <span
+                                  class="agent-install-spinner"
+                                  aria-hidden="true"
+                                />
+                                <span>Installing…</span>
+                              </span>
+                            ) : row.action === "connect" ? (
+                              <Icon name="arrow-right4" size={16} />
+                            ) : row.action === "install" ? (
+                              <span class="agent-install-action">
+                                <MenuIcon name="install" size={14} />
+                                {installErrors()[row.definition.id]
+                                  ? "Retry"
+                                  : "Install"}
+                              </span>
+                            ) : row.action === "local" ? (
+                              "Use local CLI"
+                            ) : registryBusy() ? (
+                              "Loading"
+                            ) : (
+                              "Unavailable"
+                            )}
+                          </span>
+                        </button>
+                        <Show
+                          when={props.removeAgent ? row.installed : undefined}
+                        >
+                          {(entry) => (
+                            <>
+                              <button
+                                class="agent-row-overflow"
+                                aria-label={`Manage ${row.definition.name}`}
+                                aria-expanded={
+                                  managementId() === row.definition.id
+                                }
+                                onClick={() =>
+                                  setManagementId((value) =>
+                                    value === row.definition.id
+                                      ? undefined
+                                      : row.definition.id,
+                                  )
+                                }
+                              >
+                                ···
+                              </button>
+                              <Show when={managementId() === row.definition.id}>
+                                <div class="agent-row-management">
+                                  <button
+                                    onClick={() =>
+                                      requestRemoval(entry(), false)
+                                    }
+                                  >
+                                    <Icon name="CloseCircle" size={14} />
+                                    Remove from Span
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      requestRemoval(entry(), true)
+                                    }
+                                  >
+                                    <MenuIcon name="trash" size={14} />
+                                    Uninstall managed adapter
+                                  </button>
+                                </div>
+                              </Show>
+                            </>
+                          )}
+                        </Show>
+                      </div>
+                    )}
+                  </For>
+                </Show>
+                <Show when={registryBusy()}>
+                  <div class="agent-menu-note" role="status">
+                    Loading verified registry metadata…
+                  </div>
+                </Show>
+                <div class="agent-menu-divider" />
+                <button
+                  class="agent-menu-item agent-catalog-row"
+                  onClick={() => setMenu("custom")}
+                >
+                  <Icon name="Code1" size={20} />
+                  <span class="agent-menu-copy">
+                    <strong>Custom ACP command</strong>
+                    <small>Advanced · use a local ACP executable</small>
+                  </span>
+                  <Icon name="arrow-right4" size={16} />
+                </button>
+                <Show when={otherInstalled().length}>
+                  <details class="agent-other-installed">
+                    <summary>
+                      Other installed adapters ({otherInstalled().length})
+                    </summary>
+                    <div class="agent-menu-note">
+                      Kept on this device. These adapters are outside the
+                      curated list.
+                    </div>
+                    <For each={otherInstalled()}>
+                      {(entry) => (
+                        <div class="agent-other-row">
+                          <span class="agent-menu-copy">
+                            <strong>{entry.id}</strong>
+                            <small>Managed adapter · {entry.version}</small>
+                          </span>
+                          <Show when={props.removeAgent}>
+                            <button
+                              class="agent-icon-button"
+                              aria-label={`Manage ${entry.id}`}
+                              onClick={() =>
+                                setManagementId((value) =>
+                                  value === entry.id ? undefined : entry.id,
+                                )
+                              }
+                            >
+                              ···
+                            </button>
+                          </Show>
+                          <Show when={managementId() === entry.id}>
+                            <div class="agent-row-management">
+                              <button
+                                onClick={() => requestRemoval(entry, false)}
+                              >
+                                <Icon name="CloseCircle" size={14} />
+                                Remove from Span
+                              </button>
+                              <button
+                                onClick={() => requestRemoval(entry, true)}
+                              >
+                                <MenuIcon name="trash" size={14} />
+                                Uninstall managed adapter
+                              </button>
+                            </div>
+                          </Show>
+                        </div>
+                      )}
+                    </For>
+                  </details>
                 </Show>
                 <Show when={props.onOpenSettings}>
                   <button
-                    class="agent-menu-item"
+                    class="agent-menu-item agent-settings-link"
                     onClick={() => {
                       setMenu(null);
                       props.onOpenSettings?.();
                     }}
                   >
-                    <Icon name="Setting2" size={15} />
-                    <span>Open settings</span>
+                    <Icon name="Setting2" size={16} />
+                    <span class="agent-menu-copy">Open settings</span>
                   </button>
                 </Show>
+              </Show>
+              <Show when={menu() === "remove" && removal()}>
+                {(choice) => (
+                  <div class="agent-removal-confirmation">
+                    <h3>
+                      {choice().uninstall
+                        ? "Uninstall managed adapter?"
+                        : "Remove agent from Span?"}
+                    </h3>
+                    <p>
+                      {curatedAgent(choice().entry.id)?.name ||
+                        choice().entry.id}
+                    </p>
+                    <p>
+                      {choice().uninstall
+                        ? "Deletes only this adapter's files managed by Span. Your separate CLI installation, account and project files are kept."
+                        : "Removes this adapter from Span's installed list. Its managed files stay on this device."}
+                    </p>
+                    <Show
+                      when={
+                        activeAgentId() === choice().entry.id && sessionId()
+                      }
+                    >
+                      <p>The connected session will disconnect first.</p>
+                    </Show>
+                    <Show when={removalBlock()}>
+                      <p class="agent-removal-block" role="status">
+                        {removalBlock()}
+                      </p>
+                    </Show>
+                    <div class="agent-actions">
+                      <button
+                        class="agent-action"
+                        disabled={working()}
+                        onClick={() => {
+                          setRemoval(undefined);
+                          setMenu("agent");
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        class="agent-action danger"
+                        disabled={working() || Boolean(removalBlock())}
+                        onClick={() => void confirmRemoval()}
+                      >
+                        {working()
+                          ? "Removing…"
+                          : choice().uninstall
+                            ? "Uninstall adapter"
+                            : "Remove from Span"}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </Show>
               <Show when={menu() === "custom"}>
                 <div class="agent-menu-title">Custom ACP agent</div>

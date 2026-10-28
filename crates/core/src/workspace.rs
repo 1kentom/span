@@ -33,9 +33,11 @@ pub struct FileEntry {
 pub struct CoreWorkspace {
     pub(crate) root: PathBuf,
     pub(crate) buffers: HashMap<String, Buffer>,
-    proposals: HashMap<String, EditProposal>,
+    pub(crate) proposals: HashMap<String, EditProposal>,
     next_proposal: u64,
     user_settings: Option<PathBuf>,
+    settings_buffers: HashMap<crate::SettingsScope, Buffer>,
+    settings_only: bool,
 }
 
 impl CoreWorkspace {
@@ -59,6 +61,8 @@ impl CoreWorkspace {
             proposals: HashMap::new(),
             next_proposal: 1,
             user_settings,
+            settings_buffers: HashMap::new(),
+            settings_only: false,
         })
     }
 
@@ -66,6 +70,23 @@ impl CoreWorkspace {
     pub fn with_user_settings(mut self, path: Option<PathBuf>) -> Self {
         self.user_settings = path;
         self
+    }
+
+    /// Trusted user preferences only. This context cannot resolve general filesystem paths.
+    pub fn for_user_settings() -> Result<Self> {
+        let user = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|path| path.join(".config/span/settings.jsonc"))
+            .ok_or_else(|| CoreError::Settings("User profile directory is unavailable".into()))?;
+        Ok(Self {
+            root: PathBuf::new(),
+            buffers: HashMap::new(),
+            proposals: HashMap::new(),
+            next_proposal: 1,
+            user_settings: Some(user),
+            settings_buffers: HashMap::new(),
+            settings_only: true,
+        })
     }
 
     /// Cheap immutable rope snapshots let workers scan without holding the editor mutex.
@@ -77,6 +98,8 @@ impl CoreWorkspace {
                 proposals: HashMap::new(),
                 next_proposal: 1,
                 user_settings: None,
+                settings_buffers: HashMap::new(),
+                settings_only: self.settings_only,
             },
         }
     }
@@ -93,6 +116,9 @@ impl CoreWorkspace {
 
     /// Resolve existing paths and new files by their canonical parent. Symlinks cannot escape root.
     pub(crate) fn resolve(&self, path: &str) -> Result<PathBuf> {
+        if self.settings_only || path.starts_with("settings://") {
+            return Err(CoreError::OutsideWorkspace(path.to_owned()));
+        }
         let requested = Path::new(path);
         if requested
             .components()
@@ -316,6 +342,9 @@ impl CoreWorkspace {
     pub fn save_buffer(&mut self, path: &str, expected_revision: u64) -> Result<BufferSnapshot> {
         let resolved = self.resolve(path)?;
         let relative = self.relative(&resolved)?;
+        let settings_user = (relative == ".span/settings.jsonc")
+            .then(|| self.get_settings_jsonc_for_scope(crate::SettingsScope::User))
+            .transpose()?;
         let buffer = self
             .buffers
             .get_mut(&relative)
@@ -330,9 +359,12 @@ impl CoreWorkspace {
             return Err(CoreError::SaveConflict(relative));
         }
         let text = buffer.rope.to_string();
+        if let Some(user) = settings_user {
+            crate::settings::load_with_texts(&user, &text)?;
+        }
         atomic_write(&resolved, text.as_bytes())?;
         buffer.disk_signature = Some(signature(text.as_bytes()));
-        buffer.saved_revision = buffer.revision;
+        buffer.mark_saved();
         self.snapshot(&relative)
     }
 
@@ -370,12 +402,7 @@ impl CoreWorkspace {
             .ok_or_else(|| CoreError::BufferNotOpen(path.into()))?;
         buffer.check_revision(expected_revision)?;
         // Validate transaction on a cheap rope clone before publishing a review.
-        let mut validation = Buffer {
-            rope: buffer.rope.clone(),
-            revision: buffer.revision,
-            saved_revision: buffer.saved_revision,
-            disk_signature: buffer.disk_signature,
-        };
+        let mut validation = buffer.clone();
         validation.apply(expected_revision, &edits)?;
         let id = format!("proposal-{}", self.next_proposal);
         self.next_proposal += 1;
@@ -464,7 +491,119 @@ impl CoreWorkspace {
         Ok(snapshot)
     }
 
+    fn settings_buffer_snapshot(&self, scope: crate::SettingsScope) -> Result<BufferSnapshot> {
+        let mut snapshot = self
+            .settings_buffers
+            .get(&scope)
+            .ok_or_else(|| CoreError::BufferNotOpen(scope.buffer_path().into()))?
+            .snapshot(scope.buffer_path());
+        snapshot.language = "jsonc".into();
+        Ok(snapshot)
+    }
+
+    /// Separate trusted UI route. These virtual IDs never enter the agent or filesystem resolver.
+    pub fn open_settings_buffer(&mut self, scope: crate::SettingsScope) -> Result<BufferSnapshot> {
+        let path = self.settings_path(scope)?;
+        let text = self.get_settings_jsonc_for_scope(scope)?;
+        let exists = path.exists();
+        let disk_signature = exists.then(|| signature(text.as_bytes()));
+        let current = self.settings_buffers.get(&scope);
+        let refresh = current.is_none_or(|buffer| {
+            buffer.revision == buffer.saved_revision && buffer.disk_signature != disk_signature
+        });
+        if refresh {
+            let revision = current
+                .map(|buffer| {
+                    buffer
+                        .revision
+                        .checked_add(1)
+                        .ok_or_else(|| CoreError::InvalidEdit("revision counter exhausted".into()))
+                })
+                .transpose()?
+                .unwrap_or(0);
+            let mut buffer = Buffer::new(text, exists);
+            buffer.revision = revision;
+            buffer.saved_revision = revision;
+            self.settings_buffers.insert(scope, buffer);
+        }
+        self.settings_buffer_snapshot(scope)
+    }
+
+    pub fn edit_settings_buffer(
+        &mut self,
+        scope: crate::SettingsScope,
+        expected_revision: u64,
+        changes: Vec<TextEdit>,
+    ) -> Result<BufferRevision> {
+        let buffer = self
+            .settings_buffers
+            .get_mut(&scope)
+            .ok_or_else(|| CoreError::BufferNotOpen(scope.buffer_path().into()))?;
+        buffer.apply(expected_revision, &changes)?;
+        Ok(BufferRevision {
+            path: scope.buffer_path().into(),
+            revision: buffer.revision,
+            saved_revision: buffer.saved_revision,
+        })
+    }
+
+    pub fn save_settings_buffer(
+        &mut self,
+        scope: crate::SettingsScope,
+        expected_revision: u64,
+    ) -> Result<BufferSnapshot> {
+        let buffer = self
+            .settings_buffers
+            .get(&scope)
+            .ok_or_else(|| CoreError::BufferNotOpen(scope.buffer_path().into()))?;
+        buffer.check_revision(expected_revision)?;
+        let path = self.settings_path(scope)?;
+        let disk_signature = match fs::read(&path) {
+            Ok(bytes) => Some(signature(&bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(io_error("Check settings before save", &path, error)),
+        };
+        if disk_signature != buffer.disk_signature {
+            return Err(CoreError::SaveConflict(scope.buffer_path().into()));
+        }
+        let text = buffer.rope.to_string();
+        self.update_settings_jsonc_for_scope(scope, &text)?;
+        let buffer = self
+            .settings_buffers
+            .get_mut(&scope)
+            .ok_or_else(|| CoreError::BufferNotOpen(scope.buffer_path().into()))?;
+        buffer.disk_signature = Some(signature(text.as_bytes()));
+        buffer.mark_saved();
+        self.settings_buffer_snapshot(scope)
+    }
+
+    pub fn discard_settings_buffer(
+        &mut self,
+        scope: crate::SettingsScope,
+    ) -> Result<BufferSnapshot> {
+        let current = self
+            .settings_buffers
+            .get(&scope)
+            .ok_or_else(|| CoreError::BufferNotOpen(scope.buffer_path().into()))?;
+        let revision = current
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| CoreError::InvalidEdit("revision counter exhausted".into()))?;
+        let text = self.get_settings_jsonc_for_scope(scope)?;
+        let mut buffer = Buffer::new(text, self.settings_path(scope)?.exists());
+        buffer.revision = revision;
+        buffer.saved_revision = revision;
+        self.settings_buffers.insert(scope, buffer);
+        self.settings_buffer_snapshot(scope)
+    }
+
     pub fn get_settings(&self) -> Result<Settings> {
+        if self.settings_only {
+            return crate::settings::load_with_texts(
+                &self.get_settings_jsonc_for_scope(crate::SettingsScope::User)?,
+                "{}",
+            );
+        }
         let path = if self.root.join(".span").exists() {
             self.resolve(".span/settings.jsonc")?
         } else {
@@ -473,11 +612,44 @@ impl CoreWorkspace {
         crate::settings::load(self.user_settings.as_deref(), &path)
     }
 
+    pub fn get_settings_for_scope(&self, scope: crate::SettingsScope) -> Result<Settings> {
+        if self.settings_only && scope == crate::SettingsScope::Workspace {
+            return Err(CoreError::Settings(
+                "Open a folder before using workspace settings".into(),
+            ));
+        }
+        match scope {
+            crate::SettingsScope::User => {
+                crate::settings::load_with_texts(&self.get_settings_jsonc_for_scope(scope)?, "{}")
+            }
+            crate::SettingsScope::Workspace => self.get_settings(),
+        }
+    }
+
+    fn settings_path(&self, scope: crate::SettingsScope) -> Result<PathBuf> {
+        match scope {
+            crate::SettingsScope::Workspace if self.settings_only => Err(CoreError::Settings(
+                "Open a folder before using workspace settings".into(),
+            )),
+            crate::SettingsScope::User => self.user_settings.clone().ok_or_else(|| {
+                CoreError::Settings("User settings are unavailable for this profile".into())
+            }),
+            crate::SettingsScope::Workspace if self.root.join(".span").exists() => {
+                self.resolve(".span/settings.jsonc")
+            }
+            crate::SettingsScope::Workspace => Ok(self.root.join(".span/settings.jsonc")),
+        }
+    }
+
     pub fn get_settings_jsonc(&self) -> Result<String> {
-        if !self.root.join(".span").exists() {
+        self.get_settings_jsonc_for_scope(crate::SettingsScope::Workspace)
+    }
+
+    pub fn get_settings_jsonc_for_scope(&self, scope: crate::SettingsScope) -> Result<String> {
+        if scope == crate::SettingsScope::User && self.user_settings.is_none() {
             return Ok("{\n}\n".into());
         }
-        let path = self.resolve(".span/settings.jsonc")?;
+        let path = self.settings_path(scope)?;
         match fs::read_to_string(&path) {
             Ok(text) => Ok(text),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("{\n}\n".into()),
@@ -485,31 +657,78 @@ impl CoreWorkspace {
         }
     }
 
+    pub fn get_settings_keys_for_scope(&self, scope: crate::SettingsScope) -> Result<Vec<String>> {
+        let raw = crate::settings::parse(&self.get_settings_jsonc_for_scope(scope)?)?;
+        let mut keys: Vec<_> = raw
+            .as_object()
+            .expect("settings object")
+            .keys()
+            .filter_map(|key| crate::settings::canonical_key(key))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        Ok(keys)
+    }
+
     pub fn update_settings_jsonc(&self, text: &str) -> Result<Settings> {
-        let merged =
-            crate::settings::load_with_workspace_text(self.user_settings.as_deref(), text)?;
-        let directory = self.root.join(".span");
-        if !directory.exists() {
-            fs::create_dir(&directory)
-                .map_err(|e| io_error("Create settings directory", &directory, e))?;
+        self.update_settings_jsonc_for_scope(crate::SettingsScope::Workspace, text)
+    }
+
+    pub fn update_settings_jsonc_for_scope(
+        &self,
+        scope: crate::SettingsScope,
+        text: &str,
+    ) -> Result<Settings> {
+        // Validate the edited scope independently so a narrower override cannot hide invalid data.
+        crate::settings::load_with_texts(text, "{}")?;
+        let user = if scope == crate::SettingsScope::User {
+            text.to_owned()
+        } else {
+            self.get_settings_jsonc_for_scope(crate::SettingsScope::User)?
+        };
+        let workspace = if self.settings_only {
+            "{}".into()
+        } else if scope == crate::SettingsScope::Workspace {
+            text.to_owned()
+        } else {
+            self.get_settings_jsonc()?
+        };
+        let merged = crate::settings::load_with_texts(&user, &workspace)?;
+        let path = self.settings_path(scope)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| io_error("Create settings directory", parent, error))?;
         }
-        let path = self.resolve(".span/settings.jsonc")?;
+        // Resolve again after directory creation to retain the workspace path boundary checks.
+        let path = self.settings_path(scope)?;
         atomic_write(&path, text.as_bytes())?;
         Ok(merged)
     }
 
+    pub fn update_setting(
+        &self,
+        scope: crate::SettingsScope,
+        key: &str,
+        value_json: Option<&str>,
+    ) -> Result<Settings> {
+        let text = self.get_settings_jsonc_for_scope(scope)?;
+        let patched = crate::settings::patch(&text, key, value_json)?;
+        self.update_settings_jsonc_for_scope(scope, &patched)
+    }
+
     pub fn update_settings(&self, settings: Settings) -> Result<Settings> {
         settings.validate()?;
-        let directory = self.root.join(".span");
-        if !directory.exists() {
-            fs::create_dir(&directory)
-                .map_err(|e| io_error("Create settings directory", &directory, e))?;
+        let before = serde_json::to_value(self.get_settings()?)
+            .map_err(|error| CoreError::Settings(error.to_string()))?;
+        let after = serde_json::to_value(settings)
+            .map_err(|error| CoreError::Settings(error.to_string()))?;
+        let mut text = self.get_settings_jsonc()?;
+        for (key, value) in after.as_object().expect("settings object") {
+            if before.get(key) != Some(value) {
+                text = crate::settings::patch(&text, key, Some(&value.to_string()))?;
+            }
         }
-        let path = self.resolve(".span/settings.jsonc")?;
-        let text = serde_json::to_string_pretty(&settings)
-            .map_err(|e| CoreError::Settings(e.to_string()))?;
-        atomic_write(&path, text.as_bytes())?;
-        self.get_settings()
+        self.update_settings_jsonc(&text)
     }
 }
 

@@ -63,3 +63,44 @@ describe("Goto", () => {
     expect(root.querySelector(".goto-preview")?.textContent).toContain("<img src=x onerror=alert(1)>");
   });
 });
+
+describe("Goto path completion", () => {
+  it("completes the selected relative path with Tab, retains focus and places the caret at its end", async () => {
+    const { root, input, open, close } = setup({ workspace: { name: "project", root: "C:\\project" }, files: ["C:\\project\\src\\first.ts", "C:\\project\\src\\second.ts"].map(path => ({ path, name: path.split("\\").pop()!, isDir: false })) });
+    inputValue(input, "src/"); await settle(); key(input, "ArrowDown");
+    const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }); input.dispatchEvent(event); await settle();
+    expect(event.defaultPrevented).toBe(true); expect(input.value).toBe("src/second.ts"); expect(document.activeElement).toBe(input); expect(input.selectionStart).toBe(input.value.length); expect(input.selectionEnd).toBe(input.value.length);
+    const selectedId = input.getAttribute("aria-activedescendant")!; expect(root.querySelector('[role="option"][aria-selected="true"]')?.id).toBe(selectedId);
+    expect(open).not.toHaveBeenCalled(); expect(close).not.toHaveBeenCalled();
+    inputValue(input, `${input.value}:12:3`); await settle(); expect(input.getAttribute("aria-activedescendant")).toBe(selectedId); key(input, "Enter");
+    expect(open).toHaveBeenCalledWith("C:\\project\\src\\second.ts", 12, 3); expect(close).toHaveBeenCalledOnce();
+  });
+  it("completes the first match and retains an unfinished line or column suffix", async () => {
+    const { input } = setup(); inputValue(input, "fir:12:"); await settle(); key(input, "Tab"); await settle(); expect(input.value).toBe("src/first.ts:12:"); expect(input.selectionStart).toBe(input.value.length);
+  });
+  it("does not complete Shift+Tab, other modes, or a query with no results", async () => {
+    const { root, input } = setup({ handlers: { save: vi.fn(), settings: vi.fn() }, onSearch: async () => [] }); await settle();
+    const press = (shiftKey = false) => { const event = new KeyboardEvent("keydown", { key: "Tab", shiftKey, bubbles: true, cancelable: true }); input.dispatchEvent(event); return event; };
+    inputValue(input, "fir"); await settle(); expect(press(true).defaultPrevented).toBe(false); expect(input.value).toBe("fir");
+    inputValue(input, "no result"); await settle(); expect(press().defaultPrevented).toBe(false); expect(input.value).toBe("no result");
+    for (const mode of ["Actions", "Tools", "Text Search"]) { selectMode(root, mode); inputValue(input, "save"); await settle(); expect(press().defaultPrevented).toBe(false); expect(input.value).toBe("save"); }
+  });
+  it("keeps incomplete colons matched but refuses malformed positions", async () => {
+    const { root, input, open, close } = setup();
+    for (const query of ["first:", "first:12:"]) { inputValue(input, query); await settle(); expect(root.querySelectorAll('[role="option"]')).toHaveLength(1); }
+    key(input, "Enter"); expect(open).toHaveBeenCalledWith("src/first.ts", 12);
+    for (const query of ["first:0", "first:12:0", "first:12:bad", "missing:12:3"]) { inputValue(input, query); await settle(); key(input, "Enter"); expect(root.querySelectorAll('[role="option"]')).toHaveLength(0); expect(input.hasAttribute("aria-activedescendant")).toBe(false); }
+    expect(open).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+  });
+  it("uses the explicit active file for a line-only jump", async () => {
+    const { input, open } = setup({ activePath: "src/second.ts" }); inputValue(input, ":8:2"); await settle(); key(input, "Enter"); expect(open).toHaveBeenCalledWith("src/second.ts", 8, 2);
+  });
+  it("preserves the selected file and its loaded preview when only its position changes", async () => {
+    vi.useFakeTimers(); const preview = vi.fn(async () => Array.from({ length: 30 }, (_, line) => `line ${line + 1}`).join("\n"));
+    const { root, input } = setup({ onPreview: preview }); inputValue(input, "src/"); await settle(); key(input, "ArrowDown"); await settle(); await vi.advanceTimersByTimeAsync(100);
+    const selectedId = input.getAttribute("aria-activedescendant"); expect(preview).toHaveBeenCalledOnce();
+    inputValue(input, "src/:12:3"); await settle(); await vi.advanceTimersByTimeAsync(100);
+    expect(input.getAttribute("aria-activedescendant")).toBe(selectedId); expect(preview).toHaveBeenCalledOnce(); expect(root.querySelector(".goto-preview")?.textContent).toContain("line 12");
+    inputValue(input, "no result"); await settle(); expect(root.querySelector(".goto-preview")).not.toBeNull(); expect(root.querySelector(".goto-preview")?.textContent).toContain("Select a file to preview");
+  });
+});

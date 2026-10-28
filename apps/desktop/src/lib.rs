@@ -1,6 +1,6 @@
 use span_core::{
     BufferRevision, BufferSnapshot, CancellationToken, CoreWorkspace, FileEntry, SearchMatch,
-    SearchQuery, Settings, TextEdit, Workspace,
+    SearchQuery, Settings, SettingsScope, TextEdit, Workspace,
 };
 use span_syntax::{SyntaxEngine, SyntaxSnapshot};
 use std::sync::{Arc, Mutex};
@@ -17,6 +17,7 @@ mod startup;
 pub struct DesktopState {
     pub workspace: Arc<Mutex<Option<Arc<Mutex<CoreWorkspace>>>>>,
     pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
+    pub user_settings: Arc<Mutex<Option<CoreWorkspace>>>,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
@@ -45,16 +46,61 @@ where
     .map_err(|error| format!("Workspace task failed: {error}"))?
 }
 
+async fn with_settings<T, F>(
+    state: DesktopState,
+    scope: SettingsScope,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut CoreWorkspace) -> span_core::Result<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let workspace = state
+            .workspace
+            .lock()
+            .map_err(|_| "Workspace state is unavailable".to_owned())?
+            .clone();
+        if let Some(workspace) = workspace.filter(|_| scope == SettingsScope::Workspace) {
+            let mut workspace = workspace
+                .lock()
+                .map_err(|_| "Workspace state is unavailable".to_owned())?;
+            operation(&mut workspace).map_err(|error| error.to_string())
+        } else if scope == SettingsScope::User {
+            let mut context = state
+                .user_settings
+                .lock()
+                .map_err(|_| "User settings state is unavailable".to_owned())?;
+            if context.is_none() {
+                *context =
+                    Some(CoreWorkspace::for_user_settings().map_err(|error| error.to_string())?);
+            }
+            let context = context
+                .as_mut()
+                .ok_or_else(|| "User settings state is unavailable".to_owned())?;
+            operation(context).map_err(|error| error.to_string())
+        } else {
+            Err("Open a folder to use workspace settings".to_owned())
+        }
+    })
+    .await
+    .map_err(|error| format!("Settings task failed: {error}"))?
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<Workspace, String> {
     let state = state.inner().clone();
     let _gate = state.connection_gate.lock().await;
+    let workspace = tauri::async_runtime::spawn_blocking(move || {
+        CoreWorkspace::open(path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Open folder task failed: {error}"))??;
+    agents::disconnect_and_wait(&state).await?;
     let worker_state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let workspace = CoreWorkspace::open(path).map_err(|error| error.to_string())?;
         let result = workspace.workspace();
-        agents::disconnect(&worker_state)?;
         let mut guard = worker_state
             .workspace
             .lock()
@@ -119,11 +165,25 @@ async fn edit_buffer_delta(
 #[tauri::command]
 #[specta::specta]
 async fn save_buffer(
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     path: String,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
-    services::format_or_save(state.inner().clone(), path, expected_revision, true).await
+    use tauri_specta::Event;
+    let warning: services::FormatWarningSink = Arc::new(move |warning| {
+        if let Err(error) = warning.emit(&app) {
+            eprintln!("Could not report formatter notice: {error}");
+        }
+    });
+    services::format_or_save_with_warning(
+        state.inner().clone(),
+        path,
+        expected_revision,
+        true,
+        Some(warning),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -237,7 +297,9 @@ async fn get_settings(state: State<'_, DesktopState>) -> Result<Settings, String
                 .map_err(|_| "Workspace state is unavailable".to_owned())?
                 .get_settings()
                 .map_err(|error| error.to_string()),
-            None => Ok(Settings::default()),
+            None => CoreWorkspace::for_user_settings()
+                .and_then(|context| context.get_settings_for_scope(SettingsScope::User))
+                .map_err(|error| error.to_string()),
         }
     })
     .await
@@ -306,19 +368,193 @@ async fn syntax(state: State<'_, DesktopState>, path: String) -> Result<SyntaxSn
     .map_err(|error| format!("Syntax task failed: {error}"))?
 }
 
+#[tauri::command]
+#[specta::specta]
+async fn new_file(state: State<'_, DesktopState>, path: String) -> Result<BufferSnapshot, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.new_file(&path)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn new_directory(state: State<'_, DesktopState>, path: String) -> Result<FileEntry, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.new_directory(&path)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn rename_path(
+    state: State<'_, DesktopState>,
+    from: String,
+    to: String,
+) -> Result<FileEntry, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.rename_path(&from, &to)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn duplicate_path(
+    state: State<'_, DesktopState>,
+    from: String,
+    to: String,
+) -> Result<FileEntry, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.duplicate_path(&from, &to)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn trash_path(state: State<'_, DesktopState>, path: String) -> Result<Vec<String>, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.trash_path(&path)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn get_settings_for_scope(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+) -> Result<Settings, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.get_settings_for_scope(scope)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn get_settings_jsonc_for_scope(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+) -> Result<String, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.get_settings_jsonc_for_scope(scope)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn get_settings_keys_for_scope(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+) -> Result<Vec<String>, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.get_settings_keys_for_scope(scope)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn update_settings_jsonc_for_scope(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+    text: String,
+) -> Result<Settings, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.update_settings_jsonc_for_scope(scope, &text)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn update_setting(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+    key: String,
+    value_json: Option<String>,
+) -> Result<Settings, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.update_setting(scope, &key, value_json.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn open_settings_buffer(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+) -> Result<BufferSnapshot, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.open_settings_buffer(scope)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn edit_settings_buffer(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+    expected_revision: u64,
+    changes: Vec<TextEdit>,
+) -> Result<BufferRevision, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.edit_settings_buffer(scope, expected_revision, changes)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn save_settings_buffer(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+    expected_revision: u64,
+) -> Result<BufferSnapshot, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.save_settings_buffer(scope, expected_revision)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn discard_settings_buffer(
+    state: State<'_, DesktopState>,
+    scope: SettingsScope,
+) -> Result<BufferSnapshot, String> {
+    with_settings(state.inner().clone(), scope, move |workspace| {
+        workspace.discard_settings_buffer(scope)
+    })
+    .await
+}
+
 pub fn ipc_builder() -> Builder<tauri::Wry> {
     Builder::new()
         .error_handling(ErrorHandlingMode::Throw)
         // Revisions and offsets are bounded by available document memory, below JS integer precision.
         .dangerously_cast_bigints_to_number()
         .events(collect_events![
+            services::FormatWarning,
             menu::NativeActionEvent,
-            startup::StartupRequestsChanged
+            startup::StartupRequestsChanged,
+            startup::StartupRequestError
         ])
         .commands(collect_commands![
             open_workspace,
             list_directory,
             list_files,
+            new_file,
+            new_directory,
+            rename_path,
+            duplicate_path,
+            trash_path,
             open_buffer,
             edit_buffer_delta,
             save_buffer,
@@ -327,6 +563,15 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             search_stream,
             cancel_search,
             get_settings,
+            get_settings_for_scope,
+            open_settings_buffer,
+            edit_settings_buffer,
+            save_settings_buffer,
+            discard_settings_buffer,
+            get_settings_jsonc_for_scope,
+            get_settings_keys_for_scope,
+            update_settings_jsonc_for_scope,
+            update_setting,
             update_settings,
             update_settings_jsonc,
             get_settings_jsonc,
@@ -341,6 +586,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             services::read_clipboard,
             services::write_clipboard,
             startup::take_startup_requests,
+            startup::enqueue_dropped_paths,
             services::open_external,
             services::read_image,
             menu::sync_native_menu,
@@ -348,6 +594,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_registry,
             agents::agent_installed,
             agents::agent_install,
+            agents::agent_remove,
             agents::agent_connect,
             agents::agent_prompt,
             agents::agent_cancel,
@@ -380,6 +627,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let state = DesktopState::default();
     startup::enqueue(&state, request)?;
     let builder = ipc_builder();
+    // Production launches must not write development files into the source checkout.
     #[cfg(debug_assertions)]
     export_bindings()?;
     let app = tauri::Builder::default()
@@ -391,6 +639,17 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .setup(move |app| {
             builder.mount_events(app);
             menu::install(app.handle())?;
+            if let Some(window) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
+                        paths, ..
+                    }) = event
+                    {
+                        startup::receive_drop(handle.clone(), paths.clone());
+                    }
+                });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())?;
@@ -419,6 +678,42 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn user_settings_context_works_without_exposing_a_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = super::DesktopState::default();
+        let context = span_core::CoreWorkspace::for_user_settings()
+            .unwrap()
+            .with_user_settings(Some(directory.path().join("settings.jsonc")));
+        *state.user_settings.lock().unwrap() = Some(context);
+        let snapshot =
+            super::with_settings(state.clone(), span_core::SettingsScope::User, |context| {
+                context.open_settings_buffer(span_core::SettingsScope::User)
+            })
+            .await
+            .unwrap();
+        assert_eq!(snapshot.path, "settings://user");
+        assert!(state.workspace.lock().unwrap().is_none());
+        assert!(super::with_settings(
+            state.clone(),
+            span_core::SettingsScope::Workspace,
+            |context| context.get_settings()
+        )
+        .await
+        .is_err());
+        assert!(
+            super::with_workspace(state.clone(), |context| context.list_files())
+                .await
+                .is_err()
+        );
+        assert!(
+            super::with_settings(state, span_core::SettingsScope::User, |context| context
+                .open_buffer("settings.jsonc"))
+            .await
+            .is_err()
+        );
+    }
+
     #[test]
     fn export_typescript_bindings() -> Result<(), Box<dyn std::error::Error>> {
         super::export_bindings()

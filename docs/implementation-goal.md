@@ -1,0 +1,89 @@
+# Span foundation execution checklist
+
+This checklist expands the approved goal for the Phase 0.1 foundation. It guides research, implementation, review, and verification without promising full production readiness, complete VS Code API compatibility, completed provider integrations, or release channels that have not been exercised. Continue autonomously across the listed work. Ask for clarification only when a genuine missing decision blocks safe implementation.
+
+## Product and evidence rules
+
+- Before changing a feature, research the matching behavior in the primary product sources for VS Code, JetBrains Fleet, and Zed. Record direct source links, observed behavior, Span's intended behavior, scope limits, and acceptance checks in a concise comparison matrix. Prefer official product documentation and official source repositories. Label any behavior inferred from product operation rather than specified in documentation.
+- Candidate primary sources: [VS Code documentation](https://code.visualstudio.com/docs), [VS Code keybindings](https://code.visualstudio.com/docs/configure/keybindings), [VS Code settings](https://code.visualstudio.com/docs/configure/settings), [Fleet documentation](https://www.jetbrains.com/help/fleet/), [Zed documentation](https://zed.dev/docs/). Follow links to the precise feature references and verify current behavior before relying on them.
+- Preserve the supplied screenshot and ZIP as local visual references. Keep the original archive, extracted reference, and screenshot intact and out of Git. Never execute JavaScript from the reference archive. Preserve supplied SVG assets and their provenance.
+- Use the supplied rounded linear Iconsax pack as the authoritative UI icon source. Select and copy only application-needed assets; do not redraw supplied artwork or publish private source paths or raw reference materials.
+- Give each request or bug a trackable Git issue with a clear outcome. Link implementation commits and any review or pull request to that issue. Close an issue only after its stated behavior and verification are evidenced.
+- For reported defects, first create a reproducible failing test or a precise minimal reproduction. Keep tests focused on user-visible behavior and the regression. Do not claim a fix from implementation alone.
+- Assign file ownership before parallel implementation, coordinate shared files, and integrate changes without discarding other contributors' work.
+
+## Research and acceptance matrix
+
+Complete a feature-specific matrix before implementation. A broad product comparison does not substitute for checking the actual behavior relevant to the change.
+
+| Feature | VS Code primary source and observed behavior | Fleet primary source and observed behavior | Zed primary source and observed behavior | Span behavior and acceptance evidence |
+| --- | --- | --- | --- | --- |
+| Window, tabs, split panes, close and drag | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | State the supported workflow and test it against the supplied reference |
+| File operations, context menus and dirty state | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Include keyboard, pointer, cancellation, and unsaved-change outcomes |
+| Settings, keybindings, scopes and autosave | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Document supported settings and prove persistence and conflict behavior |
+| Zoom, panels, modal interactions and accessibility | Record exact source and behavior | Record exact source and behavior | Record exact source and behavior | Verify keyboard access, focus handling, labels, and layout at supported zoom levels |
+| Agent Client Protocol providers and CLI lifecycle | Record exact source and behavior where applicable | Record exact source and behavior where applicable | Record exact source and behavior | Distinguish ACP protocol support from product-specific provider guarantees; test start, error, interrupt, quit, and recovery |
+
+For every row, include URLs and the date checked. Record unsupported or ambiguous behavior rather than filling gaps with assumptions. Convert the selected Span behavior into acceptance criteria before coding.
+
+## Implementation and review sequence
+
+1. **Establish scope.** Inspect the current issue, working tree, reference material, architecture boundaries, and existing tests. Identify affected crates and UI surfaces. Record the issue link and concrete acceptance criteria.
+2. **Research.** Fill the applicable comparison matrix from primary sources. Include scope boundaries and a short explanation for any deliberate difference from the reference products.
+3. **Reproduce.** For a bug, add a failing regression test or capture a minimal, repeatable reproduction before the fix. For a feature, define observable success and failure behavior first.
+4. **Implement.** Keep business logic in `crates/core`, parsing in `crates/syntax`, ACP integration in `crates/acp`, Tauri integration in `apps/desktop`, and frontend behavior in `ui`. Generate IPC contracts through specta and tauri-specta. Do not hand-maintain duplicate IPC types.
+5. **Cover interaction quality.** Check keyboard operation, focus order and restoration, accessible names and states, destructive-action confirmation, cancellation, dirty-buffer protection, and error feedback. Preserve user data through close, move, rename, and failed file operations.
+6. **Verify in layers.** Run the targeted regression and relevant unit tests, then the required integration or E2E flow. Capture actual command output or artifact evidence. Run supported cross-platform CI checks and inspect packaging, startup, shutdown, and resource behavior on the platforms claimed. Report unavailable platform runs explicitly.
+7. **Independent review.** Have a reviewer who did not implement the change assess design fidelity and interaction behavior. Have a separate functional and security review inspect data loss, filesystem boundaries, process execution, ACP/provider handling, IPC validation, and error paths. Resolve findings or record a concrete blocker; do not mark unverified findings as resolved.
+8. **Record and install.** Link the issue, review, and implementation commits. Immediately after a feature's checks pass, install and exercise that feature in the native desktop app. Do not hold verified native installation until unrelated website work is complete. Record what was tested in browser preview versus the native app.
+9. **Close accurately.** Close the issue only when acceptance criteria, review findings, targeted checks, and native verification are complete. Keep remaining phase gates open and describe their evidence needed.
+
+## Current implementation cuts
+
+Treat these as the next concrete cuts. Reconcile each against the current tree before editing, because some work may already be implemented or awaiting verification.
+
+| Cut | Product behavior and acceptance | Verification, review, and delivery |
+| --- | --- | --- |
+| Save fallback, whole-UI zoom, neutral overlay handles | Save has an explicit usable fallback when the primary action is unavailable. Zoom affects the whole workbench consistently and is bounded. Resize handles remain visually neutral and usable. | Regression tests for fallback and zoom; pointer and keyboard review of handles; E2E coverage for zoom and panel resizing; native install and smoke check after checks pass. |
+| Split, close, file drag, context menus | Splits follow the reference layout; close actions respect dirty state; file drag has clear supported drop targets and cancellation; context menus expose the expected actions with keyboard access. | Matrix research first; tests for dirty close, drag acceptance/rejection, and menu keyboard behavior; independent design review; E2E navigation checks; install and verify natively. |
+| Settings, keybinding table and scopes, autosave | Settings persist with defined defaults and validation. The keybinding table communicates command, key, and scope and handles conflicts. Autosave behavior and timing are explicit and protect edits. | Research all three products' current behavior; tests for persistence, scope/conflict resolution, autosave and dirty state; review discoverability and accessibility; E2E and native verification. |
+| Curated eight ACP IDs, removal and compatibility errors | Show a curated catalog of eight clearly identified ACP options. Removing a configured provider has a safe, explained outcome. Compatibility or launch errors identify the actionable cause without claiming the provider works when it has not been verified. | Source the eight entries and requirements; test catalog metadata, remove/cancel, unsupported versions, missing executables, and recovery; security review process invocation; native verification. |
+| Modal buttons, icons and keyboard behavior | Modal actions use the authoritative icons where appropriate, have clear labels, preserve focus, support keyboard operation, and make cancellation and destructive actions explicit. | Component tests for focus, activation and dismissal; accessibility and visual review against the reference; E2E and native verification. |
+| CLI launch and child-process lifecycle | The span launcher returns control to the shell and intentionally detaches the GUI from the invoking terminal, so that terminal's Ctrl+C/SIGINT does not kill the desktop app. Normal quit protects unsaved work, while owned agent and PTY children still have explicit cleanup. | Verify detached launch and installed help/version behavior separately from agent interrupt, normal exit, child cleanup, and the unsaved quit guard. Record security/functional review and native CLI smoke evidence. |
+
+For each cut, update its row with issue identifier, evidence links, reviewer outcome, commit or PR link, and native install result. If implementation is already present, finish the missing checks and reviews rather than duplicating it.
+
+## Publication and verification status
+
+Status checked on 2026-10-28. A source implementation, a browser check, a native installation, and a published installer are separate evidence. The latest development work must not inherit verification from an older build automatically.
+
+- The first complete published nightly is [v0.1.0-nightly.20261028.7](https://github.com/1kentom/span/releases/tag/v0.1.0-nightly.20261028.7), built from `0d91d334c914144ca63b15ca53c3b43fd862cd58`. [Main CI](https://github.com/1kentom/span/actions/runs/40666859507) and the [four-target installer workflow](https://github.com/1kentom/span/actions/runs/40668840489) passed. Five installer assets and every checksum entry were verified. This is a development prerelease with manual installation, not a stable or updater release.
+- The production website and its rate-limit-safe release fallback were verified after [PR #25](https://github.com/1kentom/span/pull/25). The separate download experience is under [PR #37](https://github.com/1kentom/span/pull/37) for [#34](https://github.com/1kentom/span/issues/34); its 11 browser tests, asset digests, and independent desktop visual review passed before publication review. Production verification remains required after its merge.
+- The public LSP client foundation was merged through [PR #35](https://github.com/1kentom/span/pull/35). The independently reviewed caller-cancellation and strict-clippy follow-up was merged through [PR #36](https://github.com/1kentom/span/pull/36), with 19 locally verified tests and green hosted platform checks. This backend evidence does not establish native editor LSP integration or close [#27](https://github.com/1kentom/span/issues/27).
+
+| Active request | Current evidence and limit | Remaining acceptance |
+| --- | --- | --- |
+| Save, autosave, zoom, handles: #19, #18, #3 | The frozen desktop cut passed 255 UI tests, its production build, and 55 Chromium E2E checks. A later test-only Find-default assertion update passed all four focused Find checks; application inputs did not change. | Publish the frozen source, complete hosted CI, then install and exercise that exact cut. Keep the updated handle criteria open until verified. |
+| Split lifecycle, menus, settings, modal controls: #21, #6, #20, #24 | Current source has focused tests and browser coverage. Settings compatibility research is recorded in `docs/settings-compatibility.md`. Windows WebView2 internal HTML5 dragging conflicts with the enabled native external-drop handler and remains unverified or unsupported. | Resolve final review findings and record exact native verification. A pointer-based internal drag strategy is a candidate for Windows, not completed evidence. |
+| ACP catalog, removal, and installation feedback: #22, #23, #38 | Catalog and lifecycle implementation is in the current source cut. Per-provider loader and nonblocking installation feedback are a separate active review request. | Verify metadata, process/error behavior, scoped removal, retries, and native interaction. A listed tool is not a verified provider integration. |
+| Detached CLI: #26 | Source and installed CLI lifecycle checks passed according to the implementation owner. | Publish the tested source and link its commit before closure. |
+| JSONC and LSP: #27 | Backend source is published; the cancellation correction has 19 verified tests and independent review. | Verify JSONC editor/schema behavior and native integration separately. |
+| Emmet: #28 | The focused 57-test suite passed locally. | Publish, install, and verify the supported HTML/CSS interaction natively. |
+| Markdown fences and terminal Run: #29 | Fence/copy controls and component callbacks exist. | Wire Run to the real PTY backend in the application and verify execution, output, cancellation, and cleanup. Component callbacks alone do not complete this request. |
+| Folder opening and indexing: #30 | Research identified that opening awaits the complete scan and saving rescans; behavior is unchanged. | Implement and measure incremental usable state plus cancellable background indexing. |
+| Dirty content and clean-tab LRU: #31 | The core dirty-content correction is implemented. Tab-limit preferences and schema validation exist. Automatic clean-tab LRU eviction is not implemented. | Publish and verify dirty-state behavior, then implement configurable default-10 clean-only eviction without losing dirty work. |
+| Go to and word wrap: #32, #33 | The current UI cut includes the requested completion/layout and shortcut work with focused tests. | Publish, complete review, and verify the installed interaction. |
+
+Branding correction is tracked in #40, Find and Replace polish in #41, and automatic authenticated website release metadata refresh in #39. These are separate from already verified baseline publication. The implementation goal remains open until each request has its own evidence. Keep #12 and #13 open regardless of UI, mock-server, or packaging success.
+
+## Website and release gates
+
+- The website at `span.kentom.co.ke` is already live on Vercel. Verify the current deployment before making website claims. Do not add a database requirement unless signup, analytics, or another agreed feature needs one.
+- Keep website deployment and desktop feature completion independent. A feature that passes its checks should be installed and verified in the native app at that point.
+- Require a green hosted build for the commit being considered. Exercise and document the nightly or preview path before calling that channel enabled. Keep stable release as a phase gate until its build, distribution, update, and rollback path are configured and exercised.
+- Do not claim signing, notarization, publication, a working release channel, production readiness, full editor feature coverage, or completed provider integration without direct evidence.
+- Phase gates still open: **#12 native performance** and **#13 real provider proposal**. Keep both open until their defined measurements or proposal evidence is reviewed and accepted. Passing UI or mock-provider checks does not close either gate.
+
+## Required completion report
+
+Summarize shipped behavior and its issue/commit links; research sources checked; test, CI, E2E, resource, and platform results; independent design and security/functional review outcomes; native install and verification; website state if relevant; and open gates or unavailable evidence. Separate browser preview evidence from native desktop evidence, and state the limits of any unrun platform or provider check.

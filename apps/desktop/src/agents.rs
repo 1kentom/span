@@ -30,6 +30,33 @@ pub fn disconnect(state: &DesktopState) -> Result<(), String> {
     Ok(())
 }
 
+pub async fn disconnect_and_wait(state: &DesktopState) -> Result<(), String> {
+    let active = state
+        .agent
+        .lock()
+        .map_err(|_| "Agent state is unavailable".to_owned())?
+        .take();
+    if let Some(active) = active {
+        active.service.shutdown_and_wait().await?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_remove(
+    app: tauri::AppHandle,
+    id: String,
+    uninstall: bool,
+) -> Result<(), String> {
+    let directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("agents");
+    span_acp::remove_installed_agent(&directory, &id, uninstall).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_registry() -> Result<Vec<RegistryAgent>, String> {
@@ -76,7 +103,7 @@ pub async fn agent_connect(
         .map_err(|_| "Workspace state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "Open a folder before connecting an agent".to_owned())?;
-    disconnect(&state)?;
+    disconnect_and_wait(&state).await?;
     let service = tauri::async_runtime::spawn_blocking(move || {
         tauri::async_runtime::block_on(AgentService::start(
             command,
@@ -131,7 +158,7 @@ pub async fn agent_cancel(state: State<'_, DesktopState>) -> Result<(), String> 
 pub async fn agent_disconnect(state: State<'_, DesktopState>) -> Result<(), String> {
     let state = state.inner();
     let _gate = state.connection_gate.lock().await;
-    disconnect(state)
+    disconnect_and_wait(state).await
 }
 
 #[tauri::command]

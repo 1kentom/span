@@ -4,6 +4,16 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
+const SUPPORTED_AGENTS: &[&str] = &[
+    "codex-acp",
+    "cursor",
+    "claude-acp",
+    "gemini",
+    "github-copilot-cli",
+    "glm-acp-agent",
+    "grok-build",
+    "opencode",
+];
 #[derive(Deserialize)]
 struct Registry {
     version: String,
@@ -71,6 +81,7 @@ pub async fn fetch_registry() -> Result<Vec<RegistryAgent>, String> {
         .await?
         .agents
         .into_iter()
+        .filter(|entry| SUPPORTED_AGENTS.contains(&entry.id.as_str()))
         .map(|entry| RegistryAgent {
             installable: entry
                 .distribution
@@ -94,6 +105,9 @@ pub async fn install_registry_agent(
     agent_id: &str,
     cache_dir: &Path,
 ) -> Result<InstalledAgent, String> {
+    if !SUPPORTED_AGENTS.contains(&agent_id) {
+        return Err("This adapter is outside Span's supported agent catalog. Use an explicit local custom command if you trust it.".into());
+    }
     let entry = registry()
         .await?
         .agents
@@ -111,10 +125,9 @@ pub async fn install_registry_agent(
             "Registry agent must use an exact pinned npm version and safe identifier".into(),
         );
     }
-    let directory = cache_dir.join(&entry.id).join(&entry.version);
-    tokio::fs::create_dir_all(&directory)
-        .await
-        .map_err(|e| format!("Create agent cache: {e}"))?;
+    let _mutation = crate::managed::mutation_guard().await;
+    let stage = crate::managed::StagedInstall::new(cache_dir, &entry.id, &entry.version)?;
+    let directory = &stage.directory;
     let npm = crate::launch::prepare_command(AgentCommand {
         command: if cfg!(windows) { "npm.cmd" } else { "npm" }.into(),
         args: Vec::new(),
@@ -133,7 +146,7 @@ pub async fn install_registry_agent(
                 "--no-package-lock",
                 "--prefix",
             ])
-            .arg(&directory)
+            .arg(directory)
             .arg("--")
             .arg(&npx.package)
             .kill_on_drop(true)
@@ -162,26 +175,25 @@ pub async fn install_registry_agent(
         .map_err(|e| format!("Read installed agent metadata: {e}"))?;
     let package: serde_json::Value =
         serde_json::from_slice(&package_json).map_err(|e| e.to_string())?;
-    if package["version"].as_str() != Some(&entry.version) {
-        return Err("Installed package version does not match registry pin".into());
+    if package["name"].as_str() != Some(package_name)
+        || package["version"].as_str() != Some(&entry.version)
+    {
+        return Err("Installed package identity does not match the registry pin".into());
     }
-    let bin = match &package["bin"] {
-        serde_json::Value::String(bin) => Some(bin.as_str()),
-        serde_json::Value::Object(bins) => bins.values().next().and_then(serde_json::Value::as_str),
-        _ => None,
+    let canonical_package = package_root
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !canonical_package.starts_with(&stage.directory) {
+        return Err("Installed package escapes its managed staging directory".into());
     }
-    .ok_or("Installed package has no executable")?;
+    let bin = crate::npm_bin::select_bin(package_name, &package["bin"])?;
     let launch = launch_bin(&package_root, bin, npx.args, npx.env)?;
     let installed = InstalledAgent {
         id: entry.id,
         version: entry.version,
         launch,
     };
-    let manifest = serde_json::to_vec_pretty(&installed).map_err(|e| e.to_string())?;
-    tokio::fs::write(directory.join("span-agent.json"), manifest)
-        .await
-        .map_err(|e| format!("Save installed agent: {e}"))?;
-    Ok(installed)
+    stage.publish(installed)
 }
 
 pub fn list_installed_agents(cache_dir: &Path) -> Result<Vec<InstalledAgent>, String> {
@@ -191,18 +203,44 @@ pub fn list_installed_agents(cache_dir: &Path) -> Result<Vec<InstalledAgent>, St
     }
     for agent in std::fs::read_dir(cache_dir).map_err(|e| e.to_string())? {
         let agent = agent.map_err(|e| e.to_string())?;
-        if !agent.file_type().map_err(|e| e.to_string())?.is_dir() {
+        if agent.file_name().to_string_lossy().starts_with('.')
+            || !agent.file_type().map_err(|e| e.to_string())?.is_dir()
+        {
             continue;
         }
         for version in std::fs::read_dir(agent.path()).map_err(|e| e.to_string())? {
             let version = version.map_err(|e| e.to_string())?;
-            let path = version.path().join("span-agent.json");
-            if !path.is_file() {
+            if !version
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+            {
                 continue;
             }
-            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            let path = version.path().join("span-agent.json");
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 131_072
+            {
+                continue;
+            }
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
             let agent: InstalledAgent = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("Invalid installed agent manifest: {e}"))?;
+            if agent.id
+                != path
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    .map(|value| value.to_string_lossy())
+                    .unwrap_or_default()
+                || agent.version != version.file_name().to_string_lossy()
+            {
+                continue;
+            }
             if std::path::Path::new(&agent.launch.command).exists() {
                 installed.push(agent);
             }
@@ -279,6 +317,15 @@ fn valid_package(package: &str, version: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn unsupported_registry_agents_are_rejected_before_network_or_install() {
+        let cache = tempfile::tempdir().unwrap();
+        let error = install_registry_agent("agoragentic-acp", cache.path())
+            .await
+            .unwrap_err();
+        assert!(error.contains("supported agent catalog"));
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 0);
+    }
     #[test]
     fn registry_pins_and_identifiers() {
         assert!(valid_package(

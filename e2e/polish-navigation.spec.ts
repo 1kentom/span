@@ -30,7 +30,7 @@ test("find and go to line commands route to the active split", async ({ page }) 
   await expect(second.locator(".cm-search")).toBeVisible();
   await expect(first.locator(".cm-search")).toHaveCount(0);
   await second.locator(".cm-search").getByRole("textbox", { name: "Find", exact: true }).fill("private");
-  await second.locator(".cm-search").getByRole("button", { name: "close", exact: true }).click();
+  await second.locator(".cm-search").getByRole("button", { name: "Close find (Escape)", exact: true }).click();
   await first.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true }).click();
   await page.keyboard.press("Control+g");
   const input = first.getByRole("textbox", { name: "Go to line:", exact: true });
@@ -72,6 +72,7 @@ test("breadcrumbs browse siblings and file context menus copy the actual preview
   await ready(page);
   const crumbs = page.getByRole("navigation", { name: "Active file path", exact: true });
   await crumbs.getByRole("button", { name: "rpc-node.ts", exact: true }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Copy path", exact: true }).hover();
   await page.getByRole("menuitem", { name: "Copy relative path", exact: true }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("community/platform/node-rpc-client/src/rpc-node.ts");
   await crumbs.getByRole("button", { name: "src", exact: true }).click();
@@ -103,4 +104,29 @@ test("Linux platform key selection accepts uppercase Control Shift Z events acro
   await editors.first().press("Control+Shift+Z");
   await expect(editors.first()).toContainText("Linux redo through actual keyboard events");
   await expect(editors.nth(1)).toContainText("Linux redo through actual keyboard events");
+});
+
+test("editor context Copy Cut Paste uses the browser clipboard and undo restores each edit", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:1420" });
+  await ready(page);
+  const editor = page.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true });
+  const initial = await editor.textContent();
+  const menu = page.getByRole("menu", { name: "Editor actions", exact: true });
+  await editor.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Select all", exact: true }).click();
+  await editor.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Copy", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("SocketTransport");
+  await expect.poll(() => editor.textContent()).toBe(initial);
+  await editor.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Cut", exact: true }).click();
+  await expect.poll(() => editor.textContent()).toBe("");
+  await editor.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "Paste", exact: true }).click();
+  await expect.poll(() => editor.textContent()).toBe(initial);
+  await editor.focus();
+  await editor.press(`${modifier}+z`);
+  await expect.poll(() => editor.textContent()).toBe("");
+  await editor.press(`${modifier}+Shift+z`);
+  await expect.poll(() => editor.textContent()).toBe(initial);
 });

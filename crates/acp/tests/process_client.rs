@@ -484,3 +484,169 @@ async fn identical_write_acknowledges_without_pending_review_or_revision_change(
     assert_eq!(after.text, before.text);
     service.shutdown().unwrap();
 }
+
+#[tokio::test]
+async fn incompatible_session_method_is_actionable_and_closes_process() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Arc::new(Mutex::new(
+        CoreWorkspace::open(directory.path())
+            .unwrap()
+            .with_user_settings(None),
+    ));
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let service = AgentService::start(
+        AgentCommand {
+            command: "node".into(),
+            args: vec![
+                format!("{}/tests/fixtures/agent.mjs", env!("CARGO_MANIFEST_DIR")),
+                "--missing-session".into(),
+            ],
+            env: BTreeMap::new(),
+        },
+        directory.path().to_string_lossy().into_owned(),
+        workspace,
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    )
+    .await
+    .unwrap();
+    let message = service.new_session().await.unwrap_err();
+    assert!(message.contains("does not support ACP editor sessions"));
+    assert!(!message.contains("-32601"));
+    next(
+        &mut events,
+        |event| matches!(event, AgentEvent::Log { line, .. } if line.contains("-32601")),
+    )
+    .await;
+    service.shutdown_and_wait().await.unwrap();
+    assert!(service.new_session().await.is_err());
+}
+
+#[tokio::test]
+async fn explicit_disconnect_waits_for_pending_review_cleanup() {
+    let (_directory, workspace, service, mut events, session) = setup().await;
+    let prompt_service = service.clone();
+    let prompt_session = session.clone();
+    let prompt =
+        tokio::spawn(async move { prompt_service.prompt(prompt_session, "edit".into()).await });
+    let request_id = match next(&mut events, |event| {
+        matches!(event, AgentEvent::Permission { .. })
+    })
+    .await
+    {
+        AgentEvent::Permission { request_id, .. } => request_id,
+        _ => unreachable!(),
+    };
+    service
+        .respond_permission(session, request_id, Some("yes".into()))
+        .unwrap();
+    let proposal = match next(&mut events, |event| {
+        matches!(event, AgentEvent::Proposal { .. })
+    })
+    .await
+    {
+        AgentEvent::Proposal { proposal, .. } => proposal,
+        _ => unreachable!(),
+    };
+    service.shutdown_and_wait().await.unwrap();
+    assert!(service
+        .review_proposal(proposal.id, true, proposal.base_revision)
+        .is_err());
+    assert!(workspace
+        .lock()
+        .unwrap()
+        .agent_read("sample.txt")
+        .unwrap()
+        .text
+        .contains("unsaved editor text"));
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), prompt)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn managed_adapter_removal_waits_for_real_process_and_preserves_global_node() {
+    let cache = tempfile::tempdir().unwrap();
+    let workspace_dir = tempfile::tempdir().unwrap();
+    let version = cache.path().join("codex-acp/1.0.0");
+    std::fs::create_dir_all(&version).unwrap();
+    let script = version.join("agent.mjs");
+    std::fs::copy(
+        format!("{}/tests/fixtures/agent.mjs", env!("CARGO_MANIFEST_DIR")),
+        &script,
+    )
+    .unwrap();
+    let node = span_core::resolve_program("node").unwrap();
+    let installed = span_acp::InstalledAgent {
+        id: "codex-acp".into(),
+        version: "1.0.0".into(),
+        launch: AgentCommand {
+            command: node.to_string_lossy().into_owned(),
+            args: vec![script.to_string_lossy().into_owned()],
+            env: BTreeMap::new(),
+        },
+    };
+    std::fs::write(
+        version.join("span-agent.json"),
+        serde_json::to_vec(&installed).unwrap(),
+    )
+    .unwrap();
+    let workspace = Arc::new(Mutex::new(
+        CoreWorkspace::open(workspace_dir.path())
+            .unwrap()
+            .with_user_settings(None),
+    ));
+    let service = AgentService::start(
+        installed.launch,
+        workspace_dir.path().to_string_lossy().into_owned(),
+        workspace,
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    service.new_session().await.unwrap();
+    let error = span_acp::remove_installed_agent(cache.path(), "codex-acp", true)
+        .await
+        .unwrap_err();
+    assert!(error.contains("Disconnect"));
+    assert!(script.exists());
+    service.shutdown_and_wait().await.unwrap();
+    span_acp::remove_installed_agent(cache.path(), "codex-acp", true)
+        .await
+        .unwrap();
+    assert!(!version.exists());
+    assert!(node.exists());
+}
+
+#[tokio::test]
+async fn incompatible_prompt_method_also_closes_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = Arc::new(Mutex::new(
+        CoreWorkspace::open(directory.path())
+            .unwrap()
+            .with_user_settings(None),
+    ));
+    let service = AgentService::start(
+        AgentCommand {
+            command: "node".into(),
+            args: vec![
+                format!("{}/tests/fixtures/agent.mjs", env!("CARGO_MANIFEST_DIR")),
+                "--missing-prompt".into(),
+            ],
+            env: BTreeMap::new(),
+        },
+        directory.path().to_string_lossy().into_owned(),
+        workspace,
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    let session = service.new_session().await.unwrap();
+    let message = service.prompt(session, "test".into()).await.unwrap_err();
+    assert!(message.contains("does not support ACP conversation prompts"));
+    assert!(!message.contains("-32601"));
+    service.shutdown_and_wait().await.unwrap();
+    assert!(service.new_session().await.is_err());
+}

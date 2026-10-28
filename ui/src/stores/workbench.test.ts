@@ -1,18 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRoot } from "solid-js";
+import { createComputed, createRoot } from "solid-js";
 import { ChangeSet } from "@codemirror/state";
 import type { BufferSnapshot, TextEdit, SessionState_Serialize as SessionState, Settings_Serialize as Settings } from "../bindings";
 
 const client = vi.hoisted(() => ({
   openWorkspace: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), getSettings: vi.fn(),
-  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(),
+  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
 import { createWorkbench, settleIntent, SETTINGS_TAB } from "./workbench";
 
 const initial = (): BufferSnapshot => ({ path: "src/file.ts", text: "const value = 1;\n", revision: 0, savedRevision: 0, language: "typescript" });
 let server: Map<string, BufferSnapshot>;
-const preferences: Settings = { theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, keybindings: {}, formatters: {} };
+const preferences: Settings = { theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {} };
 const roots: (() => void)[] = [];
 function testWorkbench() { return createRoot(dispose => { roots.push(dispose); return createWorkbench(); }); }
 afterEach(() => { for (const dispose of roots.splice(0)) dispose(); });
@@ -41,6 +41,11 @@ beforeEach(() => {
   client.listDirectory.mockResolvedValue([]);
   client.listFiles.mockResolvedValue([]);
   client.getSettings.mockResolvedValue(preferences);
+  client.getSettingsForScope.mockResolvedValue(preferences);
+  client.getSettingsJsoncForScope.mockResolvedValue('// retained comments\n{ "theme": "Dark" }\n');
+  client.getSettingsKeysForScope.mockResolvedValue(["theme"]);
+  client.updateSettingsJsoncForScope.mockImplementation(async (_scope, text: string) => { client.getSettingsJsoncForScope.mockResolvedValue(text); return preferences; });
+  client.updateSetting.mockResolvedValue(preferences);
   client.getSettingsJsonc.mockResolvedValue('// retained comments\n{ "theme": "Dark" }\n');
   client.getSession.mockResolvedValue(null);
   client.takeStartupRequests.mockResolvedValue([]);
@@ -64,6 +69,18 @@ beforeEach(() => {
 });
 
 describe("authoritative buffer synchronization", () => {
+  it("reactively clears the dirty indicator after a queued edit is saved", async () => {
+    const workbench = await setup();
+    const dirtyStates: boolean[] = [];
+    const synchronizedStates: boolean[] = [];
+    createRoot(dispose => { roots.push(dispose); createComputed(() => { dirtyStates.push(workbench.dirty("src/file.ts")); synchronizedStates.push(workbench.synchronized("src/file.ts")); }); });
+    append(workbench, "// save clears the indicator\n");
+    expect(dirtyStates.at(-1)).toBe(true);
+    expect(synchronizedStates.at(-1)).toBe(false);
+    await workbench.save("src/file.ts");
+    expect(dirtyStates.at(-1)).toBe(false);
+    expect(synchronizedStates.at(-1)).toBe(true);
+  });
   it("accepts a reviewed proposal on an already dirty file", async () => {
     const workbench = await setup();
     append(workbench, "// human\n");
@@ -154,7 +171,7 @@ describe("workspace views and session state", () => {
     workbench.openSettings(); workbench.openSettings(); workbench.splitEditor();
     expect(workbench.groups().flatMap(group => group.tabs).filter(path => path === SETTINGS_TAB)).toHaveLength(1);
     expect(workbench.documents()["src/file.ts"].document).toBe(document);
-    workbench.splitEditor();
+    workbench.closeGroup(2);
     await workbench.openFile("src/file.ts"); workbench.applyHistory("src/file.ts");
     expect(workbench.documents()["src/file.ts"].document.toString()).toBe(initial().text);
   });
@@ -192,7 +209,7 @@ describe("workspace views and session state", () => {
   it("retains exact raw JSONC after saving comments and trailing commas", async () => {
     const workbench = await setup(); const text = '// personal note\n{ "theme": "Dark", }\n';
     await workbench.saveSettingsJsonc(text);
-    expect(client.updateSettingsJsonc).toHaveBeenCalledWith(text);
+    expect(client.updateSettingsJsoncForScope).toHaveBeenCalledWith("workspace", text);
     expect(workbench.settingsJsonc()).toBe(text);
   });
 
@@ -258,5 +275,154 @@ describe("asynchronous user intents", () => {
     const completion = settleIntent(1, () => true, async () => { await persisted.promise; return !dirty; }, close);
     dirty = true; persisted.resolve(true);
     expect(await completion).toBe(false); expect(close).not.toHaveBeenCalled();
+  });
+});
+
+describe("closing editor groups", () => {
+  it("serializes folder opening and retains the previous workspace on cancel or failure", async () => {
+    const workbench = await setup(); const original = workbench.documents()["src/file.ts"].document;
+    const canceled = deferred<null>(); client.openWorkspace.mockImplementationOnce(() => canceled.promise);
+    const opening = workbench.openWorkspace("/next");
+    await vi.waitFor(() => expect(client.openWorkspace).toHaveBeenLastCalledWith("/next"));
+    await workbench.openWorkspace("/concurrent");
+    expect(client.openWorkspace).not.toHaveBeenCalledWith("/concurrent"); expect(workbench.busy()).toBe(true);
+    canceled.resolve(null); await opening;
+    expect(workbench.workspace()?.root).toBe("/workspace"); expect(workbench.documents()["src/file.ts"].document).toBe(original); expect(workbench.busy()).toBe(false);
+    client.openWorkspace.mockRejectedValueOnce(new Error("Folder could not open")); await workbench.openWorkspace("/failed");
+    expect(workbench.workspace()?.root).toBe("/workspace"); expect(workbench.documents()["src/file.ts"].document).toBe(original); expect(workbench.busy()).toBe(false);
+  });
+  it("can close an empty second group without replacing the first document", async () => {
+    const workbench = await setup(); const original = workbench.documents()["src/file.ts"].document;
+    workbench.openSettings(); workbench.splitEditor();
+    expect(workbench.groups()).toHaveLength(2);
+    workbench.closeGroup(2);
+    expect(workbench.groups()).toHaveLength(1);
+    expect(workbench.documents()["src/file.ts"].document).toBe(original);
+  });
+  it("removes a split when its last clean tab closes", async () => {
+    const workbench = await setup(); workbench.splitEditor();
+    workbench.closeTab("src/file.ts", 2);
+    expect(workbench.groups().map(group => group.id)).toEqual([1]);
+    expect(workbench.activeGroup()).toBe(1);
+  });
+  it("closes a duplicate dirty view without discarding shared edits or undo history", async () => {
+    const workbench = await setup(); workbench.splitEditor(); append(workbench, "// shared draft\n");
+    await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
+    workbench.closeGroup(2);
+    expect(workbench.pendingClose()).toBeUndefined(); expect(workbench.groups()).toHaveLength(1);
+    expect(workbench.documents()["src/file.ts"].document.toString()).toContain("shared draft");
+    workbench.applyHistory("src/file.ts"); expect(workbench.documents()["src/file.ts"].document.toString()).toBe(initial().text);
+  });
+  it("keeps a group and its unique dirty file when closing is canceled", async () => {
+    const workbench = await setup(); workbench.openSettings(); workbench.splitEditor();
+    await workbench.openFile("src/file.ts", 2); workbench.closeTab("src/file.ts", 1);
+    append(workbench, "// keep unique\n"); await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
+    workbench.closeGroup(2); expect(workbench.pendingClose()?.path).toBe("src/file.ts");
+    await workbench.confirmClose("cancel");
+    expect(workbench.groups()).toHaveLength(2); expect(workbench.documents()["src/file.ts"].document.toString()).toContain("keep unique");
+  });
+  it("does not close a tab after its delayed Save action was canceled", async () => {
+    const workbench = await setup(); append(workbench, "// delayed\n");
+    await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
+    const response = deferred<BufferSnapshot>(); client.saveBuffer.mockImplementationOnce(() => response.promise);
+    workbench.closeTab("src/file.ts", 1); const saving = workbench.confirmClose("save");
+    await vi.waitFor(() => expect(client.saveBuffer).toHaveBeenCalled());
+    await workbench.confirmClose("cancel"); response.resolve({ ...server.get("src/file.ts")!, savedRevision: 1 }); await saving;
+    expect(workbench.groups()[0].tabs).toContain("src/file.ts");
+  });
+  it("retains and rebases new edits when an authoritative discard response arrives after Cancel", async () => {
+    const workbench = await setup(); append(workbench, "// original draft\n");
+    await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
+    const response = deferred<BufferSnapshot>();
+    const discarded = { ...initial(), revision: 2, savedRevision: 2 };
+    client.discardBuffer.mockImplementationOnce(async () => { server.set(discarded.path, discarded); return response.promise; });
+    workbench.closeTab("src/file.ts", 1); const discarding = workbench.confirmClose("discard");
+    await vi.waitFor(() => expect(client.discardBuffer).toHaveBeenCalled());
+    await workbench.confirmClose("cancel"); append(workbench, "// new draft after Cancel\n");
+    const localDocument = workbench.documents()["src/file.ts"].document;
+    await vi.waitFor(() => expect(workbench.failed().has("src/file.ts")).toBe(true));
+    response.resolve(discarded); await discarding;
+    await vi.waitFor(() => expect(workbench.failed().has("src/file.ts")).toBe(false));
+    expect(workbench.documents()["src/file.ts"].document).toBe(localDocument);
+    expect(workbench.groups()[0].tabs).toContain("src/file.ts");
+    expect(await workbench.save("src/file.ts")).toBe(true);
+    expect(server.get("src/file.ts")?.text).toBe(localDocument.toString());
+    workbench.applyHistory("src/file.ts");
+    expect(workbench.documents()["src/file.ts"].document.toString()).not.toContain("new draft after Cancel");
+    expect(workbench.documents()["src/file.ts"].document.toString()).toContain("original draft");
+  });
+});
+
+
+describe("scoped settings and auto save integration", () => {
+  it("keeps User scope values separate from Workspace-effective values", async () => {
+    client.getSettings.mockResolvedValue({ ...preferences, theme: "Purple" });
+    client.getSettingsForScope.mockImplementation(async scope => ({ ...preferences, theme: scope === "user" ? "Light" : "Purple" }));
+    const workbench = await setup(); await workbench.refreshSettingsScope("user");
+    expect(workbench.scopeSettings().theme).toBe("Light"); expect(workbench.settings().theme).toBe("Purple");
+    await workbench.updateSettings({ fontSize: 16 });
+    expect(client.updateSetting).toHaveBeenCalledWith("user", "fontSize", "16");
+    expect(workbench.settings().theme).toBe("Purple");
+    await workbench.resetSetting("fontSize"); expect(client.updateSetting).toHaveBeenLastCalledWith("user", "fontSize", null);
+  });
+  it("auto saves an open local draft after its configured delay", async () => {
+    client.getSettings.mockResolvedValue({ ...preferences, autoSave: "afterDelay", autoSaveDelay: 25 });
+    const workbench = await setup(); append(workbench, "// automatic\n");
+    await vi.waitFor(() => expect(client.saveBuffer).toHaveBeenCalledWith("src/file.ts", 1));
+    expect(workbench.dirty("src/file.ts")).toBe(false); expect(server.get("src/file.ts")?.text).toContain("automatic");
+  });
+  it("saves focus-change mode only after the editor loses focus", async () => {
+    client.getSettings.mockResolvedValue({ ...preferences, autoSave: "onFocusChange" });
+    const workbench = await setup(); append(workbench, "// focus save\n");
+    await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
+    expect(client.saveBuffer).not.toHaveBeenCalled(); workbench.autoSaveEditorBlur("src/file.ts");
+    await vi.waitFor(() => expect(client.saveBuffer).toHaveBeenCalled());
+  });
+  it("uses dedicated settings IPC and excludes settings files from Auto Save", async () => {
+    client.getSettings.mockResolvedValue({ ...preferences, autoSave: "afterDelay", autoSaveDelay: 10 });
+    const base: BufferSnapshot = { path: "settings://user", text: "{}", revision: 0, savedRevision: 0, language: "jsonc" };
+    client.openSettingsBuffer.mockResolvedValue(base);
+    client.editSettingsBuffer.mockResolvedValue({ path: base.path, revision: 1, savedRevision: 0 });
+    client.saveSettingsBuffer.mockResolvedValue({ ...base, text: '{"fontSize":16}', revision: 1, savedRevision: 1 });
+    const workbench = await setup(); await workbench.openSettingsJsonc("user");
+    const previousDocument = workbench.documents()[base.path].document; const changes = [{ from: 1, to: 1, insert: '"fontSize":16' }]; const changeSet = ChangeSet.of(changes, previousDocument.length);
+    workbench.edit(base.path, { baseRevision: 0, previousDocument, document: changeSet.apply(previousDocument), changes, changeSet });
+    await vi.waitFor(() => expect(client.editSettingsBuffer).toHaveBeenCalledWith("user", 0, changes));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(client.saveSettingsBuffer).not.toHaveBeenCalled(); expect(workbench.dirty(base.path)).toBe(true);
+    await workbench.save(base.path); expect(client.saveSettingsBuffer).toHaveBeenCalledWith("user", 1);
+    expect(client.openBuffer).not.toHaveBeenCalledWith(base.path);
+  });
+});
+
+describe("file operations reconcile editor state", () => {
+  it("opens a newly created file from its authoritative snapshot", async () => {
+    const workbench = await setup(); const snapshot: BufferSnapshot = { ...initial(), path: "src/new.ts", text: "" };
+    client.newFile.mockResolvedValue(snapshot); await workbench.newFile(snapshot.path);
+    expect(workbench.activePath()).toBe(snapshot.path); expect(workbench.documents()[snapshot.path].document.length).toBe(0);
+    expect(client.openBuffer).not.toHaveBeenCalledWith(snapshot.path);
+  });
+  it("renames clean duplicate views without losing shared document or undo history", async () => {
+    const workbench = await setup(); append(workbench, "// keep undo\n"); await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1)); await workbench.save(); workbench.splitEditor();
+    const document = workbench.documents()["src/file.ts"].document;
+    client.renamePath.mockImplementation(async (from: string, to: string) => { const old = server.get(from)!; server.delete(from); server.set(to, { ...old, path: to, revision: old.revision + 1, savedRevision: old.revision + 1 }); return { path: to, name: "renamed.ts", isDir: false }; });
+    await workbench.renamePath("src/file.ts", "src/renamed.ts");
+    expect(workbench.groups().every(group => group.tabs.includes("src/renamed.ts"))).toBe(true);
+    expect(workbench.documents()["src/renamed.ts"].document).toBe(document);
+    workbench.applyHistory("src/renamed.ts"); await vi.waitFor(() => expect(workbench.buffers["src/renamed.ts"].revision).toBe(3));
+    expect(workbench.documents()["src/renamed.ts"].document.toString()).toBe(initial().text);
+  });
+  it("preserves a dirty file when the backend refuses its rename", async () => {
+    const workbench = await setup(); append(workbench, "// unsaved\n"); await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
+    client.renamePath.mockRejectedValue(new Error("Save or discard unsaved changes first"));
+    await expect(workbench.renamePath("src/file.ts", "src/renamed.ts")).rejects.toThrow("Save or discard");
+    expect(workbench.activePath()).toBe("src/file.ts"); expect(workbench.documents()["src/file.ts"].document.toString()).toContain("unsaved");
+  });
+  it("moves a dirty tab into another group without prompting or losing the document", async () => {
+    const workbench = await setup(); workbench.openSettings(); workbench.splitEditor(); await workbench.openFile("src/file.ts", 1); append(workbench, "// move me\n");
+    await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1)); const document = workbench.documents()["src/file.ts"].document;
+    workbench.moveTab("src/file.ts", 1, 2);
+    expect(workbench.pendingClose()).toBeUndefined(); expect(workbench.groups().find(group => group.id === 2)?.tabs).toContain("src/file.ts");
+    expect(workbench.documents()["src/file.ts"].document).toBe(document);
   });
 });

@@ -15,8 +15,14 @@ bash "$installer" --target "$target" --dry-run > "$fixture/dry-run"
 # Verify fallback PATH guidance without relying on optional shell tools.
 case "$(cat "$fixture/dry-run")" in *'Add this directory to PATH'*) ;; *) exit 1;; esac
 bash "$installer" --target "$target" --prefix "$fixture/custom prefix" > "$fixture/install"
-[ "$(readlink "$fixture/custom prefix/bin/span")" = "$target" ]
+[ ! -L "$fixture/custom prefix/bin/span" ]
+/usr/bin/grep -qFx '# span-managed-launcher-v1' "$fixture/custom prefix/bin/span"
 bash "$installer" --target "$target" --prefix "$fixture/custom prefix" > /dev/null
+mkdir -p "$fixture/upgrade/bin"
+ln -s "$target" "$fixture/upgrade/bin/span"
+bash "$installer" --target "$target" --prefix "$fixture/upgrade" > /dev/null
+[ ! -L "$fixture/upgrade/bin/span" ]
+[ -x "$target" ]
 mkdir -p "$fixture/conflict/bin"
 printf 'unrelated command\n' > "$fixture/conflict/bin/span"
 if bash "$installer" --target "$target" --prefix "$fixture/conflict" > /dev/null 2>&1; then exit 1; fi

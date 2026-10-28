@@ -5,7 +5,7 @@ use serde_json::Value;
 use span_core::CoreWorkspace;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 pub type EventSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
 type Reply<T> = oneshot::Sender<Result<T, String>>;
@@ -15,6 +15,7 @@ pub struct AgentService {
     tx: mpsc::UnboundedSender<Command>,
     state: Arc<Mutex<Bridge>>,
     workspace: Arc<Mutex<CoreWorkspace>>,
+    completion: watch::Receiver<bool>,
 }
 
 enum Command {
@@ -64,6 +65,8 @@ impl AgentService {
             return Err("Agent executable is required".into());
         }
         let config = crate::launch::prepare_command(config)?;
+        let _mutation = crate::managed::mutation_guard().await;
+        let active_launch = crate::managed::register_launch(&config)?;
         let cwd = std::fs::canonicalize(cwd).map_err(|e| format!("Agent workspace: {e}"))?;
         let workspace_root = workspace
             .lock()
@@ -76,6 +79,7 @@ impl AgentService {
         let state = Arc::new(Mutex::new(Bridge::default()));
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = oneshot::channel();
+        let (completion_tx, completion_rx) = watch::channel(false);
         let shared = state.clone();
         let service_workspace = workspace.clone();
         std::thread::Builder::new()
@@ -111,6 +115,8 @@ impl AgentService {
                         let _ = ready_tx.send(Err(format!("ACP runtime: {error}")));
                     }
                 }
+                drop(active_launch);
+                let _ = completion_tx.send(true);
             })
             .map_err(|e| format!("Start agent thread: {e}"))?;
         tokio::time::timeout(std::time::Duration::from_secs(45), ready_rx)
@@ -121,6 +127,7 @@ impl AgentService {
             tx,
             state,
             workspace: service_workspace,
+            completion: completion_rx,
         })
     }
 
@@ -161,6 +168,30 @@ impl AgentService {
         self.tx
             .send(Command::Shutdown)
             .map_err(|_| "Agent disconnected".into())
+    }
+    /// Explicit disconnect waits for all pending callbacks and the managed subprocess to close.
+    pub async fn shutdown_and_wait(&self) -> Result<(), String> {
+        let mut completion = self.completion.clone();
+        if *completion.borrow() {
+            return Ok(());
+        }
+        let _ = self.shutdown();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let finished = *completion.borrow();
+                if finished {
+                    return Ok(());
+                }
+                completion
+                    .changed()
+                    .await
+                    .map_err(|_| "Agent completion state is unavailable".to_string())?;
+            }
+        })
+        .await
+        .map_err(|_| {
+            "Agent is still closing. Wait before removing its managed files.".to_string()
+        })?
     }
     pub fn respond_permission(
         &self,
@@ -398,17 +429,19 @@ async fn run(
                 Ok(result) => result,
                 Err(_) => { let _ = ready.send(Err("Agent initialization timed out after 40 seconds".into())); return Ok(()); }
             };
-            if let Err(error) = initialized { let message = error.to_string(); let _ = ready.send(Err(message)); return Err(error); }
+            if let Err(error) = initialized { let message = crate::compatibility::user_error("initialize", &error, &emit); let _ = ready.send(Err(message)); return Ok(()); }
             if initialized.as_ref().is_ok_and(|response| response.protocol_version != ProtocolVersion::V1) {
                 let _ = ready.send(Err("Agent negotiated an unsupported protocol version".into())); return Ok(());
             }
             let _ = ready.send(Ok(()));
             emit(AgentEvent::Status { state: "connected".into(), message: "ACP initialized. Agent process has your OS privileges.".into() });
             let mut cancel_deadline: Option<tokio::time::Instant> = None;
+            let (compatibility_failed, mut compatibility_failures) = mpsc::unbounded_channel::<()>();
             loop {
                 let command = tokio::select! {
                     command = rx.recv() => match command { Some(command) => command, None => break },
                     _ = cx.incoming_closed() => break,
+                    _ = compatibility_failures.recv() => break,
                     _ = tokio::time::sleep_until(cancel_deadline.unwrap_or_else(|| tokio::time::Instant::now() + std::time::Duration::from_secs(86400))), if cancel_deadline.is_some() => {
                         cancel_deadline = None;
                         let unresponsive = state.lock().map(|bridge| bridge.running.iter().any(|id| bridge.cancelled.contains(id))).unwrap_or(true);
@@ -426,12 +459,13 @@ async fn run(
                             Ok(result) => result,
                             Err(_) => { let _ = reply.send(Err("Agent session creation timed out after 30 seconds".into())); break; }
                         };
-                        let result = result.map(|response| response.session_id.to_string()).map_err(|e| e.to_string());
-                        if let Ok(id) = &result {
-                            if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
-                            emit(AgentEvent::Session { session_id: id.clone() });
-                        }
-                        let _ = reply.send(result);
+                        let id = match result {
+                            Ok(response) => response.session_id.to_string(),
+                            Err(error) => { let message = crate::compatibility::user_error("session/new", &error, &emit); let _ = reply.send(Err(message)); break; }
+                        };
+                        if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
+                        emit(AgentEvent::Session { session_id: id.clone() });
+                        let _ = reply.send(Ok(id));
                     }
                     Command::Prompt(id, text, reply) => {
                         let valid = state.lock().map(|mut bridge| {
@@ -440,13 +474,17 @@ async fn run(
                             bridge.cancelled.remove(&id); Ok(())
                         }).unwrap_or_else(|_| Err("Agent state lock poisoned".into()));
                         if let Err(error) = valid { let _ = reply.send(Err(error)); continue; }
-                        let prompt_cx = cx.clone(); let prompt_emit = emit.clone(); let prompt_state = state.clone();
+                        let prompt_cx = cx.clone(); let prompt_emit = emit.clone(); let prompt_state = state.clone(); let compatibility_failed = compatibility_failed.clone();
                         cx.spawn(async move {
                             let result = prompt_cx.send_request(PromptRequest::new(id.clone(), vec![ContentBlock::Text(TextContent::new(text))])).block_task().await;
                             if let Ok(mut bridge) = prompt_state.lock() { bridge.running.remove(&id); }
                             match result {
                                 Ok(response) => { prompt_emit(AgentEvent::Complete { session_id: id, stop_reason: enum_string(&response.stop_reason) }); let _ = reply.send(Ok(())); }
-                                Err(error) => { let message = error.to_string(); prompt_emit(AgentEvent::Error { message: message.clone() }); let _ = reply.send(Err(message)); }
+                                Err(error) => {
+                                    let message = crate::compatibility::user_error("session/prompt", &error, &prompt_emit);
+                                    prompt_emit(AgentEvent::Error { message: message.clone() }); let _ = reply.send(Err(message));
+                                    if matches!(&error.code, ErrorCode::MethodNotFound) { let _ = compatibility_failed.send(()); }
+                                }
                             }
                             Ok(())
                         })?;

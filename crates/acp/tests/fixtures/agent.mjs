@@ -56,10 +56,12 @@ input.on('line', line => {
     if (!fs.readTextFile || !fs.writeTextFile || message.params.clientCapabilities.terminal) process.exit(8);
     result(message.id, { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'span-test-peer', version: '1.0.0' } });
   } else if (message.method === 'session/new') {
+    if (process.argv.includes('--missing-session')) { send({ id: message.id, error: { code: -32601, message: 'Method not found: session/new' } }); return; }
     if (process.argv.includes('--hang-session')) return;
     cwd = message.params.cwd;
     result(message.id, { sessionId: `fixture-${++sessions}` });
   } else if (message.method === 'session/prompt') {
+    if (process.argv.includes('--missing-prompt')) { send({ id: message.id, error: { code: -32601, message: 'Method not found: session/prompt' } }); return; }
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {
     if (activePrompt !== undefined && !ignoreCancel) result(activePrompt, { stopReason: 'cancelled' });

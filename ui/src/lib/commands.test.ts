@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { canDispatchAction, dispatchKeyboard, formatShortcut, nativeMenuBindings, normalizeShortcut, resolveKeybindings, shortcutFromEvent, validateKeybindings } from "./commands";
+import { actionContext, canDispatchAction, dispatchKeyboard, formatShortcut, nativeMenuBindings, normalizeShortcut, resolveKeybindings, shortcutFromEvent, validateKeybindings } from "./commands";
 function key(key: string, options: KeyboardEventInit = {}, target?: Element) {
   const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...options });
   if (target) Object.defineProperty(event, "target", { value: target });
@@ -21,6 +21,8 @@ describe("central keyboard commands", () => {
   });
   it("rejects reserved editing and quit shortcuts and conflicts with inherited defaults", () => {
     expect(validateKeybindings({ closeTab: ["Mod+Q"] }, "mac")[0].message).toContain("Quit");
+    expect(validateKeybindings({ closeTab: ["Mod+Alt+Q"] }, "mac")[0].message).toContain("Quit");
+    expect(validateKeybindings({ settings: ["Mod+K"] }, "mac")[0].message).toContain("already assigned");
     expect(validateKeybindings({ settings: ["Ctrl+Z"] }, "linux")[0].message).toContain("text editing");
     expect(validateKeybindings({ save: ["Mod+P"] }, "mac")[0].message).toContain("already assigned");
     expect(validateKeybindings({ mystery: ["Ctrl+P"] }, "linux")[0].message).toContain("Unknown");
@@ -65,6 +67,37 @@ describe("central keyboard commands", () => {
     expect(dispatchKeyboard(key("w", { metaKey: true }), options)).toBe(false);
     expect(nativeMenuBindings(bindings).quickOpen).toEqual(["Meta+P"]);
     expect(handler).toHaveBeenCalledOnce();
+  });
+  it("dispatches equal, plus, minus, and reset zoom variants on both platforms", () => {
+    expect(normalizeShortcut("Mod+Equal", "mac")).toBe("Meta+=");
+    expect(normalizeShortcut("Mod+Plus", "linux")).toBe("Ctrl+Shift+=");
+    expect(normalizeShortcut("Mod++", "linux")).toBe("Ctrl+Shift+=");
+    expect(normalizeShortcut("Mod+Minus", "mac")).toBe("Meta+-");
+    for (const platform of ["mac", "linux"] as const) {
+      const zoomIn = vi.fn(); const zoomOut = vi.fn(); const resetZoom = vi.fn();
+      const options = { bindings: resolveKeybindings({}, platform), handlers: { zoomIn, zoomOut, resetZoom } };
+      const modifier = platform === "mac" ? { metaKey: true } : { ctrlKey: true };
+      expect(dispatchKeyboard(key("=", { ...modifier, code: "Equal" }), options)).toBe(true);
+      expect(dispatchKeyboard(key("+", { ...modifier, shiftKey: true, code: "Equal" }), options)).toBe(true);
+      expect(dispatchKeyboard(key("+", { ...modifier, code: "NumpadAdd" }), options)).toBe(true);
+      expect(dispatchKeyboard(key("-", { ...modifier, code: "Minus" }), options)).toBe(true);
+      expect(dispatchKeyboard(key("0", { ...modifier, code: "Digit0" }), options)).toBe(true);
+      expect(zoomIn).toHaveBeenCalledTimes(3); expect(zoomOut).toHaveBeenCalledOnce(); expect(resetZoom).toHaveBeenCalledOnce();
+    }
+  });
+  it("keeps Alt-Z word wrap in the editor without consuming Option text in other fields", () => {
+    const bindings = resolveKeybindings({}, "mac"); const toggleWordWrap = vi.fn();
+    const input = document.createElement("textarea");
+    const typed = key("Ω", { altKey: true, code: "KeyZ" }, input);
+    expect(dispatchKeyboard(typed, { bindings, handlers: { toggleWordWrap } })).toBe(false);
+    expect(typed.defaultPrevented).toBe(false); expect(toggleWordWrap).not.toHaveBeenCalled();
+    const editor = document.createElement("div"); editor.className = "cm-editor";
+    const content = document.createElement("div"); content.contentEditable = "true"; editor.append(content);
+    expect(dispatchKeyboard(key("Ω", { altKey: true, code: "KeyZ" }, content), { bindings, handlers: { toggleWordWrap } })).toBe(true);
+    expect(toggleWordWrap).toHaveBeenCalledOnce();
+    expect(nativeMenuBindings(bindings).toggleWordWrap).toEqual([]);
+    expect(nativeMenuBindings(bindings).formatDocument).toEqual([]);
+    expect(actionContext("toggleWordWrap").label).toBe("Editor or non-text focus");
   });
   it("normalizes shifted letter casing and punctuation", () => {
     expect(shortcutFromEvent(key("P", { ctrlKey: true, shiftKey: true }))).toBe("Ctrl+Shift+P");

@@ -1,0 +1,38 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Five selected Markdown view and code action icons. Original SVG bytes and geometry are preserved.",
+  "processing": "SVG XML inspected for active content and external references. Application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied from the user-provided local icon library at the user\u2019s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "markdown-source.svg",
+      "source": "programming/iconsax-code-b2bbed881ef3-.svg",
+      "sourceSha256": "adb0055030f7999241c2c436e218ca4404107d0e5c41cb33882bc8a917887651",
+      "assetSha256": "adb0055030f7999241c2c436e218ca4404107d0e5c41cb33882bc8a917887651"
+    },
+    {
+      "asset": "markdown-preview.svg",
+      "source": "security/iconsax-eye-74dec7268e8e-.svg",
+      "sourceSha256": "532b8386790b829ed8c121260c3352d9a7e0e115b78ca9f9037bfb5645ad3139",
+      "assetSha256": "532b8386790b829ed8c121260c3352d9a7e0e115b78ca9f9037bfb5645ad3139"
+    },
+    {
+      "asset": "markdown-both.svg",
+      "source": "design/iconsax-horizontal-box-ed921021aabc-.svg",
+      "sourceSha256": "902348ba3e4b8962e21b634641cd099c8e9e4aa04317e9be8b6414a2e6050661",
+      "assetSha256": "902348ba3e4b8962e21b634641cd099c8e9e4aa04317e9be8b6414a2e6050661"
+    },
+    {
+      "asset": "markdown-run.svg",
+      "source": "programming/iconsax-terminal-e35742c18a09-.svg",
+      "sourceSha256": "55b50704d2bf740b59f0100c36cf6c0083147d4e78696d4e6b6877df3a40ba3f",
+      "assetSha256": "55b50704d2bf740b59f0100c36cf6c0083147d4e78696d4e6b6877df3a40ba3f"
+    },
+    {
+      "asset": "markdown-terminal.svg",
+      "source": "programming/iconsax-code-5edbf7e4973e-.svg",
+      "sourceSha256": "d21b4e60775696168ccbcfc40e5884db022e24f3689893ced32dc744d5731433",
+      "assetSha256": "d21b4e60775696168ccbcfc40e5884db022e24f3689893ced32dc744d5731433"
+    }
+  ]
+}
