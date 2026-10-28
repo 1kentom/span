@@ -77,5 +77,5 @@ jobs:
           }
           # The unchanged test step below establishes runtime success or failure.
           exit 0
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       - run: pnpm desktop:build --no-bundle
