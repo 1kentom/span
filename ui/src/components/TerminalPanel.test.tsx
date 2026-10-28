@@ -23,6 +23,7 @@ const cleanup: (() => void)[] = [];
 const observations: ResizeObserverCallback[] = [];
 beforeEach(() => {
   vi.clearAllMocks();
+  xterm.write.mockReset();
   observations.length = 0;
   vi.stubGlobal("ResizeObserver", class { constructor(callback: ResizeObserverCallback) { observations.push(callback); } observe() {} disconnect() {} });
 });
@@ -167,4 +168,65 @@ describe("terminal panel", () => {
     expect(xterm.dispose).toHaveBeenCalledTimes(1);
     expect(view.controller()).toBeUndefined();
   });
+});
+
+it("preserves the early automatic DSR reply until create returns its session id", async () => {
+  const view = mount();
+  let release!: (id: string) => void;
+  xterm.write.mockImplementation((bytes: Uint8Array, acknowledge?: () => void) => {
+    if (new TextDecoder().decode(bytes) === "\x1b[6n") xterm.data?.("\x1b[1;1R");
+    acknowledge?.();
+  });
+  vi.mocked(view.transport.create).mockImplementationOnce(async (_cols, _rows, handlers) => {
+    handlers.data(new TextEncoder().encode("\x1b[6n"));
+    return new Promise<string>(resolve => { release = resolve; });
+  });
+  await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
+  expect(view.controller()).toBeUndefined();
+  expect(view.transport.write).not.toHaveBeenCalled();
+  xterm.data?.("typed before ready"); xterm.binary?.("\xff");
+  release("early-dsr-pty");
+  await vi.waitFor(() => expect(view.controller()).toBeDefined());
+  await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(3));
+  const calls = vi.mocked(view.transport.write).mock.calls;
+  expect(calls.map(call => call[0])).toEqual(["early-dsr-pty", "early-dsr-pty", "early-dsr-pty"]);
+  expect(new TextDecoder().decode(calls[0][1])).toBe("\x1b[1;1R");
+  expect(new TextDecoder().decode(calls[1][1])).toBe("typed before ready");
+  expect([...calls[2][1]]).toEqual([255]);
+});
+
+it("drops failed-create input and refuses callbacks from the old generation after restart", async () => {
+  const view = mount(); let oldInput: ((data: string) => void) | undefined;
+  vi.mocked(view.transport.create).mockImplementationOnce(async () => {
+    oldInput = xterm.data; oldInput?.("never replay"); throw new Error("Create failed");
+  });
+  await vi.waitFor(() => expect(view.root.querySelector('[role="alert"]')?.textContent).toContain("Create failed"));
+  expect(view.transport.write).not.toHaveBeenCalled();
+  view.root.querySelector<HTMLButtonElement>('[aria-label="Start new shell"]')!.click();
+  await vi.waitFor(() => expect(view.controller()).toBeDefined());
+  oldInput?.("stale reply");
+  await view.controller()!.send("printf fresh", true);
+  expect(view.transport.write).toHaveBeenCalledExactlyOnceWith("terminal-1", new TextEncoder().encode("printf fresh\r"));
+  expect(view.root.querySelector('[role="alert"]')).toBeNull();
+});
+it("drops startup input on disposal and closes the late native session without writing", async () => {
+  const view = mount(); let release!: (id: string) => void;
+  vi.mocked(view.transport.create).mockImplementationOnce(async () => {
+    xterm.data?.("old workspace input"); return new Promise<string>(resolve => { release = resolve; });
+  });
+  await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
+  cleanup.pop()!(); xterm.focus.mockClear(); release("late-old-session");
+  await vi.waitFor(() => expect(view.transport.close).toHaveBeenCalledWith("late-old-session"));
+  expect(view.transport.write).not.toHaveBeenCalled(); expect(xterm.focus).not.toHaveBeenCalled();
+});
+it("bounds startup input bytes and chunks while retaining accepted replies", async () => {
+  const view = mount(); let release!: (id: string) => void;
+  vi.mocked(view.transport.create).mockImplementationOnce(async () => new Promise<string>(resolve => { release = resolve; }));
+  await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
+  xterm.data?.("x".repeat(64 * 1024 + 1));
+  for (let index = 0; index < 257; index++) xterm.data?.("r");
+  await vi.waitFor(() => expect(view.root.querySelector('[role="alert"]')?.textContent).toContain("startup input limit"));
+  release("bounded-session");
+  await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(256));
+  expect(vi.mocked(view.transport.write).mock.calls.every(([id, bytes]) => id === "bounded-session" && bytes.byteLength === 1)).toBe(true);
 });

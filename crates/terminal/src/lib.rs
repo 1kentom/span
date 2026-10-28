@@ -790,8 +790,8 @@ mod tests {
     }
 
     async fn output_until(rx: &mut mpsc::Receiver<TerminalEvent>, needle: &str) -> String {
-        timeout(Duration::from_secs(10), async {
-            let mut output = Vec::new();
+        let mut output = Vec::new();
+        let result = timeout(Duration::from_secs(10), async {
             while let Some(event) = rx.recv().await {
                 if let TerminalEvent::Output { data, .. } = event {
                     output.extend(data);
@@ -805,19 +805,51 @@ mod tests {
                 String::from_utf8_lossy(&output)
             );
         })
-        .await
-        .expect("PTY output timed out")
+        .await;
+        match result {
+            Ok(output) => output,
+            Err(_) => panic!(
+                "PTY output timed out waiting for {needle:?}; last output: {:?}",
+                String::from_utf8_lossy(&output[output.len().saturating_sub(4096)..])
+            ),
+        }
+    }
+
+    async fn create_test_terminal(
+        manager: &TerminalManager,
+    ) -> (TerminalInfo, mpsc::Receiver<TerminalEvent>) {
+        let (info, receiver) = manager.create(".", 80, 24).await.unwrap();
+        #[cfg(windows)]
+        let mut receiver = receiver;
+        #[cfg(windows)]
+        {
+            // ConPTY cursor inheritance requires a renderer reply before input.
+            output_until(&mut receiver, "\x1b[6n").await;
+            manager
+                .write(&info.id, b"\x1b[1;1R".to_vec())
+                .await
+                .unwrap();
+            manager
+                .write(
+                    &info.id,
+                    b"chcp 65001 >nul & echo SPAN_UTF8_R^E^A^D^Y\r".to_vec(),
+                )
+                .await
+                .unwrap();
+            output_until(&mut receiver, "SPAN_UTF8_READY").await;
+        }
+        (info, receiver)
     }
 
     #[tokio::test]
     async fn real_shell_roundtrips_unicode_and_resizes() {
         let root = TempDir::new().unwrap();
         let manager = TerminalManager::new(root.path()).unwrap();
-        let (info, mut rx) = manager.create(".", 80, 24).await.unwrap();
+        let (info, mut rx) = create_test_terminal(&manager).await;
         #[cfg(unix)]
         let input = "printf 'SPAN_RESULT:%s\\n' '日本語🌱'\r";
         #[cfg(windows)]
-        let input = "chcp 65001 >nul\rset SPAN_TEST=日本語🌱\recho SPAN_RESULT:%SPAN_TEST%\r";
+        let input = "set SPAN_TEST=日本語🌱\recho SPAN_RESULT:%SPAN_TEST%\r";
         manager
             .write(&info.id, input.as_bytes().to_vec())
             .await
@@ -870,7 +902,7 @@ mod tests {
     async fn reports_nonzero_exit_and_rejects_input_after_exit() {
         let root = TempDir::new().unwrap();
         let manager = TerminalManager::new(root.path()).unwrap();
-        let (info, mut rx) = manager.create(".", 80, 24).await.unwrap();
+        let (info, mut rx) = create_test_terminal(&manager).await;
         #[cfg(unix)]
         let input = b"exit 7\r".to_vec();
         #[cfg(windows)]
@@ -898,7 +930,7 @@ mod tests {
     async fn final_output_is_delivered_before_exit_event() {
         let root = TempDir::new().unwrap();
         let manager = TerminalManager::new(root.path()).unwrap();
-        let (info, mut rx) = manager.create(".", 80, 24).await.unwrap();
+        let (info, mut rx) = create_test_terminal(&manager).await;
         #[cfg(unix)]
         let input = b"printf 'FINAL_OUTPUT_SENTINEL\\n'; exit 0\r".to_vec();
         #[cfg(windows)]

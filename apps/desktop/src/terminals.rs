@@ -484,8 +484,8 @@ mod tests {
         receiver: &mut mpsc::UnboundedReceiver<TerminalEvent>,
         needle: &str,
     ) -> String {
-        timeout(Duration::from_secs(10), async {
-            let mut output = Vec::new();
+        let mut output = Vec::new();
+        let result = timeout(Duration::from_secs(10), async {
             while let Some(event) = receiver.recv().await {
                 match event {
                     TerminalEvent::Output { id, data, sequence } => {
@@ -502,8 +502,32 @@ mod tests {
             }
             panic!("Expected terminal output not received: {needle}");
         })
-        .await
-        .expect("Native bridge output timed out")
+        .await;
+        match result {
+            Ok(output) => output,
+            Err(_) => panic!(
+                "Native bridge output timed out waiting for {needle:?}; last output: {:?}",
+                String::from_utf8_lossy(&output[output.len().saturating_sub(4096)..])
+            ),
+        }
+    }
+
+    #[cfg(windows)]
+    async fn prepare_windows_renderer(
+        state: &TerminalState,
+        id: &str,
+        receiver: &mut mpsc::UnboundedReceiver<TerminalEvent>,
+    ) {
+        // portable-pty requests ConPTY cursor inheritance. A fresh xterm answers
+        // this query; the headless fixture must implement the same protocol.
+        output_until(state, receiver, "\x1b[6n").await;
+        state.write(id, b"\x1b[1;1R".to_vec()).await.unwrap();
+        state
+            .write(id, b"chcp 65001 >nul & echo SPAN_UTF8_R^E^A^D^Y\r".to_vec())
+            .await
+            .unwrap();
+        // Carets keep the echoed input from satisfying the executed sentinel.
+        output_until(state, receiver, "SPAN_UTF8_READY").await;
     }
 
     #[tokio::test]
@@ -514,10 +538,12 @@ mod tests {
         state.replace_workspace(root.path()).await.unwrap();
         let (sink, mut receiver) = collecting_sink();
         let info = state.create(None, 80, 24, sink).await.unwrap();
+        #[cfg(windows)]
+        prepare_windows_renderer(&state, &info.id, &mut receiver).await;
         #[cfg(unix)]
         let command = "printf 'SPAN_%s\\n' 'BRIDGE_日本語🌱'\r";
         #[cfg(windows)]
-        let command = "chcp 65001 >nul\rset SPAN_NATIVE=BRIDGE_日本語🌱\recho SPAN_%SPAN_NATIVE%\r";
+        let command = "set SPAN_NATIVE=BRIDGE_日本語🌱\recho SPAN_%SPAN_NATIVE%\r";
         state
             .write(&info.id, command.as_bytes().to_vec())
             .await
@@ -544,6 +570,14 @@ mod tests {
         state.replace_workspace(root.path()).await.unwrap();
         let (sink, mut receiver) = collecting_sink();
         let info = state.create(None, 80, 24, sink).await.unwrap();
+        #[cfg(windows)]
+        {
+            prepare_windows_renderer(&state, &info.id, &mut receiver).await;
+            state
+                .write(&info.id, b"echo SPAN_FLOW_START\r".to_vec())
+                .await
+                .unwrap();
+        }
         let first = timeout(Duration::from_secs(10), receiver.recv())
             .await
             .unwrap()
@@ -551,7 +585,13 @@ mod tests {
         let TerminalEvent::Output { sequence, data, .. } = first else {
             panic!("Expected initial shell output");
         };
+        #[cfg(unix)]
         assert_eq!(sequence, 1);
+        #[cfg(windows)]
+        assert!(
+            sequence > 1,
+            "Renderer setup already acknowledged initial output"
+        );
         assert!(data.len() <= 8192);
         assert!(state.acknowledge(&info.id, sequence + 1).is_err());
         #[cfg(unix)]

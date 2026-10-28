@@ -51,6 +51,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   let resizeFrame = 0;
   let generation = 0;
   let inputQueue: Promise<void> = Promise.resolve();
+  let startupInput: { token: number; chunks: Uint8Array[]; bytes: number } | undefined;
   const [status, setStatus] = createSignal("Starting shell");
   const [error, setError] = createSignal<string>();
   const [ready, setReady] = createSignal(false);
@@ -62,11 +63,21 @@ export function TerminalPanel(props: TerminalPanelProps) {
   const updateDraft = (value: string | undefined) => { draftVersion++; setDraft(value); };
   const invalidateDraftRun = () => { activeDraftRun = undefined; setDraftRunning(false); };
   const report = (failure: unknown) => { if (disposed) return; const message = failure instanceof Error ? failure.message : String(failure); setError(message); props.onError?.(message); };
-  const write = (data: Uint8Array) => {
+  const write = (data: Uint8Array, token = generation) => {
+    if (disposed || token !== generation || exited()) return Promise.reject(new Error("Terminal session is unavailable"));
     const currentId = sessionId;
-    if (!currentId || exited()) return Promise.reject(new Error("Terminal session is unavailable"));
+    if (!currentId) {
+      if (!startupInput || startupInput.token !== token) return Promise.reject(new Error("Terminal session is unavailable"));
+      if (startupInput.bytes + data.byteLength > 64 * 1024 || startupInput.chunks.length >= 256) return Promise.reject(new Error("Terminal startup input limit reached"));
+      startupInput.chunks.push(data.slice());
+      startupInput.bytes += data.byteLength;
+      return Promise.resolve();
+    }
     // Preserve key and paste order even when IPC acknowledgements arrive later.
-    inputQueue = inputQueue.catch(() => undefined).then(() => props.transport.write(currentId, data));
+    inputQueue = inputQueue.catch(() => undefined).then(() => {
+      if (disposed || token !== generation || sessionId !== currentId || exited()) throw new Error("Terminal session is unavailable");
+      return props.transport.write(currentId, data);
+    });
     return inputQueue;
   };
   const resize = () => {
@@ -103,15 +114,29 @@ export function TerminalPanel(props: TerminalPanelProps) {
       } catch { /* The default renderer supports machines without WebGL. */ }
     }
     if (disposed || token !== generation) return;
-    terminal.onData(data => { void write(new TextEncoder().encode(data)).catch(report); });
-    terminal.onBinary(data => { void write(Uint8Array.from(data, character => character.charCodeAt(0))).catch(report); });
-    const id = await props.transport.create(terminal.cols, terminal.rows, {
-      data: (bytes, acknowledge) => { if (!disposed && token === generation && terminal) terminal.write(bytes, acknowledge); else acknowledge?.(); },
-      exit: code => { if (!disposed && token === generation) { setExited(true); setStatus(code === null ? "Shell exited" : `Shell exited (${code})`); } },
-      error: message => { if (!disposed && token === generation) report(message); },
-    });
+    const reportInput = (failure: unknown) => { if (!disposed && token === generation) report(failure); };
+    // Renderer replies can arrive before create returns its native session ID.
+    startupInput = { token, chunks: [], bytes: 0 };
+    inputQueue = Promise.resolve();
+    terminal.onData(data => { void write(new TextEncoder().encode(data), token).catch(reportInput); });
+    terminal.onBinary(data => { void write(Uint8Array.from(data, character => character.charCodeAt(0)), token).catch(reportInput); });
+    let id: string;
+    try {
+      id = await props.transport.create(terminal.cols, terminal.rows, {
+        data: (bytes, acknowledge) => { if (!disposed && token === generation && terminal) terminal.write(bytes, acknowledge); else acknowledge?.(); },
+        exit: code => { if (!disposed && token === generation) { setExited(true); setStatus(code === null ? "Shell exited" : `Shell exited (${code})`); } },
+        error: message => { if (!disposed && token === generation) report(message); },
+      });
+    } catch (failure) {
+      if (startupInput?.token === token) startupInput = undefined;
+      if (!disposed && token === generation) throw failure;
+      return;
+    }
     if (disposed || token !== generation) { await props.transport.close(id); return; }
     sessionId = id;
+    const pending = startupInput?.token === token ? startupInput.chunks : [];
+    startupInput = undefined;
+    for (const bytes of pending) void write(bytes, token).catch(reportInput);
     setReady(true);
     if (!exited()) setStatus("Shell");
     observer = new ResizeObserver(resize);
@@ -141,6 +166,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   });
   onCleanup(() => {
     disposed = true;
+    startupInput = undefined;
     activeDraftRun = undefined;
     generation++;
     cancelAnimationFrame(resizeFrame);
@@ -156,6 +182,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
       sessionId = undefined;
     }
     generation++;
+    startupInput = undefined;
     invalidateDraftRun();
     setReady(false);
     setExited(true);
@@ -166,6 +193,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   const restart = async () => {
     if (sessionId) await props.transport.close(sessionId);
     generation++;
+    startupInput = undefined;
     invalidateDraftRun();
     sessionId = undefined;
     setReady(false);
