@@ -478,6 +478,7 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 
 /* Background chats waiting for the user, counted on the History button. */
 .agent-history-button { position: relative; }
+.agent-history-button.on { background: var(--sb-control); color: var(--sb-fg); }
 .agent-attention-badge { position: absolute; top: 0; right: 0; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--sb-warning); color: var(--sb-on-accent); font-size: 9px; font-weight: 700; line-height: 13px; text-align: center; }
 
 /* The step running now, pinned above the composer. */
