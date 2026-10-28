@@ -58,3 +58,16 @@ describe("stacked bars line up", () => {
     expect(below).toMatch(/border-radius:\s*0;/);
   });
 });
+
+describe("popovers over the prompt box", () => {
+  it("float inset like the stacked tabs, with their radius and a gap above the input", () => {
+    const anchor = block(".agent-popover-anchor");
+    const stacked = block(".agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity)");
+    const inset = Number(/left:\s*(\d+)px/.exec(anchor)?.[1]);
+    expect(inset).toBe(Number(/margin:\s*0\s+(\d+)px;/.exec(stacked)?.[1]));
+    expect(/right:\s*(\d+)px/.exec(anchor)?.[1]).toBe(String(inset));
+    expect(/bottom:\s*calc\(100% \+ (\d+)px\)/.exec(anchor)?.[1]).toBeDefined();
+    const radius = Number(/border-radius:\s*(\d+)px/.exec(block(".agent-popover-anchor > .sb-popover"))?.[1]);
+    expect(radius).toBe(Number(/border-radius:\s*(\d+)px/.exec(stacked)?.[1]));
+  });
+});

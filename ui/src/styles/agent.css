@@ -434,12 +434,16 @@
   border-color: color-mix(in srgb, var(--sb-accent) 55%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--sb-accent) 9%, transparent);
 }
+/* Popovers float over the prompt box as the same inset tab as the bars stacked on it, with a gap above the input. */
 .agent-popover-anchor {
   position: absolute;
-  left: -1px;
-  right: -1px;
-  bottom: calc(100% + 8px);
+  left: 14px;
+  right: 14px;
+  bottom: calc(100% + 10px);
   z-index: 31;
+}
+.agent-popover-anchor > .sb-popover {
+  border-radius: 12px;
 }
 .agent-popover-anchor:empty {
   display: none;

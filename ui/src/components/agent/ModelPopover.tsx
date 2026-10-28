@@ -62,6 +62,9 @@ function TraitChip(props: { trait: ModelTrait }) {
   );
 }
 
+/** A provider-prefixed model reads without its prefix inside a cost tier ("opencode/Beam Free" becomes "Beam Free"); the full name stays in the tooltip. */
+const shownName = (choice: { value: string; name: string }) => (modelCost(choice) ? choice.name.replace(/^[^/\s]+\//, "") : choice.name);
+
 /** The model popover: a provider row that opens the agent popover, the agent's model list, then the effort slider. */
 export function ModelPopover(props: ModelPopoverProps) {
   let root: HTMLDivElement | undefined;
@@ -139,7 +142,7 @@ export function ModelPopover(props: ModelPopoverProps) {
                                   <ModelIcon id={brand().id} name={brand().name} traits={traits()} />
                                   <span class="sb-option-text">
                                     <span class="sb-option-line">
-                                      <span class="sb-option-name">{choice().name}</span>
+                                      <span class="sb-option-name" title={choice().name}>{shownName(choice())}</span>
                                       <Show when={chipTrait(traits(), choice().name)}>{(trait) => <TraitChip trait={trait()} />}</Show>
                                     </span>
                                     <Show when={choice().description}><span class="sb-sub wrap">{choice().description}</span></Show>
