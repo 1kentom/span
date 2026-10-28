@@ -255,6 +255,52 @@
       "type": "boolean",
       "default": false,
       "description": "VS Code compatible alias for tabLimitPerGroup. Dotted keys take precedence within the same settings scope."
+    },
+    "languageServers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Language server behaviour. Servers are downloaded only when autoInstall is true or an install is requested.",
+      "properties": {
+        "autoInstall": {
+          "type": "boolean",
+          "default": false,
+          "description": "Download missing language servers on first use."
+        },
+        "enabled": {
+          "type": "object",
+          "description": "Per-server switches. A server that is not listed is enabled.",
+          "propertyNames": {
+            "enum": [
+              "vtsls",
+              "html",
+              "css",
+              "json",
+              "rust-analyzer",
+              "basedpyright",
+              "jdtls"
+            ]
+          },
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "javaHome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "description": "JDK home used to run JDT LS instead of searching the host."
+        },
+        "nodePath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "description": "Node.js executable used to run the npm based servers instead of searching the host."
+        }
+      }
     }
   },
   "description": "Span supports the documented built-in settings and selected VS Code keys. Other keys are preserved in JSONC but have no effect."

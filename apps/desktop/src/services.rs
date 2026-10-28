@@ -317,11 +317,12 @@ fn save_current_buffer(
 #[specta::specta]
 pub async fn format_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, crate::language_servers::LspService>,
     path: String,
     expected_revision: u64,
     request_id: u64,
 ) -> Result<BufferSnapshot, String> {
-    format_or_save_with_request(
+    let snapshot = format_or_save_with_request(
         state.inner().clone(),
         path,
         expected_revision,
@@ -329,7 +330,9 @@ pub async fn format_buffer(
         None,
         Some(request_id),
     )
-    .await
+    .await?;
+    lsp.on_snapshot(&snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]

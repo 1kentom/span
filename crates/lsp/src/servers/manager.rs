@@ -18,10 +18,10 @@ use std::time::Duration;
 
 use lsp_types::{
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentRangeFormattingParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, PublishDiagnosticsParams,
-    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, TextDocumentSyncKind,
-    TextEdit, VersionedTextDocumentIdentifier,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    DocumentRangeFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+    HoverParams, PublishDiagnosticsParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+    TextDocumentItem, TextDocumentSyncKind, TextEdit, VersionedTextDocumentIdentifier,
 };
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard};
 use tokio::task::JoinHandle;
@@ -144,6 +144,10 @@ type Key = (ServerId, PathBuf);
 
 struct Inner {
     docs: HashMap<String, TrackedDocument>,
+    /// Last version used by a document that was closed. A reopened document continues
+    /// from here, so diagnostics a server published for the earlier life of the
+    /// document can never be mistaken for the new one.
+    closed_versions: HashMap<String, i32>,
     client: Option<Arc<LspClient>>,
     ready: bool,
     /// Set under the instance lock once the buffers were handed to a replacement or
@@ -272,6 +276,7 @@ impl Manager {
             events: self.shared.events.clone(),
             inner: Arc::new(Mutex::new(Inner {
                 docs,
+                closed_versions: HashMap::new(),
                 client: None,
                 ready: false,
                 retired: false,
@@ -379,7 +384,10 @@ impl Manager {
             .lock_current(id, root)
             .await
             .ok_or(ManagerError::NotStarted)?;
-        inner.docs.remove(&uri.to_string());
+        let key = uri.to_string();
+        if let Some(doc) = inner.docs.remove(&key) {
+            inner.closed_versions.insert(key, doc.version);
+        }
         if inner.ready {
             if let Some(client) = inner.client.clone() {
                 client
@@ -393,6 +401,41 @@ impl Manager {
         Ok(())
     }
 
+    /// Tell the server a tracked document was saved. Sent only to a ready server whose
+    /// capabilities ask for `didSave`; the text is included only when it asks for that.
+    /// Anything else is a no-op, never an error.
+    pub async fn save_document(
+        &self,
+        id: ServerId,
+        root: &Path,
+        path: &Path,
+    ) -> Result<(), ManagerError> {
+        let uri = path_to_uri(path).map_err(ManagerError::Lsp)?;
+        let Some((_inst, inner)) = self.lock_current(id, root).await else {
+            return Ok(());
+        };
+        if !inner.ready {
+            return Ok(());
+        }
+        let Some(client) = inner.client.clone() else {
+            return Ok(());
+        };
+        let Some(include_text) = client.wants_did_save() else {
+            return Ok(());
+        };
+        let Some(doc) = inner.docs.get(&uri.to_string()) else {
+            return Ok(());
+        };
+        let text = include_text.then(|| doc.content().to_string());
+        client
+            .did_save(DidSaveTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri },
+                text,
+            })
+            .await
+            .map_err(|e| map_err(&client, e))
+    }
+
     /// Current buffered text of a document, if the manager tracks it.
     pub async fn document_text(&self, id: ServerId, root: &Path, path: &Path) -> Option<String> {
         let inst = self.get(id, root).await?;
@@ -402,6 +445,20 @@ impl Manager {
             .docs
             .get(&uri.to_string())
             .map(|d| d.content().to_string())
+    }
+
+    /// Capabilities the ready server advertised in `initialize`, if it is ready.
+    pub async fn capabilities(
+        &self,
+        id: ServerId,
+        root: &Path,
+    ) -> Option<lsp_types::ServerCapabilities> {
+        let inst = self.get(id, root).await?;
+        let inner = inst.inner.lock().await;
+        if !inner.ready {
+            return None;
+        }
+        inner.client.as_ref()?.server_capabilities()
     }
 
     pub async fn completion(
@@ -488,6 +545,12 @@ impl Manager {
     }
 
     pub async fn shutdown_all(&self) {
+        self.shutdown_all_within(None).await;
+    }
+
+    /// Stop every server in parallel. With `limit`, servers that have not stopped
+    /// politely by then are killed outright, so no child outlives the call.
+    pub async fn shutdown_all_within(&self, limit: Option<Duration>) {
         let all: Vec<Arc<Instance>> = self
             .shared
             .instances
@@ -496,9 +559,36 @@ impl Manager {
             .drain()
             .map(|(_, i)| i)
             .collect();
-        for inst in all {
-            self.stop_instance(&inst).await;
+        let mut clients = Vec::new();
+        for inst in &all {
+            if let Some(c) = inst.inner.lock().await.client.clone() {
+                clients.push(c);
+            }
         }
+        // Stop every server at once, so the caller's overall bound covers all of them
+        // rather than the sum of the per-server graces.
+        let mut set = tokio::task::JoinSet::new();
+        for inst in all {
+            let this = self.clone();
+            set.spawn(async move { this.stop_instance(&inst).await });
+        }
+        let drain = async { while set.join_next().await.is_some() {} };
+        let Some(limit) = limit else {
+            drain.await;
+            return;
+        };
+        if tokio::time::timeout(limit, drain).await.is_ok() {
+            return;
+        }
+        set.abort_all();
+        let mut kills = tokio::task::JoinSet::new();
+        for client in clients {
+            kills.spawn(async move { client.terminate().await });
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+            while kills.join_next().await.is_some() {}
+        })
+        .await;
     }
 
     async fn stop_instance(&self, inst: &Arc<Instance>) {
@@ -585,9 +675,13 @@ async fn open_locked(
         };
         return change_locked(inner, uri, vec![change]).await;
     }
+    let version = inner
+        .closed_versions
+        .remove(&key)
+        .map_or(1, |v| v.saturating_add(1));
     inner.docs.insert(
         key.clone(),
-        TrackedDocument::new(key, language_id.to_string(), 1, text.clone()),
+        TrackedDocument::new(key, language_id.to_string(), version, text.clone()),
     );
     if inner.ready {
         if let Some(client) = inner.client.clone() {
@@ -596,7 +690,7 @@ async fn open_locked(
                     text_document: TextDocumentItem {
                         uri,
                         language_id: language_id.to_string(),
-                        version: 1,
+                        version,
                         text,
                     },
                 })
@@ -604,7 +698,7 @@ async fn open_locked(
                 .map_err(|e| map_err(&client, e))?;
         }
     }
-    Ok(1)
+    Ok(version)
 }
 
 async fn change_locked(

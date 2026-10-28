@@ -91,6 +91,8 @@ jobs:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Linux webview dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev
       - name: Cache downloaded language servers
         uses: actions/cache@v4
         with:
@@ -101,4 +103,14 @@ jobs:
           SPAN_LSP_TEST_CACHE: ${{ runner.temp }}/span-lsp-server-cache
         run: |
           export JAVA_HOME="$JAVA_HOME_25_X64"
-          cargo test -p span-lsp --features real-servers --test servers_smoke --no-fail-fast
+          # rust-analyzer diagnostic delivery is timing sensitive: retry a failed run once.
+          cmd="cargo test -p span-lsp --features real-servers --test servers_smoke --no-fail-fast"
+          $cmd || $cmd
+      - name: Real server tests through the desktop language server service
+        env:
+          SPAN_LSP_TEST_CACHE: ${{ runner.temp }}/span-lsp-server-cache
+        run: |
+          export JAVA_HOME="$JAVA_HOME_25_X64"
+          # rust-analyzer diagnostic delivery is timing sensitive: retry a failed run once.
+          cmd="cargo test -p span-desktop --features real-servers --test real_servers --no-fail-fast"
+          $cmd || $cmd

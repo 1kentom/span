@@ -12,6 +12,81 @@ pub enum Theme {
     Purple,
 }
 
+/// Language server behaviour, stored under the `languageServers` settings key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct LanguageServerSettings {
+    /// Download missing language servers on first use. When false, nothing is
+    /// downloaded until the user asks for an install.
+    pub auto_install: bool,
+    /// Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
+    /// `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+    pub enabled: HashMap<String, bool>,
+    /// JDK home used to run JDT LS, instead of searching the host.
+    pub java_home: Option<String>,
+    /// Node.js executable used to run the npm based servers, instead of searching the host.
+    pub node_path: Option<String>,
+}
+
+/// Settings under `languageServers` that choose executables or trigger downloads. They are
+/// honoured from user settings only: a workspace file is untrusted input.
+pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] = &["autoInstall", "javaHome", "nodePath"];
+
+/// Absolute on any OS, judged from the text alone: `/x`, `C:\x`, `C:/x` or `\\server\share`.
+pub(crate) fn is_absolute_path_text(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/'))
+}
+
+pub const LANGUAGE_SERVER_IDS: &[&str] = &[
+    "vtsls",
+    "html",
+    "css",
+    "json",
+    "rust-analyzer",
+    "basedpyright",
+    "jdtls",
+];
+
+impl LanguageServerSettings {
+    pub fn is_enabled(&self, server: &str) -> bool {
+        self.enabled.get(server).copied().unwrap_or(true)
+    }
+
+    fn validate(&self) -> Result<()> {
+        for server in self.enabled.keys() {
+            if !LANGUAGE_SERVER_IDS.contains(&server.as_str()) {
+                return Err(CoreError::Settings(format!(
+                    "Unknown language server: {server}"
+                )));
+            }
+        }
+        for (name, value) in [("javaHome", &self.java_home), ("nodePath", &self.node_path)] {
+            if let Some(value) = value {
+                if value.trim().is_empty()
+                    || value.len() > 4096
+                    || value.chars().any(char::is_control)
+                {
+                    return Err(CoreError::Settings(format!(
+                        "languageServers.{name} must be a path of at most 4096 characters"
+                    )));
+                }
+                if !is_absolute_path_text(value) {
+                    return Err(CoreError::Settings(format!(
+                        "languageServers.{name} must be an absolute path"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum AutoSaveMode {
@@ -59,6 +134,7 @@ pub struct Settings {
     pub zoom_level: Option<f64>,
     pub keybindings: HashMap<String, Vec<String>>,
     pub formatters: HashMap<String, Vec<String>>,
+    pub language_servers: LanguageServerSettings,
 }
 
 impl Default for Settings {
@@ -82,6 +158,7 @@ impl Default for Settings {
             zoom_level: None,
             keybindings: HashMap::new(),
             formatters: HashMap::new(),
+            language_servers: LanguageServerSettings::default(),
         }
     }
 }
@@ -149,6 +226,7 @@ impl Settings {
             }
         }
         validate_shortcut_collisions(&self.keybindings)?;
+        self.language_servers.validate()?;
         for (language, argv) in &self.formatters {
             if language.is_empty()
                 || language.len() > 64
@@ -406,9 +484,9 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
     let mut value = serde_json::to_value(Settings::default())
         .map_err(|e| CoreError::Settings(e.to_string()))?;
     if let Some(path) = user {
-        merge_file(&mut value, path)?;
+        merge_file(&mut value, path, false)?;
     }
-    merge_file(&mut value, workspace)?;
+    merge_file(&mut value, workspace, true)?;
     decode(value)
 }
 
@@ -419,7 +497,7 @@ fn decode(value: Value) -> Result<Settings> {
     Ok(settings)
 }
 
-fn merge_file(target: &mut Value, path: &Path) -> Result<()> {
+fn merge_file(target: &mut Value, path: &Path, workspace: bool) -> Result<()> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -427,8 +505,45 @@ fn merge_file(target: &mut Value, path: &Path) -> Result<()> {
     };
     let value =
         parse(&text).map_err(|e| CoreError::Settings(format!("{}: {e}", path.display())))?;
-    merge(target, normalize(value)?);
+    let mut value = normalize(value)?;
+    if workspace {
+        drop_user_only(&mut value);
+    }
+    merge(target, value);
     Ok(())
+}
+
+/// A workspace settings file can be written by anyone who can put files in a repository,
+/// so it must not choose executables or trigger downloads. Load ignores these keys there
+/// (writes through `update_setting` and `update_settings_jsonc` reject them with an error).
+fn drop_user_only(value: &mut Value) {
+    if let Some(servers) = value
+        .get_mut("languageServers")
+        .and_then(Value::as_object_mut)
+    {
+        for key in USER_ONLY_LANGUAGE_SERVER_KEYS {
+            servers.remove(*key);
+        }
+    }
+}
+
+/// Error naming the first user-only key present in workspace settings text.
+pub(crate) fn reject_user_only(text: &str) -> Result<()> {
+    let value = parse(text)?;
+    if let Some(servers) = value.get("languageServers").and_then(Value::as_object) {
+        for key in USER_ONLY_LANGUAGE_SERVER_KEYS {
+            if servers.contains_key(*key) {
+                return Err(user_only_error(key));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn user_only_error(key: &str) -> CoreError {
+    CoreError::Settings(format!(
+        "languageServers.{key} can be set in user settings only"
+    ))
 }
 
 pub(crate) fn parse(text: &str) -> Result<Value> {
@@ -485,7 +600,9 @@ pub(crate) fn load_with_texts(user: &str, workspace: &str) -> Result<Settings> {
     let mut value = serde_json::to_value(Settings::default())
         .map_err(|error| CoreError::Settings(error.to_string()))?;
     merge(&mut value, normalize(parse(user)?)?);
-    merge(&mut value, normalize(parse(workspace)?)?);
+    let mut workspace = normalize(parse(workspace)?)?;
+    drop_user_only(&mut workspace);
+    merge(&mut value, workspace);
     decode(value)
 }
 
@@ -498,6 +615,112 @@ pub(crate) fn canonical_key(key: &str) -> Option<String> {
         .as_object()?
         .contains_key(key)
         .then(|| key.into())
+}
+
+/// Edits one setting in `scope`. Besides top-level keys it accepts exactly
+/// `languageServers.enabled.<serverId>` and, in user scope only,
+/// `languageServers.autoInstall`, `languageServers.javaHome` and `languageServers.nodePath`.
+/// A missing value removes the key.
+pub(crate) fn patch_in_scope(
+    scope: crate::SettingsScope,
+    text: &str,
+    key: &str,
+    value_json: Option<&str>,
+) -> Result<String> {
+    let Some(rest) = key.strip_prefix("languageServers.") else {
+        return patch(text, key, value_json);
+    };
+    let unsupported = || CoreError::Settings(format!("Unsupported setting: {key}"));
+    let value = value_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|error| CoreError::Settings(error.to_string()))?
+        .filter(|v| !v.is_null());
+    let root = parse(text)?;
+    let existing = root.get("languageServers").cloned();
+    let mut servers = match existing {
+        None => serde_json::Map::new(),
+        Some(Value::Object(map)) => map,
+        Some(_) => {
+            return Err(CoreError::Settings(
+                "languageServers must be an object".into(),
+            ))
+        }
+    };
+    if let Some(id) = rest.strip_prefix("enabled.") {
+        if !LANGUAGE_SERVER_IDS.contains(&id) {
+            return Err(CoreError::Settings(format!(
+                "Unknown language server: {id}"
+            )));
+        }
+        let mut enabled = match servers.remove("enabled") {
+            None => serde_json::Map::new(),
+            Some(Value::Object(map)) => map,
+            Some(_) => {
+                return Err(CoreError::Settings(
+                    "languageServers.enabled must be an object".into(),
+                ))
+            }
+        };
+        match value {
+            None => {
+                enabled.remove(id);
+            }
+            Some(Value::Bool(flag)) => {
+                enabled.insert(id.into(), Value::Bool(flag));
+            }
+            Some(_) => {
+                return Err(CoreError::Settings(format!(
+                    "languageServers.enabled.{id} must be true or false"
+                )))
+            }
+        }
+        if !enabled.is_empty() {
+            servers.insert("enabled".into(), Value::Object(enabled));
+        }
+    } else if USER_ONLY_LANGUAGE_SERVER_KEYS.contains(&rest) {
+        if scope != crate::SettingsScope::User {
+            return Err(user_only_error(rest));
+        }
+        match (rest, value) {
+            (_, None) => {
+                servers.remove(rest);
+            }
+            ("autoInstall", Some(Value::Bool(flag))) => {
+                servers.insert(rest.into(), Value::Bool(flag));
+            }
+            ("autoInstall", Some(_)) => {
+                return Err(CoreError::Settings(
+                    "languageServers.autoInstall must be true or false".into(),
+                ))
+            }
+            (_, Some(Value::String(path))) => {
+                let candidate = LanguageServerSettings {
+                    java_home: (rest == "javaHome").then(|| path.clone()),
+                    node_path: (rest == "nodePath").then(|| path.clone()),
+                    ..Default::default()
+                };
+                candidate.validate()?;
+                servers.insert(rest.into(), Value::String(path));
+            }
+            (_, Some(_)) => {
+                return Err(CoreError::Settings(format!(
+                    "languageServers.{rest} must be an absolute path string"
+                )))
+            }
+        }
+    } else {
+        return Err(unsupported());
+    }
+    if servers.is_empty() {
+        patch(text, "languageServers", None)
+    } else {
+        patch(
+            text,
+            "languageServers",
+            Some(&Value::Object(servers).to_string()),
+        )
+    }
 }
 
 /// Edits one top-level setting. Unrelated comments, unknown keys and formatting remain intact.
@@ -744,6 +967,39 @@ fn strip_jsonc(text: &str) -> Result<String> {
 }
 
 #[cfg(test)]
+mod language_server_tests {
+    use super::*;
+
+    #[test]
+    fn language_server_settings_default_to_opt_in_installs() {
+        let defaults = Settings::default().language_servers;
+        assert!(!defaults.auto_install);
+        assert!(defaults.is_enabled("jdtls"));
+        let value = load_with_texts(
+            r#"{ "languageServers": { "autoInstall": true, "enabled": { "jdtls": false },
+                 "javaHome": "/opt/jdk", "nodePath": "/usr/bin/node" } }"#,
+            "{}",
+        )
+        .unwrap()
+        .language_servers;
+        assert!(value.auto_install && !value.is_enabled("jdtls") && value.is_enabled("vtsls"));
+        assert_eq!(value.java_home.as_deref(), Some("/opt/jdk"));
+    }
+
+    #[test]
+    fn language_server_settings_reject_unknown_servers_and_bad_paths() {
+        for text in [
+            r#"{ "languageServers": { "enabled": { "gopls": true } } }"#,
+            r#"{ "languageServers": { "javaHome": "" } }"#,
+            r#"{ "languageServers": { "nodePath": "a\u0000b" } }"#,
+            r#"{ "languageServers": { "bogus": 1 } }"#,
+        ] {
+            assert!(load_with_texts(text, "{}").is_err(), "{text}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod file_open_shortcut_tests {
     use super::*;
 
@@ -883,5 +1139,156 @@ mod word_wrap_shortcut_tests {
             .contains("conflicts"));
         settings.keybindings.insert("toggleWordWrap".into(), vec![]);
         settings.validate().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod language_server_key_tests {
+    use super::*;
+    use crate::SettingsScope::{User, Workspace};
+
+    #[test]
+    fn workspace_text_cannot_choose_executables_or_downloads() {
+        let ws = r#"{ "languageServers": { "nodePath": "/tmp/evil", "javaHome": "/tmp/jdk",
+                 "autoInstall": true, "enabled": { "css": false } } }"#;
+        let loaded = load_with_texts("{}", ws).unwrap().language_servers;
+        assert_eq!(loaded.node_path, None);
+        assert_eq!(loaded.java_home, None);
+        assert!(!loaded.auto_install);
+        assert!(!loaded.is_enabled("css"), "per server switches still apply");
+        let err = reject_user_only(ws).unwrap_err().to_string();
+        assert!(err.contains("languageServers.") && err.contains("user settings only"));
+        let only = r#"{ "languageServers": { "nodePath": "/tmp/evil" } }"#;
+        let err = reject_user_only(only).unwrap_err().to_string();
+        assert!(err.contains("languageServers.nodePath") && err.contains("user settings only"));
+        // User settings keep working, and a workspace value never overrides them.
+        let user = r#"{ "languageServers": { "nodePath": "/usr/bin/node", "autoInstall": true } }"#;
+        let merged = load_with_texts(user, ws).unwrap().language_servers;
+        assert_eq!(merged.node_path.as_deref(), Some("/usr/bin/node"));
+        assert!(merged.auto_install);
+    }
+
+    #[test]
+    fn executable_paths_must_be_absolute() {
+        for bad in ["node", "./node", "bin/node", "~/node", "C:node"] {
+            let text = format!(r#"{{ "languageServers": {{ "nodePath": "{bad}" }} }}"#);
+            assert!(load_with_texts(&text, "{}").is_err(), "{bad}");
+        }
+        for good in [
+            "/usr/bin/node",
+            "C:\\node\\node.exe",
+            "C:/node/node.exe",
+            "\\\\srv\\share\\n",
+        ] {
+            assert!(is_absolute_path_text(good), "{good}");
+        }
+    }
+
+    fn set(scope: crate::SettingsScope, text: &str, key: &str, v: Option<&str>) -> Result<String> {
+        patch_in_scope(scope, text, key, v)
+    }
+
+    #[test]
+    fn dotted_keys_set_and_remove_and_keep_the_rest() {
+        let base = "{\n  // keep me\n  \"fontSize\": 14\n}\n";
+        let t = set(
+            Workspace,
+            base,
+            "languageServers.enabled.vtsls",
+            Some("false"),
+        )
+        .unwrap();
+        assert!(t.contains("// keep me") && t.contains("\"fontSize\": 14"));
+        assert!(!load_with_texts("{}", &t)
+            .unwrap()
+            .language_servers
+            .is_enabled("vtsls"));
+        let t = set(Workspace, &t, "languageServers.enabled.css", Some("false")).unwrap();
+        let s = load_with_texts("{}", &t).unwrap().language_servers;
+        assert!(!s.is_enabled("vtsls") && !s.is_enabled("css"));
+        let t = set(Workspace, &t, "languageServers.enabled.vtsls", None).unwrap();
+        let t = set(Workspace, &t, "languageServers.enabled.css", Some("null")).unwrap();
+        assert!(!t.contains("languageServers"), "{t}");
+        assert!(t.contains("// keep me"));
+
+        for (key, value, check) in [
+            ("autoInstall", "true", 0),
+            ("javaHome", "\"/opt/jdk\"", 1),
+            ("nodePath", "\"/usr/bin/node\"", 2),
+        ] {
+            let full = format!("languageServers.{key}");
+            let t = set(User, base, &full, Some(value)).unwrap();
+            let s = load_with_texts(&t, "{}").unwrap().language_servers;
+            match check {
+                0 => assert!(s.auto_install),
+                1 => assert_eq!(s.java_home.as_deref(), Some("/opt/jdk")),
+                _ => assert_eq!(s.node_path.as_deref(), Some("/usr/bin/node")),
+            }
+            assert!(t.contains("// keep me"));
+            let back = set(User, &t, &full, None).unwrap();
+            assert!(!back.contains(key), "{back}");
+            let again = set(User, &t, &full, Some("null")).unwrap();
+            assert!(!again.contains(key), "{again}");
+        }
+    }
+
+    #[test]
+    fn workspace_writes_of_user_only_keys_are_rejected_and_user_writes_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("p");
+        std::fs::create_dir(&project).unwrap();
+        let user = dir.path().join("user.jsonc");
+        let ws = crate::CoreWorkspace::open(&project)
+            .unwrap()
+            .with_user_settings(Some(user));
+        let err = ws
+            .update_setting(Workspace, "languageServers.nodePath", Some("\"/x\""))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("user settings only"), "{err}");
+        let err = ws
+            .update_settings_jsonc_for_scope(
+                Workspace,
+                r#"{ "languageServers": { "autoInstall": true } }"#,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("user settings only"), "{err}");
+        ws.update_setting(Workspace, "languageServers.enabled.css", Some("false"))
+            .unwrap();
+        let merged = ws
+            .update_setting(User, "languageServers.nodePath", Some("\"/usr/bin/node\""))
+            .unwrap();
+        assert_eq!(
+            merged.language_servers.node_path.as_deref(),
+            Some("/usr/bin/node")
+        );
+        assert!(!merged.language_servers.is_enabled("css"));
+    }
+
+    #[test]
+    fn dotted_keys_reject_bad_input() {
+        let b = "{}";
+        for (scope, key, v) in [
+            (User, "languageServers.enabled.gopls", "true"),
+            (User, "languageServers.enabled.css", "\"yes\""),
+            (User, "languageServers.autoInstall", "1"),
+            (User, "languageServers.javaHome", "5"),
+            (User, "languageServers.javaHome", "\"jdk\""),
+            (User, "languageServers.nodePath", "\"\""),
+            (User, "languageServers.bogus", "1"),
+            (User, "languageServers.", "1"),
+            (Workspace, "languageServers.autoInstall", "true"),
+            (Workspace, "languageServers.javaHome", "\"/opt/jdk\""),
+            (Workspace, "languageServers.nodePath", "\"/usr/bin/node\""),
+        ] {
+            assert!(set(scope, b, key, Some(v)).is_err(), "{key} {v}");
+        }
+        let err = set(Workspace, b, "languageServers.nodePath", Some("\"/x\""))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("languageServers.nodePath") && err.contains("user settings only"));
+        // Removing from the workspace scope is also refused: those keys are not valid there.
+        assert!(set(Workspace, b, "languageServers.javaHome", None).is_err());
     }
 }

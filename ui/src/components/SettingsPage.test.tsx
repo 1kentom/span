@@ -9,7 +9,7 @@ const defaults: SettingsValue = {
   theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false,
   uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono",
   collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null,
-  keybindings: {}, formatters: {},
+  keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null },
 };
 const disposers: (() => void)[] = [];
 afterEach(() => { disposers.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); });

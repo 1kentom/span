@@ -69,11 +69,27 @@ export const commands = {
 	agentPermission: (requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_permission", { requestId, optionId }),
 	agentReview: (proposalId: string, accept: boolean, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("agent_review", { proposalId, accept, expectedRevision }),
 	agentReviewHunks: (proposalId: string, acceptedHunkIds: string[], expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("agent_review_hunks", { proposalId, acceptedHunkIds, expectedRevision }),
+	lspCompletion: (path: string, position: PositionDto, triggerCharacter: string | null, requestId: string | null) => __TAURI_INVOKE<LspResponse<CompletionListDto_Serialize>>("lsp_completion", { path, position, triggerCharacter, requestId }),
+	lspHover: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<HoverDto_Serialize | null>>("lsp_hover", { path, position, requestId }),
+	lspDefinition: (path: string, position: PositionDto, requestId: string | null) => __TAURI_INVOKE<LspResponse<LocationDto[]>>("lsp_definition", { path, position, requestId }),
+	/**
+	 *  Returns edits in UTF-16 positions of the document at the stamped `revision`. The
+	 *  buffer is not changed; apply the edits in the editor, then it syncs as usual.
+	 */
+	lspFormat: (path: string, range: RangeDto | null, requestId: string | null) => __TAURI_INVOKE<LspResponse<TextEditDto[]>>("lsp_format", { path, range, requestId }),
+	lspCancel: (requestId: string) => __TAURI_INVOKE<null>("lsp_cancel", { requestId }),
+	lspInstall: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_install", { server }),
+	lspRestart: (server: LanguageServerId) => __TAURI_INVOKE<null>("lsp_restart", { server }),
+	lspStatus: () => __TAURI_INVOKE<ServerStatusDto_Serialize[]>("lsp_status"),
 };
 
 /** Events */
 export const events = {
+	diagnosticsPublished: makeEvent<DiagnosticsPublished_Serialize, DiagnosticsPublished_Deserialize>("diagnostics-published"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
+	languageServerError: makeEvent<LanguageServerError_Serialize, LanguageServerError_Deserialize>("language-server-error"),
+	languageServerInstallProgress: makeEvent<LanguageServerInstallProgress_Serialize, LanguageServerInstallProgress_Deserialize>("language-server-install-progress"),
+	languageServerStateChanged: makeEvent<LanguageServerStateChanged_Serialize, LanguageServerStateChanged_Deserialize>("language-server-state-changed"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
 	startupRequestError: makeEvent<StartupRequestError, StartupRequestError>("startup-request-error"),
 	startupRequestsChanged: makeEvent<StartupRequestsChanged, StartupRequestsChanged>("startup-requests-changed"),
@@ -131,6 +147,58 @@ export type BufferSnapshot = {
 	language: string,
 };
 
+/**
+ *  What a ready server advertised. `rename` and `references` are reported for
+ *  completeness; this backend exposes no commands for them yet.
+ */
+export type CapabilitiesDto = {
+	completion: boolean,
+	hover: boolean,
+	definition: boolean,
+	formatting: boolean,
+	rangeFormatting: boolean,
+	rename: boolean,
+	references: boolean,
+};
+
+export type CompletionItemDto = CompletionItemDto_Serialize | CompletionItemDto_Deserialize;
+
+export type CompletionItemDto_Deserialize = {
+	label: string,
+	/**  LSP `CompletionItemKind` number (1 Text ... 25 TypeParameter). */
+	kind?: number | null,
+	detail?: string | null,
+	/**  Text to insert when no `text_edit` is given (falls back to the label). */
+	insertText: string,
+	insertTextFormat: InsertTextFormatDto,
+	textEdit?: TextEditDto | null,
+	sortText?: string | null,
+};
+
+export type CompletionItemDto_Serialize = {
+	label: string,
+	/**  LSP `CompletionItemKind` number (1 Text ... 25 TypeParameter). */
+	kind: number | null,
+	detail: string | null,
+	/**  Text to insert when no `text_edit` is given (falls back to the label). */
+	insertText: string,
+	insertTextFormat: InsertTextFormatDto,
+	textEdit: TextEditDto | null,
+	sortText: string | null,
+};
+
+export type CompletionListDto = CompletionListDto_Serialize | CompletionListDto_Deserialize;
+
+export type CompletionListDto_Deserialize = {
+	isIncomplete: boolean,
+	items: CompletionItemDto_Deserialize[],
+};
+
+export type CompletionListDto_Serialize = {
+	isIncomplete: boolean,
+	items: CompletionItemDto_Serialize[],
+};
+
 export type ConfigChoice = ConfigChoice_Serialize | ConfigChoice_Deserialize;
 
 export type ConfigChoice_Deserialize = {
@@ -182,6 +250,54 @@ export type ConfigOption_Serialize = {
 	category: string | null,
 	currentValue: string,
 	groups: ConfigGroup_Serialize[],
+};
+
+export type DiagnosticDto = DiagnosticDto_Serialize | DiagnosticDto_Deserialize;
+
+export type DiagnosticDto_Deserialize = {
+	severity?: DiagnosticSeverityDto | null,
+	message: string,
+	range: RangeDto,
+	source?: string | null,
+	code?: string | null,
+};
+
+export type DiagnosticDto_Serialize = {
+	severity: DiagnosticSeverityDto | null,
+	message: string,
+	range: RangeDto,
+	source: string | null,
+	code: string | null,
+};
+
+export type DiagnosticSeverityDto = "error" | "warning" | "information" | "hint";
+
+/**
+ *  `version` is the LSP document version the server reported on; `revision` is the
+ *  buffer revision that version corresponds to, when known.
+ */
+export type DiagnosticsPublished = DiagnosticsPublished_Serialize | DiagnosticsPublished_Deserialize;
+
+/**
+ *  `version` is the LSP document version the server reported on; `revision` is the
+ *  buffer revision that version corresponds to, when known.
+ */
+export type DiagnosticsPublished_Deserialize = {
+	path: string,
+	version?: number | null,
+	revision?: number | null,
+	diagnostics: DiagnosticDto_Deserialize[],
+};
+
+/**
+ *  `version` is the LSP document version the server reported on; `revision` is the
+ *  buffer revision that version corresponds to, when known.
+ */
+export type DiagnosticsPublished_Serialize = {
+	path: string,
+	version: number | null,
+	revision: number | null,
+	diagnostics: DiagnosticDto_Serialize[],
 };
 
 export type EditProposal = {
@@ -254,6 +370,18 @@ export type HighlightSpan = {
 	kind: string,
 };
 
+export type HoverDto = HoverDto_Serialize | HoverDto_Deserialize;
+
+export type HoverDto_Deserialize = {
+	markdown: string,
+	range?: RangeDto | null,
+};
+
+export type HoverDto_Serialize = {
+	markdown: string,
+	range: RangeDto | null,
+};
+
 export type ImageSource = {
 	mime: string,
 	dataUrl: string,
@@ -265,6 +393,10 @@ export type IndentGuide = {
 	/**  Visual columns, using a four-column tab stop. */
 	columns: number[],
 };
+
+export type InsertTextFormatDto = "plainText" | "snippet";
+
+export type InstallPhase = "started" | "alreadyInstalled" | "waitingForLock" | "downloading" | "reused" | "verifying" | "extracting" | "finalizing" | "finished" | "failed";
 
 export type InstalledAgent = InstalledAgent_Serialize | InstalledAgent_Deserialize;
 
@@ -278,6 +410,163 @@ export type InstalledAgent_Serialize = {
 	id: string,
 	version: string,
 	launch: AgentCommand_Serialize,
+};
+
+/**  A background synchronisation or install failure that no command could return. */
+export type LanguageServerError = LanguageServerError_Serialize | LanguageServerError_Deserialize;
+
+/**  A background synchronisation or install failure that no command could return. */
+export type LanguageServerError_Deserialize = {
+	server: LanguageServerId,
+	path?: string | null,
+	message: string,
+};
+
+/**  A background synchronisation or install failure that no command could return. */
+export type LanguageServerError_Serialize = {
+	server: LanguageServerId,
+	path: string | null,
+	message: string,
+};
+
+export type LanguageServerId = "vtsls" | "html" | "css" | "json" | "rust-analyzer" | "basedpyright" | "jdtls";
+
+export type LanguageServerInstallProgress = LanguageServerInstallProgress_Serialize | LanguageServerInstallProgress_Deserialize;
+
+export type LanguageServerInstallProgress_Deserialize = {
+	server: LanguageServerId,
+	version: string,
+	phase: InstallPhase,
+	received?: number | null,
+	total?: number | null,
+	message?: string | null,
+};
+
+export type LanguageServerInstallProgress_Serialize = {
+	server: LanguageServerId,
+	version: string,
+	phase: InstallPhase,
+	received: number | null,
+	total: number | null,
+	message: string | null,
+};
+
+/**  Language server behaviour, stored under the `languageServers` settings key. */
+export type LanguageServerSettings = LanguageServerSettings_Serialize | LanguageServerSettings_Deserialize;
+
+/**  Language server behaviour, stored under the `languageServers` settings key. */
+export type LanguageServerSettings_Deserialize = {
+	/**
+	 *  Download missing language servers on first use. When false, nothing is
+	 *  downloaded until the user asks for an install.
+	 */
+	autoInstall?: boolean,
+	/**
+	 *  Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
+	 *  `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+	 */
+	enabled?: { [key in string]: boolean },
+	/**  JDK home used to run JDT LS, instead of searching the host. */
+	javaHome?: string | null,
+	/**  Node.js executable used to run the npm based servers, instead of searching the host. */
+	nodePath?: string | null,
+};
+
+/**  Language server behaviour, stored under the `languageServers` settings key. */
+export type LanguageServerSettings_Serialize = {
+	/**
+	 *  Download missing language servers on first use. When false, nothing is
+	 *  downloaded until the user asks for an install.
+	 */
+	autoInstall: boolean,
+	/**
+	 *  Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
+	 *  `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+	 */
+	enabled: { [key in string]: boolean },
+	/**  JDK home used to run JDT LS, instead of searching the host. */
+	javaHome: string | null,
+	/**  Node.js executable used to run the npm based servers, instead of searching the host. */
+	nodePath: string | null,
+};
+
+export type LanguageServerStateChanged = LanguageServerStateChanged_Serialize | LanguageServerStateChanged_Deserialize;
+
+export type LanguageServerStateChanged_Deserialize = {
+	server: LanguageServerId,
+	root: string,
+	state: LanguageServerStateDto_Deserialize,
+};
+
+export type LanguageServerStateChanged_Serialize = {
+	server: LanguageServerId,
+	root: string,
+	state: LanguageServerStateDto_Serialize,
+};
+
+export type LanguageServerStateDto = LanguageServerStateDto_Serialize | LanguageServerStateDto_Deserialize;
+
+export type LanguageServerStateDto_Deserialize = { kind: "notStarted" } | { kind: "starting" } | { kind: "ready" } | { kind: "crashed" } | { kind: "stopped" } | { kind: "disabled" } | { kind: "installing" } | 
+/**  Nothing is downloaded until `lsp_install` is called (or auto install is on). */
+{ kind: "needsInstall"; version: string; sizeHint?: number | null } | 
+/**  Retry with `lsp_install`. */
+{ kind: "installFailed"; reason: string; retryable: boolean } | 
+/**  Process start or `initialize` failed. Retry with `lsp_restart`. */
+{ kind: "startFailed"; reason: string } | 
+/**
+ *  Node.js or a JDK is missing or too old. Fix the host or the override setting,
+ *  then `lsp_restart`.
+ */
+{ kind: "runtimeMissing"; runtime: string; requiredVersion: number; found: string[] };
+
+export type LanguageServerStateDto_Serialize = { kind: "notStarted" } | { kind: "starting" } | { kind: "ready" } | { kind: "crashed" } | { kind: "stopped" } | { kind: "disabled" } | { kind: "installing" } | 
+/**  Nothing is downloaded until `lsp_install` is called (or auto install is on). */
+{ kind: "needsInstall"; version: string; sizeHint: number | null } | 
+/**  Retry with `lsp_install`. */
+{ kind: "installFailed"; reason: string; retryable: boolean } | 
+/**  Process start or `initialize` failed. Retry with `lsp_restart`. */
+{ kind: "startFailed"; reason: string } | 
+/**
+ *  Node.js or a JDK is missing or too old. Fix the host or the override setting,
+ *  then `lsp_restart`.
+ */
+{ kind: "runtimeMissing"; runtime: string; requiredVersion: number; found: string[] };
+
+/**
+ *  `path` is workspace relative with forward slashes when inside the workspace,
+ *  otherwise the absolute path.
+ */
+export type LocationDto = {
+	path: string,
+	range: RangeDto,
+};
+
+/**  Typed errors of every `lsp_*` command. */
+export type LspErrorDto = LspErrorDto_Serialize | LspErrorDto_Deserialize;
+
+/**  Typed errors of every `lsp_*` command. */
+export type LspErrorDto_Deserialize = { kind: "notReady"; message: string } | { kind: "unsupported"; message: string } | { kind: "needsInstall"; server: LanguageServerId; version: string; sizeHint?: number | null } | { kind: "installFailed"; server: LanguageServerId; reason: string; retryable: boolean } | { kind: "startFailed"; server: LanguageServerId; reason: string } | { kind: "runtimeMissing"; server: LanguageServerId; runtime: string; requiredVersion: number; found: string[] } | { kind: "serverCrashed"; message: string } | { kind: "cancelled" } | 
+/**
+ *  The document changed, closed, or the server restarted or the workspace changed
+ *  before the reply arrived. The reply was dropped.
+ */
+{ kind: "stale" } | { kind: "other"; message: string };
+
+/**  Typed errors of every `lsp_*` command. */
+export type LspErrorDto_Serialize = { kind: "notReady"; message: string } | { kind: "unsupported"; message: string } | { kind: "needsInstall"; server: LanguageServerId; version: string; sizeHint: number | null } | { kind: "installFailed"; server: LanguageServerId; reason: string; retryable: boolean } | { kind: "startFailed"; server: LanguageServerId; reason: string } | { kind: "runtimeMissing"; server: LanguageServerId; runtime: string; requiredVersion: number; found: string[] } | { kind: "serverCrashed"; message: string } | { kind: "cancelled" } | 
+/**
+ *  The document changed, closed, or the server restarted or the workspace changed
+ *  before the reply arrived. The reply was dropped.
+ */
+{ kind: "stale" } | { kind: "other"; message: string };
+
+/**  Every `lsp_*` reply is stamped with what it was computed against. */
+export type LspResponse<T> = {
+	/**  Buffer revision of the document the reply refers to. */
+	revision: number,
+	/**  Server epoch (incremented on every restart of that server). */
+	epoch: number,
+	data: T,
 };
 
 export type MarkdownView = "source" | "preview" | "both";
@@ -306,12 +595,23 @@ export type PlanEntry = {
 	status: string,
 };
 
+/**  UTF-16 based LSP position (`character` counts UTF-16 code units, like CodeMirror). */
+export type PositionDto = {
+	line: number,
+	character: number,
+};
+
 export type ProposalHunk = {
 	id: string,
 	from: number,
 	to: number,
 	before: string,
 	after: string,
+};
+
+export type RangeDto = {
+	start: PositionDto,
+	end: PositionDto,
 };
 
 export type RecentProject = RecentProject_Serialize | RecentProject_Deserialize;
@@ -379,6 +679,32 @@ export type SearchQuery_Serialize = {
 	isRegex: boolean,
 	caseSensitive: boolean,
 	maxResults: number,
+};
+
+export type ServerStatusDto = ServerStatusDto_Serialize | ServerStatusDto_Deserialize;
+
+export type ServerStatusDto_Deserialize = {
+	server: LanguageServerId,
+	root?: string | null,
+	state: LanguageServerStateDto_Deserialize,
+	installed: boolean,
+	enabled: boolean,
+	version: string,
+	epoch: number,
+	/**  Only known while the server is ready. */
+	capabilities?: CapabilitiesDto | null,
+};
+
+export type ServerStatusDto_Serialize = {
+	server: LanguageServerId,
+	root: string | null,
+	state: LanguageServerStateDto_Serialize,
+	installed: boolean,
+	enabled: boolean,
+	version: string,
+	epoch: number,
+	/**  Only known while the server is ready. */
+	capabilities: CapabilitiesDto | null,
 };
 
 export type SessionGroup = SessionGroup_Serialize | SessionGroup_Deserialize;
@@ -471,6 +797,7 @@ export type Settings_Deserialize = {
 	zoomLevel?: number | null,
 	keybindings?: { [key in string]: string[] },
 	formatters?: { [key in string]: string[] },
+	languageServers?: LanguageServerSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -492,6 +819,7 @@ export type Settings_Serialize = {
 	zoomLevel: number | null,
 	keybindings: { [key in string]: string[] },
 	formatters: { [key in string]: string[] },
+	languageServers: LanguageServerSettings_Serialize,
 };
 
 export type StartupFile = StartupFile_Serialize | StartupFile_Deserialize;
@@ -545,6 +873,12 @@ export type TextEdit = {
 	from: number,
 	to: number,
 	insert: string,
+};
+
+/**  A replacement of `range` (positions in the document the response is stamped with). */
+export type TextEditDto = {
+	range: RangeDto,
+	newText: string,
 };
 
 export type Theme = "Dark" | "Light" | "Purple";

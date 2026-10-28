@@ -10,8 +10,11 @@ use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode}
 mod agents;
 mod cli;
 mod file_index;
+#[doc(hidden)]
+pub mod language_servers;
 mod menu;
-mod services;
+#[doc(hidden)]
+pub mod services;
 mod startup;
 
 /// The authoritative workspace is only accessed by blocking workers.
@@ -96,8 +99,13 @@ where
 
 #[tauri::command]
 #[specta::specta]
-async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<Workspace, String> {
+async fn open_workspace(
+    state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
+    path: String,
+) -> Result<Workspace, String> {
     let state = state.inner().clone();
+    let lsp = lsp.inner().clone();
     let _gate = state.connection_gate.lock().await;
     let workspace = tauri::async_runtime::spawn_blocking(move || {
         CoreWorkspace::open(path).map_err(|error| error.to_string())
@@ -106,9 +114,10 @@ async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<
     .map_err(|error| format!("Open folder task failed: {error}"))??;
     agents::disconnect_and_wait(&state).await?;
     services::cancel_all_formatter_jobs(&state);
-    let (result, workspace) = tauri::async_runtime::spawn_blocking(move || {
+    let (result, settings, workspace) = tauri::async_runtime::spawn_blocking(move || {
         let result = workspace.workspace();
-        Ok::<_, String>((result, workspace))
+        let settings = workspace.get_settings().unwrap_or_default();
+        Ok::<_, String>((result, settings, workspace))
     })
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
@@ -129,6 +138,8 @@ async fn open_workspace(state: State<'_, DesktopState>, path: String) -> Result<
             .lock()
             .map_err(|_| "Workspace state is unavailable".to_owned())? =
             Some(PathBuf::from(&result.root));
+        // Closes the previous workspace's documents and servers; never waits for them.
+        lsp.workspace_changed(std::path::PathBuf::from(&result.root), &settings);
         if let Err(error) = span_core::RecentProjectStore::for_current_user()
             .and_then(|store| store.record_open(std::path::Path::new(&result.root)))
         {
@@ -162,10 +173,14 @@ async fn list_files(state: State<'_, DesktopState>) -> Result<Vec<FileEntry>, St
 #[specta::specta]
 async fn open_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     path: String,
 ) -> Result<BufferSnapshot, String> {
+    let lsp = lsp.inner().clone();
     with_workspace(state.inner().clone(), move |workspace| {
-        workspace.open_buffer(&path)
+        let snapshot = workspace.open_buffer(&path)?;
+        lsp.on_snapshot(&snapshot);
+        Ok(snapshot)
     })
     .await
 }
@@ -174,14 +189,16 @@ async fn open_buffer(
 #[specta::specta]
 async fn edit_buffer_delta(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     path: String,
     expected_revision: u64,
     changes: Vec<TextEdit>,
 ) -> Result<BufferRevision, String> {
     let state = state.inner().clone();
+    let lsp = lsp.inner().clone();
     let edited_path = path.clone();
     let result = with_workspace(state.clone(), move |workspace| {
-        workspace.edit_buffer_delta(&path, expected_revision, changes)
+        lsp.edit_buffer_delta(workspace, &path, expected_revision, changes)
     })
     .await?;
     services::cancel_formatter_jobs_for_path(&state, &edited_path);
@@ -193,6 +210,7 @@ async fn edit_buffer_delta(
 async fn save_buffer(
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     path: String,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
@@ -207,6 +225,7 @@ async fn save_buffer(
         .lock()
         .map_err(|_| "Workspace state is unavailable".to_owned())?
         .clone();
+    // Saving never waits for a language server: the hooks below only queue.
     let snapshot = services::format_or_save_with_warning(
         state.inner().clone(),
         path,
@@ -221,6 +240,13 @@ async fn save_buffer(
             span_file_index::FileEvent::Upsert(PathBuf::from(&snapshot.path)),
         );
     }
+    lsp.on_snapshot(&snapshot);
+    lsp.on_saved(&snapshot);
+    if snapshot.path.ends_with(".span/settings.jsonc") {
+        if let Ok(settings) = with_workspace(state.inner().clone(), |w| w.get_settings()).await {
+            lsp.inner().apply_settings(&settings);
+        }
+    }
     Ok(snapshot)
 }
 
@@ -228,12 +254,16 @@ async fn save_buffer(
 #[specta::specta]
 async fn discard_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     path: String,
 ) -> Result<BufferSnapshot, String> {
     let state = state.inner().clone();
+    let lsp = lsp.inner().clone();
     let discarded_path = path.clone();
     let result = with_workspace(state.clone(), move |workspace| {
-        workspace.discard_buffer(&path)
+        let snapshot = workspace.discard_buffer(&path)?;
+        lsp.on_discard(&snapshot);
+        Ok(snapshot)
     })
     .await?;
     services::cancel_formatter_jobs_for_path(&state, &discarded_path);
@@ -352,24 +382,30 @@ async fn get_settings(state: State<'_, DesktopState>) -> Result<Settings, String
 #[specta::specta]
 async fn update_settings(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     settings: Settings,
 ) -> Result<Settings, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
+    let saved = with_workspace(state.inner().clone(), move |workspace| {
         workspace.update_settings(settings)
     })
-    .await
+    .await?;
+    lsp.inner().apply_settings(&saved);
+    Ok(saved)
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn update_settings_jsonc(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     text: String,
 ) -> Result<Settings, String> {
-    with_workspace(state.inner().clone(), move |workspace| {
+    let saved = with_workspace(state.inner().clone(), move |workspace| {
         workspace.update_settings_jsonc(&text)
     })
-    .await
+    .await?;
+    lsp.inner().apply_settings(&saved);
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -412,15 +448,24 @@ async fn syntax(state: State<'_, DesktopState>, path: String) -> Result<SyntaxSn
 
 #[tauri::command]
 #[specta::specta]
-async fn new_file(state: State<'_, DesktopState>, path: String) -> Result<BufferSnapshot, String> {
+async fn new_file(
+    state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
+    path: String,
+) -> Result<BufferSnapshot, String> {
     let state = state.inner().clone();
+    let lsp = lsp.inner().clone();
     let index_root = state
         .file_index_root
         .lock()
         .ok()
         .and_then(|root| root.clone());
-    let snapshot =
-        with_workspace(state.clone(), move |workspace| workspace.new_file(&path)).await?;
+    let snapshot = with_workspace(state.clone(), move |workspace| {
+        let snapshot = workspace.new_file(&path)?;
+        lsp.on_snapshot(&snapshot);
+        Ok(snapshot)
+    })
+    .await?;
     if let Some(root) = index_root {
         let _ = state.file_index.apply_for_root(
             &root,
@@ -455,10 +500,12 @@ async fn new_directory(state: State<'_, DesktopState>, path: String) -> Result<F
 #[specta::specta]
 async fn rename_path(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     from: String,
     to: String,
 ) -> Result<FileEntry, String> {
     let state = state.inner().clone();
+    let lsp = lsp.inner().clone();
     let index_root = state
         .file_index_root
         .lock()
@@ -467,7 +514,17 @@ async fn rename_path(
     let worker_from = from.clone();
     let worker_to = to.clone();
     let entry = with_workspace(state.clone(), move |workspace| {
-        workspace.rename_path(&worker_from, &worker_to)
+        let entry = workspace.rename_path(&worker_from, &worker_to)?;
+        // The old paths leave the servers; the buffers that moved with the rename
+        // are opened again under their new paths.
+        for old in lsp.on_closed(&worker_from) {
+            let suffix = old.strip_prefix(worker_from.as_str()).unwrap_or("");
+            let new = format!("{}{suffix}", entry.path);
+            if let Ok(snapshot) = workspace.buffer_snapshot(&new) {
+                lsp.on_snapshot(&snapshot);
+            }
+        }
+        Ok(entry)
     })
     .await?;
     if let Some(root) = index_root {
@@ -493,17 +550,26 @@ async fn rename_path(
 #[specta::specta]
 async fn duplicate_path(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     from: String,
     to: String,
 ) -> Result<FileEntry, String> {
     let state = state.inner().clone();
+    let lsp = lsp.inner().clone();
     let index_root = state
         .file_index_root
         .lock()
         .ok()
         .and_then(|root| root.clone());
     let entry = with_workspace(state.clone(), move |workspace| {
-        workspace.duplicate_path(&from, &to)
+        let entry = workspace.duplicate_path(&from, &to)?;
+        // A copied source file reaches the servers like any created file.
+        if !entry.is_dir && lsp.handles_path(&entry.path) {
+            if let Ok(snapshot) = workspace.open_buffer(&entry.path) {
+                lsp.on_snapshot(&snapshot);
+            }
+        }
+        Ok(entry)
     })
     .await?;
     if let Some(root) = index_root {
@@ -524,8 +590,13 @@ async fn duplicate_path(
 
 #[tauri::command]
 #[specta::specta]
-async fn trash_path(state: State<'_, DesktopState>, path: String) -> Result<Vec<String>, String> {
+async fn trash_path(
+    state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
+    path: String,
+) -> Result<Vec<String>, String> {
     let state = state.inner().clone();
+    let lsp = lsp.inner().clone();
     let index_root = state
         .file_index_root
         .lock()
@@ -533,8 +604,12 @@ async fn trash_path(state: State<'_, DesktopState>, path: String) -> Result<Vec<
         .and_then(|root| root.clone());
     let absolute = index_root.as_ref().map(|root| root.join(&path));
     let is_dir = absolute.as_ref().is_some_and(|path| path.is_dir());
-    let removed =
-        with_workspace(state.clone(), move |workspace| workspace.trash_path(&path)).await?;
+    let removed = with_workspace(state.clone(), move |workspace| {
+        let removed = workspace.trash_path(&path)?;
+        lsp.on_closed(&path);
+        Ok(removed)
+    })
+    .await?;
     if let (Some(root), Some(absolute)) = (index_root, absolute) {
         let result = if is_dir {
             state.file_index.reconcile(&root).map(|_| ())
@@ -586,31 +661,46 @@ async fn get_settings_keys_for_scope(
     .await
 }
 
+/// Push the effective (user plus workspace) settings to the language server service after a
+/// scoped settings change. With no workspace open there is nothing running to update.
+async fn apply_effective_settings(state: &DesktopState, lsp: &language_servers::LspService) {
+    if let Ok(effective) = with_workspace(state.clone(), |workspace| workspace.get_settings()).await
+    {
+        lsp.apply_settings(&effective);
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn update_settings_jsonc_for_scope(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     scope: SettingsScope,
     text: String,
 ) -> Result<Settings, String> {
-    with_settings(state.inner().clone(), scope, move |workspace| {
+    let saved = with_settings(state.inner().clone(), scope, move |workspace| {
         workspace.update_settings_jsonc_for_scope(scope, &text)
     })
-    .await
+    .await?;
+    apply_effective_settings(state.inner(), lsp.inner()).await;
+    Ok(saved)
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn update_setting(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     scope: SettingsScope,
     key: String,
     value_json: Option<String>,
 ) -> Result<Settings, String> {
-    with_settings(state.inner().clone(), scope, move |workspace| {
+    let saved = with_settings(state.inner().clone(), scope, move |workspace| {
         workspace.update_setting(scope, &key, value_json.as_deref())
     })
-    .await
+    .await?;
+    apply_effective_settings(state.inner(), lsp.inner()).await;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -643,13 +733,16 @@ async fn edit_settings_buffer(
 #[specta::specta]
 async fn save_settings_buffer(
     state: State<'_, DesktopState>,
+    lsp: State<'_, language_servers::LspService>,
     scope: SettingsScope,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
-    with_settings(state.inner().clone(), scope, move |workspace| {
+    let saved = with_settings(state.inner().clone(), scope, move |workspace| {
         workspace.save_settings_buffer(scope, expected_revision)
     })
-    .await
+    .await?;
+    apply_effective_settings(state.inner(), lsp.inner()).await;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -673,6 +766,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             services::FormatWarning,
             menu::NativeActionEvent,
             startup::StartupRequestsChanged,
+            language_servers::LanguageServerStateChanged,
+            language_servers::LanguageServerInstallProgress,
+            language_servers::DiagnosticsPublished,
+            language_servers::LanguageServerError,
             startup::StartupRequestError
         ])
         .commands(collect_commands![
@@ -738,7 +835,15 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_disconnect,
             agents::agent_permission,
             agents::agent_review,
-            agents::agent_review_hunks
+            agents::agent_review_hunks,
+            language_servers::lsp_completion,
+            language_servers::lsp_hover,
+            language_servers::lsp_definition,
+            language_servers::lsp_format,
+            language_servers::lsp_cancel,
+            language_servers::lsp_install,
+            language_servers::lsp_restart,
+            language_servers::lsp_status
         ])
 }
 
@@ -775,6 +880,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            let cache = app.path().app_cache_dir()?.join("language-servers");
+            app.manage(language_servers::production(
+                cache,
+                language_servers::tauri_sink(app.handle().clone()),
+            )?);
             menu::install(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
@@ -804,6 +914,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let state = app.state::<DesktopState>();
             let _ = agents::disconnect(&state);
             state.file_index.shutdown();
+            // Bounded: a server that ignores shutdown is killed, never waited on forever.
+            app.state::<language_servers::LspService>()
+                .shutdown_blocking(std::time::Duration::from_secs(8));
             if let Ok(searches) = state.searches.lock() {
                 for cancellation in searches.values() {
                     cancellation.cancel();
