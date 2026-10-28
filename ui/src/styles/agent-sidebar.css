@@ -468,6 +468,8 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .agent-model-button .sb-model-icon { width: 17px; }
 .sb-trait-badge { position: absolute; right: -2px; bottom: -3px; display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: var(--sb-accent-fill); color: var(--sb-on-accent); box-shadow: 0 0 0 1.5px var(--sb-ring); }
 .agent-model-button .sb-trait-badge { right: -4px; }
+/* Heavy models carry a gold star where fast models carry the accent bolt. */
+.sb-trait-badge[data-trait="frontier"] { background: var(--sb-warning); color: var(--sb-surface); }
 .sb-option-line { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
 .sb-trait-chip { display: inline-flex; align-items: center; gap: 3px; flex: none; padding: 0 5px; border: 1px solid var(--sb-border); border-radius: 8px; font-size: 10.5px; line-height: 15px; color: var(--sb-dim); }
 

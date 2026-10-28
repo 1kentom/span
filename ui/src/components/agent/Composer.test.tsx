@@ -27,14 +27,18 @@ const claudeModels: ConfigOptionView = {
 
 describe("ModelPopover traits", () => {
   const rows = () => [...document.querySelectorAll<HTMLButtonElement>(".sb-option[role=radio]")];
-  it("shows an icon on every model row and the bolt only on fast models", () => {
+  it("shows an icon on every model row, the bolt on fast models and the star on heavy ones", () => {
     mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[claudeModels]} onSelect={() => {}} onClose={() => {}} />);
     expect(rows()).toHaveLength(4);
     for (const row of rows()) expect(row.querySelector(".sb-model-icon img")).not.toBeNull();
-    expect(rows().map((row) => row.querySelectorAll(".sb-trait-badge").length)).toEqual([0, 0, 1, 0]);
+    expect(rows().map((row) => row.querySelectorAll(".sb-trait-badge").length)).toEqual([0, 1, 1, 0]);
     const badge = rows()[2].querySelector(".sb-trait-badge")!;
     expect(badge.getAttribute("aria-label")).toBe("Fast model");
     expect(badge.getAttribute("title")).toBe("Fast model");
+    expect(badge.getAttribute("data-trait")).toBe("fast");
+    const star = rows()[1].querySelector(".sb-trait-badge")!;
+    expect(star.getAttribute("aria-label")).toBe("Most capable");
+    expect(star.getAttribute("data-trait")).toBe("frontier");
   });
   it("labels the other trait chip, skips redundant and unknown ones, and keeps the check", () => {
     mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[claudeModels]} onSelect={() => {}} onClose={() => {}} />);

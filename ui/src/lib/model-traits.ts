@@ -68,6 +68,14 @@ export function modelTraits(choice: TraitInput, context: TraitContext = {}): Mod
   return ORDER.filter((trait) => found.has(trait));
 }
 
+/** Traits that can sit on the model icon as a badge, strongest first: a fast model gets the bolt, a heavy model the star. */
+export const OVERLAY_TRAITS: readonly ModelTrait[] = ["fast", "frontier"];
+
+/** The one trait drawn on the icon itself, if any. Every other trait is only a chip after the name. */
+export function overlayTrait(traits: readonly ModelTrait[]): ModelTrait | undefined {
+  return OVERLAY_TRAITS.find((trait) => traits.includes(trait));
+}
+
 /** The one trait shown as a chip after the name, if any. Fast lives on the icon overlay. */
 export function chipTrait(traits: readonly ModelTrait[], name: string): ModelTrait | undefined {
   const trait = CHIP_PRIORITY.find((candidate) => traits.includes(candidate));

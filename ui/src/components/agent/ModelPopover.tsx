@@ -3,7 +3,7 @@ import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import type { AgentChoice, ConfigOptionView } from "./types";
 import { arrowFocus, useEscape } from "./util";
-import { TRAIT_INFO, chipTrait, isFastSwitchOn, modelTraits, type ModelTrait } from "../../lib/model-traits";
+import { TRAIT_INFO, chipTrait, isFastSwitchOn, modelTraits, overlayTrait, type ModelTrait } from "../../lib/model-traits";
 import type { BrandIdentity } from "../../lib/brand-icons";
 import { EffortSlider, defaultLevel, focusModelRow, modelNameOf } from "./EffortSlider";
 
@@ -29,15 +29,18 @@ export function currentModelTraits(options: readonly ConfigOptionView[]): ModelT
   return choice ? modelTraits(choice, { fastOn: fastSwitchOn(options) }) : [];
 }
 
-/** Agent brand mark with the primary trait badge (fast bolt) at its bottom right corner. */
+/** Agent brand mark with the primary trait badge (fast bolt, or the star for heavy models) at its bottom right corner. */
 export function ModelIcon(props: BrandIdentity & { traits: readonly ModelTrait[]; size?: number }) {
+  const overlay = () => overlayTrait(props.traits);
   return (
     <span class="sb-model-icon">
       <BrandIcon id={props.id} name={props.name} size={props.size ?? 16} />
-      <Show when={props.traits.includes("fast")}>
-        <span class="sb-trait-badge" role="img" aria-label={TRAIT_INFO.fast.label} title={TRAIT_INFO.fast.label}>
-          <Icon name={TRAIT_INFO.fast.icon!} size={9} />
-        </span>
+      <Show when={overlay()}>
+        {(trait) => (
+          <span class="sb-trait-badge" data-trait={trait()} role="img" aria-label={TRAIT_INFO[trait()].label} title={TRAIT_INFO[trait()].label}>
+            <Icon name={TRAIT_INFO[trait()].icon!} size={9} />
+          </span>
+        )}
       </Show>
     </span>
   );

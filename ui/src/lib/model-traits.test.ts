@@ -82,3 +82,21 @@ describe("real Codex and Claude model lists", () => {
     expect(modelTraits({ name: "Haiku 5.5", description: "Fastest for quick answers" })).toContain("fast");
   });
 });
+
+describe("icon overlay", () => {
+  it("gives fast models the bolt and heavy models the star, fast first", async () => {
+    const { overlayTrait } = await import("./model-traits");
+    expect(overlayTrait(modelTraits({ name: "Haiku 5.5", description: "Fastest for quick answers" }))).toBe("fast");
+    expect(overlayTrait(modelTraits({ name: "Opus 5.5", description: "For complex work and everyday tasks" }))).toBe("frontier");
+    expect(overlayTrait(modelTraits({ name: "6 Astra", description: "Frontier intelligence for the most demanding work." }))).toBe("frontier");
+    expect(overlayTrait(["fast", "frontier"])).toBe("fast");
+    expect(overlayTrait(["balanced", "recommended"])).toBeUndefined();
+    expect(overlayTrait([])).toBeUndefined();
+  });
+  it("has an icon for every trait that can be an overlay", () => {
+    for (const trait of ["fast", "frontier"] as const) {
+      expect(TRAIT_INFO[trait].icon, trait).toBeTruthy();
+      expect(existsSync(resolve(__dirname, `../../public/icons/${TRAIT_INFO[trait].icon}.svg`)), trait).toBe(true);
+    }
+  });
+});
