@@ -4,6 +4,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import type { LspPort } from './lsp-client';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
+import type { NavigationPort } from './lsp-navigation';
+import { createPreviewNavigationPort, previewNavigationFiles } from './navigation-preview';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
@@ -18,6 +20,7 @@ function nativeRequired(action: string): never {
 // This fixture exists only in browser preview. Native commands always use Rust workspace state.
 const fixture: Record<string, string> = {
   ...previewAssetFiles,
+  ...previewNavigationFiles,
   '.env.local': 'SPAN_ENV=preview\nPORT=1420\nSPAN_SAMPLE_ONLY=true\n',
   'community/platform/node-rpc-client/src/rpc-node.ts': `import { JsonRpc } from './rpc';
 import { SocketTransport } from './socket-transport';
@@ -564,3 +567,28 @@ export async function agentCancelTask(taskId: string): Promise<void> {
   if (!isDesktop) nativeRequired('Cancelling an agent task');
   await commands.agentCancelTask(taskId);
 }
+
+/** Preview only: the browser answers navigation requests from a labelled text-scanning fixture, see navigation-preview.ts. */
+const previewNavigation = createPreviewNavigationPort(() => Object.fromEntries(Object.keys(fixture).map(path => { const buffer = buffers.get(path); return [path, { text: buffer?.text ?? fixture[path], revision: buffer?.revision ?? 0 }]; })));
+
+/** Code navigation commands. Browser preview answers from the labelled fixture. */
+export const navigationPort: NavigationPort = isDesktop ? {
+  definition: (path, position, id) => commands.lspDefinition(path, position, id),
+  typeDefinition: (path, position, id) => commands.lspTypeDefinition(path, position, id),
+  implementation: (path, position, id) => commands.lspImplementation(path, position, id),
+  declaration: (path, position, id) => commands.lspDeclaration(path, position, id),
+  references: (path, position, include, id) => commands.lspReferences(path, position, include, id),
+  documentSymbols: (path, id) => commands.lspDocumentSymbols(path, id),
+  workspaceSymbols: (query, hint, id) => commands.lspWorkspaceSymbols(query, hint, id),
+  callPrepare: (path, position, id) => commands.lspCallHierarchyPrepare(path, position, id),
+  callIncoming: (item, id) => commands.lspCallHierarchyIncoming(item, id),
+  callOutgoing: (item, id) => commands.lspCallHierarchyOutgoing(item, id),
+  typePrepare: (path, position, id) => commands.lspTypeHierarchyPrepare(path, position, id),
+  typeSupertypes: (item, id) => commands.lspTypeHierarchySupertypes(item, id),
+  typeSubtypes: (item, id) => commands.lspTypeHierarchySubtypes(item, id),
+  highlights: (path, position, id) => commands.lspDocumentHighlights(path, position, id),
+  prepareRename: (path, position, id) => commands.lspPrepareRename(path, position, id),
+  rename: (path, position, name, id) => commands.lspRename(path, position, name, id),
+  readSource: (location, context) => commands.lspReadSource(location, context),
+  cancel: id => commands.lspCancel(id),
+} : previewNavigation;
