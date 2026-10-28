@@ -203,9 +203,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
                 .map(|(_, _, action)| *action)
         };
         if let Some(action) = action {
-            if let Err(error) = (NativeActionEvent { action }).emit(app) {
-                eprintln!("Could not dispatch menu action: {error}");
-            }
+            crate::events::emit(app, &NativeActionEvent { action });
         }
     });
     Ok(())

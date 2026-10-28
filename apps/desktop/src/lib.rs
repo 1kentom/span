@@ -9,6 +9,7 @@ use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
 mod cli;
+mod events;
 mod file_index;
 #[doc(hidden)]
 pub mod language_servers;
@@ -245,11 +246,8 @@ async fn save_buffer(
     path: String,
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
-    use tauri_specta::Event;
     let warning: services::FormatWarningSink = Arc::new(move |warning| {
-        if let Err(error) = warning.emit(&app) {
-            eprintln!("Could not report formatter notice: {error}");
-        }
+        events::emit(&app, &warning);
     });
     let index_root = state
         .file_index_root
@@ -945,11 +943,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+            events::mark_mounted(app);
             let cache = app.path().app_cache_dir()?.join("language-servers");
             app.manage(language_servers::production(
                 cache,
                 language_servers::tauri_sink(app.handle().clone()),
-            )?);
+            ));
             menu::install(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();

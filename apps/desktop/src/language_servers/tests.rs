@@ -931,3 +931,34 @@ async fn a_save_finishing_after_a_workspace_switch_is_not_sent_to_the_new_worksp
         "no document is tracked"
     );
 }
+
+#[tokio::test]
+async fn a_failing_download_client_degrades_installs_without_failing_the_service() {
+    let dir = tempfile::tempdir().unwrap();
+    let events: Arc<Mutex<Vec<LspEvent>>> = Arc::default();
+    let sink_events = events.clone();
+    let svc = production_using(
+        dir.path().join("cache"),
+        Arc::new(move |e| sink_events.lock().unwrap().push(e)),
+        || Err("TLS backend could not be initialised".to_owned()),
+    );
+    svc.workspace_changed(dir.path().canonicalize().unwrap(), &Settings::default());
+
+    // Everything but downloads works: status answers for every server.
+    assert!(!svc.status().await.is_empty());
+
+    // An install is a typed failure, not a panic or a missing service.
+    svc.install(ServerId::RustAnalyzer).await.unwrap();
+    eventually("typed install failure", || {
+        events.lock().unwrap().iter().any(|e| {
+            matches!(e, LspEvent::Install(i) if i.phase == InstallPhase::Failed
+                && i.message.as_deref().is_some_and(|m| m.contains("unavailable")))
+        })
+    })
+    .await;
+    assert!(svc
+        .status()
+        .await
+        .iter()
+        .any(|s| matches!(s.state, LanguageServerStateDto::InstallFailed { .. })));
+}

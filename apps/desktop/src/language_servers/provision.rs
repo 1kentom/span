@@ -9,9 +9,7 @@
 use super::LspSettings;
 use span_lsp::servers::cache::ServerCache;
 use span_lsp::servers::catalog::{self, Platform};
-use span_lsp::servers::install::{
-    BoxFuture, Fetch, HttpFetch, InstallError, InstallProgress, Installer,
-};
+use span_lsp::servers::install::{BoxFuture, Fetch, InstallError, InstallProgress, Installer};
 use span_lsp::servers::manager::{LaunchResolver, ServerError};
 use span_lsp::servers::resolver::{locate_java, CatalogResolver, JavaSearch};
 use span_lsp::servers::runtime::{locate_node, NodeSearch, RuntimeError, SystemProbe};
@@ -105,13 +103,8 @@ fn config_for(cache_root: &Path, fetch: &Arc<dyn Fetch>, settings: &LspSettings)
 }
 
 impl CatalogProvisioner {
-    pub fn new(cache_root: PathBuf) -> Result<Self, String> {
-        let fetch = HttpFetch::new().map_err(|e| e.to_string())?;
-        Ok(Self::with_fetch(cache_root, Arc::new(fetch)))
-    }
-
-    /// Same as [`Self::new`] with a caller supplied download source (integration
-    /// tests pass a counting wrapper around the real [`HttpFetch`]).
+    /// Provisioner with a caller supplied download source (production passes
+    /// `HttpFetch`; integration tests pass a counting wrapper around it).
     pub fn with_fetch(cache_root: PathBuf, fetch: Arc<dyn Fetch>) -> Self {
         let settings = LspSettings::default();
         let config = config_for(&cache_root, &fetch, &settings);

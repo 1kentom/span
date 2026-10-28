@@ -37,10 +37,10 @@ pub fn receive_drop(app: tauri::AppHandle, paths: Vec<std::path::PathBuf>) {
         .and_then(|result| result);
         match result {
             Ok(()) => {
-                let _ = (StartupRequestsChanged { pending: true }).emit(&app);
+                crate::events::emit(&app, &StartupRequestsChanged { pending: true });
             }
             Err(message) => {
-                let _ = (StartupRequestError { message }).emit(&app);
+                crate::events::emit(&app, &StartupRequestError { message });
             }
         }
     });
@@ -70,7 +70,7 @@ pub fn forwarded(app: &tauri::AppHandle, args: Vec<String>, cwd: String) {
             let state = app.state::<DesktopState>();
             match enqueue(&state, request) {
                 Ok(()) => {
-                    let _ = (StartupRequestsChanged { pending: true }).emit(app);
+                    crate::events::emit(app, &StartupRequestsChanged { pending: true });
                 }
                 Err(error) => eprintln!("Could not queue file-open request: {error}"),
             }
@@ -111,9 +111,8 @@ pub async fn enqueue_dropped_paths(
     tauri::async_runtime::spawn_blocking(move || enqueue(&state, paths_request(paths, &cwd)?))
         .await
         .map_err(|error| format!("Open dropped paths task failed: {error}"))??;
-    (StartupRequestsChanged { pending: true })
-        .emit(&app)
-        .map_err(|error| error.to_string())
+    crate::events::emit(&app, &StartupRequestsChanged { pending: true });
+    Ok(())
 }
 
 #[tauri::command]

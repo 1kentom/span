@@ -105,15 +105,12 @@ pub type EventSink = Arc<dyn Fn(LspEvent) + Send + Sync>;
 
 pub fn tauri_sink(app: tauri::AppHandle) -> EventSink {
     Arc::new(move |event| {
-        let result = match event {
-            LspEvent::State(e) => e.emit(&app),
-            LspEvent::Install(e) => e.emit(&app),
-            LspEvent::Diagnostics(e) => e.emit(&app),
-            LspEvent::Error(e) => e.emit(&app),
+        match event {
+            LspEvent::State(e) => crate::events::emit(&app, &e),
+            LspEvent::Install(e) => crate::events::emit(&app, &e),
+            LspEvent::Diagnostics(e) => crate::events::emit(&app, &e),
+            LspEvent::Error(e) => crate::events::emit(&app, &e),
         };
-        if let Err(error) = result {
-            eprintln!("Could not emit language server event: {error}");
-        }
     })
 }
 
@@ -284,16 +281,49 @@ impl Default for ServiceConfig {
     }
 }
 
-/// Production service: catalog resolver under `cache_root`, opt-in installs.
-pub fn production(cache_root: PathBuf, sink: EventSink) -> Result<LspService, String> {
-    let provisioner = Arc::new(CatalogProvisioner::new(cache_root)?);
-    let resolver = Arc::new(GatedResolver::new(provisioner.clone()));
-    Ok(LanguageServers::new(
-        resolver,
-        provisioner,
-        sink,
-        ServiceConfig::default(),
-    ))
+/// Download source used when the HTTP client could not be built (TLS or proxy setup):
+/// every download fails with a typed install error, nothing else is affected.
+struct UnavailableFetch(String);
+
+impl span_lsp::servers::install::Fetch for UnavailableFetch {
+    fn get<'a>(
+        &'a self,
+        _url: &'a str,
+    ) -> span_lsp::servers::install::BoxFuture<
+        'a,
+        Result<span_lsp::servers::install::FetchResponse, span_lsp::servers::install::FetchError>,
+    > {
+        Box::pin(async move {
+            Err(span_lsp::servers::install::FetchError(format!(
+                "language server downloads are unavailable: {}",
+                self.0
+            )))
+        })
+    }
+}
+
+/// Production service: catalog resolver under `cache_root`, opt-in installs. Never fails:
+/// if the HTTP client cannot be built the service starts in a degraded mode where
+/// installs report a failure and every other feature works.
+pub fn production(cache_root: PathBuf, sink: EventSink) -> LspService {
+    production_using(cache_root, sink, || {
+        span_lsp::servers::install::HttpFetch::new()
+            .map(|fetch| Arc::new(fetch) as Arc<dyn span_lsp::servers::install::Fetch>)
+            .map_err(|error| error.to_string())
+    })
+}
+
+/// [`production`] with an injectable download source builder (tests inject a failing one).
+pub fn production_using(
+    cache_root: PathBuf,
+    sink: EventSink,
+    build_fetch: impl FnOnce() -> Result<Arc<dyn span_lsp::servers::install::Fetch>, String>,
+) -> LspService {
+    let fetch = build_fetch().unwrap_or_else(|reason| {
+        eprintln!("Language server downloads are disabled: {reason}");
+        Arc::new(UnavailableFetch(reason))
+    });
+    production_with_fetch(cache_root, fetch, sink, ServiceConfig::default())
 }
 
 /// Test seam: the production wiring (catalog resolver, gated installs) with a
