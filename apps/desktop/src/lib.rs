@@ -978,8 +978,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             ));
             agents::watch_session_states(app.handle());
             menu::install(app.handle())?;
-            // The window starts hidden; the frontend shows it once the session has rendered.
-            window::show_if_still_hidden(app.handle(), std::time::Duration::from_secs(4));
+            // The window starts hidden; the frontend shows it once the session has rendered (its
+            // own cap is 2s after the first render). This only catches a frontend that never
+            // reports, and leaves room for a slow first load of the development server.
+            window::show_if_still_hidden(app.handle(), std::time::Duration::from_secs(6));
             window::log_window_created();
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
