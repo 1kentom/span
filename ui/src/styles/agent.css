@@ -390,28 +390,31 @@
 }
 /*
  * One rule for everything stacked on the prompt box (plan and queue drawers, the activity bar, question,
- * permission and URL docks): the prompt box's width and top radius (20px, see .agent-composer).
- * A dock is one card, its question, error and Skip live inside.
+ * permission and URL docks): the same compact tab as the activity bar, inset from the prompt box on both sides
+ * with a smaller top radius than the composer. A dock is one card, its question, error and Skip live inside.
  */
 .agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) {
-  margin: 0;
-  border-radius: 20px 20px 0 0;
+  margin: 0 14px;
+  border-radius: 12px 12px 0 0;
 }
 .agent-footer > :is(.sb-dock, .sb-activity) {
   border: 1px solid var(--sb-accent-border);
   border-bottom: 0;
 }
-/* The activity bar is a compact tab on the prompt box: a little narrower and a smaller radius than the card it sits on. */
+/* A long question never grows past the panel: it scrolls inside the dock and the prompt box stays in view. */
+.agent-footer > .sb-dock {
+  max-height: min(55vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* The activity bar keeps neutral colours and text clear of the rounded corner; its width and radius come from the shared rule. */
 .agent-footer > .sb-activity {
-  margin-inline: 14px;
   padding-inline: 14px;
-  border-radius: 12px 12px 0 0;
   border-color: var(--sb-border);
   background: var(--sb-raised);
 }
-/* Only the top element of a stack is rounded: any stacked bar below another one (even with a running step between) is square and full width, so the activity tab is only a tab when it tops the stack. */
+/* Only the top element of a stack is rounded: any stacked bar below another one (even with a running step between) is square and keeps the same inset, so the stack reads as one tab. */
 .agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) ~ :is(.sb-drawer, .sb-dock, .sb-activity) {
-  margin-inline: 0;
   border-radius: 0;
 }
 .sb-urlbox .sb-mono.sb-ellipsis {

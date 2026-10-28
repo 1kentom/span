@@ -68,14 +68,20 @@ describe("dock CSS frame", () => {
     expect(scroll).toMatch(/overflow-x:\s*hidden/);
   });
 
-  it("makes every composer-adjacent dock as wide as the prompt box, with no outside margin", () => {
-    // Docks share the one stacked-bar rule with the drawers and the activity bar.
+  it("makes every composer-adjacent dock the same compact tab as the activity bar", () => {
+    // Docks share the one stacked-bar rule with the drawers and the activity bar: same inset, same top radius.
     const dock = rule(agent, ".agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity)");
-    expect(dock).toMatch(/margin:\s*0;/);
-    // The dock's top corners follow the prompt box's radius, whatever the composer design sets it to.
-    const composerRadius = rule(agent, ".agent-composer").match(/border-radius:\s*(\d+px);/)?.[1];
-    expect(composerRadius).toBeTruthy();
-    expect(dock).toMatch(new RegExp(`border-radius:\\s*${composerRadius} ${composerRadius} 0 0`));
+    expect(dock).toMatch(/margin:\s*0\s+\d+px;/);
+    const composerRadius = Number(rule(agent, ".agent-composer").match(/border-radius:\s*(\d+)px;/)?.[1]);
+    const tabRadius = Number(dock.match(/border-radius:\s*(\d+)px\s+\1px\s+0\s+0/)?.[1]);
+    expect(tabRadius).toBeGreaterThan(0);
+    expect(tabRadius).toBeLessThan(composerRadius);
+  });
+
+  it("caps a tall dock and scrolls inside it, so its answers never slide under the prompt box", () => {
+    const dock = rule(agent, ".agent-footer > .sb-dock");
+    expect(dock).toMatch(/max-height:/);
+    expect(dock).toMatch(/overflow-y:\s*auto/);
   });
 
   it("does not style a separate strip beside the dock", () => {
