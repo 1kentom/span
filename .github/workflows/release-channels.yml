@@ -1,0 +1,150 @@
+name: Release channels
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        type: choice
+        options: [preview, stable]
+        default: preview
+      source_ref:
+        description: Existing release/* branch for preview, existing vX.Y.Z tag for stable
+        required: true
+        default: release/0.1
+        type: string
+      phase_gate:
+        description: Stable only, enter phase-0.1-verified after reviewing docs/releases.md
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.channel || github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      github.repository == '1kentom/span' &&
+      vars.RELEASE_CHANNELS_ENABLED == 'true' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      channel: ${{ steps.plan.outputs.channel }}
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test release policy
+        run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
+      - name: Resolve source and require successful CI for that exact SHA
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_RELEASE_BRANCH: ${{ vars.PREVIEW_RELEASE_BRANCH }}
+        run: python3 scripts/release/release.py plan
+      - name: Generate curated and conventional commit release notes
+        env:
+          RELEASE_SHA: ${{ steps.plan.outputs.sha }}
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+          RELEASE_CHANNEL: ${{ steps.plan.outputs.channel }}
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+        run: >-
+          python3 scripts/release/release.py notes
+          --sha "$RELEASE_SHA" --version "$RELEASE_VERSION"
+          --channel "$RELEASE_CHANNEL" --tag "$RELEASE_TAG" --output release-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            release-plan.json
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 30
+
+  package:
+    needs: prepare
+    uses: ./.github/workflows/release-build.yml
+    permissions:
+      contents: read
+    with:
+      channel: ${{ needs.prepare.outputs.channel }}
+      source_sha: ${{ needs.prepare.outputs.sha }}
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  publish:
+    needs: [prepare, package]
+    runs-on: ubuntu-24.04
+    environment: release-${{ needs.prepare.outputs.channel }}
+    permissions:
+      contents: write
+    steps:
+      - name: Require environment approval marker for stable
+        if: needs.prepare.outputs.channel == 'stable'
+        env:
+          APPROVED: ${{ vars.PHASE_0_1_RELEASE_APPROVED }}
+        run: test "$APPROVED" = true
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: release-assets
+      - name: Require all four installer targets before publishing
+        run: python3 scripts/release/release.py verify-assets --source release-assets
+      - name: Hash release artifacts
+        run: python3 scripts/release/release.py checksums --source release-assets
+      - name: Create draft, upload every artifact, then publish atomically
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          set -euo pipefail
+          flags=(--prerelease --latest=false)
+          create_flags=()
+          if [[ "$RELEASE_CHANNEL" == stable ]]; then
+            git fetch origin "refs/tags/$RELEASE_TAG"
+            test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$RELEASE_SHA"
+            flags=(--latest)
+            create_flags=(--verify-tag)
+          elif git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null; then
+            echo 'Refusing to reuse an existing prerelease tag' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --target "$RELEASE_SHA" --draft \
+            --title "Span $RELEASE_TAG" --notes-file release-assets/release-notes.md "${flags[@]}" "${create_flags[@]}"
+          gh release upload "$RELEASE_TAG" release-assets/*
+          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"

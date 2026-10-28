@@ -1,0 +1,279 @@
+import { open } from '@tauri-apps/plugin-dialog';
+import { Channel } from '@tauri-apps/api/core';
+import { commands } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, InstalledAgent, RegistryAgent, SearchMatch, Settings_Serialize as Settings, SyntaxSnapshot, TextEdit, Workspace } from '../bindings';
+
+export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
+
+function nativeRequired(action: string): never {
+  throw new Error(`${action} requires the span desktop app. This browser shows a sample workspace.`);
+}
+
+// This fixture exists only in browser preview. Native commands always use Rust workspace state.
+const fixture: Record<string, string> = {
+  'community/platform/node-rpc-client/src/rpc-node.ts': `import { JsonRpc } from './rpc';
+import { SocketTransport } from './socket-transport';
+import type { ConnectionOptions } from './types';
+
+export class NodeRpcClient {
+  private readonly rpc: JsonRpc;
+  private readonly transport: SocketTransport;
+
+  constructor(options: ConnectionOptions) {
+    this.transport = new SocketTransport(options);
+    this.rpc = new JsonRpc(this.transport);
+  }
+
+  async connect(): Promise<void> {
+    await this.transport.connect();
+    this.rpc.start();
+  }
+
+  async request<T>(method: string, params?: unknown): Promise<T> {
+    return this.rpc.request<T>(method, params);
+  }
+
+  dispose(): void {
+    this.rpc.dispose();
+    this.transport.close();
+  }
+}
+`,
+  'community/platform/node-rpc-client/src/rpc.ts': 'export class JsonRpc {\n  constructor(private transport: unknown) {}\n  start() {}\n  dispose() {}\n}\n',
+  'community/platform/node-rpc-client/src/socket-transport.ts': 'export class SocketTransport {\n  async connect() {}\n  close() {}\n}\n',
+  'community/platform/node-rpc-client/package.json': '{\n  "name": "@platform/node-rpc-client",\n  "private": true\n}\n',
+  'README.md': '# span\n\nA focused space for code and agents.\n\nThis is the browser preview workspace. Open the desktop app to edit your own files.\n',
+  'src/App.tsx': `import { createSignal } from 'solid-js';
+import { Editor } from './components/Editor';
+import './styles.css';
+
+export default function App() {
+  const [activeFile, setActiveFile] = createSignal('welcome.ts');
+
+  return (
+    <main class="workspace">
+      <header class="workspace-header">
+        <span class="wordmark">span</span>
+        <span class="workspace-name">A space for your next idea</span>
+      </header>
+      <Editor path={activeFile()} onSelect={setActiveFile} />
+    </main>
+  );
+}
+`,
+  'src/components/Editor.tsx': `import { createSignal } from 'solid-js';
+
+type EditorProps = {
+  path: string;
+  onSelect: (path: string) => void;
+};
+
+export function Editor(props: EditorProps) {
+  const [ready] = createSignal(true);
+
+  return (
+    <section class="editor" data-ready={ready()}>
+      <h1>{props.path}</h1>
+      <p>Good ideas need room to grow.</p>
+    </section>
+  );
+}
+`,
+  'src/styles.css': ':root {\n  color-scheme: dark;\n  font-family: Inter, sans-serif;\n  background: #101113;\n  color: #d9dadd;\n}\n\n.workspace {\n  display: grid;\n  min-height: 100vh;\n}\n',
+  'package.json': '{\n  "name": "span-workspace",\n  "private": true,\n  "scripts": { "dev": "vite" }\n}\n',
+  'tsconfig.json': '{\n  "compilerOptions": {\n    "target": "ES2022",\n    "strict": true,\n    "jsx": "preserve"\n  }\n}\n',
+};
+
+const buffers = new Map<string, BufferSnapshot>();
+let previewSettings: Settings = { theme: 'Dark', fontSize: 13, tabSize: 2, wordWrap: false };
+const previewWorkspace: Workspace = { name: 'intellij', root: '/preview/intellij' };
+const agentListeners = new Set<(event: AgentEvent) => void>();
+let agentGeneration = 0;
+let searchSequence = 0;
+
+function language(path: string): string {
+  const extension = path.split('.').pop();
+  if (extension === 'ts' || extension === 'tsx') return 'typescript';
+  if (extension === 'js' || extension === 'jsx') return 'javascript';
+  if (extension === 'json' || extension === 'jsonc') return 'json';
+  if (extension === 'md') return 'markdown';
+  if (extension === 'rs') return 'rust';
+  if (extension === 'py') return 'python';
+  return 'text';
+}
+
+function previewBuffer(path: string): BufferSnapshot {
+  let buffer = buffers.get(path);
+  if (!buffer) {
+    if (!(path in fixture)) throw new Error(`Sample file does not exist: ${path}`);
+    buffer = { path, text: fixture[path], revision: 0, savedRevision: 0, language: language(path) };
+    buffers.set(path, buffer);
+  }
+  return { ...buffer };
+}
+
+function previewEntries(path: string): FileEntry[] {
+  const prefix = path.replace(/^\/preview\/intellij\/?/, '').replace(/\/$/, '');
+  const directory = prefix ? `${prefix}/` : '';
+  const entries = new Map<string, FileEntry>();
+  for (const file of Object.keys(fixture)) {
+    if (!file.startsWith(directory)) continue;
+    const relative = file.slice(directory.length);
+    const name = relative.split('/')[0];
+    const entryPath = `${directory}${name}`;
+    entries.set(entryPath, { path: entryPath, name, isDir: relative.includes('/') });
+  }
+  return [...entries.values()].sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
+}
+
+export const api = {
+  async openWorkspace(path?: string): Promise<Workspace | null> {
+    if (!isDesktop) {
+      if (path && path !== previewWorkspace.root) nativeRequired('Opening folders');
+      return { ...previewWorkspace };
+    }
+    const selected = path ?? await open({ directory: true, multiple: false, title: 'Open a folder in span' });
+    if (!selected || Array.isArray(selected)) return null;
+    const workspace = await commands.openWorkspace(selected);
+    agentGeneration += 1;
+    return workspace;
+  },
+  async listDirectory(path: string): Promise<FileEntry[]> {
+    return isDesktop ? commands.listDirectory(path) : previewEntries(path);
+  },
+  async listFiles(): Promise<FileEntry[]> {
+    return isDesktop ? commands.listFiles() : Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
+  },
+  async openBuffer(path: string): Promise<BufferSnapshot> {
+    return isDesktop ? commands.openBuffer(path) : previewBuffer(path);
+  },
+  async editBuffer(path: string, expectedRevision: number, changes: TextEdit[]): Promise<BufferRevision> {
+    if (isDesktop) return commands.editBufferDelta(path, expectedRevision, changes);
+    const buffer = previewBuffer(path);
+    if (buffer.revision !== expectedRevision) throw new Error(`Expected revision ${expectedRevision}, current revision is ${buffer.revision}`);
+    let end = 0;
+    for (const change of changes) {
+      if (change.from < end || change.from > change.to || change.to > buffer.text.length) throw new Error('Invalid sample buffer edit');
+      end = change.to;
+    }
+    for (const change of [...changes].reverse()) buffer.text = buffer.text.slice(0, change.from) + change.insert + buffer.text.slice(change.to);
+    if (changes.length) buffer.revision += 1;
+    buffers.set(path, buffer);
+    return { path, revision: buffer.revision, savedRevision: buffer.savedRevision };
+  },
+  async saveBuffer(path: string, expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Saving files');
+    return commands.saveBuffer(path, expectedRevision);
+  },
+  async discardBuffer(path: string): Promise<BufferSnapshot> {
+    if (isDesktop) return commands.discardBuffer(path);
+    const buffer = previewBuffer(path);
+    buffer.text = fixture[path];
+    buffer.revision += 1;
+    buffer.savedRevision = buffer.revision;
+    buffers.set(path, buffer);
+    return { ...buffer };
+  },
+  async search(query: string): Promise<SearchMatch[]> {
+    if (isDesktop) return commands.search({ text: query, isRegex: false, caseSensitive: false, maxResults: 1000 });
+    if (!query) return [];
+    const results: SearchMatch[] = [];
+    for (const path of Object.keys(fixture)) {
+      previewBuffer(path).text.split('\n').forEach((text, index) => {
+        const column = text.toLowerCase().indexOf(query.toLowerCase());
+        if (column >= 0) results.push({ path, line: index + 1, column: column + 1, text });
+      });
+    }
+    return results;
+  },
+  searchStream(query: string, onMatch: (match: SearchMatch) => void): { done: Promise<number>; cancel: () => Promise<void> } {
+    const id = `search-${++searchSequence}`;
+    if (isDesktop) {
+      const channel = new Channel<SearchMatch>();
+      channel.onmessage = onMatch;
+      return {
+        done: commands.searchStream(id, { text: query, isRegex: false, caseSensitive: false, maxResults: 1000 }, channel),
+        cancel: async () => { await commands.cancelSearch(id); },
+      };
+    }
+    let cancelled = false;
+    return {
+      done: api.search(query).then(matches => {
+        if (cancelled) return 0;
+        for (const match of matches) onMatch(match);
+        return matches.length;
+      }),
+      cancel: async () => { cancelled = true; },
+    };
+  },
+  async getSettings(): Promise<Settings> {
+    return isDesktop ? commands.getSettings() : { ...previewSettings };
+  },
+  async updateSettings(settings: Settings): Promise<Settings> {
+    if (isDesktop) return commands.updateSettings(settings);
+    previewSettings = { ...settings };
+    return { ...previewSettings };
+  },
+  async updateSettingsJsonc(text: string): Promise<Settings> {
+    if (!isDesktop) nativeRequired('Validating and saving JSONC settings');
+    return commands.updateSettingsJsonc(text);
+  },
+  async syntax(path: string): Promise<SyntaxSnapshot> {
+    if (!isDesktop) nativeRequired('Tree-sitter syntax analysis');
+    return commands.syntax(path);
+  },
+  async agentRegistry(): Promise<RegistryAgent[]> {
+    if (!isDesktop) nativeRequired('Agent registry discovery');
+    return commands.agentRegistry();
+  },
+  async agentInstalled(): Promise<InstalledAgent[]> {
+    if (!isDesktop) nativeRequired('Listing installed agents');
+    return commands.agentInstalled();
+  },
+  async agentInstall(id: string): Promise<InstalledAgent> {
+    if (!isDesktop) nativeRequired('Installing agents');
+    return commands.agentInstall(id);
+  },
+  async agentConnect(command: AgentCommand, cwd: string): Promise<string> {
+    if (!isDesktop) nativeRequired('Connecting agents');
+    const generation = ++agentGeneration;
+    const channel = new Channel<AgentEvent>();
+    channel.onmessage = event => {
+      if (generation !== agentGeneration) return;
+      for (const listener of agentListeners) listener(event);
+    };
+    const session = await commands.agentConnect(command, cwd, channel);
+    if (generation !== agentGeneration) throw new Error('Agent connection was superseded by another connection or disconnect.');
+    return session;
+  },
+  async agentPrompt(text: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Sending agent prompts');
+    await commands.agentPrompt(text);
+  },
+  async agentCancel(): Promise<void> {
+    if (!isDesktop) nativeRequired('Cancelling agents');
+    await commands.agentCancel();
+  },
+  async agentDisconnect(): Promise<void> {
+    if (!isDesktop) nativeRequired('Disconnecting agents');
+    agentGeneration += 1;
+    await commands.agentDisconnect();
+  },
+  async agentPermission(requestId: string, optionId: string | null): Promise<void> {
+    if (!isDesktop) nativeRequired('Responding to agent permissions');
+    await commands.agentPermission(requestId, optionId);
+  },
+  async agentReview(proposalId: string, accept: boolean, expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Reviewing agent edits');
+    return commands.agentReview(proposalId, accept, expectedRevision);
+  },
+  async agentReviewHunks(proposalId: string, acceptedHunkIds: string[], expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Reviewing agent edit hunks');
+    return commands.agentReviewHunks(proposalId, acceptedHunkIds, expectedRevision);
+  },
+  async onAgentEvent(listener: (event: AgentEvent) => void): Promise<() => void> {
+    agentListeners.add(listener);
+    return () => { agentListeners.delete(listener); };
+  },
+};

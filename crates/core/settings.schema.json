@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://span.dev/settings.schema.json",
+  "title": "span settings",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "theme": { "type": "string", "enum": ["Dark", "Light", "Purple"], "default": "Dark" },
+    "fontSize": { "type": "integer", "minimum": 8, "maximum": 40, "default": 13 },
+    "tabSize": { "type": "integer", "minimum": 1, "maximum": 8, "default": 2 },
+    "wordWrap": { "type": "boolean", "default": false }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "span-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @span/ui dev",
+    "build": "pnpm --filter @span/ui build",
+    "check": "pnpm --filter @span/ui check",
+    "test": "pnpm --filter @span/ui test",
+    "test:e2e": "pnpm exec playwright test",
+    "desktop:dev": "cd apps/desktop && tauri dev",
+    "desktop:build": "cd apps/desktop && tauri build",
+    "bench:web": "node bench/run-web.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "@playwright/test": "1.64.1"
+  }
+}

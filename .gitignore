@@ -7,3 +7,22 @@ ui/dist/
 playwright-report/
 test-results/
 apps/desktop/gen/schemas/
+
+# Private local design inputs and generated review evidence.
+/design/
+/*.zip
+/*.png
+/artifacts/
+/screenshots/
+/coverage/
+
+# Local credentials and machine configuration.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python release-tool test caches.
+__pycache__/
+*.py[cod]

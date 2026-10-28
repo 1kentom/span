@@ -1,0 +1,19 @@
+{
+  "recorded_at": "2026-10-28T07:27:19.178210+00:00",
+  "command": "CARGO_TARGET_DIR=/tmp/span-core-validation cargo run --release -p span-core --example rope_bench",
+  "reported_by": "core implementation agent, actual local run",
+  "scope": "Core backend only, native UI phase gates unverified",
+  "bytes": 104857600,
+  "open_ms": 183.426833,
+  "middle_edit_ms": 0.0945,
+  "open_method": "core disk read, rope construction, initial snapshot",
+  "edit_method": "versioned UTF-16 validated middle edit with metadata acknowledgement",
+  "excluded": [
+    "fixture generation",
+    "cold disk cache",
+    "Tauri serialization and transfer",
+    "CodeMirror load",
+    "editable paint",
+    "scrolling"
+  ]
+}
