@@ -1,8 +1,10 @@
-//! Main window startup: timing reports from the frontend.
+//! Main window startup. The window is created hidden (tauri.conf.json) and shown once the
+//! frontend has rendered the restored session, so no blank native frame is ever on screen.
 use serde::Deserialize;
 use specta::Type;
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tauri::{window::Color, Manager};
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
@@ -45,5 +47,66 @@ pub fn report_startup_timings(timings: StartupTimings) {
             format_ms(timings.shell_rendered_ms),
             format_ms(timings.session_ready_ms),
         );
+    }
+}
+
+/// The `--canvas` colour of each theme in ui/src/styles/workbench.css.
+pub fn canvas_color(theme: span_core::Theme) -> Color {
+    match theme {
+        span_core::Theme::Dark => Color(9, 9, 9, 255),
+        span_core::Theme::Light => Color(238, 239, 240, 255),
+        span_core::Theme::Purple => Color(8, 8, 16, 255),
+    }
+}
+
+/// Called by the frontend once the restored session has rendered: match the native background
+/// to the theme (it shows during resizes and before the webview paints), then show the window.
+#[tauri::command]
+#[specta::specta]
+pub fn show_main_window(window: tauri::WebviewWindow, theme: span_core::Theme) -> Result<(), String> {
+    if let Err(error) = window.set_background_color(Some(canvas_color(theme))) {
+        eprintln!("Could not set the window background: {error}");
+    }
+    reveal(&window, "frontend").map_err(|error| error.to_string())
+}
+
+fn reveal(window: &tauri::WebviewWindow, by: &str) -> tauri::Result<()> {
+    if !window.is_visible()? {
+        window.show()?;
+        window.set_focus()?;
+        if cfg!(debug_assertions) {
+            eprintln!("startup: window shown by {by} at {:.0}ms", since_process_start_ms());
+        }
+    }
+    Ok(())
+}
+
+/// Shows the main window after `delay` if the frontend never asked for it (a script error, or a
+/// very slow first load), so a hidden window can never leave the app looking dead.
+pub fn show_if_still_hidden(app: &tauri::AppHandle, delay: Duration) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        if let Some(window) = app.get_webview_window("main") {
+            if let Err(error) = reveal(&window, "failsafe") {
+                eprintln!("Could not show the main window: {error}");
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn canvas_colours_match_the_workbench_tokens() {
+        use span_core::Theme;
+        let hex = |theme| {
+            let tauri::window::Color(r, g, b, a) = super::canvas_color(theme);
+            assert_eq!(a, 255);
+            format!("#{r:02x}{g:02x}{b:02x}")
+        };
+        assert_eq!(hex(Theme::Dark), "#090909");
+        assert_eq!(hex(Theme::Light), "#eeeff0");
+        assert_eq!(hex(Theme::Purple), "#080810");
     }
 }

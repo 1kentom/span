@@ -3,7 +3,7 @@ import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import type { LspPort } from './lsp-client';
-import type { StartupTimings } from './startup';
+import type { BootTheme, StartupTimings } from './startup';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
@@ -369,6 +369,10 @@ export const api = {
     if (isDesktop) { await commands.writeClipboard(text); return; }
     if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
     await navigator.clipboard.writeText(text);
+  },
+  /** Shows the main window, which starts hidden, on the theme's canvas colour. */
+  async showMainWindow(theme: BootTheme): Promise<void> {
+    if (isDesktop) await commands.showMainWindow(theme === "light" ? "Light" : theme === "purple" ? "Purple" : "Dark");
   },
   async reportStartupTimings(timings: StartupTimings): Promise<void> {
     if (isDesktop) await commands.reportStartupTimings(timings);

@@ -73,3 +73,19 @@ export function readBootTheme(storage: StorageLike | undefined = defaultStorage(
 export function rememberBootTheme(theme: BootTheme, storage: StorageLike | undefined = defaultStorage()) {
   try { if (storage?.getItem(THEME_STORAGE_KEY) !== theme) storage?.setItem(THEME_STORAGE_KEY, theme); } catch { /* storage can be unavailable */ }
 }
+
+/**
+ * Returns a function that calls `show` once: when the caller says the UI is ready, or after
+ * `capMs` so a slow session restore never keeps the window hidden.
+ */
+export function revealOnce(show: () => void | Promise<void>, capMs: number) {
+  let shown = false;
+  const reveal = () => {
+    if (shown) return;
+    shown = true;
+    clearTimeout(timer);
+    void Promise.resolve().then(show).catch(() => undefined);
+  };
+  const timer = setTimeout(reveal, capMs);
+  return reveal;
+}

@@ -200,6 +200,11 @@ export const commands = {
 	uploadsOpen: (id: string) => __TAURI_INVOKE<null>("uploads_open", { id }),
 	/**  Logs the webview's startup marks next to the time since the process started. */
 	reportStartupTimings: (timings: StartupTimings_Deserialize) => __TAURI_INVOKE<void>("report_startup_timings", { timings }),
+	/**
+	 *  Called by the frontend once the restored session has rendered: match the native background
+	 *  to the theme (it shows during resizes and before the webview paints), then show the window.
+	 */
+	showMainWindow: (theme: Theme) => __TAURI_INVOKE<null>("show_main_window", { theme }),
 };
 
 /** Events */

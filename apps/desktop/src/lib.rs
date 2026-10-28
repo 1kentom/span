@@ -931,7 +931,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             uploads::uploads_copy_path,
             uploads::uploads_reveal,
             uploads::uploads_open,
-            window::report_startup_timings
+            window::report_startup_timings,
+            window::show_main_window
         ])
 }
 
@@ -977,6 +978,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             ));
             agents::watch_session_states(app.handle());
             menu::install(app.handle())?;
+            // The window starts hidden; the frontend shows it once the session has rendered.
+            window::show_if_still_hidden(app.handle(), std::time::Duration::from_secs(4));
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
                 window.on_window_event(move |event| {

@@ -21,7 +21,7 @@ import { UpdatesSettings } from "./components/UpdatesSettings";
 import { agentUpdateError, agentUpdates, agentUpdatesBusy, appUpdate, appUpdateBusy, checkAllUpdates } from "./lib/updates";
 import { absolutePath, relativePath, fileName, parentPath, contextMenuPosition, isContextMenuKey } from "./lib/navigation";
 import { SettingsPage } from "./components/SettingsPage";
-import { afterNextPaint, collectStartupTimings, markStartup, readBootTheme, rememberBootTheme, STARTUP_MARKS, type BootTheme } from "./lib/startup";
+import { afterNextPaint, collectStartupTimings, markStartup, readBootTheme, rememberBootTheme, revealOnce, STARTUP_MARKS, type BootTheme } from "./lib/startup";
 import { createWorkbench, settleIntent, SETTINGS_TAB, isSettingsBuffer, tabName, type EditorGroup } from "./stores/workbench";
 import { AttachmentTab, createAttachmentTabs, type AttachmentTabView } from "./components/attachments";
 import { isViewerTab } from "./lib/viewer-tabs";
@@ -266,11 +266,13 @@ export default function App() {
   }
   onMount(() => {
     markStartup(STARTUP_MARKS.shellRendered);
+    // The native window starts hidden: show it once the restored session has rendered, or after the cap.
+    const revealWindow = revealOnce(() => api.showMainWindow(theme()), 2000);
     applyZoom(zoom.restore);
     const observer = new ResizeObserver(entries => { const width = entries[0]?.contentRect.width; if (width) setCenterWidth(width); });
     observer.observe(centerElement); onCleanup(() => observer.disconnect());
     const resize = () => setWindowWidth(window.innerWidth); window.addEventListener("resize", resize); onCleanup(() => window.removeEventListener("resize", resize));
-    window.addEventListener("keydown", keyboard, true); window.addEventListener("beforeunload", beforeUnload); void w.initialize(applyStartup).then(async () => { setSettingsApplied(true); markStartup(STARTUP_MARKS.sessionReady); afterNextPaint(() => void api.reportStartupTimings(collectStartupTimings()).catch(() => undefined)); await refreshRecentProjects(); const unlisten = await api.onOpenWorkspaceRequested(applyStartup); if (disposed) unlisten(); else unlistenStartup = unlisten; });
+    window.addEventListener("keydown", keyboard, true); window.addEventListener("beforeunload", beforeUnload); void w.initialize(applyStartup).then(async () => { setSettingsApplied(true); markStartup(STARTUP_MARKS.sessionReady); revealWindow(); afterNextPaint(() => void api.reportStartupTimings(collectStartupTimings()).catch(() => undefined)); await refreshRecentProjects(); const unlisten = await api.onOpenWorkspaceRequested(applyStartup); if (disposed) unlisten(); else unlistenStartup = unlisten; });
     if (isDesktop) {
       void api.onWindowFocus(focused => { if (!focused) w.autoSaveWindowBlur(); }).then(unlisten => { if (disposed) unlisten(); else unlistenFocus = unlisten; });
       void api.onOpenRequestError(message => w.setError(message)).then(unlisten => { if (disposed) unlisten(); else unlistenOpenError = unlisten; });
