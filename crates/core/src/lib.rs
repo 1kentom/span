@@ -2,6 +2,7 @@
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
 mod buffer;
 mod format;
+mod fs_ops;
 mod images;
 mod proposal_diff;
 mod recent;
@@ -19,7 +20,9 @@ pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
-pub use settings::{LanguageServerSettings, Settings, Theme, LANGUAGE_SERVER_IDS};
+pub use settings::{
+    AutoSaveMode, LanguageServerSettings, Settings, SettingsScope, Theme, LANGUAGE_SERVER_IDS,
+};
 pub use tools::{list_tools, ToolInfo};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
 

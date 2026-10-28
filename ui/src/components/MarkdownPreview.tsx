@@ -4,6 +4,8 @@ import type { ImageSource } from "../bindings";
 import MarkdownIt, { type Token, type Env } from "markdown-it";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { loadFenceLanguage } from "../editor/languages";
+import { describeMarkdownFence, type MarkdownRunRequest } from "../lib/markdown-fences";
+export type { MarkdownRunRequest } from "../lib/markdown-fences";
 import "../styles/markdown.css";
 
 export interface MarkdownPreviewProps {
@@ -14,10 +16,11 @@ export interface MarkdownPreviewProps {
   loadImage?: (path: string) => Promise<ImageSource>;
   onOpenFile?: (path: string) => void;
   onOpenExternal?: (url: string) => void;
+  onRunCode?: (request: MarkdownRunRequest) => void | Promise<void>;
 }
 
 type Destination = { kind: "anchor" | "external" | "file"; value: string } | null;
-interface RenderContext extends Env { documentPath: string; workspaceRoot: string }
+interface RenderContext extends Env { documentPath: string; workspaceRoot: string; canRun?: boolean }
 export interface MarkdownBlock { tokens: Token[]; key: string; lines: number; headingIds: string[] }
 const escape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 
@@ -73,11 +76,16 @@ markdown.renderer.rules.image = (tokens, index, _options, env, renderer) => {
   if (destination?.kind === "file") return `<span class="markdown-image-placeholder" role="img" aria-label="${caption}" data-markdown-local-image="${escape(destination.value)}" data-image-alt="${escape(alt)}"><span>${caption}</span><small>Local image unavailable: ${escape(source)}</small></span>`;
   return `<span class="markdown-image-placeholder" role="img" aria-label="${caption}"><span>${caption}</span><small>Image source blocked</small></span>`;
 };
-markdown.renderer.rules.fence = (tokens, index) => {
+markdown.renderer.rules.fence = (tokens, index, _options, env) => {
   const token = tokens[index];
-  const language = token.info.trim().split(/\s+/, 1)[0].toLowerCase();
-  const safeLanguage = /^[\w+-]{1,32}$/.test(language) ? language : "";
-  return `<pre class="markdown-code"><code${safeLanguage ? ` data-language="${escape(safeLanguage)}"` : ""}>${escape(token.content)}</code></pre>\n`;
+  const fence = describeMarkdownFence(token.info, token.content);
+  const canRun = !!(env as RenderContext)?.canRun && !!fence.action;
+  const action = fence.action === "send" ? "Send code to terminal for review" : "Run code in terminal";
+  const reason = fence.disabledReason || "A native terminal is required";
+  const tooltip = canRun ? `${action}\n${fence.command?.slice(0, 240) ?? ""}` : reason;
+  const info = fence.declared || (token.info.trim() ? "text" : "");
+  const languageTitle = fence.language === "text" && fence.declared && !["text", "txt", "plaintext", "plain", "none"].includes(fence.declared) ? `Unsupported language: ${fence.declared}. Displayed as plain text.` : fence.label;
+  return `<div class="markdown-code-block"><div class="markdown-code-header"><span class="markdown-code-language" title="${escape(languageTitle)}">${escape(fence.label)}</span><span class="markdown-code-status" role="status" aria-live="polite"></span><button type="button" class="markdown-code-action" data-markdown-copy aria-label="Copy code" title="Copy code"><span class="icon markdown-copy-icon" aria-hidden="true"></span></button><button type="button" class="markdown-code-action" data-markdown-run aria-label="${action}" title="${escape(tooltip)}"${canRun ? "" : " disabled"}><span class="icon ${fence.action === "send" ? "markdown-terminal-icon" : "markdown-run-icon"}" aria-hidden="true"></span></button></div><pre class="markdown-code"><code data-language="${fence.language}" data-fence-info="${escape(info)}" data-source-line="${(token.map?.[0] ?? 0) + 2}">${escape(token.content)}</code></pre></div>\n`;
 };
 markdown.renderer.rules.task_checkbox = (tokens, index) => `<input type="checkbox" disabled${tokens[index].meta?.checked ? " checked" : ""} aria-label="${tokens[index].meta?.checked ? "Completed task" : "Incomplete task"}"> `;
 
@@ -138,16 +146,28 @@ export async function highlightFence(element: HTMLElement) {
   const name = element.dataset.language ?? "";
   const language = await loadFenceLanguage(name);
   if (!language || !element.isConnected || element.textContent !== code) return;
+  const ranges: { from: number; to: number; classes: string }[] = [];
+  highlightTree(language.parser.parse(code), classHighlighter, (from, to, classes) => ranges.push({ from, to, classes }));
+  if (name === "shell") {
+    // The bundled shell grammar has a fixed command dictionary. Package managers added later still need command styling.
+    const packageCommands = /(^|[;&|])[ \t]*(?:\$[ \t]+)?(npm|pnpm|yarn|bun|npx)(?=[ \t]|$)/gm;
+    for (const match of code.matchAll(packageCommands)) {
+      const from = match.index! + match[0].lastIndexOf(match[2]);
+      const to = from + match[2].length;
+      if (!ranges.some((range) => range.from < to && range.to > from)) ranges.push({ from, to, classes: "tok-variableName tok-commandName" });
+    }
+    ranges.sort((left, right) => left.from - right.from);
+  }
   const fragment = document.createDocumentFragment();
   let position = 0;
-  highlightTree(language.parser.parse(code), classHighlighter, (from, to, classes) => {
+  for (const { from, to, classes } of ranges) {
     fragment.append(document.createTextNode(code.slice(position, from)));
     const span = document.createElement("span");
     span.className = classes;
     span.textContent = code.slice(from, to);
     fragment.append(span);
     position = to;
-  });
+  }
   fragment.append(document.createTextNode(code.slice(position)));
   element.replaceChildren(fragment);
 }
@@ -213,7 +233,7 @@ export function MarkdownPreview(props: MarkdownPreviewProps): JSX.Element {
     return () => { revealers.delete(element); observer?.unobserve(element); };
   }
   onCleanup(() => observer?.disconnect());
-  const context = createMemo(() => ({ documentPath: props.documentPath, workspaceRoot: props.workspaceRoot }));
+  const context = createMemo(() => ({ documentPath: props.documentPath, workspaceRoot: props.workspaceRoot, canRun: !!props.onRunCode }));
   let previous: string | Text | undefined;
   let initialized = false;
   createEffect(() => {
@@ -244,8 +264,28 @@ export function MarkdownPreview(props: MarkdownPreviewProps): JSX.Element {
     }));
   }
   function click(event: MouseEvent) {
-    const target = event.target instanceof Element ? event.target.closest<HTMLElement>("a,button[data-markdown-image]") : null;
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>("a,button[data-markdown-image],button[data-markdown-copy],button[data-markdown-run]") : null;
     if (!target) return;
+    if (target.hasAttribute("data-markdown-copy") || target.hasAttribute("data-markdown-run")) {
+      event.preventDefault();
+      const block = target.closest(".markdown-code-block");
+      const code = block?.querySelector<HTMLElement>("code");
+      const status = block?.querySelector<HTMLElement>(".markdown-code-status");
+      if (!code || target.hasAttribute("disabled")) return;
+      const text = code.textContent ?? "";
+      const report = (message: string) => { if (status) status.textContent = message; };
+      if (target.hasAttribute("data-markdown-copy")) {
+        if (!navigator.clipboard?.writeText) { report("Clipboard unavailable"); return; }
+        try { void navigator.clipboard.writeText(text).then(() => report("Copied"), () => report("Could not copy")); } catch { report("Could not copy"); }
+      } else if (props.onRunCode) {
+        const fence = describeMarkdownFence(code.dataset.fenceInfo ?? "", text);
+        if (!fence.command || !fence.action) return;
+        const request: MarkdownRunRequest = { code: fence.command, language: fence.declared || fence.language, documentPath: props.documentPath, workspaceRoot: props.workspaceRoot, sourceLine: Number(code.dataset.sourceLine) || 1, action: fence.action, detected: fence.detected, omittedOutput: fence.omittedOutput };
+        target.setAttribute("disabled", "");
+        void Promise.resolve().then(() => props.onRunCode?.(request)).then(() => report(fence.action === "send" ? "Staged in terminal" : "Running in terminal"), () => report("Could not send to terminal")).finally(() => { if (target.isConnected) target.removeAttribute("disabled"); });
+      }
+      return;
+    }
     const image = target.dataset.markdownImage;
     if (image) {
       event.preventDefault();

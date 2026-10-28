@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { absolutePath, clampMenu, fileName, fileResults, parentPath, pathBreadcrumbs, relativePath } from "./navigation";
+import { absolutePath, clampMenu, fileName, fileResults, parentPath, pathBreadcrumbs, relativePath, parseFileQuery } from "./navigation";
 
 describe("workspace navigation paths", () => {
   it("builds each nested breadcrumb from actual workspace paths", () => {
@@ -30,5 +30,28 @@ describe("workspace navigation paths", () => {
   it("clamps a menu at the visible viewport edges", () => {
     expect(clampMenu(999, 999, 220, 250, 800, 600)).toEqual({ x: 572, y: 342 });
     expect(clampMenu(-1, -5, 220, 250, 800, 600)).toEqual({ x: 8, y: 8 });
+  });
+});
+
+describe("Goto position queries", () => {
+  const files = ["src/file.ts", "notes/report:2026.md", "notes/report:2026", "colon:12"].map(path => ({ path, name: fileName(path), isDir: false }));
+  it("keeps file matches through incomplete position suffixes", () => {
+    for (const query of ["file:", "file:12", "file:12:", "file:12:3"]) expect(fileResults(files, query).map(file => file.path)).toEqual(["src/file.ts"]);
+    expect(parseFileQuery("file:12:3", files)).toMatchObject({ filter: "file", line: 12, column: 3 });
+    expect(parseFileQuery("file:12:", files)).toMatchObject({ filter: "file", line: 12, column: undefined });
+  });
+  it("preserves actual colon filenames and favors the longest existing path prefix", () => {
+    expect(parseFileQuery("colon:12", files)).toEqual({ filter: "colon:12", suffix: "" });
+    expect(parseFileQuery("report:202", files)).toEqual({ filter: "report:202", suffix: "" });
+    expect(parseFileQuery("notes/report:2026:12", files)).toMatchObject({ filter: "notes/report:2026", line: 12, column: undefined });
+    expect(parseFileQuery("notes/report:2026.md:4:2", files)).toMatchObject({ filter: "notes/report:2026.md", line: 4, column: 2 });
+  });
+  it("distinguishes Windows drive letters from position suffixes", () => {
+    expect(parseFileQuery("C:", files)).toEqual({ filter: "C:", suffix: "" });
+    expect(fileResults(files, "C:\\workspace\\src\\file.ts:14:7", [], "C:\\workspace").map(file => file.path)).toEqual(["src/file.ts"]);
+    expect(parseFileQuery("C:\\workspace\\src\\file.ts:14:7", files, "C:\\workspace")).toMatchObject({ filter: "C:\\workspace\\src\\file.ts", line: 14, column: 7 });
+  });
+  it("keeps malformed or invalid positions from opening an unrelated result", () => {
+    for (const query of ["file:0", "file:12:0", "file:999999999999999999999999999999", "file:12:abc", "file::", "missing:12:3"]) expect(fileResults(files, query)).toEqual([]);
   });
 });

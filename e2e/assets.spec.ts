@@ -33,7 +33,7 @@ test('SVG remains editable in both view while its isolated preview blocks execut
   const image = preview.getByRole('img', { name: 'span-sample.svg', exact: true });
   await expect(image).toBeVisible();
   await expect.poll(() => image.evaluate(element => [(element as HTMLImageElement).naturalWidth, (element as HTMLImageElement).naturalHeight])).toEqual([128, 96]);
-  await page.getByRole('button', { name: 'Both', exact: true }).click();
+  await page.getByRole('radio', { name: 'Source and preview', exact: true }).click();
   const editor = page.getByRole('textbox', { name: 'Edit span-sample.svg', exact: true });
   await expect(editor).toBeVisible();
   await editor.focus();

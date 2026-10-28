@@ -633,3 +633,85 @@ fn missing_or_invalid_scan_root_still_returns_contextual_error() {
         Err(CoreError::Io { .. })
     ));
 }
+
+#[test]
+fn manually_deleting_inserted_text_clears_dirty_state_without_rewinding_revision() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("file.txt"), "saved 😀 text").unwrap();
+    let mut workspace = CoreWorkspace::open(directory.path()).unwrap();
+    workspace.open_buffer("file.txt").unwrap();
+    let changed = workspace
+        .edit_buffer_delta("file.txt", 0, vec![edit(6, 6, "extra ")])
+        .unwrap();
+    assert_ne!(changed.revision, changed.saved_revision);
+    let restored = workspace
+        .edit_buffer_delta("file.txt", 1, vec![edit(6, 12, "")])
+        .unwrap();
+    assert_eq!(restored.revision, 2);
+    assert_eq!(restored.saved_revision, restored.revision);
+    assert_eq!(
+        workspace.agent_read("file.txt").unwrap().text,
+        "saved 😀 text"
+    );
+    assert!(matches!(
+        workspace.edit_buffer_delta("file.txt", 1, vec![]),
+        Err(CoreError::StaleRevision { .. })
+    ));
+}
+
+#[test]
+fn content_equivalence_does_not_reset_proposal_revisions_or_disk_conflicts() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("file.txt"), "saved").unwrap();
+    let mut workspace = CoreWorkspace::open(directory.path()).unwrap();
+    let proposal = workspace
+        .stage_proposal("file.txt", 0, "agent edit".into())
+        .unwrap();
+    workspace
+        .edit_buffer_delta("file.txt", 0, vec![edit(0, 0, "x")])
+        .unwrap();
+    let restored = workspace
+        .edit_buffer_delta("file.txt", 1, vec![edit(0, 1, "")])
+        .unwrap();
+    assert_eq!(restored.saved_revision, 2);
+    assert!(matches!(
+        workspace.resolve_proposal(&proposal.id, true, 2),
+        Err(CoreError::StaleRevision { .. })
+    ));
+    workspace.resolve_proposal(&proposal.id, false, 0).unwrap();
+    fs::write(directory.path().join("file.txt"), "external").unwrap();
+    assert!(matches!(
+        workspace.save_buffer("file.txt", 2),
+        Err(CoreError::SaveConflict(_))
+    ));
+    assert_eq!(workspace.agent_read("file.txt").unwrap().text, "saved");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("file.txt")).unwrap(),
+        "external"
+    );
+}
+
+#[test]
+fn successful_save_rebases_exact_dirty_tracking_for_later_manual_reverts() {
+    let directory = tempdir().unwrap();
+    fs::write(directory.path().join("file.txt"), "old").unwrap();
+    let mut workspace = CoreWorkspace::open(directory.path()).unwrap();
+    workspace.open_buffer("file.txt").unwrap();
+    workspace
+        .edit_buffer_delta("file.txt", 0, vec![edit(0, 3, "new 😀")])
+        .unwrap();
+    let saved = workspace.save_buffer("file.txt", 1).unwrap();
+    assert_eq!(saved.saved_revision, 1);
+    workspace
+        .edit_buffer_delta("file.txt", 1, vec![edit(0, 0, "x")])
+        .unwrap();
+    let reverted = workspace
+        .edit_buffer_delta("file.txt", 2, vec![edit(0, 1, "")])
+        .unwrap();
+    assert_eq!(reverted.saved_revision, 3);
+    workspace
+        .edit_buffer_delta("file.txt", 3, vec![edit(0, 6, "old")])
+        .unwrap();
+    let changed = workspace.buffer_snapshot("file.txt").unwrap();
+    assert_ne!(changed.revision, changed.saved_revision);
+}

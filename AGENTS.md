@@ -13,3 +13,4 @@
 - Raw supplied design archives, extracted references, screenshots, source prompts, and personal machine paths stay local and out of Git publication. Keep the local design directory intact; publish only copied application assets needed by the app.
 - Preserve the supplied artwork and asset provenance. Do not imply that the project MIT license establishes separate third-party asset redistribution rights.
 - Keep public documentation specific about browser preview, native app verification, and unverified phase gates. Do not claim publication, signing, notarization, or working release channels before they are configured and exercised.
+- Use [docs/implementation-goal.md](docs/implementation-goal.md) as the approved execution checklist for completing and verifying the foundation.

@@ -25,6 +25,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Test website release metadata validation
+        if: runner.os == 'Linux'
+        run: node --test apps/web/scripts/sync-releases.test.mjs
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

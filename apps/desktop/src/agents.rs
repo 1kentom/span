@@ -9,14 +9,22 @@ pub struct ActiveAgent {
     session: String,
 }
 
-fn switch_session(state: &DesktopState, session: &str) -> Result<(), String> {
-    state
+fn switch_session(
+    state: &DesktopState,
+    expected: &AgentService,
+    session: &str,
+) -> Result<(), String> {
+    let mut guard = state
         .agent
         .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())?
+        .map_err(|_| "Agent state is unavailable".to_owned())?;
+    let active = guard
         .as_mut()
-        .ok_or_else(|| "Connect an agent first".to_owned())?
-        .session = session.to_owned();
+        .ok_or_else(|| "Connect an agent first".to_owned())?;
+    if !active.service.same_connection(expected) {
+        return Err("The agent connection changed while switching conversations".into());
+    }
+    active.session = session.to_owned();
     Ok(())
 }
 
@@ -39,6 +47,33 @@ pub fn disconnect(state: &DesktopState) -> Result<(), String> {
         active.service.shutdown()?;
     }
     Ok(())
+}
+
+pub async fn disconnect_and_wait(state: &DesktopState) -> Result<(), String> {
+    let active = state
+        .agent
+        .lock()
+        .map_err(|_| "Agent state is unavailable".to_owned())?
+        .take();
+    if let Some(active) = active {
+        active.service.shutdown_and_wait().await?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_remove(
+    app: tauri::AppHandle,
+    id: String,
+    uninstall: bool,
+) -> Result<(), String> {
+    let directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("agents");
+    span_acp::remove_installed_agent(&directory, &id, uninstall).await
 }
 
 #[tauri::command]
@@ -87,7 +122,7 @@ pub async fn agent_connect(
         .map_err(|_| "Workspace state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "Open a folder before connecting an agent".to_owned())?;
-    disconnect(&state)?;
+    disconnect_and_wait(&state).await?;
     let service = tauri::async_runtime::spawn_blocking(move || {
         tauri::async_runtime::block_on(AgentService::start(
             command,
@@ -129,7 +164,7 @@ pub async fn agent_connect(
 pub async fn agent_new_session(state: State<'_, DesktopState>) -> Result<String, String> {
     let agent = active(state.inner())?;
     let session = agent.service.new_session().await?;
-    switch_session(state.inner(), &session)?;
+    switch_session(state.inner(), &agent.service, &session)?;
     Ok(session)
 }
 
@@ -149,7 +184,7 @@ pub async fn agent_resume_session(
 ) -> Result<String, String> {
     let agent = active(state.inner())?;
     agent.service.load_session(session_id.clone()).await?;
-    switch_session(state.inner(), &session_id)?;
+    switch_session(state.inner(), &agent.service, &session_id)?;
     Ok(session_id)
 }
 
@@ -186,7 +221,7 @@ pub async fn agent_cancel(state: State<'_, DesktopState>) -> Result<(), String> 
 pub async fn agent_disconnect(state: State<'_, DesktopState>) -> Result<(), String> {
     let state = state.inner();
     let _gate = state.connection_gate.lock().await;
-    disconnect(state)
+    disconnect_and_wait(state).await
 }
 
 #[tauri::command]
@@ -242,4 +277,57 @@ pub async fn agent_review_hunks(
     .map_err(|error| format!("Review task failed: {error}"))??;
     lsp.on_snapshot(&snapshot);
     Ok(snapshot)
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    #[tokio::test]
+    async fn old_connection_cannot_change_new_connections_active_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Mutex::new(
+            span_core::CoreWorkspace::open(directory.path())
+                .unwrap()
+                .with_user_settings(None),
+        ));
+        let command = AgentCommand {
+            command: "node".into(),
+            args: vec![format!(
+                "{}/../../crates/acp/tests/fixtures/agent.mjs",
+                env!("CARGO_MANIFEST_DIR")
+            )],
+            env: BTreeMap::new(),
+        };
+        let old = AgentService::start(
+            command.clone(),
+            directory.path().to_string_lossy().into_owned(),
+            workspace.clone(),
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+        let current = AgentService::start(
+            command,
+            directory.path().to_string_lossy().into_owned(),
+            workspace,
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+        let state = DesktopState::default();
+        *state.agent.lock().unwrap() = Some(ActiveAgent {
+            service: current.clone(),
+            session: "current".into(),
+        });
+        assert!(switch_session(&state, &old, "old-result").is_err());
+        assert_eq!(active(&state).unwrap().session, "current");
+        switch_session(&state, &current, "valid-result").unwrap();
+        assert_eq!(active(&state).unwrap().session, "valid-result");
+        old.shutdown_and_wait().await.unwrap();
+        current.shutdown_and_wait().await.unwrap();
+    }
 }

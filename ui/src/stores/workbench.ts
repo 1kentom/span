@@ -1,12 +1,17 @@
 import { batch, createEffect, createSignal, onCleanup } from "solid-js";
+import { createAutoSaveController, type AutoSaveFailure } from "./autosave";
 import { createStore } from "solid-js/store";
 import { ChangeSet, Text } from "@codemirror/state";
 import { isAssetPath, isBinaryAssetPath } from "../components/AssetPreview";
 import type { EditorEdit, EditorDocumentChange } from "../components/Editor";
 import { api, isDesktop } from "../lib/client";
-import type { BufferSnapshot, FileEntry, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, StartupRequest_Serialize as StartupRequest } from "../bindings";
+import type { BufferSnapshot, FileEntry, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
 
 export const SETTINGS_TAB = "span:settings";
+export function settingsBufferScope(path: string): SettingsScope | undefined { return path === "settings://user" ? "user" : path === "settings://workspace" ? "workspace" : undefined; }
+export const isSettingsBuffer = (path: string) => settingsBufferScope(path) !== undefined;
+export const settingsBufferPath = (scope: SettingsScope) => `settings://${scope}`;
+export const tabName = (path: string) => path === SETTINGS_TAB ? "Settings" : isSettingsBuffer(path) ? `${settingsBufferScope(path) === "user" ? "User" : "Workspace"} settings.jsonc` : path.split("/").pop() || path;
 export async function settleIntent<T>(intent: T, isCurrent: (intent: T) => boolean, work: () => Promise<boolean>, complete: () => void | Promise<void>): Promise<boolean> {
   if (!isCurrent(intent) || !await work() || !isCurrent(intent)) return false;
   await complete();
@@ -24,7 +29,13 @@ export function createWorkbench() {
   const [activeGroup, setActiveGroup] = createSignal(1);
   const [files, setFiles] = createSignal<FileEntry[]>([]);
   const [recentPaths, setRecentPaths] = createSignal<string[]>([]);
-  const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, keybindings: {}, formatters: {} });
+  const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null } });
+  const [settingsScope, setSettingsScope] = createSignal<SettingsScope>("workspace");
+  const [scopeSettings, setScopeSettings] = createSignal<Settings>(settings());
+  const [configuredSettingsKeys, setConfiguredSettingsKeys] = createSignal<string[]>([]);
+  const [fileOperationBusy, setFileOperationBusy] = createSignal(false);
+  const [editCounters, setEditCounters] = createSignal<Record<string, number>>({});
+  const [autoSaveFailures, setAutoSaveFailures] = createSignal<readonly AutoSaveFailure[]>([]);
   const [settingsJsonc, setSettingsJsonc] = createSignal("");
   const [panels, setPanels] = createSignal<SessionPanels>({ projectWidth: Math.min(1000, Math.max(230, Math.round((typeof window === "undefined" ? 1440 : window.innerWidth) * .25) - 12)), assistantWidth: Math.min(1000, Math.max(260, Math.round((typeof window === "undefined" ? 1440 : window.innerWidth) * .25) - 12)), terminalHeight: Math.min(1000, Math.round((typeof window === "undefined" ? 900 : window.innerHeight) * .31)), projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: false });
   const [markdownViews, setMarkdownViews] = createSignal<Record<string, MarkdownView>>({});
@@ -34,7 +45,10 @@ export function createWorkbench() {
   const [busy, setBusy] = createSignal(false);
   const [searchResults, setSearchResults] = createSignal<SearchMatch[]>([]);
   const [searching, setSearching] = createSignal(false);
-  const [pendingClose, setPendingClose] = createSignal<{ path: string; group: number }>();
+  const [pendingClose, setPendingClose] = createSignal<{ path: string; group: number; closingGroup?: boolean }>();
+  const [closeBusy, setCloseBusy] = createSignal(false);
+  let closeOperation = 0;
+  let nextGroupId = 2;
   const [pendingWorkspace, setPendingWorkspace] = createSignal(false);
   const [pendingRecovery, setPendingRecovery] = createSignal<{ path: string; document: Text }>();
   const [failed, setFailed] = createSignal<Set<string>>(new Set());
@@ -43,6 +57,7 @@ export function createWorkbench() {
   const pendingEdits = new Map<string, EditorEdit[]>();
   const histories = new Map<string, { undo: { forward: ChangeSet; backward: ChangeSet; time: number; origin?: object }[]; redo: { forward: ChangeSet; backward: ChangeSet; time: number; origin?: object }[] }>();
   let workspaceVersion = 0;
+  let settingsRequest = 0;
   let searchVersion = 0;
   let activeSearch: { cancel: () => Promise<void> } | undefined;
   const report = (e: unknown) => setError(typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
@@ -55,7 +70,7 @@ export function createWorkbench() {
   let sessionWriting: Promise<void> = Promise.resolve();
   function sessionSnapshot(): SessionState | undefined {
     const current = workspace(); if (!current) return;
-    return { workspaceRoot: current.root, groups: groups().map(group => ({ paths: group.tabs.filter(path => path !== SETTINGS_TAB), activePath: group.active === SETTINGS_TAB ? group.tabs.find(path => path !== SETTINGS_TAB) || null : group.active || null })), activeGroup: Math.max(0, groups().findIndex(group => group.id === activeGroup())), panels: panels(), markdownViews: markdownViews() };
+    return { workspaceRoot: current.root, groups: groups().map(group => ({ paths: group.tabs.filter(path => path !== SETTINGS_TAB && !isSettingsBuffer(path)), activePath: group.active && group.active !== SETTINGS_TAB && !isSettingsBuffer(group.active) ? group.active : group.tabs.find(path => path !== SETTINGS_TAB && !isSettingsBuffer(path)) || null })), activeGroup: Math.max(0, groups().findIndex(group => group.id === activeGroup())), panels: panels(), markdownViews: markdownViews() };
   }
   async function persistSession() {
     if (sessionTimer) clearTimeout(sessionTimer);
@@ -66,7 +81,7 @@ export function createWorkbench() {
   }
   createEffect(() => { const state = sessionSnapshot(); if (sessionTimer) clearTimeout(sessionTimer); if (!state || !sessionReady() || !isDesktop || busy()) return; sessionTimer = setTimeout(() => void persistSession(), 350); });
   onCleanup(() => { if (sessionTimer) clearTimeout(sessionTimer); });
-  const dirty = (path: string) => { documents()[path]; return !!buffers[path] && ((pendingEdits.get(path)?.length || 0) > 0 || buffers[path].revision !== buffers[path].savedRevision); };
+  const dirty = (path: string) => { documents()[path]; const buffer = buffers[path]; const revision = buffer?.revision; const savedRevision = buffer?.savedRevision; return !!buffer && ((pendingEdits.get(path)?.length || 0) > 0 || revision !== savedRevision); };
   const hasDirty = () => Object.keys(buffers).some(dirty);
 
   async function loadDirectory(path: string) {
@@ -77,15 +92,18 @@ export function createWorkbench() {
     if (expanded().has(path)) setExpanded(current => { const next = new Set(current); next.delete(path); return next; });
     else { if (!directories[path]) await loadDirectory(path); setExpanded(current => new Set([...current, path])); }
   }
+  const readBuffer = (path: string) => { const scope = settingsBufferScope(path); return scope ? api.openSettingsBuffer(scope) : api.openBuffer(path); };
+  const discardBuffer = (path: string) => { const scope = settingsBufferScope(path); return scope ? api.discardSettingsBuffer(scope) : api.discardBuffer(path); };
   async function openFile(path: string, group = activeGroup()) {
     const version = workspaceVersion;
     try {
-      if (!buffers[path] && !isBinaryAssetPath(path)) { const buffer = await api.openBuffer(path); if (version !== workspaceVersion) return; accepted.set(path, buffer); setBuffers(path, buffer); setDocuments(current => ({ ...current, [path]: { document: Text.of(buffer.text.split("\n")) } })); }
-      setRecentPaths(current => [path, ...current.filter(item => item !== path)].slice(0, 50));
+      if (!buffers[path] && !isBinaryAssetPath(path)) { const buffer = await readBuffer(path); if (version !== workspaceVersion) return; accepted.set(path, buffer); setBuffers(path, buffer); setDocuments(current => ({ ...current, [path]: { document: Text.of(buffer.text.split("\n")) } })); }
+      if (!isSettingsBuffer(path)) setRecentPaths(current => [path, ...current.filter(item => item !== path)].slice(0, 50));
       batch(() => { setGroups(current => current.map(g => g.id === group ? { ...g, tabs: g.tabs.includes(path) ? g.tabs : [...g.tabs, path], active: path } : g)); setActiveGroup(group); });
     } catch (e) { report(e); }
   }
   async function openWorkspace(path?: string, restore?: SessionState) {
+    if (busy()) return;
     setBusy(true);
     try {
       if (activeSearch) await activeSearch.cancel().catch(() => undefined);
@@ -97,9 +115,10 @@ export function createWorkbench() {
       batch(() => { setWorkspaceGeneration(workspaceVersion); setWorkspace(value); setGroups([{ id: 1, tabs: [] }]); setActiveGroup(1); setExpanded(new Set([""])); setError(""); setSearchResults([]); });
       for (const key of Object.keys(buffers)) setBuffers(key, undefined!);
       for (const key of Object.keys(directories)) setDirectories(key, undefined!);
-      accepted.clear(); pendingEdits.clear(); histories.clear(); closedTabs.length = 0; setRecentPaths([]); setDocuments({}); setMarkdownViews(restore?.markdownViews || {});
+      nextGroupId = 2; accepted.clear(); pendingEdits.clear(); histories.clear(); closedTabs.length = 0; setRecentPaths([]); setDocuments({}); setEditCounters({}); setMarkdownViews(restore?.markdownViews || {});
       const [rootFiles, allFiles, prefs, rawSettings] = await Promise.all([api.listDirectory(""), api.listFiles(), api.getSettings().catch(e => { report(e); return settings(); }), api.getSettingsJsonc()]);
-      batch(() => { setDirectories("", rootFiles); setFiles(allFiles); setSettings(prefs); setSettingsJsonc(rawSettings); });
+      batch(() => { setDirectories("", rootFiles); setFiles(allFiles); setSettings(prefs); setScopeSettings(prefs); setSettingsJsonc(rawSettings); });
+      await refreshSettingsScope(settingsScope());
       if (restore) {
         setPanels(restore.panels);
         setGroups(restore.groups.slice(0, 2).map((_group, index) => ({ id: index + 1, tabs: [] })));
@@ -109,6 +128,7 @@ export function createWorkbench() {
           setGroups(current => current.map(item => item.id === index + 1 ? { ...item, active: item.tabs.includes(group.activePath || "") ? group.activePath! : item.tabs[0] } : item));
         }
         setActiveGroup(groups()[Math.min(restore.activeGroup, groups().length - 1)]?.id || 1);
+        nextGroupId = Math.max(...groups().map(group => group.id)) + 1;
       }
       if (!isDesktop) {
         const sample = allFiles.find(f => f.path.endsWith("rpc-node.ts")) || allFiles.find(f => f.path.endsWith("App.tsx")) || allFiles[0];
@@ -130,6 +150,7 @@ export function createWorkbench() {
       try { const requests = await api.takeStartupRequests(); if (requests.length && onStartup) { for (const request of requests) await onStartup(request); } else { const saved = await api.getSession(); if (saved) await openWorkspace(saved.workspaceRoot, saved); else setSettings(await api.getSettings()); } }
       catch (e) { report(e); }
     }
+    if (!workspace()) try { await refreshSettingsScope("user"); } catch (error) { report(error); }
     setSessionReady(true);
   }
   function edit(path: string, event: EditorEdit, recordHistory = true) {
@@ -146,6 +167,7 @@ export function createWorkbench() {
       if (history.undo.length > 1000) history.undo.shift();
       history.redo = []; histories.set(path, history);
     }
+    setEditCounters(current => ({ ...current, [path]: (current[path] || 0) + 1 }));
     const queue = pendingEdits.get(path) || [];
     queue.push(event); pendingEdits.set(path, queue);
     setDocuments(current => ({ ...current, [path]: { document: event.document, change: { before: event.previousDocument, changes: event.changeSet } } }));
@@ -174,7 +196,8 @@ export function createWorkbench() {
         while (queue?.length) {
           const base = accepted.get(path);
           if (!base) return;
-          const next = await api.editBuffer(path, base.revision, queue[0].changes);
+          const scope = settingsBufferScope(path);
+          const next = scope ? await api.editSettingsBuffer(scope, base.revision, queue[0].changes) : await api.editBuffer(path, base.revision, queue[0].changes);
           accepted.set(path, { ...base, ...next, savedRevision: Math.max(base.savedRevision, next.savedRevision) });
           queue.shift();
           batch(() => { setBuffers(path, "revision", next.revision); setBuffers(path, "savedRevision", Math.max(buffers[path].savedRevision, next.savedRevision)); });
@@ -186,7 +209,7 @@ export function createWorkbench() {
     await operation;
     writes.delete(path);
   }
-  const synchronized = (path: string) => { documents()[path]; return !(pendingEdits.get(path)?.length); };
+  const synchronized = (path: string) => { documents()[path]; buffers[path]?.revision; return !(pendingEdits.get(path)?.length); };
   async function save(path = activePath()): Promise<boolean> {
     if (!path) return false;
     const version = workspaceVersion;
@@ -194,7 +217,8 @@ export function createWorkbench() {
       await flush(path);
       const base = accepted.get(path);
       if (!base || failed().has(path)) return false;
-      const result = await api.saveBuffer(path, base.revision);
+      const scope = settingsBufferScope(path);
+      const result = scope ? await api.saveSettingsBuffer(scope, base.revision) : await api.saveBuffer(path, base.revision);
       if (version !== workspaceVersion) return false;
       if (result.revision > base.revision) await acceptAgentBuffer(path, result, true);
       const current = accepted.get(path);
@@ -202,11 +226,11 @@ export function createWorkbench() {
       setBuffers(path, "savedRevision", Math.max(buffers[path].savedRevision, result.savedRevision));
       void api.listFiles().then(setFiles).catch(report);
       for (const directory of Object.keys(directories)) if (directories[directory]) void loadDirectory(directory);
-      if (path === ".span/settings.jsonc") setSettings(await api.getSettings());
+      if (isSettingsBuffer(path) || path === ".span/settings.jsonc") await refreshSettingsScope(settingsScope());
       return true;
     } catch (e) {
       report(e);
-      if (version === workspaceVersion) try { const snapshot = await api.openBuffer(path); if (snapshot.revision > (accepted.get(path)?.revision ?? 0)) { await acceptAgentBuffer(path, snapshot, true); report(e); } } catch { /* Preserve the local draft if recovery cannot read the accepted document. */ }
+      if (version === workspaceVersion) try { const snapshot = await readBuffer(path); if (snapshot.revision > (accepted.get(path)?.revision ?? 0)) { await acceptAgentBuffer(path, snapshot, true); report(e); } } catch { /* Preserve the local draft if recovery cannot read the accepted document. */ }
       return false;
     }
   }
@@ -217,41 +241,92 @@ export function createWorkbench() {
     setActiveGroup(group);
   }
   async function reopenClosedTab() { const closed = closedTabs.pop(); if (closed) await openFile(closed.path, groups().some(group => group.id === closed.group) ? closed.group : activeGroup()); }
-  function removeTab(path: string, group: number) {
-    if (path !== SETTINGS_TAB) { closedTabs.push({ path, group }); if (closedTabs.length > 20) closedTabs.shift(); }
-    setGroups(current => current.map(g => {
-      if (g.id !== group) return g;
-      const tabs = g.tabs.filter(p => p !== path);
-      return { ...g, tabs, active: g.active === path ? tabs[Math.min(g.tabs.indexOf(path), tabs.length - 1)] : g.active };
+  function removeGroup(group: number) {
+    const current = groups(); if (current.length <= 1) return;
+    const index = current.findIndex(item => item.id === group);
+    const next = current.filter(item => item.id !== group);
+    batch(() => { setGroups(next); if (activeGroup() === group) setActiveGroup(next[Math.max(0, Math.min(index, next.length - 1))].id); });
+  }
+  function removeTab(path: string, group: number, recordClosed = true) {
+    if (recordClosed && path !== SETTINGS_TAB && !isSettingsBuffer(path)) { closedTabs.push({ path, group }); if (closedTabs.length > 20) closedTabs.shift(); }
+    setGroups(current => current.map(item => {
+      if (item.id !== group) return item;
+      const tabs = item.tabs.filter(tab => tab !== path);
+      return { ...item, tabs, active: item.active === path ? tabs[Math.min(item.tabs.indexOf(path), tabs.length - 1)] : item.active };
     }));
+    if (!groups().find(item => item.id === group)?.tabs.length) removeGroup(group);
+  }
+  function closeGroup(group: number) {
+    const current = groups().find(item => item.id === group); if (!current || groups().length <= 1) return;
+    const uniqueDirty = current.tabs.find(path => dirty(path) && !groups().some(item => item.id !== group && item.tabs.includes(path)));
+    if (uniqueDirty) setPendingClose({ path: uniqueDirty, group, closingGroup: true });
+    else removeGroup(group);
   }
   function closeTab(path: string, group: number) {
-    const elsewhere = groups().some(g => g.id !== group && g.tabs.includes(path));
+    const elsewhere = groups().some(item => item.id !== group && item.tabs.includes(path));
     if (dirty(path) && !elsewhere) setPendingClose({ path, group });
     else removeTab(path, group);
   }
+  async function reconcileCanceledDiscard(path: string, version: number) {
+    while (version === workspaceVersion) {
+      await writes.get(path);
+      const snapshot = await readBuffer(path);
+      if (version !== workspaceVersion) return;
+      if (writes.has(path) || snapshot.revision < (accepted.get(path)?.revision ?? 0)) continue;
+      const draft = documents()[path]?.document;
+      const baseline = Text.of(snapshot.text.split("\n"));
+      pendingEdits.delete(path);
+      accepted.set(path, snapshot);
+      setFailed(current => { const next = new Set(current); next.delete(path); return next; });
+      batch(() => {
+        setBuffers(path, snapshot);
+        if (draft && !draft.eq(baseline)) {
+          // Recovery is one explicit replacement against the new authoritative revision.
+          const changes = [{ from: 0, to: baseline.length, insert: draft.toString() }];
+          edit(path, { baseRevision: snapshot.revision, previousDocument: baseline, document: draft, changes, changeSet: ChangeSet.of(changes, baseline.length) }, false);
+        }
+      });
+      await flush(path);
+      return;
+    }
+  }
   async function confirmClose(action: "save" | "discard" | "cancel") {
     const pending = pendingClose(); if (!pending) return;
-    if (action === "save" && !await save(pending.path)) return;
-    if (action !== "cancel") {
+    if (action === "cancel") { closeOperation++; setCloseBusy(false); setPendingClose(undefined); return; }
+    if (closeBusy()) return;
+    const operation = ++closeOperation; const version = workspaceVersion; setCloseBusy(true);
+    try {
+      if (action === "save" && !await save(pending.path)) return;
       if (action === "discard") {
         await writes.get(pending.path);
-        try {
-          const base = await api.discardBuffer(pending.path);
-          accepted.set(pending.path, base); pendingEdits.delete(pending.path); histories.delete(pending.path);
-          setBuffers(pending.path, base);
-          setDocuments(current => ({ ...current, [pending.path]: { document: Text.of(base.text.split("\n")) } }));
-        } catch (e) { report(e); return; }
+        if (pendingClose() !== pending || operation !== closeOperation || version !== workspaceVersion) return;
+        const originalDocument = documents()[pending.path]?.document;
+        const base = await discardBuffer(pending.path);
+        if (version !== workspaceVersion) return;
+        if (pendingClose() !== pending || operation !== closeOperation || documents()[pending.path]?.document !== originalDocument) { await reconcileCanceledDiscard(pending.path, version); return; }
+        accepted.set(pending.path, base); pendingEdits.delete(pending.path); histories.delete(pending.path);
+        setBuffers(pending.path, base);
+        setDocuments(current => ({ ...current, [pending.path]: { document: Text.of(base.text.split("\n")) } }));
       }
-      removeTab(pending.path, pending.group);
-    }
-    setPendingClose(undefined);
+      if (pendingClose() !== pending || operation !== closeOperation || version !== workspaceVersion) return;
+      setPendingClose(undefined);
+      if (pending.closingGroup) closeGroup(pending.group);
+      else removeTab(pending.path, pending.group);
+    } catch (error) { if (version === workspaceVersion) report(error); }
+    finally { if (operation === closeOperation) setCloseBusy(false); }
   }
   function splitEditor() {
-    if (groups().length >= 2) { setGroups(current => [{ ...current[0], tabs: [...new Set(current.flatMap(group => group.tabs))] }]); setActiveGroup(groups()[0].id); return; }
-    const path = activePath();
-    setGroups(current => [...current, { id: 2, tabs: path ? [path] : [], active: path }]);
-    setActiveGroup(2);
+    if (groups().length >= 2) return;
+    const path = activePath(); const id = nextGroupId++;
+    setGroups(current => [...current, { id, tabs: path ? [path] : [], active: path }]);
+    setActiveGroup(id);
+  }
+  function moveTab(path: string, fromGroup: number, toGroup: number, copy = false) {
+    if (path === SETTINGS_TAB) copy = false;
+    if (fromGroup === toGroup || !groups().some(group => group.id === toGroup)) return;
+    setGroups(current => current.map(group => group.id === toGroup ? { ...group, tabs: group.tabs.includes(path) ? group.tabs : [...group.tabs, path], active: path } : group));
+    if (!copy) removeTab(path, fromGroup, false);
+    setActiveGroup(toGroup);
   }
   async function search(query: string) {
     const version = ++searchVersion;
@@ -271,18 +346,72 @@ export function createWorkbench() {
     } catch (e) { if (version === searchVersion) report(e); }
     finally { if (version === searchVersion) { setSearching(false); activeSearch = undefined; } }
   }
-  async function reloadSettingsJsonc(): Promise<string> { const raw = await api.getSettingsJsonc(); setSettingsJsonc(raw); setSettings(await api.getSettings()); return raw; }
-  async function saveSettingsJsonc(text: string): Promise<Settings> { const next = await api.updateSettingsJsonc(text); batch(() => { setSettings(next); setSettingsJsonc(text); }); return next; }
+  async function refreshSettingsScope(scope: SettingsScope = settingsScope()) {
+    const request = ++settingsRequest; const version = workspaceVersion;
+    const [selected, effective, raw, keys] = await Promise.all([api.getSettingsForScope(scope), api.getSettings(), api.getSettingsJsoncForScope(scope), api.getSettingsKeysForScope(scope)]);
+    if (request !== settingsRequest || version !== workspaceVersion) return;
+    batch(() => { setSettingsScope(scope); setScopeSettings(selected); setSettings(effective); setSettingsJsonc(raw); setConfiguredSettingsKeys(keys); });
+  }
+  async function reloadSettingsJsonc(): Promise<string> { await refreshSettingsScope(); return settingsJsonc(); }
+  async function openSettingsJsonc(scope = settingsScope()) { await openFile(settingsBufferPath(scope)); }
+  async function syncCleanSettingsBuffer(scope: SettingsScope) {
+    const path = settingsBufferPath(scope); if (!buffers[path] || dirty(path)) return;
+    const snapshot = await api.discardSettingsBuffer(scope); accepted.set(path, snapshot); setBuffers(path, snapshot); histories.delete(path);
+    setDocuments(current => ({ ...current, [path]: { document: Text.of(snapshot.text.split("\n")) } }));
+  }
+  function guardSettingsScope(scope: SettingsScope) { if (dirty(settingsBufferPath(scope))) throw new Error("Save or discard the open settings file before changing this scope."); }
+  async function saveSettingsJsonc(text: string): Promise<Settings> { const scope = settingsScope(); guardSettingsScope(scope); await api.updateSettingsJsoncForScope(scope, text); await refreshSettingsScope(scope); await syncCleanSettingsBuffer(scope); return scopeSettings(); }
   async function updateSettings(patch: Partial<Settings>) {
-    const next = await api.updateSettings({ ...settings(), ...patch });
-    batch(() => { setSettings(next); });
-    setSettingsJsonc(await api.getSettingsJsonc());
+    const scope = settingsScope(); guardSettingsScope(scope);
+    for (const [key, value] of Object.entries(patch)) if (JSON.stringify(scopeSettings()[key as keyof Settings]) !== JSON.stringify(value)) await api.updateSetting(scope, key, JSON.stringify(value));
+    await refreshSettingsScope(scope); await syncCleanSettingsBuffer(scope);
+  }
+  async function updateEffectiveSetting(key: keyof Settings, value: Settings[keyof Settings]) { const scope: SettingsScope = workspace() ? "workspace" : "user"; guardSettingsScope(scope); await api.updateSetting(scope, key, JSON.stringify(value)); await refreshSettingsScope(); await syncCleanSettingsBuffer(scope); }
+  async function resetSetting(key: keyof Settings) { const scope = settingsScope(); guardSettingsScope(scope); await api.updateSetting(scope, key, null); await refreshSettingsScope(scope); await syncCleanSettingsBuffer(scope); }
+  async function refreshFiles() { const version = workspaceVersion; const entries = await api.listFiles(); if (version !== workspaceVersion) return; setFiles(entries); for (const directory of Object.keys(directories)) if (directories[directory]) await loadDirectory(directory); }
+  const inSubtree = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
+  async function fileOperation<T>(operation: (assertCurrent: () => void) => Promise<T>): Promise<T> {
+    if (fileOperationBusy()) throw new Error("Finish the current file operation first.");
+    const version = workspaceVersion; setFileOperationBusy(true);
+    try { await Promise.all([...writes.values()]); if (version !== workspaceVersion) throw new Error("The project changed before the file operation started."); return await operation(() => { if (version !== workspaceVersion) throw new Error("The project changed during the file operation."); }); }
+    finally { setFileOperationBusy(false); }
+  }
+  async function newFile(path: string) { return fileOperation(async assertCurrent => { const snapshot = await api.newFile(path); assertCurrent(); accepted.set(snapshot.path, snapshot); setBuffers(snapshot.path, snapshot); setDocuments(current => ({ ...current, [snapshot.path]: { document: Text.of(snapshot.text.split("\n")) } })); await refreshFiles(); await openFile(snapshot.path); return snapshot; }); }
+  async function newDirectory(path: string) { return fileOperation(async assertCurrent => { const entry = await api.newDirectory(path); assertCurrent(); await refreshFiles(); await loadDirectory(entry.path); setExpanded(current => new Set([...current, entry.path])); return entry; }); }
+  async function renamePath(from: string, to: string) {
+    return fileOperation(async assertCurrent => {
+      const entry = await api.renamePath(from, to); assertCurrent();
+      const mapped = (path: string) => inSubtree(path, from) ? `${entry.path}${path.slice(from.length)}` : path;
+      const moved = Object.keys(buffers).filter(path => buffers[path] && inSubtree(path, from));
+      for (const previous of moved) {
+        const next = mapped(previous); const snapshot = await api.openBuffer(next); assertCurrent(); const document = documents()[previous]?.document || Text.of(snapshot.text.split("\n")); const history = histories.get(previous);
+        accepted.delete(previous); accepted.set(next, snapshot); histories.delete(previous); if (history) histories.set(next, history);
+        setBuffers(previous, undefined!); setBuffers(next, snapshot);
+        setDocuments(current => { const value = { ...current }; delete value[previous]; value[next] = { document }; return value; });
+      }
+      batch(() => { setGroups(current => current.map(group => ({ ...group, tabs: group.tabs.map(mapped), active: group.active ? mapped(group.active) : undefined }))); setRecentPaths(current => current.map(mapped)); setExpanded(current => new Set([...current].map(mapped))); setMarkdownViews(current => Object.fromEntries(Object.entries(current).map(([path, view]) => [mapped(path), view]))); setEditCounters(current => Object.fromEntries(Object.entries(current).map(([path, revision]) => [mapped(path), revision]))); });
+      for (const directory of Object.keys(directories)) if (inSubtree(directory, from)) setDirectories(directory, undefined!);
+      await refreshFiles(); return entry;
+    });
+  }
+  async function duplicatePath(from: string, to: string) { return fileOperation(async assertCurrent => { const entry = await api.duplicatePath(from, to); assertCurrent(); await refreshFiles(); if (!entry.isDir) await openFile(entry.path); return entry; }); }
+  async function trashPath(path: string) {
+    return fileOperation(async assertCurrent => {
+      await api.trashPath(path); assertCurrent();
+      for (const key of Object.keys(buffers)) if (inSubtree(key, path)) { setBuffers(key, undefined!); accepted.delete(key); pendingEdits.delete(key); histories.delete(key); }
+      setDocuments(current => Object.fromEntries(Object.entries(current).filter(([key]) => !inSubtree(key, path))));
+      setGroups(current => current.map(group => { const tabs = group.tabs.filter(key => !inSubtree(key, path)); return { ...group, tabs, active: group.active && tabs.includes(group.active) ? group.active : tabs[0] }; }));
+      for (const group of [...groups()]) if (!group.tabs.length) removeGroup(group.id);
+      setRecentPaths(current => current.filter(key => !inSubtree(key, path))); setExpanded(current => new Set([...current].filter(key => !inSubtree(key, path))));
+      for (const directory of Object.keys(directories)) if (inSubtree(directory, path)) setDirectories(directory, undefined!);
+      await refreshFiles();
+    });
   }
   async function acceptAgentBuffer(path: string, snapshot?: BufferSnapshot, preserveHistory = false) {
     const version = workspaceVersion;
     await writes.get(path);
     try {
-      const result = await api.openBuffer(path);
+      const result = await readBuffer(path);
       if (version !== workspaceVersion) return;
       if (writes.has(path)) { await writes.get(path); return acceptAgentBuffer(path, snapshot, preserveHistory); }
       const latest = result.revision >= (snapshot?.revision ?? 0) ? result : snapshot!;
@@ -293,6 +422,7 @@ export function createWorkbench() {
         pendingEdits.delete(path);
         setFailed(current => { const next = new Set(current); next.delete(path); return next; });
       }
+      setEditCounters(current => ({ ...current, [path]: (current[path] || 0) + 1 }));
       const previousDocument = documents()[path]?.document;
       const document = Text.of(latest.text.split("\n"));
       const changeSet = previousDocument ? ChangeSet.of({ from: 0, to: previousDocument.length, insert: document }, previousDocument.length) : undefined;
@@ -320,14 +450,21 @@ export function createWorkbench() {
     setPendingRecovery(undefined);
   }
   async function format(path = activePath()) {
-    if (!path) return;
+    if (!path || isSettingsBuffer(path)) return;
     try { await flush(path); if (!synchronized(path) || failed().has(path)) return; const base = accepted.get(path); if (!base) return; const result = await api.formatBuffer(path, base.revision); if (result.revision !== base.revision) await acceptAgentBuffer(path, result, true); }
     catch (e) { report(e); }
   }
   async function refreshBuffer(path: string) {
     if (dirty(path)) { setError("This file has unsaved changes. Save or close it before loading agent edits."); return; }
-    try { const result = await api.openBuffer(path); accepted.set(path, result); setBuffers(path, result); setDocuments(current => ({ ...current, [path]: { document: Text.of(result.text.split("\n")) } })); } catch (e) { report(e); }
+    try { const result = await readBuffer(path); accepted.set(path, result); setBuffers(path, result); setDocuments(current => ({ ...current, [path]: { document: Text.of(result.text.split("\n")) } })); } catch (e) { report(e); }
   }
-  return { workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, toggleDirectory, openFile, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, confirmClose, splitEditor, search, updateSettings, refreshBuffer };
+  const autosave = createAutoSaveController({
+    read: () => ({ generation: workspaceGeneration(), mode: settings().autoSave, delay: settings().autoSaveDelay, paused: busy() || fileOperationBusy() || !!pendingClose() || pendingWorkspace(), buffers: [...new Set(groups().flatMap(group => group.tabs))].filter(path => !!buffers[path]).map(path => ({ path, revision: editCounters()[path] || 0, dirty: dirty(path), eligible: !isSettingsBuffer(path) })) }),
+    save: (path, generation) => generation === workspaceGeneration() ? save(path) : Promise.resolve(false),
+    onFailures: setAutoSaveFailures,
+  });
+  createEffect(() => autosave.sync());
+  onCleanup(() => autosave.dispose());
+  return { newFile, newDirectory, renamePath, duplicatePath, trashPath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, toggleDirectory, openFile, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, confirmClose, splitEditor, search, updateSettings, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;

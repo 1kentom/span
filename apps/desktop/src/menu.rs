@@ -23,9 +23,13 @@ pub enum NativeAction {
     ToggleProject,
     ToggleAssistant,
     ToggleTerminal,
+    ToggleWordWrap,
     MarkdownPreview,
     FormatDocument,
     GoToLine,
+    ZoomIn,
+    ZoomOut,
+    ResetZoom,
     Quit,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
@@ -77,6 +81,14 @@ const ACTIONS: &[(&str, &str, NativeAction)] = &[
         NativeAction::FormatDocument,
     ),
     ("goToLine", "Go to Line...", NativeAction::GoToLine),
+    (
+        "toggleWordWrap",
+        "Toggle Word Wrap",
+        NativeAction::ToggleWordWrap,
+    ),
+    ("zoomIn", "Zoom In", NativeAction::ZoomIn),
+    ("zoomOut", "Zoom Out", NativeAction::ZoomOut),
+    ("resetZoom", "Reset Zoom", NativeAction::ResetZoom),
 ];
 
 fn item(
@@ -150,6 +162,10 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["toggleAssistant"],
             &items["toggleTerminal"],
             &items["markdownPreview"],
+            &items["toggleWordWrap"],
+            &items["zoomIn"],
+            &items["zoomOut"],
+            &items["resetZoom"],
         ],
     )?;
     let go = Submenu::with_items(app, "Go", true, &[&items["goToLine"]])?;

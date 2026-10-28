@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Install a user-requested CLI link after the native application is installed.
+# Install a user-requested detached launcher after the native application is installed.
 set -euo pipefail
 prefix=''
 target=''
 dry_run=false
+script_dir=$(cd "$(dirname "$0")" && pwd)
+launcher="$script_dir/span-launcher.sh"
+[ -f "$launcher" ] || { printf 'Launcher source is unavailable: %s\n' "$launcher" >&2; exit 1; }
 usage() {
   cat <<'HELP'
 Usage: install-cli.sh [--prefix DIRECTORY] [--target EXECUTABLE] [--dry-run]
 
-Creates DIRECTORY/bin/span when --prefix is provided. Otherwise chooses a
+Creates a detached launcher at DIRECTORY/bin/span when --prefix is provided. Otherwise chooses a
 writable /opt/homebrew/bin or /usr/local/bin already on PATH, falling back to
 ~/.local/bin. Never changes shell configuration or replaces an unrelated command.
 On macOS the default executable is /Applications/span.app/Contents/MacOS/span-desktop.
@@ -52,6 +55,8 @@ if [ -L "$link" ]; then
     printf 'Refusing to replace an existing span command: %s -> %s\n' "$link" "$existing" >&2
     exit 1
   fi
+elif [ -f "$link" ] && /usr/bin/grep -qFx '# span-managed-launcher-v1' "$link"; then
+  :
 elif [ -e "$link" ]; then
   printf 'Refusing to replace an existing span command: %s\n' "$link" >&2
   exit 1
@@ -63,10 +68,20 @@ if [ -n "$existing_command" ] && [ "$existing_command" != "$link" ]; then
   exit 1
 fi
 if "$dry_run"; then
-  printf 'Would link %s -> %s\n' "$link" "$target"
+  printf 'Would install detached launcher %s for %s\n' "$link" "$target"
 else
   mkdir -p "$bin_dir"
-  if [ ! -L "$link" ]; then ln -s "$target" "$link"; fi
+  temporary=$(mktemp "$bin_dir/.span-launcher.XXXXXX")
+  trap 'if [ -n "${temporary:-}" ] && [ -f "$temporary" ]; then /bin/unlink "$temporary"; fi' EXIT
+  {
+    printf '#!/bin/bash\n# span-managed-launcher-v1\n'
+    printf 'SPAN_EXECUTABLE=%q\n' "$target"
+    /usr/bin/tail -n +3 "$launcher"
+  } > "$temporary"
+  chmod 755 "$temporary"
+  # Rename replaces our old managed symlink itself, never its app target.
+  mv -f "$temporary" "$link"
+  temporary=''
   printf 'CLI available at %s\n' "$link"
 fi
 case ":${PATH:-}:" in

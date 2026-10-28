@@ -3,7 +3,7 @@
   "$id": "https://span.dev/settings.schema.json",
   "title": "span settings",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "theme": {
       "type": "string",
@@ -12,56 +12,67 @@
         "Light",
         "Purple"
       ],
-      "default": "Dark"
+      "default": "Dark",
+      "description": "Color theme used by the editor and surrounding interface."
     },
     "fontSize": {
       "type": "integer",
       "minimum": 8,
       "maximum": 40,
-      "default": 13
+      "default": 13,
+      "description": "Editor font size in pixels."
     },
     "tabSize": {
       "type": "integer",
       "minimum": 1,
       "maximum": 8,
-      "default": 2
+      "default": 2,
+      "description": "Number of spaces represented by one indentation level."
     },
     "wordWrap": {
       "type": "boolean",
-      "default": false
+      "default": false,
+      "description": "Wrap editor lines to the available viewport width."
     },
     "$schema": {
-      "type": "string"
+      "type": "string",
+      "description": "JSON Schema used for settings completion and validation."
     },
     "uiFontSize": {
       "type": "integer",
       "minimum": 10,
       "maximum": 24,
-      "default": 13
+      "default": 13,
+      "description": "Interface font size in pixels."
     },
     "uiFontFamily": {
       "type": "string",
       "minLength": 1,
       "maxLength": 200,
-      "default": "Inter"
+      "default": "Inter",
+      "description": "Font family for interface labels, controls and panels."
     },
     "editorFontFamily": {
       "type": "string",
       "minLength": 1,
       "maxLength": 200,
-      "default": "JetBrains Mono"
+      "default": "JetBrains Mono",
+      "description": "Font family for source code and text editing."
     },
     "collapsePanelsOnDrag": {
       "type": "boolean",
-      "default": true
+      "default": true,
+      "description": "Allow side panels to collapse when dragged beyond their minimum width."
     },
     "markdownPreviewDefault": {
       "type": "boolean",
-      "default": true
+      "default": true,
+      "description": "Open Markdown files in preview mode by default. Source and split views remain available."
     },
     "formatOnSave": {
       "type": "boolean",
-      "default": false
+      "default": false,
+      "description": "Run an available real language formatter before saving. Formatter failures preserve unsaved text."
     },
     "keybindings": {
       "type": "object",
@@ -80,9 +91,13 @@
           "toggleProject",
           "toggleAssistant",
           "toggleTerminal",
+          "toggleWordWrap",
           "markdownPreview",
           "formatDocument",
-          "goToLine"
+          "goToLine",
+          "zoomIn",
+          "zoomOut",
+          "resetZoom"
         ]
       },
       "additionalProperties": {
@@ -112,6 +127,178 @@
         }
       },
       "description": "Per-language executable argv. Document text is sent on stdin. Arguments may contain {path}. Commands never run through a shell implicitly."
+    },
+    "autoSave": {
+      "type": "string",
+      "enum": [
+        "off",
+        "afterDelay",
+        "onFocusChange",
+        "onWindowChange"
+      ],
+      "default": "off",
+      "description": "When unsaved buffers are saved automatically. Off keeps saving explicit."
+    },
+    "autoSaveDelay": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3600000,
+      "default": 1000,
+      "description": "Delay in milliseconds before saving when autoSave is afterDelay."
+    },
+    "zoomLevel": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": -5,
+      "maximum": 5,
+      "default": null,
+      "description": "Explicit current-window zoom. Null keeps the global zoom preference."
+    },
+    "files.autoSave": {
+      "type": "string",
+      "enum": [
+        "off",
+        "afterDelay",
+        "onFocusChange",
+        "onWindowChange"
+      ],
+      "default": "off",
+      "description": "VS Code compatible alias for autoSave. Dotted keys take precedence over legacy flat keys within a scope."
+    },
+    "files.autoSaveDelay": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3600000,
+      "default": 1000,
+      "description": "VS Code compatible alias for autoSaveDelay. Dotted keys take precedence over legacy flat keys within a scope."
+    },
+    "editor.fontSize": {
+      "type": "integer",
+      "minimum": 8,
+      "maximum": 40,
+      "default": 13,
+      "description": "VS Code compatible alias for fontSize. Dotted keys take precedence over legacy flat keys within a scope."
+    },
+    "editor.fontFamily": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "default": "JetBrains Mono",
+      "description": "VS Code compatible alias for editorFontFamily. Dotted keys take precedence over legacy flat keys within a scope."
+    },
+    "editor.tabSize": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "default": 2,
+      "description": "VS Code compatible alias for tabSize. Dotted keys take precedence over legacy flat keys within a scope."
+    },
+    "editor.formatOnSave": {
+      "type": "boolean",
+      "default": false,
+      "description": "VS Code compatible alias for formatOnSave. Dotted keys take precedence over legacy flat keys within a scope."
+    },
+    "window.zoomLevel": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": -5,
+      "maximum": 5,
+      "default": null,
+      "description": "VS Code compatible alias for zoomLevel. Dotted keys take precedence over legacy flat keys within a scope."
+    },
+    "editor.wordWrap": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "description": "VS Code compatible wrap mode. bounded and wordWrapColumn are not implemented.",
+      "default": "off"
+    },
+    "tabLimitEnabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Limit open file tabs using the configured tab limit. Dirty, pending, pinned and visible active files are protected."
+    },
+    "tabLimit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 10,
+      "description": "Maximum open file tabs. The limit applies across the workspace unless tabLimitPerGroup is enabled."
+    },
+    "tabLimitPerGroup": {
+      "type": "boolean",
+      "default": false,
+      "description": "Apply the tab limit to each editor group instead of the whole workspace."
+    },
+    "workbench.editor.limit.enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "VS Code compatible alias for tabLimitEnabled. Dotted keys take precedence within the same settings scope."
+    },
+    "workbench.editor.limit.value": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 10,
+      "description": "VS Code compatible alias for tabLimit. Dotted keys take precedence within the same settings scope."
+    },
+    "workbench.editor.limit.perEditorGroup": {
+      "type": "boolean",
+      "default": false,
+      "description": "VS Code compatible alias for tabLimitPerGroup. Dotted keys take precedence within the same settings scope."
+    },
+    "languageServers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Language server behaviour. Servers are downloaded only when autoInstall is true or an install is requested.",
+      "properties": {
+        "autoInstall": {
+          "type": "boolean",
+          "default": false,
+          "description": "Download missing language servers on first use."
+        },
+        "enabled": {
+          "type": "object",
+          "description": "Per-server switches. A server that is not listed is enabled.",
+          "propertyNames": {
+            "enum": [
+              "vtsls",
+              "html",
+              "css",
+              "json",
+              "rust-analyzer",
+              "basedpyright",
+              "jdtls"
+            ]
+          },
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "javaHome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "description": "JDK home used to run JDT LS instead of searching the host."
+        },
+        "nodePath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "description": "Node.js executable used to run the npm based servers instead of searching the host."
+        }
+      }
     }
-  }
+  },
+  "description": "Span supports the documented built-in settings and selected VS Code keys. Other keys are preserved in JSONC but have no effect."
 }

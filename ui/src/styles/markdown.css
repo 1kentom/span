@@ -58,3 +58,21 @@
 .theme-light .markdown-preview { --syntax-keyword: #267d81; --syntax-string: #a34a90; --syntax-number: #976319; --syntax-type: #3d72b1; --syntax-comment: #74777d; --syntax-definition: #7b58ad; }
 .theme-purple .markdown-preview { --syntax-keyword: #a6c8d4; --syntax-string: #daa2cc; --syntax-number: #e5c49a; --syntax-type: #afa3ec; }
 @media (max-width: 600px) { .markdown-body { padding: 18px 20px 70px; } .markdown-body h1 { font-size: 24px; line-height: 32px; } }
+.markdown-code-block { margin: 0 0 20px; border: 1px solid var(--sepLine); border-radius: 5px; overflow: hidden; background: var(--field); }
+.markdown-code-header { display: flex; align-items: center; gap: 5px; min-height: 31px; padding: 3px 7px 3px 13px; border-bottom: 1px solid var(--sepLine); color: var(--dim); }
+.markdown-code-language { font-size: 10px; line-height: 20px; font-weight: 500; }
+.markdown-code-status { flex: 1; min-width: 0; text-align: right; padding-right: 5px; font-size: 10px; line-height: 18px; color: var(--dim); }
+.markdown-code-action { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 4px; color: var(--dim); }
+.markdown-code-action:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.markdown-code-action:disabled { opacity: .32; }
+.markdown-code-action .icon { width: 14px; height: 14px; }
+.markdown-copy-icon { mask-image: url('/icons/rounded-linear/copy.svg'); -webkit-mask-image: url('/icons/rounded-linear/copy.svg'); }
+.markdown-run-icon { mask-image: url('/icons/markdown-run.svg'); -webkit-mask-image: url('/icons/markdown-run.svg'); }
+.markdown-terminal-icon { mask-image: url('/icons/markdown-terminal.svg'); -webkit-mask-image: url('/icons/markdown-terminal.svg'); }
+.markdown-body .markdown-code-block > .markdown-code { border: 0; border-radius: 0; margin: 0; max-height: 480px; overflow: auto; }
+.markdown-view-toggle { display: flex; align-items: center; gap: 2px; }
+.markdown-view-toolbar .markdown-view-toggle button { display: grid; place-items: center; width: 25px; height: 24px; padding: 0; border-radius: 4px; color: var(--dim); }
+.markdown-view-toolbar .markdown-view-toggle button:hover { background: var(--hover); color: var(--text); }
+.markdown-view-toolbar .markdown-view-toggle button[aria-checked="true"] { color: var(--text); background: var(--pill); }
+.markdown-body code[data-language="shell"] .tok-variableName { color: var(--syntax-function, #d9ba7e); }
+.markdown-body code[data-language="shell"] .tok-variableName.tok-definition { color: var(--syntax-type, #80b7ec); }

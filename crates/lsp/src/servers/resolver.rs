@@ -461,7 +461,7 @@ mod tests {
     fn make_java(home: &Path) -> PathBuf {
         let bin = home.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let java = bin.join("java");
+        let java = bin.join(java_exe());
         std::fs::write(&java, "").unwrap();
         java
     }
