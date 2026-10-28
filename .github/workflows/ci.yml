@@ -3,58 +3,285 @@ on:
   push:
     branches: [main, 'release/**']
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: '10'
+  # Linux webview packages needed to compile and test span-desktop.
+  WEBVIEW_APT: libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev
+
 jobs:
-  check:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+  # Decides which areas a pull request touches. Push, schedule and dispatch run everything.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' }}
+      ui: ${{ github.event_name != 'pull_request' || steps.filter.outputs.ui == 'true' }}
+      web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
+      release: ${{ github.event_name != 'pull_request' || steps.filter.outputs.release == 'true' }}
+      full: ${{ github.event_name != 'pull_request' || steps.filter.outputs.platform == 'true' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Test release metadata and policy
-        if: runner.os == 'Linux'
-        run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'apps/desktop/**'
+              - 'Cargo.*'
+              - '.github/workflows/ci.yml'
+            ui:
+              - 'ui/**'
+              - 'e2e/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
+              - 'playwright.config.ts'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'apps/web/**'
+            release:
+              - 'scripts/release/**'
+              - '.github/workflows/release-*.yml'
+              - '.github/workflows/refresh-release-metadata.yml'
+            platform:
+              - 'crates/lsp/**'
+              - 'crates/terminal*/**'
+              - 'apps/desktop/src/menu*'
+              - 'apps/desktop/src/startup*'
+              - 'apps/desktop/src/cli*'
+              - 'crates/core/src/fs_ops*'
+              - 'crates/core/src/workspace*'
+              - '.github/workflows/ci.yml'
+
+  # ---------------------------------------------------------------- fast gate (ubuntu, parallel)
+  fmt:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  ui:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - name: Test website release metadata validation
-        if: runner.os == 'Linux'
-        run: node --test apps/web/scripts/sync-releases.test.mjs
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Linux webview dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build
-      - name: Install browser test runtime
-        if: runner.os == 'Linux'
+
+  clippy:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/fast-gate' }}
+      - uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: ${{ env.WEBVIEW_APT }}
+          version: webview-1
+      - name: Placeholder frontend bundle for the Tauri build script
+        run: mkdir -p ui/dist && touch ui/dist/index.html
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2.88.0
+        with:
+          tool: nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/fast-gate' }}
+      - uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: ${{ env.WEBVIEW_APT }}
+          version: webview-1
+      - name: Placeholder frontend bundle for the Tauri build script
+        run: mkdir -p ui/dist && touch ui/dist/index.html
+      # The real-server tests are behind the real-servers feature and run in their own job.
+      # The workspace has no doc tests, so there is no `cargo test --doc` step.
+      - run: cargo nextest run --workspace --no-fail-fast
+
+  # Cheap script tests, no Rust toolchain and no dependency install.
+  meta:
+    needs: changes
+    if: needs.changes.outputs.release == 'true' || needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test release metadata and policy
+        if: needs.changes.outputs.release == 'true'
+        run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
+      - name: Test website release metadata validation
+        if: needs.changes.outputs.web == 'true'
+        run: node --test apps/web/scripts/sync-releases.test.mjs
+
+  # ---------------------------------------------------------------- full set
+  e2e:
+    name: e2e (playwright)
+    needs: changes
+    if: needs.changes.outputs.ui == 'true' || needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - name: Install browser binaries and system libraries
+        if: steps.pw-cache.outputs.cache-hit != 'true'
         run: pnpm exec playwright install --with-deps --only-shell chromium
+      - name: Install system libraries only
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
       - name: Browser preview interaction tests
-        if: runner.os == 'Linux'
         run: pnpm test:e2e
       - name: Upload browser evidence
-        if: always() && runner.os == 'Linux'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: browser-preview-evidence
           path: |
             test-results/
             playwright-report/
-      - run: cargo fmt --all -- --check
+
+  desktop-build:
+    name: desktop-build (ubuntu-24.04)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/fast-gate' }}
+      - uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: ${{ env.WEBVIEW_APT }} build-essential curl wget file
+          version: webview-1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm desktop:build --no-bundle
+
+  full:
+    name: full (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # Windows is known-broken (issue #77); the owner chose to proceed without it for now.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: full
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/fast-gate' }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: runner.os == 'Windows'
       - name: Diagnose Windows desktop test manifests
         if: runner.os == 'Windows'
         shell: pwsh
@@ -79,9 +306,13 @@ jobs:
           exit 0
       - run: cargo test --workspace --no-fail-fast
       - run: pnpm desktop:build --no-bundle
+
   real-servers:
     name: real language servers (ubuntu-24.04)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,6 +322,10 @@ jobs:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lsp
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/fast-gate' }}
       - name: Cache downloaded language servers
         uses: actions/cache@v4
         with:
@@ -102,3 +337,22 @@ jobs:
         run: |
           export JAVA_HOME="$JAVA_HOME_25_X64"
           cargo test -p span-lsp --features real-servers --test servers_smoke --no-fail-fast
+
+  # One result to look at. Jobs skipped by the path filter count as success.
+  gate:
+    name: gate
+    if: always()
+    needs: [changes, fmt, ui, clippy, test, meta, e2e, desktop-build, full, real-servers]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail when any needed job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | python3 -c '
+          import json, sys
+          bad = {k: v["result"] for k, v in json.load(sys.stdin).items() if v["result"] in ("failure", "cancelled")}
+          print("results:", bad or "all passed or skipped")
+          sys.exit(1 if bad else 0)
+          '
