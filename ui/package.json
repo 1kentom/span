@@ -31,8 +31,11 @@
     "@lezer/highlight": "^1.2.5",
     "@tauri-apps/api": "2.12.4",
     "@tauri-apps/plugin-dialog": "^2",
+    "fflate": "0.8.3",
     "jsonc-parser": "^3.3.1",
+    "mammoth": "1.13.0",
     "markdown-it": "15.0.3",
+    "pdfjs-dist": "6.4.299",
     "solid-js": "1.9.17"
   },
   "devDependencies": {

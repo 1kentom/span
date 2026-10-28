@@ -62,7 +62,7 @@ describe('attachment kinds map to the viewer', () => {
     open(file('blob.bin', 'application/octet-stream', new Uint8Array([0, 1, 2, 0, 255, 0, 3])));
     expect(kind()).toBe('hex');
     document.body.replaceChildren();
-    open(file('doc.pdf', 'application/pdf', new Uint8Array(64)));
+    open(file('bundle.7z', 'application/x-7z-compressed', new Uint8Array(64)));
     expect(kind()).toBe('unsupported');
     expect(document.querySelector('img')).toBeNull();
   });
