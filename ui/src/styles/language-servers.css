@@ -21,7 +21,7 @@
 
 /* Language intelligence hub: top bar button */
 .hub-anchor{position:relative;display:inline-flex}
-.hub-button{position:relative;color:var(--dim)}
+.hub-button{position:relative;color:var(--blue,var(--accent))}
 .hub-button:hover,.hub-button[aria-expanded=true]{background:var(--pill);color:var(--text)}
 .hub-button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .hub-button[data-tone=ok]{color:var(--lsp-ok)}

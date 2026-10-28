@@ -1,15 +1,9 @@
 {
   "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
-  "scope": "Language intelligence button and the Go to group of the editor context menu. Original SVG bytes and geometry are preserved.",
+  "scope": "Go to group of the editor context menu. Original SVG bytes and geometry are preserved.",
   "processing": "SVG XML inspected for active content and external references. Application renders the artwork with a currentColor alpha mask.",
   "rights": "Copied from the user-provided local icon library at the user\u2019s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
   "assets": [
-    {
-      "asset": "language-intelligence.svg",
-      "source": "programming2new/iconsax-code-chip-9948a7a45267-.svg",
-      "sourceSha256": "c23b5cbcc7edfc69a385abccf9df880ec63698bf553c6ff1dcc957fe6049c59c",
-      "assetSha256": "c23b5cbcc7edfc69a385abccf9df880ec63698bf553c6ff1dcc957fe6049c59c"
-    },
     {
       "asset": "goto-definition.svg",
       "source": "programming2new/iconsax-code-search-73fc18898bdc-.svg",

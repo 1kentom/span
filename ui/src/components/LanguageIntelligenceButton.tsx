@@ -30,7 +30,7 @@ export function LanguageIntelligenceButton(props: LanguageIntelligenceButtonProp
         <Show when={ring().kind !== "none"}><circle class="hub-ring-bar" classList={{ spin: ring().kind === "indeterminate" }} cx="14" cy="14" r={RADIUS} transform="rotate(-90 14 14)"
           stroke-dasharray={ring().kind === "determinate" ? `${(CIRCUMFERENCE * (ring().percent ?? 0)) / 100} ${CIRCUMFERENCE}` : `${CIRCUMFERENCE * 0.25} ${CIRCUMFERENCE}`} /></Show>
       </svg>
-      <Icon name="language-intelligence" size={16} />
+      <Icon name="flash" size={16} />
       <Show when={button().check}><span class="hub-badge check"><Icon name="TickCircle" size={11} /></span></Show>
       <Show when={button().badge}><i class="hub-badge dot" data-kind={button().badge} /></Show>
     </button>
