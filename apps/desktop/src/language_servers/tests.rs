@@ -121,7 +121,8 @@ fn fixture(installed: bool, mode: &'static str, request_timeout: Duration) -> Fi
     let ws = CoreWorkspace::open(&project)
         .unwrap()
         .with_user_settings(None);
-    let root = PathBuf::from(ws.workspace().root);
+    // The production service normalizes canonical Windows verbatim roots before keying instances.
+    let root = paths::normalize_path(Path::new(&ws.workspace().root));
     let resolver = Arc::new(FakeResolver {
         mode: Mutex::new(mode),
         log: log.clone(),

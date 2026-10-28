@@ -15,6 +15,8 @@ type Trace = {
 };
 
 async function nativeFixture(page: Page) {
+  const pageErrors: string[] = [];
+  page.on("pageerror", error => pageErrors.push(error.message));
   await page.addInitScript(settings => {
     const rootA = "/fixture/workspace-a";
     const rootB = "/fixture/workspace-b";
@@ -37,6 +39,7 @@ async function nativeFixture(page: Page) {
     Object.assign(window, {
       isTauri: true,
       __indexFixture: trace,
+      __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => undefined },
       __TAURI_INTERNALS__: {
         metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
         transformCallback: () => ++callback,
@@ -44,7 +47,10 @@ async function nativeFixture(page: Page) {
         invoke: async (command: string, args: Record<string, any> = {}) => {
           trace.calls.push(command);
           if (command === "get_session") return { workspaceRoot: root, groups: [], activeGroup: 0, markdownViews: {}, panels: { projectWidth: 230, assistantWidth: 350, terminalHeight: 260, projectCollapsed: false, assistantCollapsed: true, terminalCollapsed: true } };
-          if (command === "take_startup_requests" || command === "recent_projects" || command === "get_settings_keys_for_scope" || command === "agent_installed" || command === "sync_native_menu") return [];
+          if (command === "take_startup_requests" || command === "recent_projects" || command === "get_settings_keys_for_scope" || command === "agent_installed" || command === "agent_registry" || command === "agent_presets" || command === "pending_run_approvals" || command === "lsp_status" || command === "sync_native_menu") return [];
+          if (command === "run_tools_enabled") return false;
+          if (command === "run_configurations") return { workspaceRoot: root, configurations: [], detected: [] };
+          if (command === "run_context") return { workspaceRoot: root, workspaceEpoch: generation, runs: [] };
           if (command === "get_settings" || command === "get_settings_for_scope") return settings;
           if (command === "get_settings_jsonc" || command === "get_settings_jsonc_for_scope") return "{}";
           if (command === "open_workspace") { root = args.path as string; generation += 1; statusCalls = 0; return { root, name: root.split("/").at(-1) }; }
@@ -68,25 +74,29 @@ async function nativeFixture(page: Page) {
             if (path === "src") return [{ path: "src/zebra.ts", name: "zebra.ts", isDir: false }, { path: "src/alpha.ts", name: "alpha.ts", isDir: false }];
             return [];
           }
+          if (command === "peek_buffer") return { path: String(args.path), text, revision: 0, savedRevision: 0, language: "typescript" };
           if (command === "open_buffer") { const path = String(args.path); trace.opened.push(path); return { path, text, revision: 0, savedRevision: 0, language: "typescript" }; }
           if (command === "edit_buffer_delta") { const path = String(args.path); trace.edits.push(path); return { path, revision: Number(args.expectedRevision) + 1, savedRevision: Number(args.expectedRevision) }; }
           if (command === "save_buffer") { const path = String(args.path); trace.saves.push(path); const revision = Number(args.expectedRevision); return { path, text, revision, savedRevision: revision, language: "typescript" }; }
           if (command === "native_window_state") return { fullscreen: false, maximized: false, hasNativeTrafficLights: false };
           if (command === "plugin:dialog|open") return nextDialog;
           if (["plugin:event|listen", "plugin:event|unlisten", "plugin:webview|set_webview_zoom", "save_session"].includes(command)) return ++callback;
-          return null;
+          throw new Error(`Unsupported explicit index fixture command: ${command}`);
         },
       },
       __setNextIndexDialog: (path: string) => { nextDialog = path; },
     });
   }, settings);
+  return pageErrors;
 }
 
 const trace = (page: Page) => page.evaluate(() => (window as unknown as { __indexFixture: Trace }).__indexFixture);
 
 test("native IPC shows root/progress before full scan, preserves fuzzy order, completes Tab and navigates to line:column without save rescans", async ({ page }) => {
-  await nativeFixture(page);
+  const pageErrors = await nativeFixture(page);
   await page.goto("/");
+  await expect(page.getByRole("main", { name: "span editor", exact: true })).toHaveAttribute("aria-busy", "false");
+  expect(pageErrors).toEqual([]);
   const tree = page.getByRole("tree", { name: "Workspace files", exact: true });
   await expect(tree.getByRole("treeitem", { name: /src/ })).toBeVisible();
   await expect(tree.getByRole("treeitem", { name: /README\.md/ })).toBeVisible();
@@ -122,11 +132,14 @@ test("native IPC shows root/progress before full scan, preserves fuzzy order, co
   const after = await trace(page);
   expect(after.calls.filter(call => call === "list_files")).toHaveLength(fullScanCount);
   expect(after.listings).toHaveLength(listingCount);
+  expect(pageErrors).toEqual([]);
 });
 
 test("slow indexed queries survive progress updates and stale query/workspace results are discarded", async ({ page }) => {
-  await nativeFixture(page);
+  const pageErrors = await nativeFixture(page);
   await page.goto("/");
+  await expect(page.getByRole("main", { name: "span editor", exact: true })).toHaveAttribute("aria-busy", "false");
+  expect(pageErrors).toEqual([]);
   await page.getByRole("button", { name: "Open quick open", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Goto", exact: true });
   const input = dialog.getByRole("combobox", { name: "Find a file", exact: true });
@@ -161,5 +174,7 @@ test("slow indexed queries survive progress updates and stale query/workspace re
   await expect(dialog.getByRole("option").filter({ hasText: "stale-old-root.ts" })).toHaveCount(0);
   await expect(dialog.getByRole("option").first()).toContainText("old-root-only.ts");
   expect((await trace(page)).queries.filter(item => item.query === "oldroot")[0].root).toBe("/fixture/workspace-a");
+  expect((await trace(page)).calls).toContain("plugin:event|unlisten");
   expect((await trace(page)).calls).not.toContain("list_files");
+  expect(pageErrors).toEqual([]);
 });

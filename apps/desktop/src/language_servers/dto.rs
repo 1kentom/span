@@ -619,7 +619,8 @@ mod tests {
         let locations = map_definition(&root, Some(response));
         assert_eq!(locations[0].path, "src/a b.rs");
         assert_eq!(locations[0].range.start.line, 1);
-        assert!(locations[1].path.ends_with("elsewhere/c.rs"));
+        assert!(std::path::Path::new(&locations[1].path)
+            .ends_with(std::path::Path::new("elsewhere").join("c.rs")));
         assert!(std::path::Path::new(&locations[1].path).is_absolute());
         assert!(map_definition(&root, None).is_empty());
     }

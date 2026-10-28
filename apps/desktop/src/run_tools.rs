@@ -568,10 +568,18 @@ mod tests {
             run_events,
         ));
 
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/acp/tests/fixtures/worker.mjs")
-            .canonicalize()
-            .unwrap();
+        // Keep this as a regular drive path on Windows. `canonicalize()` may
+        // add the `\\?\` prefix, which Node does not accept as a script path.
+        let desktop_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repository_root = desktop_manifest
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("desktop manifest is two levels below the repository root");
+        let fixture = repository_root.join("crates/acp/tests/fixtures/worker.mjs");
+        assert!(
+            fixture.is_file(),
+            "ACP worker fixture is missing: {fixture:?}"
+        );
         let connection = state
             .sessions
             .connect(
