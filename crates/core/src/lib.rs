@@ -1,5 +1,6 @@
 //! The editor's authoritative text and workspace services.
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
+mod attachment;
 mod buffer;
 mod format;
 mod images;
@@ -11,6 +12,7 @@ mod settings;
 mod tools;
 mod workspace;
 
+pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
 pub use format::{
     native_program_path, resolve_program, run_formatter, FormatRequest, FormatResult,
@@ -51,6 +53,8 @@ pub enum CoreError {
     Formatter(String),
     #[error("Search: {0}")]
     Search(String),
+    #[error("Attachment rejected: {0}")]
+    Attachment(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
