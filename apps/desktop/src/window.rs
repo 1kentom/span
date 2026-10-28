@@ -3,21 +3,35 @@
 use serde::Deserialize;
 use specta::Type;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{window::Color, Manager};
 
-static PROCESS_START: OnceLock<Instant> = OnceLock::new();
+static PROCESS_START: OnceLock<(Instant, SystemTime)> = OnceLock::new();
 
 /// Records when the process started so startup reports can include the native side.
 pub fn mark_process_start() {
-    PROCESS_START.get_or_init(Instant::now);
+    PROCESS_START.get_or_init(|| (Instant::now(), SystemTime::now()));
 }
 
 fn since_process_start_ms() -> f64 {
     PROCESS_START
         .get()
-        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .map(|(start, _)| start.elapsed().as_secs_f64() * 1000.0)
         .unwrap_or_default()
+}
+
+/// Milliseconds from process start to a wall clock time in milliseconds since the Unix epoch.
+fn process_relative_ms(epoch_ms: f64) -> Option<f64> {
+    let (_, started) = PROCESS_START.get()?;
+    let started_ms = started.duration_since(UNIX_EPOCH).ok()?.as_secs_f64() * 1000.0;
+    Some(epoch_ms - started_ms)
+}
+
+/// Logs when the main window exists (it was visible from here when created visible).
+pub fn log_window_created() {
+    if cfg!(debug_assertions) {
+        eprintln!("startup: main window created at {:.0}ms", since_process_start_ms());
+    }
 }
 
 /// Startup marks measured by the webview, in milliseconds since its navigation started.
@@ -28,6 +42,8 @@ pub struct StartupTimings {
     pub entry_evaluated_ms: Option<f64>,
     pub shell_rendered_ms: Option<f64>,
     pub session_ready_ms: Option<f64>,
+    /// `performance.timeOrigin`: when the webview navigation started, in Unix epoch milliseconds.
+    pub time_origin_ms: Option<f64>,
 }
 
 fn format_ms(value: Option<f64>) -> String {
@@ -47,6 +63,14 @@ pub fn report_startup_timings(timings: StartupTimings) {
             format_ms(timings.shell_rendered_ms),
             format_ms(timings.session_ready_ms),
         );
+        if let Some(navigation) = timings.time_origin_ms.and_then(process_relative_ms) {
+            let at = |mark: Option<f64>| format_ms(mark.map(|value| navigation + value));
+            eprintln!(
+                "startup: since process start: navigation {navigation:.0}ms first-paint {} session-ready {}",
+                at(timings.first_paint_ms),
+                at(timings.session_ready_ms),
+            );
+        }
     }
 }
 

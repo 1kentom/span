@@ -2014,6 +2014,8 @@ export type StartupTimings_Deserialize = {
 	entryEvaluatedMs?: number | null,
 	shellRenderedMs?: number | null,
 	sessionReadyMs?: number | null,
+	/**  `performance.timeOrigin`: when the webview navigation started, in Unix epoch milliseconds. */
+	timeOriginMs?: number | null,
 };
 
 /**  Startup marks measured by the webview, in milliseconds since its navigation started. */
@@ -2022,6 +2024,8 @@ export type StartupTimings_Serialize = {
 	entryEvaluatedMs: number | null,
 	shellRenderedMs: number | null,
 	sessionReadyMs: number | null,
+	/**  `performance.timeOrigin`: when the webview navigation started, in Unix epoch milliseconds. */
+	timeOriginMs: number | null,
 };
 
 export type SyntaxSnapshot = {

@@ -13,9 +13,11 @@ export type StartupTimings = {
   entryEvaluatedMs: number | null;
   shellRenderedMs: number | null;
   sessionReadyMs: number | null;
+  /** performance.timeOrigin, so the desktop side can place the marks on its own clock. */
+  timeOriginMs: number | null;
 };
 
-type PerformanceLike = Pick<Performance, "mark" | "getEntriesByName" | "getEntriesByType">;
+type PerformanceLike = Pick<Performance, "mark" | "getEntriesByName" | "getEntriesByType"> & { timeOrigin?: number };
 
 const defaultPerformance = (): PerformanceLike | undefined => (typeof performance === "undefined" ? undefined : performance);
 
@@ -31,8 +33,8 @@ const markTime = (perf: PerformanceLike, name: StartupMark) => {
 };
 
 /** Reads the marks plus the browser's own paint entry, preferring first-paint over first-contentful-paint. */
-export function collectStartupTimings(perf: PerformanceLike | undefined = defaultPerformance()): StartupTimings {
-  if (!perf) return { firstPaintMs: null, entryEvaluatedMs: null, shellRenderedMs: null, sessionReadyMs: null };
+export function collectStartupTimings(perf: PerformanceLike | null | undefined = defaultPerformance()): StartupTimings {
+  if (!perf) return { firstPaintMs: null, entryEvaluatedMs: null, shellRenderedMs: null, sessionReadyMs: null, timeOriginMs: null };
   let paints: PerformanceEntry[] = [];
   try { paints = perf.getEntriesByType("paint"); } catch { /* paint timing is optional */ }
   const paint = paints.find(entry => entry.name === "first-paint") ?? paints.find(entry => entry.name === "first-contentful-paint");
@@ -41,6 +43,7 @@ export function collectStartupTimings(perf: PerformanceLike | undefined = defaul
     entryEvaluatedMs: markTime(perf, STARTUP_MARKS.entryEvaluated),
     shellRenderedMs: markTime(perf, STARTUP_MARKS.shellRendered),
     sessionReadyMs: markTime(perf, STARTUP_MARKS.sessionReady),
+    timeOriginMs: typeof perf.timeOrigin === "number" ? Math.round(perf.timeOrigin) : null,
   };
 }
 

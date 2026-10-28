@@ -980,6 +980,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             menu::install(app.handle())?;
             // The window starts hidden; the frontend shows it once the session has rendered.
             window::show_if_still_hidden(app.handle(), std::time::Duration::from_secs(4));
+            window::log_window_created();
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
                 window.on_window_event(move |event| {
