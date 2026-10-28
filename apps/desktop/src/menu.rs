@@ -47,6 +47,7 @@ pub enum NativeAction {
     RenameSymbol,
     GoBack,
     GoForward,
+    FocusBreadcrumbs,
     ZoomIn,
     ZoomOut,
     ResetZoom,
@@ -182,6 +183,11 @@ const ACTIONS: &[(&str, &str, NativeAction)] = &[
     ("renameSymbol", "Rename Symbol", NativeAction::RenameSymbol),
     ("goBack", "Go Back", NativeAction::GoBack),
     ("goForward", "Go Forward", NativeAction::GoForward),
+    (
+        "focusBreadcrumbs",
+        "Focus Breadcrumbs",
+        NativeAction::FocusBreadcrumbs,
+    ),
     ("zoomIn", "Zoom In", NativeAction::ZoomIn),
     ("zoomOut", "Zoom Out", NativeAction::ZoomOut),
     ("resetZoom", "Reset Zoom", NativeAction::ResetZoom),
@@ -291,6 +297,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["showTypeHierarchy"],
             &items["goBack"],
             &items["goForward"],
+            &items["focusBreadcrumbs"],
         ],
     )?;
     app.set_menu(Menu::with_items(
@@ -375,6 +382,7 @@ mod tests {
             ("peekReferences", "Shift+Alt+F12"),
             ("goToSymbolInWorkspace", "Mod+T"),
             ("goBack", "Mod+Alt+ArrowLeft"),
+            ("focusBreadcrumbs", "Mod+Shift+."),
         ]
         .into_iter()
         .map(|(id, key)| (id.to_owned(), vec![key.to_owned()]))
