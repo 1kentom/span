@@ -7,8 +7,10 @@
 //! - `manager`: lazy start, reuse, restart and shutdown on top of `LspClient`
 
 pub mod cache;
+pub mod catalog;
 pub mod install;
 pub mod manager;
+pub mod runtime;
 pub mod spec;
 
 pub use spec::{
