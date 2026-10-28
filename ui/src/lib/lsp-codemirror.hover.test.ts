@@ -433,7 +433,7 @@ describe("Cmd/Ctrl-click go to definition", () => {
     const { view, session } = make("foo bar");
     press(view, 3, { ctrlKey: true });
     press(view, 5);
-    press(view, 5, { ctrlKey: true, altKey: true });
+    press(view, 5, { altKey: true });
     press(view, 5, { ctrlKey: true, button: 2 });
     expect(session.definition).not.toHaveBeenCalled();
     // None of these started a gesture, so a context menu that follows is not swallowed.
