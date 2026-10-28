@@ -87,6 +87,7 @@ impl Harness {
                 version: "1.0.0".into(),
                 launch: worker(&[]),
             }],
+            background: None,
             events: Some(Arc::new(move |event| sink.lock().unwrap().push(event))),
         }
     }
@@ -1590,4 +1591,422 @@ async fn open_lead_right_after_connect_always_sees_features() {
         h.manager.close(&key).await.ok();
         h.manager.disconnect(&connection).unwrap();
     }
+}
+
+// On-demand starts of installed agents (#82): Span starts an installed agent
+// the lead delegates to, in the background, through the session manager.
+
+use span_acp::tools::LeadServers;
+use span_acp::{BackgroundAgents, BackgroundState, InstalledAgent, LaunchFn};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn installed(id: &str, launch: AgentCommand) -> InstalledAgent {
+    InstalledAgent {
+        id: id.into(),
+        version: "1.0.0".into(),
+        launch,
+    }
+}
+
+/// A launcher that starts the installed agent's own command through the
+/// manager, after `delay`, counting the processes it started.
+fn launcher(h: &Harness, delay: Duration, starts: Arc<AtomicUsize>) -> LaunchFn {
+    let manager = h.manager.clone();
+    let workspace = h.workspace.clone();
+    let cwd = h.directory.path().to_string_lossy().into_owned();
+    Arc::new(move |agent: InstalledAgent, sink| {
+        let (manager, workspace, cwd, starts) =
+            (manager.clone(), workspace.clone(), cwd.clone(), starts.clone());
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            starts.fetch_add(1, Ordering::SeqCst);
+            manager.connect(agent.launch, cwd, workspace, Some(sink)).await
+        })
+    })
+}
+
+impl Harness {
+    fn background_config(
+        &self,
+        policy: ToolPolicy,
+        agents: Vec<InstalledAgent>,
+        background: &BackgroundAgents,
+    ) -> ToolServerConfig {
+        // Ten real seconds for a fixture process to start, unless the test
+        // set its own limit.
+        let policy = if policy.launch_timeout_seconds == ToolPolicy::default().launch_timeout_seconds {
+            ToolPolicy {
+                launch_timeout_seconds: 1000,
+                ..policy
+            }
+        } else {
+            policy
+        };
+        let mut config = self.config(policy);
+        config.installed = agents;
+        config.background = Some(background.clone());
+        config
+    }
+
+    async fn background_lead(
+        &self,
+        connection: &str,
+        config: ToolServerConfig,
+    ) -> (SessionKey, ToolServer) {
+        let server = ToolServer::start(&self.manager, connection, config)
+            .await
+            .expect("start span-agents");
+        let lead = self
+            .manager
+            .open_session_with(
+                connection,
+                None,
+                SessionOrigin::User,
+                vec![server.mcp_server_json()],
+            )
+            .await
+            .expect("lead session");
+        server.bind(&self.manager, lead.clone()).expect("bind lead");
+        (lead, server)
+    }
+
+    /// The lead still answers its own prompts.
+    async fn lead_answers(&mut self, lead: &SessionKey) {
+        let manager = self.manager.clone();
+        let key = lead.clone();
+        let turn = tokio::spawn(async move {
+            manager
+                .prompt(&key, "reply:lead still here".into(), vec![])
+                .await
+        });
+        let lead_session = lead.session_id.clone();
+        let event = self
+            .next(|e| {
+                e.session_id.as_deref() == Some(lead_session.as_str())
+                    && matches!(&e.event, AgentEvent::Text { text, .. } if text.contains("lead still here"))
+            })
+            .await;
+        assert_eq!(event.connection_id, lead.connection_id);
+        turn.await.unwrap().expect("lead turn");
+    }
+}
+
+#[tokio::test]
+async fn list_agents_reports_installed_agents_as_ready_to_start() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let background = BackgroundAgents::new(
+        h.manager.clone(),
+        launcher(&h, Duration::ZERO, Arc::default()),
+    );
+    let config = h.background_config(
+        scaled(),
+        vec![installed("codex-acp", worker(&["--name=codex"]))],
+        &background,
+    );
+    let (_lead, server) = h.background_lead(&lead_connection, config).await;
+    let listed = Client::new(&server).tool("list_agents", json!({})).await;
+    let agents = structured(&listed)["agents"].as_array().unwrap().clone();
+    let codex = agents.iter().find(|a| a["id"] == "codex-acp").unwrap();
+    assert_eq!(codex["state"], "ready to start");
+    assert_eq!(codex["delegable"], true);
+    let text = listed["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("codex-acp (installed, ready to start)"), "{text}");
+    assert!(!text.to_lowercase().contains("ask the user to connect"), "{text}");
+    // Listing starts nothing.
+    assert_eq!(background.state("codex-acp"), BackgroundState::Idle);
+    assert_eq!(h.manager.connections().len(), 1);
+
+    // The advertised instructions and descriptions say so too.
+    let mut client = Client::new(&server);
+    let init = client
+        .rpc("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}))
+        .await;
+    let instructions = init.response["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("Do not ask the user to connect"), "{instructions}");
+    let tools = client.rpc("tools/list", json!({})).await;
+    let delegate = tools.response["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "delegate")
+        .unwrap()
+        .clone();
+    assert!(delegate["description"]
+        .as_str()
+        .unwrap()
+        .contains("Span starts an installed agent in the background"));
+}
+
+#[tokio::test]
+async fn delegating_to_an_installed_agent_starts_it_and_returns_the_childs_result() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let starts = Arc::new(AtomicUsize::new(0));
+    let background =
+        BackgroundAgents::new(h.manager.clone(), launcher(&h, Duration::ZERO, starts.clone()));
+    let config = h.background_config(
+        scaled(),
+        vec![installed("codex-acp", worker(&["--name=codex"]))],
+        &background,
+    );
+    let (lead, server) = h.background_lead(&lead_connection, config).await;
+    let mut client = Client::new(&server);
+    let delegated = client
+        .tool(
+            "delegate",
+            json!({"agent": "codex-acp", "task": "reply:hello from codex"}),
+        )
+        .await;
+    assert_eq!(delegated["isError"], false, "{delegated}");
+    let connection = structured(&delegated)["connectionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(connection, lead_connection);
+    assert_eq!(structured(&delegated)["agent"], "codex");
+    let task = structured(&delegated)["taskId"].as_str().unwrap().to_owned();
+    let result = client.until_finished(&task).await;
+    assert_eq!(structured(&result)["status"], "completed");
+    assert!(result["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("hello from codex"));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        background.state("codex-acp"),
+        BackgroundState::Connected(connection.clone())
+    );
+
+    // The UI saw the start, then the delegation, in that order.
+    let events = h.tool_events.lock().unwrap().clone();
+    let position = |pred: &dyn Fn(&DelegationEvent) -> bool| events.iter().position(pred).unwrap();
+    let starting = position(&|e| matches!(e, DelegationEvent::Starting { agent_id, lead: l } if agent_id == "codex-acp" && *l == lead));
+    let finished = position(&|e| {
+        matches!(e, DelegationEvent::StartFinished { agent_id, launched: true, connection_id: Some(c), reason: None, .. } if agent_id == "codex-acp" && *c == connection)
+    });
+    let delegated_at = position(&|e| matches!(e, DelegationEvent::Delegated { .. }));
+    assert!(starting < finished && finished < delegated_at, "{events:?}");
+
+    // list_agents now shows it connected under its installed id, once.
+    let listed = client.tool("list_agents", json!({})).await;
+    let agents = structured(&listed)["agents"].as_array().unwrap().clone();
+    assert!(agents.iter().all(|a| a["id"] != "codex-acp"));
+    let running = agents.iter().find(|a| a["id"] == connection).unwrap();
+    assert_eq!(running["state"], "connected");
+    assert_eq!(running["installedId"], "codex-acp");
+
+    // A second delegation reuses the running process and announces no start.
+    let before = h.tool_events.lock().unwrap().len();
+    let again = client
+        .tool("delegate", json!({"agent": "codex-acp", "task": "reply:again"}))
+        .await;
+    assert_eq!(structured(&again)["connectionId"], connection);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    let later = h.tool_events.lock().unwrap()[before..].to_vec();
+    assert!(!later
+        .iter()
+        .any(|e| matches!(e, DelegationEvent::Starting { .. })));
+    h.lead_answers(&lead).await;
+}
+
+#[tokio::test]
+async fn two_simultaneous_delegates_share_one_start() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let starts = Arc::new(AtomicUsize::new(0));
+    let background = BackgroundAgents::new(
+        h.manager.clone(),
+        launcher(&h, Duration::from_millis(400), starts.clone()),
+    );
+    let config = h.background_config(
+        scaled(),
+        vec![installed("codex-acp", worker(&["--name=codex"]))],
+        &background,
+    );
+    let (_lead, server) = h.background_lead(&lead_connection, config).await;
+    let (mut a, mut b) = (Client::new(&server), Client::new(&server));
+    let (first, second) = tokio::join!(
+        a.tool("delegate", json!({"agent": "codex-acp", "task": "reply:one"})),
+        b.tool("delegate", json!({"agent": "codex-acp", "task": "reply:two"})),
+    );
+    assert_eq!(first["isError"], false, "{first}");
+    assert_eq!(second["isError"], false, "{second}");
+    assert_eq!(
+        structured(&first)["connectionId"],
+        structured(&second)["connectionId"]
+    );
+    assert_eq!(starts.load(Ordering::SeqCst), 1, "one process for both");
+    assert_eq!(h.manager.connections().len(), 2);
+    let events = h.tool_events.lock().unwrap().clone();
+    let launched: Vec<bool> = events
+        .iter()
+        .filter_map(|e| match e {
+            DelegationEvent::StartFinished { launched, .. } => Some(*launched),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(launched.iter().filter(|l| **l).count(), 1, "{events:?}");
+}
+
+#[tokio::test]
+async fn a_failed_start_maps_to_a_closed_reason_and_the_lead_keeps_working() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let manager = h.manager.clone();
+    let workspace = h.workspace.clone();
+    let cwd = h.directory.path().to_string_lossy().into_owned();
+    // "hang" never finishes starting; the others start their own command.
+    let launch: LaunchFn = Arc::new(move |agent: InstalledAgent, sink| {
+        let (manager, workspace, cwd) = (manager.clone(), workspace.clone(), cwd.clone());
+        Box::pin(async move {
+            if agent.id == "hang" {
+                std::future::pending::<()>().await;
+            }
+            manager.connect(agent.launch, cwd, workspace, Some(sink)).await
+        })
+    });
+    let background = BackgroundAgents::new(h.manager.clone(), launch);
+    let missing = AgentCommand {
+        command: "span-agent-that-does-not-exist".into(),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+    };
+    let policy = ToolPolicy {
+        launch_timeout_seconds: 300,
+        ..scaled()
+    };
+    let config = h.background_config(
+        policy,
+        vec![
+            installed("missing", missing),
+            installed("hang", worker(&["--name=hang"])),
+            installed("locked", worker(&["--name=locked", "--auth-required"])),
+        ],
+        &background,
+    );
+    let (lead, server) = h.background_lead(&lead_connection, config).await;
+    let mut client = Client::new(&server);
+    for (agent, reason, says) in [
+        ("missing", "agent_unavailable", "not installed"),
+        ("hang", "timeout", "did not start in time"),
+        ("locked", "auth_required", "Authentication required"),
+    ] {
+        let started = Instant::now();
+        let result = client
+            .tool("delegate", json!({"agent": agent, "task": "reply:x"}))
+            .await;
+        assert!(started.elapsed() < Duration::from_secs(10), "{agent} hung");
+        assert_eq!(result["isError"], true, "{agent}: {result}");
+        assert_eq!(structured(&result)["reason"], reason, "{agent}: {result}");
+        let detail = structured(&result)["detail"].as_str().unwrap();
+        assert!(detail.contains(says), "{agent}: {detail}");
+    }
+    let events = h.tool_events.lock().unwrap().clone();
+    assert!(events.iter().any(|e| matches!(e, DelegationEvent::StartFinished { agent_id, reason: Some(_), .. } if agent_id == "missing")));
+    // A failed start is quiet: listed as unavailable, retried on demand.
+    let listed = client.tool("list_agents", json!({})).await;
+    let agents = structured(&listed)["agents"].as_array().unwrap().clone();
+    let missing = agents.iter().find(|a| a["id"] == "missing").unwrap();
+    assert_eq!(missing["state"], "unavailable");
+    assert_eq!(missing["delegable"], true);
+    h.lead_answers(&lead).await;
+}
+
+#[tokio::test]
+async fn a_child_cannot_start_agents_unless_depth_allows() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let starts = Arc::new(AtomicUsize::new(0));
+    let background =
+        BackgroundAgents::new(h.manager.clone(), launcher(&h, Duration::ZERO, starts.clone()));
+    // A server bound to a delegated child (depth 1) with the default max depth 1.
+    let (lead, lead_server) = h
+        .background_lead(
+            &lead_connection,
+            h.background_config(scaled(), Vec::new(), &background),
+        )
+        .await;
+    drop(lead_server);
+    let control = h.manager.agent_control(lead).unwrap();
+    let child = control.delegate(&lead_connection).await.unwrap();
+    let server = ToolServer::start(
+        &h.manager,
+        &lead_connection,
+        h.background_config(
+            scaled(),
+            vec![installed("codex-acp", worker(&["--name=codex"]))],
+            &background,
+        ),
+    )
+    .await
+    .unwrap();
+    server.bind(&h.manager, child).unwrap();
+    let result = Client::new(&server)
+        .tool("delegate", json!({"agent": "codex-acp", "task": "reply:x"}))
+        .await;
+    assert_eq!(structured(&result)["reason"], "depth_exceeded");
+    assert_eq!(starts.load(Ordering::SeqCst), 0, "nothing was started");
+}
+
+#[tokio::test]
+async fn delegation_off_exposes_no_tool() {
+    let mut h = harness();
+    let connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let leads = LeadServers::default();
+    let (key, outcome) = leads
+        .open_lead(&h.manager, &connection, None)
+        .await
+        .unwrap();
+    assert_eq!(outcome, span_acp::tools::LeadDelegation::Off);
+    assert!(!leads.attached(&key));
+    assert_eq!(h.servers_of(&key).await, json!([]));
+}
+
+#[tokio::test]
+async fn background_connections_forward_only_child_requests_until_promoted() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let background = BackgroundAgents::new(
+        h.manager.clone(),
+        launcher(&h, Duration::ZERO, Arc::default()),
+    );
+    let forwarded: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
+    let sink = forwarded.clone();
+    background.set_child_sink(Some(Arc::new(move |event| sink.lock().unwrap().push(event))));
+    let config = h.background_config(
+        scaled(),
+        vec![installed("codex-acp", worker(&["--name=codex"]))],
+        &background,
+    );
+    let (_lead, server) = h.background_lead(&lead_connection, config).await;
+    let mut client = Client::new(&server);
+    let delegated = client
+        .tool("delegate", json!({"agent": "codex-acp", "task": "permission"}))
+        .await;
+    let session = structured(&delegated)["sessionId"].as_str().unwrap().to_owned();
+    let connection = structured(&delegated)["connectionId"].as_str().unwrap().to_owned();
+    let asked = h
+        .next(|e| e.connection_id == connection && matches!(e.event, AgentEvent::Permission { .. }))
+        .await;
+    let AgentEvent::Permission { request_id, .. } = asked.event else {
+        unreachable!()
+    };
+    let seen = forwarded.lock().unwrap().clone();
+    assert!(seen.iter().all(|e| matches!(e, AgentEvent::Permission { session_id, .. } if *session_id == session)), "{seen:?}");
+    assert_eq!(seen.len(), 1);
+    // The user answers it through the manager, as agent_child_permission does.
+    h.manager
+        .respond_permission(&SessionKey::new(connection.clone(), session), request_id, None)
+        .unwrap();
+
+    // Promoted, the UI first gets the identity it missed, then everything.
+    let primary: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
+    let sink = primary.clone();
+    let promoted = background
+        .promote("codex-acp", Arc::new(move |event| sink.lock().unwrap().push(event)))
+        .unwrap();
+    assert_eq!(promoted, connection);
+    let replayed = primary.lock().unwrap().clone();
+    assert!(replayed.iter().any(|e| matches!(e, AgentEvent::Ready { agent_name: Some(name), .. } if name == "codex")), "{replayed:?}");
 }

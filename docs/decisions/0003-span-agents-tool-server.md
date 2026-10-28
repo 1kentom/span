@@ -93,9 +93,14 @@ use `additionalProperties: false` and unknown arguments are rejected.
 - `list_agents {}`: connected agents with `reported` (the agent's ACP
   `initialize` features, verbatim) and `hinted` (`{source: "span",
   capabilities}`, from `CAPABILITY_HINTS`, currently only `codex ->
-  image_generation`, UNVERIFIED), plus installed but unconnected agents
-  (`connected: false`, `delegable: false`). Also `maxDepth`,
-  `callerDepth`, `canDelegate`.
+  image_generation`, UNVERIFIED), plus installed agents that are not
+  running. Every entry has a `state`: `connected` (with `installedId` when
+  Span started it for an installed agent), `ready to start`, `starting` or
+  `unavailable` (the last start failed; the next delegate retries), and
+  `delegable`. Installed agents are delegable when the server has a
+  background starter (section 8) and the caller's depth allows; without
+  one they keep `state: "not connected"`, `delegable: false`. Also
+  `maxDepth`, `callerDepth`, `canDelegate`.
 - `delegate {agent, task, attachments?, expect?, saveTo?, budget?}`: creates
   a child session on a connected agent (by connection id or name), queues
   the prompt and returns `{status: "running", taskId, sessionId,
@@ -103,9 +108,11 @@ use `additionalProperties: false` and unknown arguments are rejected.
   `session/new` (bounded by the service's 30 s), well under Codex's
   default MCP `tool_timeout_sec` of 60 s (from Codex docs, UNVERIFIED
   here). Attachments are workspace files sent as ACP `resource_link`s.
-  `saveTo` is appended to the prompt and reported as an artifact. Installed
-  but unconnected agents fail with `agent_unavailable`: starting a process
-  stays a user action.
+  `saveTo` is appended to the prompt and reported as an artifact. An
+  installed agent that is not running is started first (section 8); the
+  call then also waits for that start, bounded by
+  `ToolPolicy::launch_timeout_seconds` (25). `agent` matches a connection
+  id first, then an installed id, then a reported agent name.
 - `get_result {taskId, waitSeconds <= 30}`: waits until the task finishes or
   the wait ends, sending progress (default every 5 s) when the call has a
   progress token. Returns `queued`/`running` with `progress {activity,
@@ -311,6 +318,62 @@ Four gaps the delegation UI reported, closed in the backend:
   `a_user_cancel_right_after_delegate_ends_cancelled_not_completed`, and
   the `tools::tasks` unit tests.
 
+### 8. On-demand starts of installed agents (#82)
+
+With delegation on (the user's setting, default on), a lead can delegate
+to any installed agent; the user does not connect it first. Turning
+delegation on is the consent: no extra dialog, the start is made visible
+instead.
+
+- `BackgroundAgents` (`crates/acp/src/background.rs`) keeps one map from
+  installed agent id to its connection. A start runs the process and ACP
+  `initialize` only, through `SessionManager::connect` with the launch
+  command from the agent's install manifest (the same command and PATH
+  resolution as the UI's connect). Concurrent requests for one agent share
+  one start (`ensure`), so two delegations never spawn two processes. A
+  start that outlives the caller's wait keeps going and its connection is
+  kept for the next request. A failed start is recorded quietly and the
+  next request retries.
+- `delegate` to such an agent emits `DelegationEvent::Starting {lead,
+  agentId}`, waits for the start, emits `StartFinished {connectionId,
+  agentName, launched, reason, detail}`, then opens the child exactly as
+  for a connected agent. Failures map to the closed set:
+  `agent_unavailable` (not found where Span can run it, or exited),
+  `timeout` (no `initialize` within the limit), `auth_required` (the
+  child's `session/new` asks for sign-in). The lead's turn keeps working.
+- Guardrails are unchanged: the depth check runs before any start, so a
+  child at the depth limit starts nothing (tested); budgets, the cancel
+  cascade and user-only answering apply to the child as before.
+- The background connection never takes over the user's chat. Its events
+  go through a router: until the UI makes it the active connection, only
+  permission, elicitation and edit proposal events of delegated child
+  sessions are forwarded to the UI's agent channel (the child sink); its
+  status, identity and log events are kept back. `agent_review` and
+  `agent_elicitation` try the active agent first and then the other open
+  connections, so the user can answer a background child's edit review or
+  question. Proposal ids come from the shared workspace and are unique;
+  elicitation ids are per process, so an id pending on both the active and
+  a background agent resolves the active one first (UNVERIFIED in a
+  running app).
+- When the UI connects an installed agent (`agent_connect` with the
+  manifest's exact launch command), it goes through the same map and the
+  connection is promoted to the UI's channel, replaying the status,
+  identity and capability events it missed. A running background process
+  is reused instead of starting a second one.
+- Background connections end when the folder changes and on app exit.
+  Children of a lead end with the lead as before.
+- `message` is unchanged: it targets an existing child session, so its
+  agent is already running.
+
+Tests (`crates/acp/tests/tool_server.rs`):
+`list_agents_reports_installed_agents_as_ready_to_start`,
+`delegating_to_an_installed_agent_starts_it_and_returns_the_childs_result`,
+`two_simultaneous_delegates_share_one_start`,
+`a_failed_start_maps_to_a_closed_reason_and_the_lead_keeps_working`,
+`a_child_cannot_start_agents_unless_depth_allows`,
+`delegation_off_exposes_no_tool`,
+`background_connections_forward_only_child_requests_until_promoted`.
+
 ## Resolved blockers
 
 1. Per-session MCP entry: `AgentService::new_session_with` and
@@ -333,8 +396,8 @@ Four gaps the delegation UI reported, closed in the backend:
 - The UI wrappers (`agentDelegationStatus`, `agentChildPermission` in
   `ui/src/lib/client.ts`) exist; rendering decision and nested agent
   cards is #54.
-- There is no UI to edit user settings yet, so delegation is turned on by
-  editing `~/.config/span/settings.jsonc`.
+- The connect screen's "Agents work together" switch writes
+  `agents.delegation.enabled` to the user settings file.
 
 ## UNVERIFIED
 

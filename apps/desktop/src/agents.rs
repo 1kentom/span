@@ -2,9 +2,9 @@ use crate::DesktopState;
 use serde::Serialize;
 use span_acp::tools::{DelegationEventSink, DelegationStatus, ToolPolicy, ToolServerConfig};
 use span_acp::{
-    AgentCommand, AgentEvent, AgentPreset, AgentService, AuthCredential, InstalledAgent,
-    PromptAttachment, PromptError, RegistryAgent, SessionActivity, SessionKey, SessionOrigin,
-    SessionStates, PROMPT_ALREADY_RUNNING,
+    AgentCommand, AgentEvent, AgentPreset, AgentService, AuthCredential, BackgroundAgents,
+    EventSink, InstalledAgent, PromptAttachment, PromptError, RegistryAgent, SessionActivity,
+    SessionKey, SessionOrigin, SessionStates, PROMPT_ALREADY_RUNNING,
 };
 use span_core::{BufferSnapshot, CoreWorkspace};
 use specta::Type;
@@ -134,8 +134,21 @@ async fn delegation_config(
     if !delegation_enabled(workspace.clone()).await {
         return Ok(None);
     }
-    // Listed for the lead only; starting another agent stays a user action.
-    let installed = match app.path().app_cache_dir() {
+    // The user turned delegation on, so an installed agent the lead
+    // delegates to is started in the background; the UI shows the start on
+    // the delegation card (ADR 0003 section 8).
+    let installed = installed_agents(app).await;
+    Ok(Some(ToolServerConfig {
+        workspace,
+        policy: ToolPolicy::default(),
+        installed,
+        background: Some(background(state)),
+        events: Some(agent.delegation_events.clone()),
+    }))
+}
+
+async fn installed_agents(app: &tauri::AppHandle) -> Vec<InstalledAgent> {
+    match app.path().app_cache_dir() {
         Ok(directory) => {
             let directory = directory.join("agents");
             tauri::async_runtime::spawn_blocking(move || {
@@ -145,13 +158,53 @@ async fn delegation_config(
             .unwrap_or_default()
         }
         Err(_) => Vec::new(),
-    };
-    Ok(Some(ToolServerConfig {
-        workspace,
-        policy: ToolPolicy::default(),
-        installed,
-        events: Some(agent.delegation_events.clone()),
-    }))
+    }
+}
+
+/// The installed agents Span runs in the background, started through the
+/// session manager in the open folder. Created on first use.
+pub fn background(state: &DesktopState) -> BackgroundAgents {
+    let mut guard = state.background.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .get_or_insert_with(|| {
+            let folder = state.workspace.clone();
+            let sessions = state.sessions.clone();
+            BackgroundAgents::new(
+                state.sessions.clone(),
+                Arc::new(move |agent: InstalledAgent, sink: EventSink| {
+                    let (folder, sessions) = (folder.clone(), sessions.clone());
+                    Box::pin(async move {
+                        let workspace = folder
+                            .lock()
+                            .map_err(|_| "Workspace state is unavailable".to_owned())?
+                            .clone()
+                            .ok_or_else(|| "Open a folder before starting an agent".to_owned())?;
+                        let cwd = workspace
+                            .lock()
+                            .map_err(|_| "Workspace lock poisoned".to_owned())?
+                            .workspace()
+                            .root;
+                        // Same launch path as a user connect (PATH resolution in
+                        // span_acp::launch), off the async runtime's workers.
+                        tauri::async_runtime::spawn_blocking(move || {
+                            tauri::async_runtime::block_on(sessions.connect(
+                                agent.launch,
+                                cwd,
+                                workspace,
+                                Some(sink),
+                            ))
+                        })
+                        .await
+                        .map_err(|error| format!("Agent start task failed: {error}"))?
+                    })
+                }),
+            )
+        })
+        .clone()
+}
+
+fn same_command(a: &AgentCommand, b: &AgentCommand) -> bool {
+    a.command == b.command && a.args == b.args && a.env == b.env
 }
 
 /// Open a user session on the active connection. With delegation on, the
@@ -276,19 +329,42 @@ pub async fn agent_connect(
             let _ = channel.send(AgentEvent::Delegation { event });
         })
     };
-    let sessions = state.sessions.clone();
-    let connection = tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(sessions.connect(
-            command,
-            cwd,
-            workspace,
-            Some(Arc::new(move |event| {
-                let _ = on_event.send(event);
-            })),
-        ))
-    })
-    .await
-    .map_err(|error| format!("Agent connection task failed: {error}"))??;
+    let ui: EventSink = {
+        let channel = on_event.clone();
+        Arc::new(move |event| {
+            let _ = channel.send(event);
+        })
+    };
+    let background = background(&state);
+    // Requests of delegated children on background agents reach this chat.
+    background.set_child_sink(Some(ui.clone()));
+    let installed = installed_agents(&app)
+        .await
+        .into_iter()
+        .find(|agent| same_command(&agent.launch, &command));
+    let connection = match installed {
+        // An installed agent runs through the background map, so a warm or
+        // delegated process is reused and never started twice.
+        Some(installed) => {
+            background
+                .ensure(&installed, std::time::Duration::from_secs(60))
+                .await?;
+            background.promote(&installed.id, ui)?
+        }
+        None => {
+            let sessions = state.sessions.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                tauri::async_runtime::block_on(sessions.connect(
+                    command,
+                    cwd,
+                    workspace,
+                    Some(ui),
+                ))
+            })
+            .await
+            .map_err(|error| format!("Agent connection task failed: {error}"))??
+        }
+    };
     let service: AgentService = state
         .sessions
         .service(&connection)
@@ -514,9 +590,58 @@ pub async fn agent_elicitation(
     content_json: Option<String>,
 ) -> Result<(), String> {
     let agent = active(state.inner())?;
-    agent
+    match agent
         .service
-        .respond_elicitation(request_id, action, content_json)
+        .respond_elicitation(request_id.clone(), action.clone(), content_json.clone())
+    {
+        // A delegated child on a background agent asked it.
+        Err(error) if error.contains("no longer pending") => {
+            for service in other_services(state.inner(), &agent) {
+                if service
+                    .respond_elicitation(request_id.clone(), action.clone(), content_json.clone())
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+            }
+            Err(error)
+        }
+        result => result,
+    }
+}
+
+/// The services of every other open connection (background agents running
+/// delegated children). Proposal ids come from the shared workspace, so
+/// they are unique across connections.
+fn other_services(state: &DesktopState, agent: &ActiveAgent) -> Vec<AgentService> {
+    state
+        .sessions
+        .connections()
+        .into_iter()
+        .filter(|c| c.open && c.connection_id != agent.connection)
+        .filter_map(|c| state.sessions.service(&c.connection_id))
+        .collect()
+}
+
+/// Review a proposal on the active agent, else on the background agent
+/// whose delegated child proposed it.
+fn review_anywhere(
+    state: &DesktopState,
+    agent: &ActiveAgent,
+    review: impl Fn(&AgentService) -> Result<BufferSnapshot, String>,
+) -> Result<BufferSnapshot, String> {
+    match review(&agent.service) {
+        Err(error) if error.contains("no longer pending") => {
+            for service in other_services(state, agent) {
+                match review(&service) {
+                    Err(other) if other.contains("no longer pending") => continue,
+                    result => return result,
+                }
+            }
+            Err(error)
+        }
+        result => result,
+    }
 }
 
 #[tauri::command]
@@ -571,10 +696,11 @@ pub async fn agent_review(
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
     let agent = active(state.inner())?;
+    let desktop = state.inner().clone();
     let snapshot = tauri::async_runtime::spawn_blocking(move || {
-        agent
-            .service
-            .review_proposal(proposal_id, accept, expected_revision)
+        review_anywhere(&desktop, &agent, |service| {
+            service.review_proposal(proposal_id.clone(), accept, expected_revision)
+        })
     })
     .await
     .map_err(|error| format!("Review task failed: {error}"))??;
@@ -592,10 +718,15 @@ pub async fn agent_review_hunks(
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
     let agent = active(state.inner())?;
+    let desktop = state.inner().clone();
     let snapshot = tauri::async_runtime::spawn_blocking(move || {
-        agent
-            .service
-            .review_proposal_hunks(proposal_id, accepted_hunk_ids, expected_revision)
+        review_anywhere(&desktop, &agent, |service| {
+            service.review_proposal_hunks(
+                proposal_id.clone(),
+                accepted_hunk_ids.clone(),
+                expected_revision,
+            )
+        })
     })
     .await
     .map_err(|error| format!("Review task failed: {error}"))??;

@@ -17,7 +17,8 @@ use super::{
     hints_for, transport_for, BudgetRequest, DelegationEvent, DelegationTask, ToolServerConfig,
 };
 use crate::{
-    AgentControl, PromptAttachment, SessionEvent, SessionKey, SessionManager, Subscription,
+    AgentControl, BackgroundState, ConnectionInfo, InstalledAgent, PromptAttachment, SessionEvent,
+    SessionKey, SessionManager, Subscription,
 };
 use agent_client_protocol::schema::v1::{HttpHeader, McpServer, McpServerHttp};
 use serde::Deserialize;
@@ -876,7 +877,7 @@ async fn dispatch(
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": SERVER_NAME, "title": "Span agents", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Delegate work to other agents connected in Span. delegate returns a taskId at once; poll get_result with waitSeconds up to 30 until status is completed or failed. Permission requests, questions and edit reviews from delegated agents go to the user, never to you.",
+                "instructions": "Delegate work to other agents in Span. list_agents shows every agent you can use: connected ones and installed ones that are ready to start. Delegate directly to any agent marked delegable; when it is not running, Span starts it in the background and delegate waits for the start. Do not ask the user to connect or open an agent first. delegate returns a taskId; poll get_result with waitSeconds up to 30 until status is completed or failed. Permission requests, questions and edit reviews from delegated agents go to the user, never to you.",
             }))
         }
         "ping" => Ok(json!({})),
@@ -970,6 +971,7 @@ fn list_agents(shared: &Shared) -> Result<Value, RpcError> {
     let max_depth = shared.config.policy.max_depth;
     let depth = control.depth().unwrap_or(0);
     let can_delegate = depth < max_depth;
+    let background = shared.config.background.as_ref();
     let connected = control.agents();
     let mut agents = Vec::new();
     let mut lines = Vec::new();
@@ -983,11 +985,16 @@ fn list_agents(shared: &Shared) -> Result<Value, RpcError> {
         } else {
             None
         };
+        let installed_id = background.and_then(|b| b.agent_for(&agent.connection_id));
         let hinted = hints_for(&agent.agent_name);
         lines.push(format!(
-            "- {} (id {}){}{}",
+            "- {} (id {}{}){}{}",
             agent.agent_name,
             agent.connection_id,
+            installed_id
+                .as_deref()
+                .map(|id| format!(", installed as {id}"))
+                .unwrap_or_default(),
             if agent.connection_id == shared.lead_connection {
                 ", your own agent"
             } else {
@@ -998,6 +1005,8 @@ fn list_agents(shared: &Shared) -> Result<Value, RpcError> {
         agents.push(json!({
             "id": agent.connection_id,
             "name": agent.agent_name,
+            "installedId": installed_id,
+            "state": if agent.open { "connected" } else { "exited" },
             "connected": true,
             "isLead": agent.connection_id == shared.lead_connection,
             "reported": agent.features,
@@ -1007,23 +1016,53 @@ fn list_agents(shared: &Shared) -> Result<Value, RpcError> {
         }));
     }
     for installed in &shared.config.installed {
-        let known = connected
-            .iter()
-            .any(|c| c.agent_name.eq_ignore_ascii_case(&installed.id));
+        let running = background.map(|b| b.state(&installed.id));
+        let known = matches!(running, Some(BackgroundState::Connected(_)))
+            || connected
+                .iter()
+                .any(|c| c.agent_name.eq_ignore_ascii_case(&installed.id));
         if known {
             continue;
         }
-        lines.push(format!("- {} (installed, not connected)", installed.id));
+        let (state, delegable, reason) = match (&running, can_delegate) {
+            (None, _) => (
+                "not connected",
+                false,
+                "Installed but not running, and Span cannot start it for this session.".to_owned(),
+            ),
+            (Some(_), false) => (
+                "ready to start",
+                false,
+                "Depth limit reached: this session cannot delegate".to_owned(),
+            ),
+            (Some(BackgroundState::Starting), true) => (
+                "starting",
+                true,
+                "Span is starting it; delegate waits for the start.".to_owned(),
+            ),
+            (Some(BackgroundState::Unavailable(error)), true) => (
+                "unavailable",
+                true,
+                format!("The last start failed ({error}); delegate tries again."),
+            ),
+            (Some(_), true) => (
+                "ready to start",
+                true,
+                "Not running yet: delegate to it directly and Span starts it in the background. The user does not need to connect it.".to_owned(),
+            ),
+        };
+        lines.push(format!("- {} (installed, {state}): {reason}", installed.id));
         agents.push(json!({
             "id": installed.id,
             "name": installed.id,
             "version": installed.version,
+            "state": state,
             "connected": false,
             "isLead": false,
             "reported": Value::Null,
             "hinted": {"source": "span", "capabilities": hints_for(&installed.id)},
-            "delegable": false,
-            "reason": "Installed but not connected. Ask the user to connect it in Span.",
+            "delegable": delegable,
+            "reason": reason,
         }));
     }
     let structured = json!({
@@ -1057,6 +1096,95 @@ fn compose_prompt(lead: &str, args: &DelegateArgs, save_to: Option<&str>) -> Str
     text
 }
 
+/// The running connection of an installed agent, started in the background
+/// when needed. The UI sees `Starting` then `StartFinished` while Span waits
+/// for the start. A failure comes back as the tool result for the lead.
+async fn start_installed(
+    shared: &Arc<Shared>,
+    control: &AgentControl,
+    installed: &InstalledAgent,
+) -> Result<ConnectionInfo, Value> {
+    let background = shared
+        .config
+        .background
+        .as_ref()
+        .expect("checked by the caller");
+    let lead = control.caller().clone();
+    let running = match background.state(&installed.id) {
+        BackgroundState::Connected(connection) => Some(connection),
+        _ => None,
+    };
+    if running.is_none() {
+        shared.emit(DelegationEvent::Starting {
+            lead: lead.clone(),
+            agent_id: installed.id.clone(),
+        });
+    }
+    let timeout = shared
+        .second()
+        .saturating_mul(shared.config.policy.launch_timeout_seconds.max(1) as u32);
+    let started = background.ensure(installed, timeout).await;
+    let target = started.as_ref().ok().and_then(|ensured| {
+        control
+            .agents()
+            .into_iter()
+            .find(|c| c.connection_id == ensured.connection_id)
+    });
+    let outcome = match (&started, target) {
+        (Ok(ensured), Some(target)) => Ok((ensured.launched, target)),
+        (Ok(_), None) => Err((
+            FailureReason::AgentUnavailable,
+            format!("{} started but its process exited", installed.id),
+        )),
+        (Err(error), _) => Err((start_failure(error), start_detail(&installed.id, error))),
+    };
+    if running.is_none() {
+        let (connection_id, agent_name, launched, reason, detail) = match &outcome {
+            Ok((launched, target)) => (
+                Some(target.connection_id.clone()),
+                Some(target.agent_name.clone()),
+                *launched,
+                None,
+                None,
+            ),
+            Err((reason, detail)) => (None, None, false, Some(*reason), Some(detail.clone())),
+        };
+        shared.emit(DelegationEvent::StartFinished {
+            lead,
+            agent_id: installed.id.clone(),
+            connection_id,
+            agent_name,
+            launched,
+            reason,
+            detail,
+        });
+    }
+    outcome
+        .map(|(_, target)| target)
+        .map_err(|(reason, detail)| result::failure(&installed.id, reason, &detail))
+}
+
+/// Closed set reason for a failed background start.
+fn start_failure(error: &str) -> FailureReason {
+    match FailureReason::from_error(error) {
+        FailureReason::Cancelled => FailureReason::AgentUnavailable,
+        reason => reason,
+    }
+}
+
+fn start_detail(agent: &str, error: &str) -> String {
+    let lower = error.to_lowercase();
+    if lower.contains("executable was not found") || lower.contains("no such file") {
+        format!("{agent} is not installed where Span can run it: {error}")
+    } else if lower.contains("timed out") {
+        format!("{agent} did not start in time: {error}")
+    } else if start_failure(error) == FailureReason::AuthRequired {
+        format!("{agent} needs the user to sign in first: {error}")
+    } else {
+        format!("Span could not start {agent}: {error}")
+    }
+}
+
 async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, RpcError> {
     let control = shared.control()?;
     if args.task.trim().is_empty() {
@@ -1080,18 +1208,25 @@ async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, Rpc
         .iter()
         .filter(|c| c.agent_name.eq_ignore_ascii_case(&args.agent))
         .collect();
-    let target = match (by_id.as_slice(), by_name.as_slice()) {
-        ([one], _) | ([], [one]) => (*one).clone(),
-        ([], []) => {
-            let detail = if shared
-                .config
-                .installed
-                .iter()
-                .any(|i| i.id.eq_ignore_ascii_case(&args.agent))
-            {
-                "the agent is installed but not connected; ask the user to connect it in Span"
+    let installed = shared
+        .config
+        .installed
+        .iter()
+        .find(|i| i.id.eq_ignore_ascii_case(&args.agent));
+    let target = match (by_id.as_slice(), installed, by_name.as_slice()) {
+        ([one], _, _) => (*one).clone(),
+        ([], Some(installed), _) if shared.config.background.is_some() => {
+            match start_installed(shared, &control, installed).await {
+                Ok(target) => target,
+                Err(failure) => return Ok(failure),
+            }
+        }
+        ([], _, [one]) => (*one).clone(),
+        ([], _, []) => {
+            let detail = if installed.is_some() {
+                "the agent is installed but not connected, and Span cannot start it for this session"
             } else {
-                "no connected agent has this id or name; call list_agents"
+                "no connected or installed agent has this id or name; call list_agents"
             };
             return Ok(result::failure(
                 &args.agent,
@@ -1401,18 +1536,18 @@ pub fn tool_definitions() -> Value {
         {
             "name": "list_agents",
             "title": "List agents",
-            "description": "List agents connected or installed in Span. `reported` capabilities come from the agent's ACP initialize; `hinted` capabilities are maintained by Span and are not reported by the agent.",
+            "description": "List the agents you can delegate to: connected agents and installed agents Span starts on demand (`state` is connected, ready to start, starting or unavailable; `delegable` says whether delegate can use it now). You can delegate to a ready to start agent directly; the user does not need to connect it. `reported` capabilities come from the agent's ACP initialize; `hinted` capabilities are maintained by Span and are not reported by the agent.",
             "inputSchema": {"type": "object", "additionalProperties": false},
             "annotations": {"readOnlyHint": true, "openWorldHint": false},
         },
         {
             "name": "delegate",
             "title": "Delegate a task",
-            "description": "Start a task on another agent in a new child session. Returns a taskId immediately; poll get_result. The child's permission requests, questions and edits go to the user, not to you. Children cannot delegate further unless the user raised the depth limit.",
+            "description": "Start a task on another agent in a new child session. The agent may be connected or only installed: Span starts an installed agent in the background first (this call then waits for the start, up to about 25 seconds) and never needs the user to connect it. Returns a taskId once the child session exists; poll get_result. The child's permission requests, questions and edits go to the user, not to you. Children cannot delegate further unless the user raised the depth limit.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "agent": {"type": "string", "description": "Agent id or name from list_agents."},
+                    "agent": {"type": "string", "description": "Agent id or name from list_agents, connected or installed."},
                     "task": {"type": "string", "description": "What the child should do."},
                     "attachments": {"type": "array", "items": {"type": "string"}, "description": "Workspace relative files sent as resource links."},
                     "expect": {"type": "string", "description": "What you expect back, for example a summary, a diff or an image."},

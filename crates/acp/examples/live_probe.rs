@@ -848,6 +848,7 @@ async fn probe(agent: &str, out: &Path) -> Res<()> {
             workspace: workspace.clone(),
             policy: ToolPolicy::default(),
             installed: Vec::new(),
+            background: None,
             events: Some(Arc::new(move |event| {
                 events_rec.write(
                     "events",
