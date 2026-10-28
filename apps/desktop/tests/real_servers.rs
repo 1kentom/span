@@ -21,9 +21,10 @@
 
 use span_core::{BufferRevision, BufferSnapshot, CoreWorkspace, Settings, TextEdit};
 use span_desktop_lib::language_servers::{
-    production_with_fetch, CapabilitiesDto, CompletionItemDto, DiagnosticDto, DiagnosticsPublished,
-    HoverDto, LanguageServerStateDto, LocationDto, LspErrorDto, LspEvent, LspResponse, LspService,
-    PositionDto, RangeDto, ServerStatusDto, ServiceConfig, TextEditDto,
+    production_with_fetch, CallHierarchyItemDto, CapabilitiesDto, CompletionItemDto, DiagnosticDto,
+    DiagnosticsPublished, HoverDto, LanguageServerStateDto, LocationDto, LspErrorDto, LspEvent,
+    LspResponse, LspService, PositionDto, RangeDto, ServerStatusDto, ServiceConfig, SymbolDto,
+    TextEditDto, TypeHierarchyItemDto,
 };
 use span_desktop_lib::{services, DesktopState};
 use span_lsp::servers::install::{BoxFuture, Fetch, FetchError, FetchResponse, HttpFetch};
@@ -1790,5 +1791,793 @@ async fn save_writes_draft_when_formatter_is_broken() {
         )
         .await;
     assert_eq!(r.revision, snapshot.revision);
+    env.finish().await;
+}
+
+// ---------------------------------------------------------------------------
+// Code navigation
+// ---------------------------------------------------------------------------
+
+/// What one language family is asked in the navigation checks. Every `*_at` / `*_line`
+/// field is a needle searched for in `text`; positions come from `before`, so they are
+/// UTF-16 like the protocol.
+struct NavCase<'a> {
+    id: ServerId,
+    rel: &'a str,
+    text: &'a str,
+    /// Start of the identifier `target` where it is declared (after emoji and CJK text).
+    decl: &'a str,
+    /// Interface or trait name where it is declared, and a needle on the line of one
+    /// implementer.
+    interface: &'a str,
+    implementer_line: &'a str,
+    /// A variable use whose type is declared on the line of the second needle.
+    typed_use: &'a str,
+    type_line: &'a str,
+    helper_decl: &'a str,
+    caller_decl: &'a str,
+    /// Query position inside a call to a function with two parameters.
+    call_args: &'a str,
+    /// Symbol names that document symbols must contain (prefix match, any depth).
+    symbols: &'a [&'a str],
+    workspace_query: &'a str,
+    /// Class name needle and interface needle for the type hierarchy, with the expected
+    /// supertype and subtype names.
+    type_hierarchy: Option<(&'a str, &'a str, &'a str, &'a str)>,
+}
+
+fn line_of(text: &str, needle: &str) -> u32 {
+    before(text, needle).line
+}
+
+fn flatten<'a>(symbols: &'a [SymbolDto], out: &mut Vec<&'a SymbolDto>) {
+    for s in symbols {
+        out.push(s);
+        flatten(&s.children, out);
+    }
+}
+
+impl Env {
+    async fn caps(&self, id: ServerId) -> CapabilitiesDto {
+        self.ready_row(id)
+            .await
+            .expect("server is ready")
+            .capabilities
+            .expect("a Ready row carries capabilities")
+    }
+
+    /// `flag` true: repeat until the request succeeds and `pred` accepts the data (servers
+    /// answer empty while they still index), and fail on `Unsupported`. `flag` false: the
+    /// request must be `Unsupported`, which also proves it never reached the server.
+    async fn nav<T, F, Fut>(
+        &self,
+        id: ServerId,
+        flag: bool,
+        what: &str,
+        mut f: F,
+        pred: impl Fn(&T) -> bool,
+    ) -> Option<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<LspResponse<T>, LspErrorDto>>,
+        T: std::fmt::Debug,
+    {
+        if !flag {
+            let outcome = self.settle(id, what, &mut f).await.map(|r| r.data);
+            assert!(
+                matches!(outcome, Err(LspErrorDto::Unsupported { .. })),
+                "{id:?}: {what} is not advertised, expected Unsupported, got {outcome:?}"
+            );
+            return None;
+        }
+        let deadline = Instant::now() + request_limit(id);
+        let mut last;
+        loop {
+            match f().await {
+                Ok(r) if pred(&r.data) => {
+                    eprintln!("[evidence] {id:?} {what}: {:?}", r.data);
+                    return Some(r.data);
+                }
+                Ok(r) => last = format!("unexpected data {:?}", r.data),
+                Err(e @ LspErrorDto::Unsupported { .. }) => {
+                    panic!("{id:?}: {what} is advertised but the service says {e:?}")
+                }
+                Err(e) => last = format!("error {e:?}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{id:?}: {what} never produced the expected data; last = {last}. events:\n  {}",
+                self.event_dump()
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Runs the navigation checks that apply to every family. Each request is checked
+    /// against the capability flag the server advertised.
+    async fn navigate(&self, c: &NavCase<'_>) -> CapabilitiesDto {
+        let (id, rel, text) = (c.id, c.rel, c.text);
+        let caps = self.caps(id).await;
+        eprintln!("[evidence] {id:?} navigation capabilities: {caps:?}");
+        let decl = before(text, c.decl);
+        let svc = &self.svc;
+
+        // UTF-16: emoji and CJK precede `target`, so the byte column differs.
+        let line_start = text[..text.find(c.decl).unwrap()]
+            .rfind('\n')
+            .map_or(0, |i| i + 1);
+        let byte_col = (text.find(c.decl).unwrap() - line_start) as u32;
+        assert_ne!(
+            byte_col, decl.character,
+            "the declaration line must contain wide text"
+        );
+
+        let with_decl = self
+            .nav(
+                id,
+                caps.references,
+                "references",
+                || svc.references(rel, decl, true, None),
+                |l: &Vec<LocationDto>| {
+                    l.len() >= 3
+                        && l.iter()
+                            .any(|l| l.path.ends_with(rel) && l.range.start == decl)
+                },
+            )
+            .await;
+        if let Some(with_decl) = &with_decl {
+            assert!(with_decl.iter().all(|l| !l.external));
+            let without = self
+                .nav(
+                    id,
+                    true,
+                    "references without declaration",
+                    || svc.references(rel, decl, false, None),
+                    |l: &Vec<LocationDto>| !l.is_empty(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                without.len() < with_decl.len(),
+                "includeDeclaration=false must drop the declaration: {without:?} vs {with_decl:?}"
+            );
+        }
+
+        let iface = before(text, c.interface);
+        let impl_line = line_of(text, c.implementer_line);
+        self.nav(
+            id,
+            caps.implementation,
+            "implementation",
+            || svc.implementation(rel, iface, None),
+            |l: &Vec<LocationDto>| l.iter().any(|l| l.range.start.line == impl_line),
+        )
+        .await;
+
+        let typed = before(text, c.typed_use);
+        let type_line = line_of(text, c.type_line);
+        self.nav(
+            id,
+            caps.type_definition,
+            "typeDefinition",
+            || svc.type_definition(rel, typed, None),
+            |l: &Vec<LocationDto>| l.iter().any(|l| l.range.start.line == type_line),
+        )
+        .await;
+
+        self.nav(
+            id,
+            caps.declaration,
+            "declaration",
+            || svc.declaration(rel, decl, None),
+            |l: &Vec<LocationDto>| !l.is_empty(),
+        )
+        .await;
+
+        let wanted: Vec<String> = c.symbols.iter().map(|s| s.to_string()).collect();
+        self.nav(
+            id,
+            caps.document_symbol,
+            "documentSymbol",
+            || svc.document_symbols(rel, None),
+            |s: &Vec<SymbolDto>| {
+                let mut all = Vec::new();
+                flatten(s, &mut all);
+                wanted
+                    .iter()
+                    .all(|w| all.iter().any(|x| x.name.starts_with(w.as_str())))
+            },
+        )
+        .await;
+
+        let query = c.workspace_query.to_string();
+        self.nav(
+            id,
+            caps.workspace_symbol,
+            "workspaceSymbol",
+            || svc.workspace_symbols(query.clone(), Some(rel.to_string()), None),
+            |s: &Vec<span_desktop_lib::language_servers::WorkspaceSymbolDto>| {
+                s.len() <= 200 && s.iter().any(|x| x.name.starts_with(&query))
+            },
+        )
+        .await;
+
+        let helper = before(text, c.helper_decl);
+        let caller = before(text, c.caller_decl);
+        let prepared: Option<Vec<CallHierarchyItemDto>> = self
+            .nav(
+                id,
+                caps.call_hierarchy,
+                "callHierarchy/prepare",
+                || svc.call_hierarchy_prepare(rel, helper, None),
+                |i: &Vec<CallHierarchyItemDto>| i.iter().any(|i| i.name.contains("helper")),
+            )
+            .await;
+        if let Some(items) = prepared {
+            let item = items
+                .into_iter()
+                .find(|i| i.name.contains("helper"))
+                .unwrap();
+            self.nav(
+                id,
+                true,
+                "callHierarchy/incoming",
+                || svc.call_hierarchy_incoming(&item, None),
+                |c| c.iter().any(|c| c.from.name.contains("caller")),
+            )
+            .await;
+            let items = self
+                .nav(
+                    id,
+                    true,
+                    "callHierarchy/prepare caller",
+                    || svc.call_hierarchy_prepare(rel, caller, None),
+                    |i: &Vec<CallHierarchyItemDto>| i.iter().any(|i| i.name.contains("caller")),
+                )
+                .await
+                .unwrap();
+            let item = items
+                .into_iter()
+                .find(|i| i.name.contains("caller"))
+                .unwrap();
+            self.nav(
+                id,
+                true,
+                "callHierarchy/outgoing",
+                || svc.call_hierarchy_outgoing(&item, None),
+                |c| c.iter().any(|c| c.to.name.contains("helper")),
+            )
+            .await;
+        }
+
+        match c.type_hierarchy {
+            Some((class_needle, iface_needle, super_name, sub_name)) => {
+                let class_at = before(text, class_needle);
+                let iface_at = before(text, iface_needle);
+                let items: Option<Vec<TypeHierarchyItemDto>> = self
+                    .nav(
+                        id,
+                        caps.type_hierarchy,
+                        "typeHierarchy/prepare",
+                        || svc.type_hierarchy_prepare(rel, class_at, None),
+                        |i: &Vec<TypeHierarchyItemDto>| !i.is_empty(),
+                    )
+                    .await;
+                if let Some(items) = items {
+                    self.nav(
+                        id,
+                        true,
+                        "typeHierarchy/supertypes",
+                        || svc.type_hierarchy_supertypes(&items[0], None),
+                        |s| s.iter().any(|s| s.name.contains(super_name)),
+                    )
+                    .await;
+                    let ifaces = self
+                        .nav(
+                            id,
+                            true,
+                            "typeHierarchy/prepare interface",
+                            || svc.type_hierarchy_prepare(rel, iface_at, None),
+                            |i: &Vec<TypeHierarchyItemDto>| !i.is_empty(),
+                        )
+                        .await
+                        .unwrap();
+                    self.nav(
+                        id,
+                        true,
+                        "typeHierarchy/subtypes",
+                        || svc.type_hierarchy_subtypes(&ifaces[0], None),
+                        |s| s.iter().any(|s| s.name.contains(sub_name)),
+                    )
+                    .await;
+                }
+            }
+            None => {
+                self.nav(
+                    id,
+                    caps.type_hierarchy,
+                    "typeHierarchy/prepare",
+                    || svc.type_hierarchy_prepare(rel, decl, None),
+                    |_: &Vec<TypeHierarchyItemDto>| true,
+                )
+                .await;
+            }
+        }
+
+        self.nav(
+            id,
+            caps.document_highlight,
+            "documentHighlight",
+            || svc.document_highlights(rel, decl, None),
+            |h| h.len() >= 3 && h.iter().any(|h| h.range.start == decl),
+        )
+        .await;
+
+        let args = after(text, c.call_args);
+        self.nav(
+            id,
+            caps.signature_help,
+            "signatureHelp",
+            || svc.signature_help(rel, args, None),
+            |h| {
+                h.as_ref().is_some_and(|h| {
+                    let sig = &h.signatures[h.active_signature.unwrap_or(0) as usize];
+                    sig.parameters.len() == 2
+                        && (h.active_parameter == Some(1) || sig.active_parameter == Some(1))
+                })
+            },
+        )
+        .await;
+
+        let before_edit = self.snapshot(rel);
+        self.nav(
+            id,
+            caps.prepare_rename,
+            "prepareRename",
+            || svc.prepare_rename(rel, decl, None),
+            |p| {
+                p.as_ref()
+                    .is_some_and(|p| p.range.is_some_and(|r| r.start == decl))
+            },
+        )
+        .await;
+        let edit = self
+            .nav(
+                id,
+                caps.rename,
+                "rename",
+                || svc.rename(rel, decl, "renamed".into(), None),
+                |e| e.files.len() == 1 && e.files[0].edits.len() >= 3,
+            )
+            .await;
+        if let Some(edit) = edit {
+            assert_eq!(edit.skipped_operations, 0);
+            assert!(!edit.files[0].external);
+            assert!(edit.files[0].path.ends_with(rel));
+            assert!(edit.files[0].edits.iter().all(|e| e.new_text == "renamed"));
+            assert!(edit.files[0].edits.iter().any(|e| e.range.start == decl));
+            let applied = apply_edits(&before_edit.text, &edit.files[0].edits);
+            assert_eq!(
+                applied.matches("renamed").count(),
+                edit.files[0].edits.len()
+            );
+        }
+        let after_snapshot = self.snapshot(rel);
+        assert_eq!(
+            after_snapshot.text, before_edit.text,
+            "rename must not edit the buffer"
+        );
+        assert_eq!(after_snapshot.revision, before_edit.revision);
+        caps
+    }
+
+    /// A location outside the workspace is flagged external and can be previewed read
+    /// only. The preview never opens the file in the server (the service has no path for
+    /// that), so the open buffers stay what they were.
+    async fn check_external(&self, id: ServerId, rel: &str, at: PositionDto, expect: &str) {
+        let svc = &self.svc;
+        let locations = self
+            .nav(
+                id,
+                true,
+                "external definition",
+                || svc.definition(rel, at, None),
+                |l: &Vec<LocationDto>| l.iter().any(|l| l.external),
+            )
+            .await
+            .unwrap();
+        let external = locations.into_iter().find(|l| l.external).unwrap();
+        assert!(!external.display_path.is_empty());
+        assert!(
+            external.path.contains("://") || Path::new(&external.path).is_absolute(),
+            "external paths are absolute or a server URI: {:?}",
+            external.path
+        );
+        let snippet = svc
+            .read_source(external.clone(), 20)
+            .await
+            .unwrap_or_else(|e| panic!("{id:?}: read_source({external:?}) failed: {e:?}"));
+        assert!(snippet.external && snippet.read_only, "{snippet:?}");
+        assert!(snippet.text.contains(expect), "{id:?}: {:?}", snippet.text);
+        assert!(snippet.text.lines().count() <= 1200);
+        eprintln!(
+            "[evidence] {id:?} external source {} ({} lines from {}, language {})",
+            snippet.display_path,
+            snippet.text.lines().count(),
+            snippet.start_line,
+            snippet.language
+        );
+        // The in-workspace file stayed the only buffer.
+        assert_eq!(self.snapshot(rel).path, rel);
+    }
+
+    /// Edits between request and reply drop the reply as `Stale`; an `Ok` reply is only
+    /// ever stamped with the revision it was computed for.
+    async fn nav_stale_after_edit(&self, id: ServerId, rel: &str, at: PositionDto) {
+        let mut stale = 0;
+        let mut ok = 0;
+        for attempt in 0..80u64 {
+            let svc = self.svc.clone();
+            let rel_owned = rel.to_string();
+            let before_rev = self.snapshot(rel).revision;
+            let request =
+                tokio::spawn(async move { svc.references(&rel_owned, at, true, None).await });
+            tokio::time::sleep(Duration::from_micros((attempt % 40) * 500)).await;
+            let rev = self.insert(rel, 0, " ");
+            match request.await.unwrap() {
+                Err(LspErrorDto::Stale) => stale += 1,
+                Ok(r) => {
+                    ok += 1;
+                    assert_eq!(r.revision, before_rev);
+                    assert!(r.revision <= rev.revision);
+                }
+                Err(LspErrorDto::NotReady { .. }) => {}
+                Err(e) => panic!("{id:?}: unexpected error {e:?}"),
+            }
+            if stale >= 2 {
+                break;
+            }
+        }
+        eprintln!("[evidence] {id:?} navigation stale test: {stale} Stale, {ok} Ok replies");
+        assert!(stale >= 1, "{id:?}: never observed Stale ({ok} Ok replies)");
+    }
+}
+
+const TS_NAV: &str = "export {};\ninterface Shape {\n  area(): number;\n}\nclass Circle implements Shape {\n  area(): number {\n    return 3;\n  }\n}\nfunction describe(s: Shape): number {\n  return s.area();\n}\nfunction helper(): number {\n  return 1;\n}\nfunction caller(): number {\n  return helper();\n}\nfunction add(a: number, b: number): number {\n  return a + b;\n}\nconst c = new Circle();\nconst emoji = \"😀日本\"; const target = 1;\nconsole.log(target, target, add(1, 2), c, emoji, describe(c));\n";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn navigation_typescript() {
+    let id = ServerId::Vtsls;
+    let mut env = Env::start(&[
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"strict":true,"target":"es2020"}}"#,
+        ),
+        ("a.ts", "export {};\n"),
+    ])
+    .await;
+    env.open("a.ts");
+    env.replace("a.ts", TS_NAV);
+    env.wait_ready(id).await;
+    let caps = env
+        .navigate(&NavCase {
+            id,
+            rel: "a.ts",
+            text: TS_NAV,
+            decl: "target = 1",
+            interface: "Shape {",
+            implementer_line: "class Circle",
+            typed_use: "s.area()",
+            type_line: "interface Shape",
+            helper_decl: "helper(): number",
+            caller_decl: "caller(): number",
+            call_args: "add(1, ",
+            symbols: &["Shape", "Circle", "describe", "helper", "caller", "add"],
+            workspace_query: "Circle",
+            type_hierarchy: None,
+        })
+        .await;
+    assert!(
+        caps.references
+            && caps.implementation
+            && caps.type_definition
+            && caps.document_symbol
+            && caps.workspace_symbol
+            && caps.call_hierarchy
+            && caps.document_highlight
+            && caps.signature_help
+            && caps.rename
+    );
+    // Class members are nested under their class (hierarchical DocumentSymbol).
+    let symbols = env.svc.document_symbols("a.ts", None).await.unwrap().data;
+    let circle = symbols.iter().find(|s| s.name == "Circle").expect("Circle");
+    assert!(
+        circle.children.iter().any(|c| c.name == "area"),
+        "{circle:?}"
+    );
+    assert_eq!(
+        circle.selection_range.start,
+        before(TS_NAV, "Circle implements")
+    );
+
+    env.check_external(id, "a.ts", before(TS_NAV, "log(target"), "log")
+        .await;
+    env.nav_stale_after_edit(id, "a.ts", before(TS_NAV, "target = 1"))
+        .await;
+    env.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn navigation_json() {
+    let id = ServerId::Json;
+    let text = "{\n  \"emoji\": \"😀日本\", \"target\": 1,\n  \"nested\": {\"inner\": true}\n}\n";
+    let mut env = Env::start(&[("package.json", "{}"), ("a.json", "{}\n")]).await;
+    env.open("a.json");
+    env.replace("a.json", text);
+    env.wait_ready(id).await;
+    let caps = env.caps(id).await;
+    eprintln!("[evidence] {id:?} navigation capabilities: {caps:?}");
+    assert!(
+        caps.document_symbol,
+        "the JSON server advertises documentSymbol"
+    );
+    let target = before(text, "\"target\"");
+    let symbols = env
+        .nav(
+            id,
+            caps.document_symbol,
+            "documentSymbol",
+            || env.svc.document_symbols("a.json", None),
+            |s: &Vec<SymbolDto>| {
+                let mut all = Vec::new();
+                flatten(s, &mut all);
+                all.iter().any(|x| x.name == "target") && all.iter().any(|x| x.name == "inner")
+            },
+        )
+        .await
+        .unwrap();
+    let mut all = Vec::new();
+    flatten(&symbols, &mut all);
+    let t = all.iter().find(|s| s.name == "target").unwrap();
+    assert_eq!(
+        t.range.start, target,
+        "UTF-16 range after emoji and CJK text"
+    );
+    assert_ne!(
+        t.range.start.character as usize,
+        text.lines().nth(1).unwrap().find("\"target\"").unwrap()
+    );
+    let nested = symbols.iter().find(|s| s.name == "nested").unwrap();
+    assert!(
+        nested.children.iter().any(|c| c.name == "inner"),
+        "hierarchy"
+    );
+
+    // Everything the JSON server does not advertise is Unsupported, and never sent.
+    let rel = "a.json";
+    let svc = &env.svc;
+    let at = target;
+    env.nav(
+        id,
+        caps.references,
+        "references",
+        || svc.references(rel, at, true, None),
+        |_: &Vec<LocationDto>| true,
+    )
+    .await;
+    env.nav(
+        id,
+        caps.implementation,
+        "implementation",
+        || svc.implementation(rel, at, None),
+        |_: &Vec<LocationDto>| true,
+    )
+    .await;
+    env.nav(
+        id,
+        caps.type_definition,
+        "typeDefinition",
+        || svc.type_definition(rel, at, None),
+        |_: &Vec<LocationDto>| true,
+    )
+    .await;
+    env.nav(
+        id,
+        caps.declaration,
+        "declaration",
+        || svc.declaration(rel, at, None),
+        |_: &Vec<LocationDto>| true,
+    )
+    .await;
+    env.nav(
+        id,
+        caps.call_hierarchy,
+        "callHierarchy",
+        || svc.call_hierarchy_prepare(rel, at, None),
+        |_: &Vec<CallHierarchyItemDto>| true,
+    )
+    .await;
+    env.nav(
+        id,
+        caps.type_hierarchy,
+        "typeHierarchy",
+        || svc.type_hierarchy_prepare(rel, at, None),
+        |_: &Vec<TypeHierarchyItemDto>| true,
+    )
+    .await;
+    env.nav(
+        id,
+        caps.document_highlight,
+        "documentHighlight",
+        || svc.document_highlights(rel, at, None),
+        |_| true,
+    )
+    .await;
+    env.nav(
+        id,
+        caps.signature_help,
+        "signatureHelp",
+        || svc.signature_help(rel, at, None),
+        |_| true,
+    )
+    .await;
+    env.nav(
+        id,
+        caps.rename,
+        "rename",
+        || svc.rename(rel, at, "x".into(), None),
+        |_| true,
+    )
+    .await;
+    env.finish().await;
+}
+
+const RS_NAV: &str = "pub trait Shape {\n    fn area(&self) -> i32;\n}\n\npub struct Circle;\n\nimpl Shape for Circle {\n    fn area(&self) -> i32 {\n        3\n    }\n}\n\nfn helper() -> i32 {\n    1\n}\n\nfn caller() -> i32 {\n    helper()\n}\n\nfn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\nfn main() {\n    let c = Circle;\n    let emoji = \"😀日本\"; let target = 1;\n    println!(\"{} {} {}\", target, target + add(1, 2), c.area());\n    let v: Vec<i32> = Vec::new();\n    println!(\"{} {}\", emoji, v.len());\n}\n";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn navigation_rust() {
+    let id = ServerId::RustAnalyzer;
+    let mut env = Env::start(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/main.rs", "fn main() {}\n"),
+    ])
+    .await;
+    env.open("src/main.rs");
+    env.replace("src/main.rs", RS_NAV);
+    env.wait_ready(id).await;
+    let caps = env
+        .navigate(&NavCase {
+            id,
+            rel: "src/main.rs",
+            text: RS_NAV,
+            decl: "target = 1",
+            interface: "Shape {",
+            implementer_line: "impl Shape for Circle",
+            typed_use: "c = Circle",
+            type_line: "pub struct Circle",
+            helper_decl: "helper() -> i32",
+            caller_decl: "caller() -> i32",
+            call_args: "add(1, ",
+            symbols: &["Shape", "Circle", "helper", "caller", "add", "main"],
+            workspace_query: "Circle",
+            type_hierarchy: None,
+        })
+        .await;
+    assert!(
+        caps.references
+            && caps.implementation
+            && caps.type_definition
+            && caps.document_symbol
+            && caps.workspace_symbol
+            && caps.call_hierarchy
+            && caps.document_highlight
+            && caps.signature_help
+            && caps.rename
+    );
+    // The standard library comes from the rust-src component.
+    env.check_external(id, "src/main.rs", before(RS_NAV, "Vec::new"), "Vec")
+        .await;
+    env.nav_stale_after_edit(id, "src/main.rs", before(RS_NAV, "target = 1"))
+        .await;
+    env.finish().await;
+}
+
+const PY_NAV: &str = "class Base:\n    def run(self) -> int:\n        return 1\n\n\nclass Child(Base):\n    def run(self) -> int:\n        return 2\n\n\ndef helper() -> int:\n    return 1\n\n\ndef caller() -> int:\n    return helper()\n\n\ndef add(a: int, b: int) -> int:\n    return a + b\n\n\nc = Child()\nemoji = \"😀日本\"; target = 1\nprint(target, target, add(1, 2), c, emoji)\n";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn navigation_python() {
+    let id = ServerId::Basedpyright;
+    let mut env = Env::start(&[
+        ("pyproject.toml", "[project]\nname = \"demo\"\n"),
+        ("main.py", "pass\n"),
+    ])
+    .await;
+    env.open("main.py");
+    env.replace("main.py", PY_NAV);
+    env.wait_ready(id).await;
+    let caps = env
+        .navigate(&NavCase {
+            id,
+            rel: "main.py",
+            text: PY_NAV,
+            decl: "target = 1",
+            interface: "Base:",
+            implementer_line: "class Child",
+            typed_use: "c = Child",
+            type_line: "class Child",
+            helper_decl: "helper() -> int",
+            caller_decl: "caller() -> int",
+            call_args: "add(1, ",
+            symbols: &["Base", "Child", "helper", "caller", "add"],
+            workspace_query: "Child",
+            type_hierarchy: None,
+        })
+        .await;
+    assert!(
+        caps.references
+            && caps.type_definition
+            && caps.document_symbol
+            && caps.workspace_symbol
+            && caps.call_hierarchy
+            && caps.document_highlight
+            && caps.signature_help
+            && caps.rename
+    );
+    env.check_external(id, "main.py", before(PY_NAV, "print(target"), "print")
+        .await;
+    env.finish().await;
+}
+
+const JAVA_NAV: &str = "public class Hello {\n    interface Shape { int area(); }\n    static class Circle implements Shape { public int area() { return 3; } }\n    static int helper() { return 1; }\n    static int caller() { return helper(); }\n    static int add(int a, int b) { return a + b; }\n    public static void main(String[] args) {\n        Circle c = new Circle();\n        String emoji = \"😀日本\"; int target = 1;\n        System.out.println(target + target + add(1, 2) + c.area() + emoji);\n    }\n}\n";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn navigation_java() {
+    let id = ServerId::Jdtls;
+    let mut env = Env::start(&[(
+        "Hello.java",
+        "public class Hello {\n    public static void main(String[] args) {}\n}\n",
+    )])
+    .await;
+    env.open("Hello.java");
+    env.replace("Hello.java", JAVA_NAV);
+    env.wait_ready(id).await;
+    let caps = env
+        .navigate(&NavCase {
+            id,
+            rel: "Hello.java",
+            text: JAVA_NAV,
+            decl: "target = 1",
+            interface: "Shape {",
+            implementer_line: "static class Circle",
+            typed_use: "c = new Circle",
+            type_line: "static class Circle",
+            helper_decl: "helper() {",
+            caller_decl: "caller() {",
+            call_args: "add(1, ",
+            symbols: &[
+                "Hello", "Shape", "Circle", "helper", "caller", "add", "main",
+            ],
+            workspace_query: "Circle",
+            type_hierarchy: Some(("Circle implements", "Shape {", "Shape", "Circle")),
+        })
+        .await;
+    assert!(
+        caps.references
+            && caps.implementation
+            && caps.type_definition
+            && caps.document_symbol
+            && caps.workspace_symbol
+            && caps.call_hierarchy
+            && caps.type_hierarchy
+            && caps.document_highlight
+            && caps.signature_help
+            && caps.rename
+    );
+    // Library classes arrive as `jdt:` URIs and are read through JDT LS.
+    env.check_external(id, "Hello.java", before(JAVA_NAV, "String emoji"), "String")
+        .await;
     env.finish().await;
 }
