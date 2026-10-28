@@ -14,6 +14,7 @@ import type {
 } from "../bindings";
 import type { Attachment } from "./attachments";
 import { hintText, PERMISSION_BYPASS_NOTICE } from "./agent-hint-text";
+import { parseUrlRequest, type UrlRecord } from "./agent-url-request";
 import { isFinished, knownDelegation, mergeTask, type ChildRequest, type DelegationNote, type DelegationTaskState } from "./agent-delegation";
 
 /** Agent session state built from ACP events. Pure data: the panel derives every view from it. */
@@ -25,6 +26,7 @@ export type FeedItem =
   | { id: number; kind: "user"; text: string; attachments?: Attachment[]; /** Sent by interrupting the running turn. */ steered?: boolean; /** Sent with Send now from the queue. */ sentNow?: boolean }
   | { id: number; kind: "text" | "thought"; text: string; /** The agent's id for this message, when it sent one. */ messageId?: string }
   | { id: number; kind: "note"; text: string }
+  | ({ id: number; kind: "signin" } & UrlRecord)
   | { id: number; kind: "notice"; severity: string; title: string; description?: string; /** Set for a notice the agent later clears. */ noticeId?: string; hint?: AgentHint }
   | { id: number; kind: "compaction"; compactionId: string; status: string; summary: string; error?: string }
   | { id: number; kind: "tool"; event: ToolEvent; /** A status held back while a permission for this call is open; the step shows as waiting until then. */ deferredStatus?: string }
@@ -247,7 +249,9 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         strayPermissions: [],
         childRequests: [],
         delegation: {},
-        feed: next.feed.map((item) => (item.kind === "permission" && !item.resolved ? { ...item, resolved: true } : item)),
+        feed: next.feed.map((item) =>
+          item.kind === "permission" && !item.resolved ? { ...item, resolved: true } : item.kind === "signin" && item.status === "waiting" ? { ...item, status: "cancelled" } : item,
+        ),
         failure: exited ? { phase: "exit", message: state.lastError || event.message, log: state.stderr } : state.failure,
       };
     }
@@ -312,12 +316,20 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
       if (!found) return addFeedItem(state, { kind: "compaction", compactionId: event.compactionId, status: "in_progress", summary: event.text });
       return mapFeed(state, (item) => (item.kind === "compaction" && item.compactionId === event.compactionId ? { ...item, summary: item.summary + event.text } : item));
     }
-    case "elicitation":
-      return state.elicitations.some((pending) => pending.requestId === event.requestId) ? state : { ...state, elicitations: [...state.elicitations, event] };
+    case "elicitation": {
+      if (state.elicitations.some((pending) => pending.requestId === event.requestId)) return state;
+      const next = { ...state, elicitations: [...state.elicitations, event] };
+      return event.mode === "url" ? addFeedItem(next, urlRecordFor(event)) : next;
+    }
     case "elicitationResolved":
-      return { ...state, elicitations: state.elicitations.filter((pending) => pending.requestId !== event.requestId) };
-    case "elicitationComplete":
-      return addFeedItem(state, { kind: "note", text: "The agent finished the browser step" });
+      // Resolved without the user opening the page (declined, stopped, agent gone) reads as cancelled.
+      return mapUrlRecords({ ...state, elicitations: state.elicitations.filter((pending) => pending.requestId !== event.requestId) }, (item) =>
+        item.requestId === event.requestId && item.status === "waiting" ? { ...item, status: "cancelled" } : item,
+      );
+    case "elicitationComplete": {
+      if (!state.feed.some((item) => item.kind === "signin" && item.elicitationId === event.elicitationId)) return addFeedItem(state, { kind: "note", text: "The agent finished the browser step" });
+      return mapUrlRecords(state, (item) => (item.elicitationId === event.elicitationId && item.status !== "cancelled" ? { ...item, status: "completed" } : item));
+    }
     case "user":
       return appendText(state, "user", event.text, {}, replayAttachments(event.attachments));
     case "text":
@@ -473,6 +485,29 @@ export function unresolvedProposals(feed: readonly FeedItem[]): EditProposal[] {
 }
 
 /** The oldest permission request that is still open. */
+/** The feed record for a URL request. Keeps the provider and host only: never the message, the code or the query. */
+function urlRecordFor(event: ElicitationEvent): Omit<Extract<FeedItem, { kind: "signin" }>, "id"> {
+  const view = parseUrlRequest(event.message, event.url);
+  return {
+    kind: "signin",
+    requestId: event.requestId,
+    ...(event.elicitationId ? { elicitationId: event.elicitationId } : {}),
+    ...(view.provider ? { provider: view.provider } : {}),
+    host: view.host,
+    status: view.rejection ? "cancelled" : "waiting",
+    ...(view.rejection ? { reason: view.rejection } : {}),
+  };
+}
+
+function mapUrlRecords(state: AgentState, change: (item: Extract<FeedItem, { kind: "signin" }>) => Extract<FeedItem, { kind: "signin" }>): AgentState {
+  return mapFeed(state, (item) => (item.kind === "signin" ? change(item) : item));
+}
+
+/** The user opened the page and accepted: the record reads Opened until the agent says it finished. */
+export function markUrlOpened(state: AgentState, requestId: string): AgentState {
+  return mapUrlRecords(state, (item) => (item.requestId === requestId && !item.reason && (item.status === "waiting" || item.status === "cancelled") ? { ...item, status: "opened" } : item));
+}
+
 export function openPermission(feed: readonly FeedItem[]): Extract<FeedItem, { kind: "permission" }> | undefined {
   return feed.find((item): item is Extract<FeedItem, { kind: "permission" }> => item.kind === "permission" && !item.resolved);
 }

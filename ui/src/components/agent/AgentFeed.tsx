@@ -6,12 +6,25 @@ import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
 import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
+import { Icon } from "../Icon";
+import { urlRecordText } from "../../lib/agent-url-request";
 import { EditsBypassNote, ErrorCard, Notice, StopCard } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
 import { DelegationCard } from "./DelegationCard";
 import { ChangesCard, WorkGroup } from "./WorkGroup";
 
 const sameKeys = (previous: string[], next: string[]) => previous.length === next.length && previous.every((key, index) => key === next[index]);
+
+/** One muted line for a browser sign-in: no code, no message, no query string. */
+function UrlRecordLine(props: { record: Extract<FeedItem, { kind: "signin" }> }) {
+  const line = () => urlRecordText(props.record);
+  return (
+    <div class="sb-url-record" data-status={props.record.status} title={line()}>
+      <Icon name="Link2" size={12} />
+      <span class="sb-ellipsis">{line()}</span>
+    </div>
+  );
+}
 
 function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: () => boolean }) {
   const a = props.agent;
@@ -48,6 +61,9 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       </Match>
       <Match when={item().kind === "note"}>
         <Notice text={message().text} />
+      </Match>
+      <Match when={item().kind === "signin"}>
+        <UrlRecordLine record={item() as Extract<FeedItem, { kind: "signin" }>} />
       </Match>
       <Match when={item().kind === "notice"}>
         {(() => {

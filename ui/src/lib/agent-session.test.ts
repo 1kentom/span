@@ -60,7 +60,7 @@ describe("agent session reducer", () => {
     expect(opened.elicitations.map((item) => item.requestId)).toEqual(["e1", "e2"]);
     const resolved = apply([{ kind: "elicitationResolved", requestId: "e1" }, { kind: "elicitationComplete", elicitationId: "x" }], opened);
     expect(resolved.elicitations.map((item) => item.requestId)).toEqual(["e2"]);
-    expect(resolved.feed.at(-1)).toMatchObject({ kind: "note" });
+    expect(resolved.feed.at(-1)).toMatchObject({ kind: "signin", requestId: "e1", status: "cancelled" });
   });
 
   it("ignores updates for another session", () => {

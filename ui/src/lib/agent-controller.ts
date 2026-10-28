@@ -22,6 +22,7 @@ import {
   unresolvedProposals,
   type AgentState,
   type Failure,
+  markUrlOpened,
 } from "./agent-session";
 
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
@@ -1209,6 +1210,7 @@ export function createAgentController(props: AgentPanelProps) {
       fail({ phase: "prompt", message: `Could not open the browser: ${errorText(cause)}` });
       return;
     }
+    update((current) => markUrlOpened(current, requestId));
     await respondElicitation(requestId, "accept");
   }
 
