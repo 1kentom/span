@@ -20,7 +20,7 @@ import { AgentFeed } from "./agent/AgentFeed";
 import { ErrorCard, OfflineBar } from "./agent/Banners";
 import { ConnectingSteps, ReadyCard } from "./agent/ConnectFlow";
 import { ConnectScreen } from "./agent/ConnectScreen";
-import { EditorToast } from "./agent/EditorToast";
+import { EditorToast, OpenRefusal } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
 import { HistoryList } from "./agent/HistoryList";
@@ -585,6 +585,7 @@ export function AgentPanel(props: AgentPanelProps) {
       </Show>
       <DropOverlay visible={a.intake.dragging()} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
       <EditorToast name={a.toast()} onDismiss={a.clearToast} />
+      <OpenRefusal refusal={a.openRefusal()} onCopy={(path) => api.writeClipboard(path)} onDismiss={a.clearOpenRefusal} />
     </section>
   );
 }
