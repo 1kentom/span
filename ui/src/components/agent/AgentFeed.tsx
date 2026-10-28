@@ -50,7 +50,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
             )}
           </Show>
           {message().text}
-          <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.setViewing(attachment.id)} />
+          <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.openAttachment(attachment)} />
         </div>
       </Match>
       <Match when={item().kind === "text" || item().kind === "thought"}>

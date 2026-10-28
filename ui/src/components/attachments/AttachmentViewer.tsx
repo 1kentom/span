@@ -35,6 +35,8 @@ export interface AttachmentViewerProps {
 
 /** Props of the inline view. Without `onClose` there is no close button: a workbench tab closes from its own tab strip. */
 export type AttachmentViewProps = Omit<AttachmentViewerProps, 'onClose'> & { onClose?: () => void };
+/** What the agent panel hands the workbench for one attachment tab. Fields may be getters that track live state. */
+export type AttachmentTabView = Omit<AttachmentViewProps, 'onClose'>;
 
 const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 

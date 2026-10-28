@@ -1,6 +1,6 @@
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
-import { createAttachmentIntake } from "../components/attachments";
+import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
 import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop } from "./client";
 import { childPermissions, isFinished, type ChildPermission } from "./agent-delegation";
@@ -52,6 +52,8 @@ export type AgentPanelProps = {
   onReviewBusyChange?: (busy: boolean) => void;
   onReviewInEditor?: (path: string, line?: number) => void;
   onReviewReady?: (review: (proposalId: string, acceptedHunkIds: string[]) => Promise<void>) => void;
+  /** Opens an attachment as a workbench viewer tab. Without it attachments open in the panel's modal viewer. */
+  onOpenAttachment?: (view: AttachmentTabView) => void;
 };
 
 export type View = "session" | "history" | "connect" | "logs";
@@ -1338,6 +1340,14 @@ export function createAgentController(props: AgentPanelProps) {
         feed().flatMap((item) => (item.kind === "user" ? item.attachments ?? [] : [])).find((item) => item.id === id) ??
         toolImageAttachment(id);
   const viewingItem = createMemo(() => findAttachment(viewing()));
+  /** Set by the panel when a workbench can show attachments as tabs. */
+  let attachmentOpener: ((item: Attachment) => void) | undefined;
+  const setAttachmentOpener = (open: ((item: Attachment) => void) | undefined) => { attachmentOpener = open; };
+  /** Chips and tiles call this: a workbench tab when one is wired, else the modal viewer. */
+  function openAttachment(item: Attachment) {
+    if (attachmentOpener) attachmentOpener(item);
+    else setViewing(item.id);
+  }
   const viewingInComposer = createMemo(() => attachments().some((item) => item.id === viewing()));
   /** Writes the bytes into the workspace (default folder assets) and turns the item into a workspace file. */
   async function saveAttachment(item: Attachment) {
@@ -1485,6 +1495,9 @@ export function createAgentController(props: AgentPanelProps) {
     setViewing,
     viewingItem,
     viewingInComposer,
+    findAttachment,
+    openAttachment,
+    setAttachmentOpener,
     online,
     setOnline,
     bannerDismissed,
