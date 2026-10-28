@@ -11,6 +11,7 @@ mod search;
 mod session;
 mod settings;
 mod tools;
+mod uploads;
 mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
@@ -26,6 +27,12 @@ pub use settings::{
     AgentSettings, AutoSaveMode, DelegationSettings, Settings, SettingsScope, Theme,
 };
 pub use tools::{list_tools, ToolInfo};
+pub use uploads::{
+    content_fingerprint, is_valid_upload_id, open_refusal, sniff_upload, workspace_key,
+    ExternalCopy, Upload, UploadChunk, UploadKind, UploadLimits, UploadOrigin, UploadSource,
+    UploadStore, UploadUsage, MAX_UPLOADS_TOTAL_BYTES, MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT,
+    MAX_UPLOAD_READ_BYTES,
+};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
 
 use std::path::Path;
@@ -58,6 +65,8 @@ pub enum CoreError {
     Search(String),
     #[error("Attachment rejected: {0}")]
     Attachment(String),
+    #[error("Upload: {0}")]
+    Upload(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

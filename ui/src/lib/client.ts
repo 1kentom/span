@@ -523,3 +523,64 @@ export async function agentCancelTask(taskId: string): Promise<void> {
   if (!isDesktop) nativeRequired('Cancelling an agent task');
   await commands.agentCancelTask(taskId);
 }
+
+/** Uploads panel (ADR 0006): files the user sent to agents or added, stored per workspace in app data, never in the workspace. Newest first. Browser preview has no store, so it lists nothing. */
+export async function uploadsList(): Promise<import('../bindings').Upload_Serialize[]> {
+  return isDesktop ? commands.uploadsList() : [];
+}
+
+/** Store usage and caps. Over a cap, new uploads are refused; nothing is evicted. */
+export async function uploadsUsage(): Promise<import('../bindings').UploadUsage> {
+  if (isDesktop) return commands.uploadsUsage();
+  return { count: 0, totalBytes: 0, maxCount: 2000, maxTotalBytes: 512 * 1024 * 1024, maxFileBytes: 32 * 1024 * 1024, orphanBlobs: 0, orphanBytes: 0, quarantinedIndexes: 0 };
+}
+
+/** Store a file (at most 32 MiB). `name` follows the workspace attachment naming rules. */
+export async function uploadsAdd(name: string, dataBase64: string, source: import('../bindings').UploadSource_Deserialize): Promise<import('../bindings').Upload_Serialize> {
+  if (!isDesktop) nativeRequired('Storing uploads');
+  return commands.uploadsAdd(name, dataBase64, source);
+}
+
+/** Bounded read for previews: at most 4 MiB per call, `eof` marks the last chunk. */
+export async function uploadsRead(id: string, offset: number, len: number): Promise<import('../bindings').UploadChunk> {
+  if (!isDesktop) nativeRequired('Reading uploads');
+  return commands.uploadsRead(id, offset, len);
+}
+
+export async function uploadsRename(id: string, name: string): Promise<import('../bindings').Upload_Serialize> {
+  if (!isDesktop) nativeRequired('Renaming uploads');
+  return commands.uploadsRename(id, name);
+}
+
+export async function uploadsDuplicate(id: string): Promise<import('../bindings').Upload_Serialize> {
+  if (!isDesktop) nativeRequired('Duplicating uploads');
+  return commands.uploadsDuplicate(id);
+}
+
+export async function uploadsRemove(id: string): Promise<void> {
+  if (!isDesktop) nativeRequired('Removing uploads');
+  await commands.uploadsRemove(id);
+}
+
+/** Copy into a workspace-relative folder. Never overwrites: a taken name gets a numbered suffix. */
+export async function uploadsSaveToWorkspace(id: string, dir: string): Promise<SavedAttachment> {
+  if (!isDesktop) nativeRequired('Saving uploads to the workspace');
+  return commands.uploadsSaveToWorkspace(id, dir);
+}
+
+/** App data path of a named copy, only for an explicit "Copy path". Show the upload name otherwise. */
+export async function uploadsCopyPath(id: string): Promise<string> {
+  if (!isDesktop) nativeRequired('Copying upload paths');
+  return commands.uploadsCopyPath(id);
+}
+
+export async function uploadsReveal(id: string): Promise<void> {
+  if (!isDesktop) nativeRequired('Revealing uploads');
+  await commands.uploadsReveal(id);
+}
+
+/** Open with the system default app. Programs, scripts and installers are refused with advice to save to the workspace instead. */
+export async function uploadsOpen(id: string): Promise<void> {
+  if (!isDesktop) nativeRequired('Opening uploads with another app');
+  await commands.uploadsOpen(id);
+}
