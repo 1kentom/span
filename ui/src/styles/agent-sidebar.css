@@ -190,6 +190,20 @@
 .sb-agent-text .sb-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-sub code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 10.5px; color: var(--sb-dim); }
 .sb-agent-row .sb-bar { margin-left: 28px; flex: none; }
+/* An installed agent: one row with the quiet installed check, Connect, and a manage menu under it. */
+.sb-installed-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sb-installed-line > .icon { flex: none; color: var(--sb-success); }
+.sb-installed-line > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The action column cell: Connect, and on a Found row the manage menu after it. */
+.sb-row-actions { display: inline-flex; align-items: center; gap: 2px; justify-self: end; }
+.sb-row-actions > .sb-btn { min-width: 68px; height: 24px; padding: 0 9px; border-radius: 6px; font-size: 11px; justify-content: center; }
+.sb-found-manage { width: 24px; height: 24px; }
+/* Known command rows leave the manage slot empty so their Connect lines up with the Found rows above. */
+.sb-connect:has(.sb-found-manage) .sb-preset-row .sb-row-actions { padding-right: 26px; }
+/* A row that grows with a command chip or an update pill keeps its mark and actions level with the name and status lines. */
+.sb-agent-line:has(.sb-command-chip, .sb-update-pill) { align-items: start; }
+.sb-agent-line:has(.sb-command-chip, .sb-update-pill) > .brand-icon { margin-top: 8px; }
+.sb-agent-line:has(.sb-command-chip, .sb-update-pill) > .sb-row-actions { margin-top: 4px; }
 .sb-custom { border: 1px dashed var(--sb-control-border); border-radius: 8px; }
 .sb-custom-toggle { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; background: none; color: var(--sb-dim); text-align: left; cursor: pointer; }
 .sb-custom-form { display: flex; gap: 6px; padding: 0 10px 10px; }
@@ -438,9 +452,11 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-header-row { display: flex; gap: 4px; align-items: center; }
 .sb-header-row .sb-input { flex: 1; min-width: 0; }
 .sb-auth-hint code, .sb-fine code { padding: 0 4px; border-radius: 3px; background: var(--sb-field); color: var(--sb-fg); font-size: 11px; }
-.sb-command-chip { display: inline-flex; align-items: center; gap: 2px; align-self: flex-start; max-width: calc(100% - 28px); margin-left: 28px; padding: 2px 2px 2px 8px; border: 1px solid var(--sb-border); border-radius: 6px; background: var(--sb-field); }
-.sb-command-chip .sb-preset-command { min-width: 0; font-size: 11px; line-height: 18px; color: var(--sb-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-row-extra.sb-command-chip { margin-left: 38px; max-width: calc(100% - 46px); }
+/* A launch command on one line that fills the text column. No border: the field background marks it. */
+.sb-command-chip { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; height: 28px; margin-top: 5px; padding: 0 3px 0 8px; border-radius: 6px; background: var(--sb-field); box-sizing: border-box; }
+.sb-command-chip .sb-preset-command { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 28px; color: var(--sb-fg); }
+.sb-command-copy { width: 22px; height: 22px; }
+.sb-command-copy.copied { color: var(--sb-accent-fg); }
 .agent-turn-tokens { align-self: center; }
 
 /* Decision and delegated-agent cards */

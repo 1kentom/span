@@ -5,7 +5,10 @@ import { Icon, MenuIcon } from "../Icon";
 import { splitCode } from "../../lib/agent-hint-text";
 import type { AgentUpdate_Serialize as AgentUpdate } from "../../bindings";
 import type { FoundAgent, PresetRow, RegistryAgent } from "./types";
-import { CopyCommand, UpdateBadge, UpdatePanel } from "./UpdateBadge";
+import { CommandChip } from "./CommandChip";
+import { UpdateBadge, UpdatePanel } from "./UpdateBadge";
+
+export { CommandChip };
 
 type ConnectScreenProps = {
   found: FoundAgent[];
@@ -36,6 +39,13 @@ type ConnectScreenProps = {
   onDelegationChange?: (enabled: boolean) => void;
   /** Agents the curated catalog already lists. They are left out of the groups below so each program appears once. */
   listedIds?: readonly string[];
+  /** Copies a shown launch command. Without it the browser clipboard is used. */
+  onCopyCommand?: (command: string) => unknown;
+  /**
+   * Asks to remove an installed agent (`uninstall` also deletes its managed files). The request only opens the
+   * confirmation; nothing is removed here. Without it the manage menu has no removal entries.
+   */
+  onRemove?: (id: string, uninstall: boolean) => void;
 };
 
 /** A one-line subtitle: ellipsis on overflow, the whole text in the title, backticked spans drawn as code. */
@@ -106,7 +116,11 @@ export function ConnectScreen(props: ConnectScreenProps) {
   };
   const listed = (id: string) => props.listedIds?.includes(id) ?? false;
   const found = () => props.found.filter((agent) => !listed(agent.id));
-  const presets = () => (props.presets ?? []).filter((preset) => !listed(preset.id));
+  const installed = (id: string) => props.found.some((agent) => agent.id === id);
+  /** An installed agent is listed once, under Found on this computer, so its known command is not repeated here. */
+  const presets = () => (props.presets ?? []).filter((preset) => !listed(preset.id) && !installed(preset.id));
+  /** The known command of an installed agent, drawn as a chip on its Found row. */
+  const presetFor = (id: string) => props.presets?.find((preset) => preset.id === id);
   const updateFor = (id: string) => props.updates?.find((update) => update.id === id);
   const [openUpdate, setOpenUpdate] = createSignal<string>();
   const toggleUpdate = (id: string) => setOpenUpdate((value) => (value === id ? undefined : id));
@@ -114,6 +128,11 @@ export function ConnectScreen(props: ConnectScreenProps) {
   const Panel = (panel: { id: string }) => (
     <Show when={openUpdate() === panel.id ? updateFor(panel.id) : undefined}>{(update) => <UpdatePanel update={update()} onOpenExternal={props.onOpenExternal} />}</Show>
   );
+  const [managing, setManaging] = createSignal<string>();
+  const remove = (id: string, uninstall: boolean) => {
+    setManaging(undefined);
+    props.onRemove?.(id, uninstall);
+  };
   return (
     <section class="sb-connect" aria-labelledby="sb-connect-title">
       <header class="sb-hero">
@@ -127,17 +146,56 @@ export function ConnectScreen(props: ConnectScreenProps) {
           <Eyebrow label="Found on this computer" count={found().length} />
           <For each={found()}>
             {(agent) => (
-              <div class="sb-agent-row stacked">
+              <div class="sb-agent-row stacked sb-found-entry" data-agent-id={agent.id}>
                 <div class="sb-agent-line">
                   <BrandIcon id={agent.id} name={agent.name} size={18} />
                   <span class="sb-agent-text">
                     <span class="sb-agent-name">{agent.name}</span>
-                    <Show when={agent.subtitle}>{(subtitle) => <Subtitle text={subtitle()} />}</Show>
+                    <span class="sb-sub sb-installed-line" title={`Installed${agent.subtitle ? ` · ${agent.subtitle}` : ""}`}>
+                      <Icon name="TickCircle" size={11} />
+                      <span>Installed{agent.subtitle ? ` · ${agent.subtitle}` : ""}</span>
+                    </span>
+                    <Show when={presetFor(agent.id)}>
+                      {(preset) => <CommandChip command={preset().command} label={`Command for ${agent.name}`} onCopy={props.onCopyCommand} />}
+                    </Show>
                     <Badge id={agent.id} />
                   </span>
-                  <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${agent.name}`} onClick={() => props.onConnect(agent.id)}>Connect</button>
+                  <span class="sb-row-actions">
+                    <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${agent.name}`} onClick={() => props.onConnect(agent.id)}>Connect</button>
+                    <Show when={props.onRemove || props.onCheckUpdates}>
+                      <button
+                        type="button"
+                        class="sb-icon-btn sb-found-manage"
+                        aria-label={`Manage ${agent.name}`}
+                        aria-expanded={managing() === agent.id}
+                        onClick={() => setManaging((open) => (open === agent.id ? undefined : agent.id))}
+                      >
+                        <Icon name="3DotsMore" size={14} />
+                      </button>
+                    </Show>
+                  </span>
                 </div>
                 <Panel id={agent.id} />
+                <Show when={managing() === agent.id}>
+                  <div class="agent-row-management sb-found-management">
+                    <Show when={props.onRemove}>
+                      <button type="button" onClick={() => remove(agent.id, false)}>
+                        <Icon name="CloseCircle" size={14} />
+                        Remove from Span
+                      </button>
+                      <button type="button" onClick={() => remove(agent.id, true)}>
+                        <MenuIcon name="trash" size={14} />
+                        Uninstall managed adapter
+                      </button>
+                    </Show>
+                    <Show when={props.onCheckUpdates}>
+                      <button type="button" disabled={props.checkingUpdates} onClick={() => { setManaging(undefined); props.onCheckUpdates?.(); }}>
+                        <Icon name="Refresh2" size={14} />
+                        Check for updates
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
               </div>
             )}
           </For>
@@ -148,19 +206,18 @@ export function ConnectScreen(props: ConnectScreenProps) {
           <Eyebrow label="Known commands" count={presets().length} />
           <For each={presets()}>
             {(preset) => (
-              <div class="sb-agent-row stacked">
+              <div class="sb-agent-row stacked sb-preset-row">
                 <div class="sb-agent-line">
                   <BrandIcon id={preset.id} name={preset.name} size={18} />
                   <span class="sb-agent-text">
                     <span class="sb-agent-name">{preset.name}</span>
                     <Show when={preset.description}>{(description) => <Subtitle text={description()} />}</Show>
+                    <CommandChip command={preset.command} label={`Command for ${preset.name}`} onCopy={props.onCopyCommand} />
                     <Badge id={preset.id} />
                   </span>
-                  <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${preset.name}`} onClick={() => props.onPreset?.(preset.id)}>Connect</button>
-                </div>
-                <div class="sb-command-chip">
-                  <code class="sb-preset-command sb-mono" aria-label={`Command for ${preset.name}`}>{preset.command}</code>
-                  <CopyCommand command={preset.command} />
+                  <span class="sb-row-actions">
+                    <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${preset.name}`} onClick={() => props.onPreset?.(preset.id)}>Connect</button>
+                  </span>
                 </div>
                 <Panel id={preset.id} />
               </div>

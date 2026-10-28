@@ -4,12 +4,12 @@ import { curatedAgent, type CatalogRow } from "../../lib/acp-catalog";
 import { BrandIcon } from "../BrandIcon";
 import { Icon, MenuIcon } from "../Icon";
 import type { PresetRow } from "./types";
-import { CopyCommand, UpdateBadge, UpdatePanel, updateLabel } from "./UpdateBadge";
+import { CommandChip } from "./CommandChip";
+import { UpdateBadge, UpdatePanel, updateLabel } from "./UpdateBadge";
 
 type AgentCatalogProps = {
+  /** Every curated agent. Rows that are already installed are left out here: they show under Found on this computer. */
   rows: CatalogRow[];
-  /** Installed adapters outside the curated list. */
-  others: InstalledAgent[];
   search: string;
   onSearch: (value: string) => void;
   installingIds: string[];
@@ -20,8 +20,6 @@ type AgentCatalogProps = {
   desktop: boolean;
   onRefresh: () => void;
   onPick: (row: CatalogRow) => void;
-  /** Present only when the host can remove agents. Without it no manage control is drawn. */
-  onRequestRemoval?: (entry: InstalledAgent, uninstall: boolean) => void;
   removal?: { entry: InstalledAgent; uninstall: boolean };
   /** Why the pending removal cannot go ahead yet, or an empty string. */
   removalBlock: string;
@@ -35,6 +33,8 @@ type AgentCatalogProps = {
   /** Check-only update results. A confirmed update draws a pill under its row. */
   updates?: AgentUpdate[];
   onOpenExternal?: (url: string) => void;
+  /** Copies a shown launch command. Without it the browser clipboard is used. */
+  onCopyCommand?: (command: string) => unknown;
 };
 
 /** The command a curated row connects through when it is not installed and the host knows a launch command for it. */
@@ -43,40 +43,23 @@ export function catalogPreset(row: CatalogRow, presets: readonly PresetRow[] | u
   return presets?.find((preset) => preset.id === row.definition.id);
 }
 
-/** Curated ACP agents with search, per-row install state, and removal that always asks first. */
+/**
+ * Curated ACP agents that are not installed yet, with search, per-row install state, and the removal confirmation.
+ * Installed agents are listed once, under Found on this computer, with their connect and manage controls.
+ */
 export function AgentCatalog(props: AgentCatalogProps) {
-  const [managing, setManaging] = createSignal<string>();
   const installingRow = (id: string) => props.installingIds.includes(id);
-  const toggle = (id: string) => setManaging((value) => (value === id ? undefined : id));
   const [openUpdate, setOpenUpdate] = createSignal<string>();
   const updateFor = (id: string) => props.updates?.find((update) => update.id === id);
   const presetFor = (row: CatalogRow) => catalogPreset(row, props.presets);
+  const subtitle = (row: CatalogRow) => (props.installErrors[row.definition.id] ? "Installation failed. Retry." : row.definition.detail);
   const pick = (row: CatalogRow) => {
     const preset = presetFor(row);
     if (preset && props.onPreset) props.onPreset(preset.id);
     else props.onPick(row);
   };
-  const subtitle = (row: CatalogRow) =>
-    row.installed ? `Installed · ${row.installed.version}` : props.installErrors[row.definition.id] ? "Installation failed. Retry." : row.definition.detail;
-  const request = (entry: InstalledAgent, uninstall: boolean) => {
-    setManaging(undefined);
-    props.onRequestRemoval?.(entry, uninstall);
-  };
-  const Manage = (manage: { id: string; entry: InstalledAgent }) => (
-    <Show when={managing() === manage.id}>
-      <div class="agent-row-management">
-        <button type="button" onClick={() => request(manage.entry, false)}>
-          <Icon name="CloseCircle" size={14} />
-          Remove from Span
-        </button>
-        <button type="button" onClick={() => request(manage.entry, true)}>
-          <MenuIcon name="trash" size={14} />
-          Uninstall managed adapter
-        </button>
-      </div>
-    </Show>
-  );
-
+  const rows = () => props.rows.filter((row) => !row.installed);
+  const allInstalled = () => props.rows.length > 0 && !rows().length;
   return (
     <div class="agent-catalog" role="group" aria-label="Agents">
       <Show
@@ -85,7 +68,7 @@ export function AgentCatalog(props: AgentCatalogProps) {
           <>
             <div class="agent-menu-heading">
               <span class="sb-eyebrow-text">
-                Agents <span class="sb-count">{props.rows.length}</span>
+                Agents <span class="sb-count">{rows().length}</span>
               </span>
               <button type="button" class="sb-icon-btn" aria-label="Refresh agent registry" disabled={props.registryBusy} onClick={() => props.onRefresh()}>
                 <Icon name="Refresh2" size={14} />
@@ -99,10 +82,13 @@ export function AgentCatalog(props: AgentCatalogProps) {
             <Show when={!props.desktop}>
               <div class="agent-menu-note">Open span desktop to install or connect an ACP agent.</div>
             </Show>
-            <Show when={props.rows.length} fallback={<div class="agent-menu-note">No curated agents match this search.</div>}>
-              <For each={props.rows}>
+            <Show
+              when={rows().length}
+              fallback={<div class="agent-menu-note">{allInstalled() ? "Every curated agent here is installed. Connect one under Found on this computer." : "No curated agents match this search."}</div>}
+            >
+              <For each={rows()}>
                 {(row) => (
-                  <div class="agent-catalog-entry" aria-busy={installingRow(row.definition.id)}>
+                  <div class="agent-catalog-entry" data-agent-id={row.definition.id} aria-busy={installingRow(row.definition.id)}>
                     <button
                       type="button"
                       class="agent-menu-item agent-catalog-row"
@@ -120,12 +106,7 @@ export function AgentCatalog(props: AgentCatalogProps) {
                       </Show>
                       <span class="agent-menu-copy">
                         <strong>{row.definition.name}</strong>
-                        <small classList={{ "agent-installed": Boolean(row.installed) }} title={subtitle(row)}>
-                          <Show when={row.installed}>
-                            <Icon name="TickCircle" size={11} />
-                          </Show>
-                          {subtitle(row)}
-                        </small>
+                        <small title={subtitle(row)}>{subtitle(row)}</small>
                         <Show when={props.installErrors[row.definition.id]}>
                           {(message) => (
                             <small class="agent-install-error" role="status" title={message()}>
@@ -158,11 +139,8 @@ export function AgentCatalog(props: AgentCatalogProps) {
                     </button>
                     <Show when={presetFor(row)}>
                       {(preset) => (
-                        <div class="sb-command-chip agent-row-extra">
-                          <code class="sb-preset-command sb-mono" aria-label={`Command for ${preset().name}`}>
-                            {preset().command}
-                          </code>
-                          <CopyCommand command={preset().command} />
+                        <div class="agent-row-extra">
+                          <CommandChip command={preset().command} label={`Command for ${preset().name}`} onCopy={props.onCopyCommand} />
                         </div>
                       )}
                     </Show>
@@ -176,22 +154,6 @@ export function AgentCatalog(props: AgentCatalogProps) {
                         </div>
                       )}
                     </Show>
-                    <Show when={props.onRequestRemoval ? row.installed : undefined}>
-                      {(entry) => (
-                        <>
-                          <button
-                            type="button"
-                            class="agent-row-overflow"
-                            aria-label={`Manage ${row.definition.name}`}
-                            aria-expanded={managing() === row.definition.id}
-                            onClick={() => toggle(row.definition.id)}
-                          >
-                            ···
-                          </button>
-                          <Manage id={row.definition.id} entry={entry()} />
-                        </>
-                      )}
-                    </Show>
                   </div>
                 )}
               </For>
@@ -201,33 +163,17 @@ export function AgentCatalog(props: AgentCatalogProps) {
                 Loading verified registry metadata…
               </div>
             </Show>
-            <Show when={props.others.length}>
-              <details class="agent-other-installed">
-                <summary>Other installed adapters ({props.others.length})</summary>
-                <div class="agent-menu-note">Kept on this device. These adapters are outside the curated list.</div>
-                <For each={props.others}>
-                  {(entry) => (
-                    <div class="agent-other-row">
-                      <span class="agent-menu-copy">
-                        <strong>{entry.id}</strong>
-                        <small>Managed adapter · {entry.version}</small>
-                      </span>
-                      <Show when={props.onRequestRemoval}>
-                        <button type="button" class="sb-icon-btn" aria-label={`Manage ${entry.id}`} aria-expanded={managing() === entry.id} onClick={() => toggle(entry.id)}>
-                          ···
-                        </button>
-                      </Show>
-                      <Manage id={entry.id} entry={entry} />
-                    </div>
-                  )}
-                </For>
-              </details>
-            </Show>
           </>
         }
       >
         {(choice) => (
-          <div class="agent-removal-confirmation" role="group" aria-label="Confirm agent removal">
+          <div
+            class="agent-removal-confirmation"
+            role="group"
+            aria-label="Confirm agent removal"
+            // The request can come from a Found row further down the screen, so bring the question into view.
+            ref={(element) => queueMicrotask(() => element.scrollIntoView?.({ block: "nearest" }))}
+          >
             <h3>{choice().uninstall ? "Uninstall managed adapter?" : "Remove agent from Span?"}</h3>
             <p>{curatedAgent(choice().entry.id)?.name || choice().entry.id}</p>
             <p>
