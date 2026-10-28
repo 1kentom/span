@@ -17,6 +17,10 @@ pub struct StartupFile {
 pub struct StartupRequest {
     pub workspace_root: Option<String>,
     pub files: Vec<StartupFile>,
+    /// True when `workspace_root` was derived from the files (no folder was named). The window
+    /// then keeps an open project and opens the files in it, instead of switching project.
+    #[serde(default)]
+    pub implied_root: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliAction {
@@ -104,6 +108,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>, cwd: &Path) -> Result<
         }
     }
     if request.workspace_root.is_none() {
+        request.implied_root = !request.files.is_empty();
         if let Some(first) = request.files.first() {
             let mut root = Path::new(&first.path)
                 .parent()

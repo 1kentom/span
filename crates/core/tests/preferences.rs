@@ -442,6 +442,7 @@ fn session_reopens_only_existing_rooted_files_without_buffer_autosave() {
             ..Default::default()
         },
         markdown_views: HashMap::from([("saved.md".into(), MarkdownView::Both)]),
+        split_vertical: true,
     };
     store.save(state).unwrap();
     fs::remove_file(directory.path().join("removed.txt")).unwrap();
@@ -451,6 +452,7 @@ fn session_reopens_only_existing_rooted_files_without_buffer_autosave() {
     assert_eq!(restored.active_group, 0);
     assert_eq!(restored.panels.project_width, 1000);
     assert_eq!(restored.markdown_views["saved.md"], MarkdownView::Both);
+    assert!(restored.split_vertical);
     assert_eq!(
         fs::read_to_string(directory.path().join("saved.md")).unwrap(),
         "disk content"

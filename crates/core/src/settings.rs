@@ -339,6 +339,10 @@ pub const COMMAND_IDS: &[&str] = &[
     "save",
     "openFolder",
     "splitEditor",
+    "splitEditorDown",
+    "newFile",
+    "newFolder",
+    "newFromTemplate",
     "toggleProject",
     "toggleAssistant",
     "toggleTerminal",
@@ -369,12 +373,16 @@ pub const COMMAND_IDS: &[&str] = &[
     "focusBreadcrumbs",
 ];
 
-/// Code navigation commands introduced after shortcuts could already be saved. Like Toggle Files,
+/// Commands introduced after shortcuts could already be saved. Like Toggle Files,
 /// a default is dropped when an explicit binding already claims the same key, so adding a default
 /// never invalidates an existing settings file.
 const INHERITED_DEFAULT_IDS: &[&str] = &[
     "toggleFiles",
     "focusFiles",
+    "splitEditorDown",
+    "newFile",
+    "newFolder",
+    "newFromTemplate",
     "goToDefinition",
     "goToTypeDefinition",
     "goToImplementation",
@@ -630,6 +638,10 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("save", vec!["Mod+S"]),
         ("openFolder", vec!["Mod+O"]),
         ("splitEditor", vec!["Mod+\\"]),
+        ("splitEditorDown", vec!["Mod+Alt+\\"]),
+        ("newFile", vec!["Mod+N"]),
+        ("newFolder", vec!["Mod+Shift+N"]),
+        ("newFromTemplate", vec!["Alt+Insert"]),
         ("toggleProject", vec!["Mod+B"]),
         ("toggleAssistant", vec!["Mod+Alt+B"]),
         ("toggleTerminal", vec!["Mod+J"]),

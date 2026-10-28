@@ -1,10 +1,10 @@
 /** Internal pointer gestures stay independent of the OS file-drop handler. */
-export type InternalDragState<T> = { item: T; target?: number; x: number; y: number; copy: boolean };
-export function createInternalDrag<T>(options: {
+export type InternalDragState<T, K = number> = { item: T; target?: K; x: number; y: number; copy: boolean };
+export function createInternalDrag<T, K = number>(options: {
   valid: (item: T) => boolean;
-  targetAt: (x: number, y: number) => number | undefined;
-  preview: (state: InternalDragState<T> | undefined) => void;
-  drop: (item: T, target: number, copy: boolean) => void;
+  targetAt: (x: number, y: number) => K | undefined;
+  preview: (state: InternalDragState<T, K> | undefined) => void;
+  drop: (item: T, target: K, copy: boolean) => void;
   window?: Window;
 }) {
   const host = options.window ?? window;

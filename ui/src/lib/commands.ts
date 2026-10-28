@@ -12,6 +12,10 @@ export const actionDefinitions = [
   { id: "save", label: "Save File", category: "File", keys: ["Mod+S"], inputs: true },
   { id: "openFolder", label: "Open Folder", category: "File", keys: ["Mod+O"], inputs: true },
   { id: "splitEditor", label: "Split Editor", category: "View", keys: ["Mod+\\"], inputs: true },
+  { id: "splitEditorDown", label: "Split Editor Down", category: "View", keys: ["Mod+Alt+\\"], inputs: true },
+  { id: "newFile", label: "New File", category: "File", keys: ["Mod+N"], inputs: true },
+  { id: "newFolder", label: "New Folder", category: "File", keys: ["Mod+Shift+N"], inputs: true },
+  { id: "newFromTemplate", label: "New from Template", category: "File", keys: ["Alt+Insert"], inputs: true },
   { id: "toggleProject", label: "Toggle Project Panel", category: "View", keys: ["Mod+B"], inputs: true },
   { id: "toggleAssistant", label: "Toggle AI Assistant", category: "View", keys: ["Mod+Alt+B"], inputs: true },
   { id: "toggleTerminal", label: "Toggle Terminal Panel", category: "View", keys: ["Mod+J"], inputs: true },
@@ -50,7 +54,7 @@ export type SyntaxTokenId = typeof syntaxTokenIds[number];
 export const syntaxThemeIds = ["dark", "light", "purple"] as const;
 export type SyntaxThemeId = typeof syntaxThemeIds[number];
 /** Defaults added after shortcuts could be saved. An existing explicit binding that claims one of these keys wins and only the default is dropped. */
-const inheritedDefaultIds: ReadonlySet<string> = new Set(["toggleFiles", "focusFiles", "goToDefinition", "goToTypeDefinition", "goToImplementation", "peekDefinition", "peekTypeDefinition", "peekImplementation", "findReferences", "peekReferences", "goToSymbolInFile", "goToSymbolInWorkspace", "quickInfo", "showCallHierarchy", "showTypeHierarchy", "renameSymbol", "goBack", "goForward", "focusBreadcrumbs"]);
+const inheritedDefaultIds: ReadonlySet<string> = new Set(["toggleFiles", "focusFiles", "splitEditorDown", "newFile", "newFolder", "newFromTemplate", "goToDefinition", "goToTypeDefinition", "goToImplementation", "peekDefinition", "peekTypeDefinition", "peekImplementation", "findReferences", "peekReferences", "goToSymbolInFile", "goToSymbolInWorkspace", "quickInfo", "showCallHierarchy", "showTypeHierarchy", "renameSymbol", "goBack", "goForward", "focusBreadcrumbs"]);
 export type ActionId = typeof actionDefinitions[number]["id"];
 export type Platform = "mac" | "windows" | "linux";
 export type KeybindingOverrides = Record<string, string[]>;
