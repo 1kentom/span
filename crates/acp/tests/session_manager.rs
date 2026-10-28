@@ -83,6 +83,22 @@ impl Harness {
         .expect("matching event timed out")
     }
 
+    /// Wait until every predicate has matched an event, in any order. Events
+    /// from different agent processes (or from a process and its exit) have no
+    /// defined order, so waiting for them one after another with `next` would
+    /// discard whichever arrived first.
+    async fn all(&mut self, wanted: &[&dyn Fn(&SessionEvent) -> bool]) {
+        let mut seen = vec![false; wanted.len()];
+        while seen.contains(&false) {
+            let event = self.next(|e| wanted.iter().any(|m| m(e))).await;
+            for (index, matches) in wanted.iter().enumerate() {
+                if matches(&event) {
+                    seen[index] = true;
+                }
+            }
+        }
+    }
+
     /// Wait until the fixture has received a `session/prompt` with this text
     /// for each of `keys`.
     async fn prompts_delivered(&mut self, text: &str, keys: &[&SessionKey]) {
@@ -359,11 +375,28 @@ async fn cancelling_the_lead_cascades_to_every_child() {
     h.manager.disconnect(&worker).unwrap();
 }
 
+fn is_stdin(event: &SessionEvent, connection: &str, method: &str) -> bool {
+    event.connection_id == connection
+        && matches!(&event.event, AgentEvent::Log { direction, line } if direction == "Stdin" && line.contains(method))
+}
+
 #[tokio::test]
 async fn closing_the_lead_closes_and_forgets_children() {
+    close_lead_with_busy_child(&["--close"]).await;
+}
+
+/// Regression: the worker acknowledges Stop only after the manager has sent
+/// `session/close` for the child, so the close log comes before the
+/// cancelled `Complete`. Waiting for them in a fixed order timed out.
+#[tokio::test]
+async fn closing_the_lead_reports_a_child_whose_stop_is_acknowledged_late() {
+    close_lead_with_busy_child(&["--close", "--slow-cancel=300"]).await;
+}
+
+async fn close_lead_with_busy_child(worker_flags: &[&str]) {
     let mut h = harness();
     let lead = h.connect(&["--close"]).await;
-    let worker = h.connect(&["--close"]).await;
+    let worker = h.connect(worker_flags).await;
     let root = h.root(&lead).await;
     let child = h
         .manager
@@ -376,15 +409,15 @@ async fn closing_the_lead_closes_and_forgets_children() {
     let turn = tokio::spawn(async move { manager.prompt(&key, "wait".into(), vec![]).await });
     h.prompts_delivered("wait", &[&child]).await;
     h.manager.close(&root).await.expect("close lead");
-    h.next(|e| is_complete(e, &child, "cancelled")).await;
+    // The child's cancelled turn and its session/close come from the worker
+    // process and race the lead's close reply, so either may arrive first.
+    h.all(&[&|e| is_complete(e, &child, "cancelled"), &|e| {
+        is_stdin(e, &worker, "session/close")
+    }])
+    .await;
     turn.await.unwrap().expect("cancelled turn");
     assert!(h.manager.session(&root).is_none());
     assert!(h.manager.session(&child).is_none());
-    h.next(|e| {
-        e.connection_id == worker
-            && matches!(&e.event, AgentEvent::Log { direction, line } if direction == "Stdin" && line.contains("session/close"))
-    })
-    .await;
     h.manager.disconnect(&lead).unwrap();
     h.manager.disconnect(&worker).unwrap();
 }
@@ -420,12 +453,16 @@ async fn disconnect_cancels_its_sessions_and_their_children() {
     .await;
 
     h.manager.disconnect(&lead).expect("disconnect lead");
-    h.next(|e| {
-        e.connection_id == lead
-            && matches!(&e.event, AgentEvent::Status { state, .. } if state == "disconnected")
-    })
+    // The lead's exit and the worker's cancelled child turn come from two
+    // processes, so either may be reported first.
+    h.all(&[
+        &|e| {
+            e.connection_id == lead
+                && matches!(&e.event, AgentEvent::Status { state, .. } if state == "disconnected")
+        },
+        &|e| is_complete(e, &child, "cancelled"),
+    ])
     .await;
-    h.next(|e| is_complete(e, &child, "cancelled")).await;
     let mut turns = turns.into_iter();
     assert!(
         turns.next().unwrap().await.unwrap().is_err(),
@@ -576,4 +613,34 @@ async fn child_permission_carries_identity_and_only_the_user_can_answer_it() {
     .await;
     h.manager.disconnect(&lead).unwrap();
     h.manager.disconnect(&worker).unwrap();
+}
+
+/// Regression: `connect` used to resolve before the agent thread delivered
+/// `Ready`, so a caller that read the connection's features right away (as
+/// `ToolServer::start` does) could find none. A slow direct sink holds the
+/// agent thread inside `Ready` to force that interleaving.
+#[tokio::test]
+async fn connect_resolves_only_after_ready_is_recorded() {
+    let h = harness();
+    let slow: span_acp::EventSink = Arc::new(|event| {
+        if matches!(event, AgentEvent::Ready { .. }) {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    });
+    let connection = h
+        .manager
+        .connect(
+            fixture(&[]),
+            h.directory.path().to_string_lossy().into_owned(),
+            h.workspace.clone(),
+            Some(slow),
+        )
+        .await
+        .expect("initialize actual subprocess");
+    let info = h.manager.connection(&connection).expect("connection");
+    assert!(
+        info.features.is_some(),
+        "features recorded before connect resolves"
+    );
+    h.manager.disconnect(&connection).unwrap();
 }
