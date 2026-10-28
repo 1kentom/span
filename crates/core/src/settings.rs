@@ -166,12 +166,20 @@ pub struct AgentSettings {
 }
 
 /// `agents.delegation.*`: the span-agents tool server (#52).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct DelegationSettings {
     /// Offer the delegation tools to new lead sessions of agents that
-    /// advertise MCP over HTTP. Off by default.
+    /// advertise MCP over HTTP. On by default; the user can turn it off.
+    /// Honoured only from the user's own settings file, and the depth and
+    /// budget limits apply either way.
     pub enabled: bool,
+}
+
+impl Default for DelegationSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 impl Default for Settings {
@@ -535,7 +543,7 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
 
 /// Settings honoured only from the user's own settings file. A workspace
 /// `.span/settings.jsonc` arrives with the repository, so a cloned project
-/// must not be able to switch these on: `agents.delegation.enabled` lets an
+/// must not be able to change these: `agents.delegation.enabled` lets an
 /// agent start other agents (ADR 0003). The key is dropped from workspace
 /// settings before merging; unknown sibling keys are still rejected.
 const USER_ONLY: &[&[&str]] = &[

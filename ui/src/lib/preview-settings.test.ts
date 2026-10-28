@@ -63,3 +63,17 @@ describe('browser scoped settings fixture', () => {
     expect(() => fixture.updateJsonc('workspace', '{"editor.wordWrap":"bounded"}')).toThrow();
   });
 });
+
+describe('agent delegation in the browser fixture', () => {
+  it('is on by default and only the user scope can turn it off', () => {
+    const fixture = createPreviewSettings();
+    expect(fixture.get().agents?.delegation?.enabled).toBe(true);
+    fixture.update('workspace', 'agents', JSON.stringify({ delegation: { enabled: false } }));
+    expect(fixture.get().agents?.delegation?.enabled).toBe(true);
+    fixture.update('user', 'agents', JSON.stringify({ delegation: { enabled: false } }));
+    expect(fixture.get().agents?.delegation?.enabled).toBe(false);
+    expect(fixture.get('user').agents?.delegation?.enabled).toBe(false);
+    fixture.update('workspace', 'agents', JSON.stringify({ delegation: { enabled: true } }));
+    expect(fixture.get().agents?.delegation?.enabled).toBe(false);
+  });
+});

@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, on, type JSX } from "solid-js";
+import { For, Show, createEffect, createSignal, createUniqueId, on, type JSX } from "solid-js";
 import { AnimatedLogo } from "../AnimatedLogo";
 import { BrandIcon } from "../BrandIcon";
 import { Icon, MenuIcon } from "../Icon";
@@ -30,6 +30,10 @@ type ConnectScreenProps = {
   customDraft?: { command: string };
   /** Opens a release notes link through the host's external opener. */
   onOpenExternal?: (url: string) => void;
+  /** The merged `agents.delegation.enabled`. Unset means the default, which is on. */
+  delegationEnabled?: boolean;
+  /** Writes the user setting. Without it the switch is shown but cannot be changed. */
+  onDelegationChange?: (enabled: boolean) => void;
   /** Agents the curated catalog already lists. They are left out of the groups below so each program appears once. */
   listedIds?: readonly string[];
 };
@@ -40,6 +44,35 @@ function Subtitle(props: { text: string }) {
     <span class="sb-sub" title={props.text.replace(/`/g, "")}>
       <For each={splitCode(props.text)}>{(part) => (part.code ? <code>{part.text}</code> : part.text)}</For>
     </span>
+  );
+}
+
+/** The "Agents work together" card: one switch for the user setting `agents.delegation.enabled`, on by default. */
+function DelegationToggle(props: { enabled?: boolean; onChange?: (enabled: boolean) => void }) {
+  const titleId = createUniqueId();
+  const noteId = createUniqueId();
+  const on = () => props.enabled ?? true;
+  return (
+    <div class="sb-delegation-toggle">
+      <span class="sb-delegation-copy">
+        <span class="sb-delegation-title" id={titleId}>Agents work together</span>
+        <span class="sb-fine" id={noteId}>
+          When on, an agent can start another installed agent for a subtask. Every action still asks you, and limits apply per chat. Applies to chats started afterwards.
+        </span>
+      </span>
+      <button
+        type="button"
+        class="sb-switch"
+        role="switch"
+        aria-checked={on()}
+        aria-labelledby={titleId}
+        aria-describedby={noteId}
+        disabled={!props.onChange}
+        onClick={() => props.onChange?.(!on())}
+      >
+        <span class="sb-switch-thumb" aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 
@@ -209,9 +242,7 @@ export function ConnectScreen(props: ConnectScreenProps) {
           </form>
         </Show>
       </div>
-      <p class="sb-fine sb-delegation-hint">
-        Agents can hand work to each other once <code>agents.delegation.enabled</code> is set to true in your user settings file. It is off by default and applies to chats started afterwards.
-      </p>
+      <DelegationToggle enabled={props.delegationEnabled} onChange={props.onDelegationChange} />
     </section>
   );
 }

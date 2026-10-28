@@ -310,18 +310,24 @@
     },
     "agents": {
       "type": "object",
-      "default": {},
+      "default": {
+        "delegation": {
+          "enabled": true
+        }
+      },
       "additionalProperties": false,
       "properties": {
         "delegation": {
           "type": "object",
-          "default": {},
+          "default": {
+            "enabled": true
+          },
           "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean",
-              "default": false,
-              "description": "Offer the span-agents delegation tools to new sessions of agents that advertise MCP over HTTP. Delegated agents' permission requests and edits still go to you. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+              "default": true,
+              "description": "On by default. Offer the span-agents delegation tools to new sessions of agents that advertise MCP over HTTP. Delegated agents' permission requests and edits still go to you. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
             }
           }
         }

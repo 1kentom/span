@@ -219,15 +219,19 @@ the order the manager runs them), rejection tracking in
 
 ### 6. Desktop wiring and settings
 
-- Setting: `agents.delegation.enabled`, default false. It is honoured only
-  from the user's own settings file (`~/.config/span/settings.jsonc`). A
-  workspace `.span/settings.jsonc` arrives with a cloned repository, so it
-  must not be able to switch delegation on: core settings merging drops
-  the key from workspace settings before merging (a workspace `false`
-  does not override a user `true` either), and typed saves leave it out
-  of the workspace file. Unknown keys next to it are still rejected.
-  Tested in `crates/core/tests/preferences.rs`
-  (`agent_delegation_is_off_by_default_and_honoured_only_from_user_settings`).
+- Setting: `agents.delegation.enabled`, default true (it was false until
+  the connect screen gained the "Agents work together" switch, which
+  writes this key to the user settings file). It is honoured only from the
+  user's own settings file (`~/.config/span/settings.jsonc`). A workspace
+  `.span/settings.jsonc` arrives with a cloned repository, so it must not
+  be able to change delegation: core settings merging drops the key from
+  workspace settings before merging (a workspace `false` does not turn off
+  the default or a user `true`, and a workspace `true` does not override a
+  user `false`), and typed saves leave it out of the workspace file. An
+  agent cannot change it either: it has no settings write path. The depth
+  and budget limits above apply whatever the setting. Unknown keys next to
+  it are still rejected. Tested in `crates/core/tests/preferences.rs`
+  (`agent_delegation_is_on_by_default_and_honoured_only_from_user_settings`).
 - `LeadServers` (`crates/acp/src/tools/host.rs`) owns one server per lead
   session. The desktop opens every user session through it (connect,
   new chat, sign in): with delegation on and an agent that advertises
