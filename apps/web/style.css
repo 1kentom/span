@@ -6,3 +6,5 @@
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{animation:none!important;transition:none!important}}
 
 .published-releases:empty{display:none}.published-release{padding:25px;border:1px solid #49434f;border-radius:10px;background:#232127;margin-bottom:25px}.published-release h3{font-size:20px}.published-release p{font-size:13px;color:var(--secondary);line-height:1.8;margin-top:10px;white-space:pre-line;max-width:850px}.published-release .actions{margin-top:18px}.published-release .status{margin-bottom:12px}.published-release .text-link{margin-top:15px}
+
+.published-release .button{max-width:100%;overflow-wrap:anywhere;white-space:normal;text-align:left}
