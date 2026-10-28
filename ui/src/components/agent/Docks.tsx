@@ -1,11 +1,12 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { DiffView } from "./WorkGroup";
-import { KeyGlyph } from "./KeyGlyph";
+import { ENTER_KEY, KeyGlyph } from "./KeyGlyph";
 import type { Brand, PermissionChoice, PermissionDetails, QuestionAnswer, QuestionOption } from "./types";
 import { dockKey } from "./util";
 import { DOCK_TAB_HINT } from "../../lib/agent-dock-focus";
+import { URL_COPY, parseUrlRequest } from "../../lib/agent-url-request";
 import { permissionScope, sortPermissionOptions } from "../../lib/agent-feed";
 
 /**
@@ -76,6 +77,10 @@ type QuestionDockProps = DockFocusProps & {
   /** For example "2 of 3". */
   step?: string;
   prompt: string;
+  /** The step's own question text, drawn inside the card right under the prompt. */
+  detail?: string;
+  /** Why the last answer was refused, drawn inside the card above the answer row. */
+  error?: string;
   options: QuestionOption[];
   allowText?: boolean;
   /** Only the oldest open request answers number keys. */
@@ -116,19 +121,23 @@ export function QuestionDock(props: QuestionDockProps) {
         <span class="sb-flex" />
         <Show when={props.step}><span class="sb-mono dim">{props.step}</span></Show>
       </div>
-      <div class="sb-dock-prompt">{props.prompt}</div>
-      <TabHint show={!focus.focused()} />
-      <For each={props.options}>
-        {(option, index) => (
-          <button class="sb-q-option" onClick={() => props.onAnswer({ optionId: option.id })}>
-            <span class="sb-num" aria-hidden="true">{index() + 1}</span>
-            <span class="sb-option-text">
-              <span class="sb-option-name">{option.label}</span>
-              <Show when={option.description}><span class="sb-sub wrap">{option.description}</span></Show>
-            </span>
-          </button>
-        )}
-      </For>
+      <div class="sb-dock-scroll">
+        <div class="sb-dock-prompt">{props.prompt}</div>
+        <Show when={props.detail}><div class="sb-dock-question">{props.detail}</div></Show>
+        <TabHint show={!focus.focused()} />
+        <For each={props.options}>
+          {(option, index) => (
+            <button class="sb-q-option" onClick={() => props.onAnswer({ optionId: option.id })}>
+              <span class="sb-num" aria-hidden="true">{index() + 1}</span>
+              <span class="sb-option-text">
+                <span class="sb-option-name">{option.label}</span>
+                <Show when={option.description}><span class="sb-sub wrap">{option.description}</span></Show>
+              </span>
+            </button>
+          )}
+        </For>
+      </div>
+      <Show when={props.error}><p class="sb-fine sb-dock-error" role="alert">{props.error}</p></Show>
       <Show when={props.allowText}>
         <form class="sb-q-text" onSubmit={submit}>
           <input class="sb-input" aria-label="Your own answer" placeholder="Type your own answer" value={text()} onInput={(event) => setText(event.currentTarget.value)} />
@@ -269,18 +278,38 @@ type UrlDockProps = DockFocusProps & {
   text?: string;
   brand?: Brand;
   href: string;
-  /** A one-time code the user enters on the page, when the agent supplies one. */
+  /** A one-time code the user enters on the page, read from the agent's message. Shown, never logged or stored. */
   code?: string;
+  /** The page is open in the browser and the agent waits: shows the spinner and offers Open again. */
+  waiting?: boolean;
   active?: boolean;
   onOpen: () => void;
   onCancel: () => void;
-  onCopyCode?: (code: string) => void;
+  /** Writes the code to the clipboard. A rejection shows "Could not copy". */
+  onCopyCode?: (code: string) => void | Promise<void>;
 };
+
+let urlDockCounter = 0;
 
 /** Url-mode elicitation: send the user to the browser, never open it without a click or Enter. */
 export function UrlDock(props: UrlDockProps) {
   let dock: HTMLElement | undefined;
   const focus = useDockFocus(() => dock, props);
+  const view = createMemo(() => parseUrlRequest(undefined, props.href));
+  const sourceId = `sb-code-source-${++urlDockCounter}`;
+  const [copied, setCopied] = createSignal("");
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(copyTimer));
+  async function copy(code: string) {
+    clearTimeout(copyTimer);
+    try {
+      await props.onCopyCode?.(code);
+      setCopied(URL_COPY.copied);
+    } catch {
+      setCopied(URL_COPY.copyFailed);
+    }
+    copyTimer = setTimeout(() => setCopied(""), 1500);
+  }
   useDockKeys(
     () => dock,
     () => props.active !== false,
@@ -288,7 +317,7 @@ export function UrlDock(props: UrlDockProps) {
       const target = event.target;
       if (event.key === "Enter" && !(target instanceof HTMLButtonElement)) {
         event.preventDefault();
-        props.onOpen();
+        if (!view().rejection) props.onOpen();
       } else if (event.key === "Escape") {
         event.preventDefault();
         props.onCancel();
@@ -306,20 +335,34 @@ export function UrlDock(props: UrlDockProps) {
       <Show when={props.text}><div class="sb-body">{props.text}</div></Show>
       <div class="sb-urlbox">
         <span class="sb-option-text">
-          <span class="sb-mono accent sb-ellipsis" title={props.href}>{props.href}</span>
-          <Show when={props.code}><span class="sb-sub">Enter this code</span></Show>
+          <span class="sb-mono accent sb-ellipsis" title={view().displayUrl}>
+            <Show when={view().parts.host} fallback={view().displayUrl}>
+              <span class="sb-url-dim">{view().parts.scheme}{view().parts.userinfo}</span>
+              <span class="sb-url-host">{view().parts.host}</span>
+              <span class="sb-url-dim">{view().parts.rest}</span>
+            </Show>
+          </span>
+          <Show when={props.code}><span class="sb-sub">{URL_COPY.enterCode}</span></Show>
         </span>
         <Show when={props.code}>
-          <span class="sb-code-value" aria-label="One-time code">{props.code}</span>
+          <span class="sb-code-value" aria-label={URL_COPY.codeLabel} aria-describedby={sourceId}>{props.code}</span>
+          <span id={sourceId} class="sb-visually-hidden">{URL_COPY.codeDescription}</span>
           <Show when={props.onCopyCode}>
-            <button class="sb-icon-btn" aria-label="Copy code" onClick={() => props.onCopyCode?.(props.code!)}><Icon name="Copy" size={12} /></button>
+            <button class="sb-icon-btn" aria-label={URL_COPY.copyCode} onClick={() => void copy(props.code!)}><Icon name="Copy" size={12} /></button>
           </Show>
+          <span class="sb-sub sb-copy-status" role="status" aria-live="polite">{copied()}</span>
         </Show>
       </div>
+      <Show when={props.waiting}>
+        <div class="sb-waiting">
+          <span class="sb-spinner" aria-hidden="true" />
+          <span class="sb-sub" role="status" aria-live="polite">{URL_COPY.waitingBrowser}</span>
+        </div>
+      </Show>
       <TabHint show={!focus.focused()} />
       <div class="sb-actions">
-        <button class="sb-btn primary" onClick={props.onOpen}>Open browser<kbd class="sb-hotkey" aria-hidden="true"><KeyGlyph value="\u21b5" size={11} /></kbd></button>
-        <button class="sb-btn" onClick={props.onCancel}>Cancel</button>
+        <button class="sb-btn primary" disabled={Boolean(view().rejection)} onClick={props.onOpen}>{props.waiting ? URL_COPY.openAgain : URL_COPY.openBrowser}<kbd class="sb-hotkey" aria-hidden="true"><KeyGlyph value={ENTER_KEY} size={11} /></kbd></button>
+        <button class="sb-btn" onClick={props.onCancel}>{props.waiting ? URL_COPY.dismiss : URL_COPY.cancel}</button>
       </div>
     </section>
   );

@@ -432,6 +432,14 @@ export function noticeView(notice: { title: string; description?: string; hint?:
   return { title, description };
 }
 
+/** One-line summary and the rest of a long warning. Home folders read as ~ and the split is at the first sentence. */
+export function warningParts(title: string, description?: string): { summary: string; detail?: string } {
+  const text = [title, description].filter(Boolean).join(" ").replace(/\/(Users|home)\/[^/\s]+/g, "~").replace(/\s+/g, " ").trim();
+  const cut = /[.!?](?=\s|$)/.exec(text);
+  if (!cut || cut.index + 1 >= text.length) return { summary: text };
+  return { summary: text.slice(0, cut.index + 1), detail: text.slice(cut.index + 1).trim() };
+}
+
 /** "Working" or "Worked" plus counts by kind, for example "2 reads, 1 edit". */
 export function workSummary(steps: readonly StepView[]): { headline: string; counts: string } {
   const running = steps.some((step) => step.status === "in_progress" || step.status === "pending");

@@ -66,10 +66,25 @@ after each turn finishes. The returned future resolves when that prompt's
 own turn finishes; dropping it does not withdraw the prompt. Requires a
 Tokio runtime (Tauri's async runtime is Tokio).
 
-The existing `agent_prompt` command still calls the service directly and
-still rejects a second prompt with "A prompt is already running". Changing
-that is a UI behaviour change and out of scope. Queueing applies to prompts
-sent through the manager (delegation, later the UI).
+`agent_prompt` goes through `SessionManager::start_turn`: an idle session
+starts the turn, a busy one refuses it with the typed `PromptError::Busy`
+(nothing is sent or queued) so the UI offers steer or queue instead of an
+error card. A session also counts as busy while its agent still runs a turn
+the manager did not start. A prompt that arrives after the turn reported its
+end, but before the driver collected it, runs next instead of being refused.
+Queueing applies to prompts sent through `prompt` and `enqueue` (delegation).
+
+### 4a. Session runtime state is published, not inferred
+
+The manager derives each session's runtime state (`idle`, `running`,
+`waitingForApproval`, `waitingForAnswer`, queued count, when the turn started
+and its newest unfinished tool title) and publishes the states of a
+connection whenever one changes (`watch_states`). The desktop forwards them as
+the `AgentSessionStatesChanged` event and answers `agent_session_states` with
+the active connection's snapshot. `agent_resume_session` skips `session/load`
+for a held session that is still working, so reopening it never replays over
+a live turn. Closing a session that runs a turn stops that turn first (the
+usual Stop and deadline), so no work keeps running untracked.
 
 ### 5. Session tree and cascades
 

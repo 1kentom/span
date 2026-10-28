@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
-import { ModelPopover, barHeight } from "./ModelPopover";
+import { ModelPopover } from "./ModelPopover";
 import { SlashPopover } from "./SlashPopover";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock } from "./Docks";
 import { PlanDrawer } from "./PlanDrawer";
@@ -15,47 +15,112 @@ const options: ConfigOptionView[] = [
   { id: "mode", name: "Mode", category: "mode", currentValue: "ask", choices: [{ value: "ask", name: "Ask" }, { value: "plan", name: "Plan" }] },
 ];
 
+const claudeModels: ConfigOptionView = {
+  id: "model", name: "Model", category: "model", currentValue: "default",
+  choices: [
+    { value: "default", name: "Default (recommended)", description: "Sonnet 5.5" },
+    { value: "opus", name: "Opus 5.5", description: "For complex work and everyday tasks" },
+    { value: "haiku", name: "Haiku 5.5", description: "Fastest for quick answers" },
+    { value: "luna", name: "gpt-6-luna" },
+  ],
+};
+
+describe("ModelPopover traits", () => {
+  const rows = () => [...document.querySelectorAll<HTMLButtonElement>(".sb-option[role=radio]")];
+  it("shows an icon on every model row, the bolt on fast models and the star on heavy ones", () => {
+    mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[claudeModels]} onSelect={() => {}} onClose={() => {}} />);
+    expect(rows()).toHaveLength(4);
+    for (const row of rows()) expect(row.querySelector(".sb-model-icon img")).not.toBeNull();
+    expect(rows().map((row) => row.querySelectorAll(".sb-trait-badge").length)).toEqual([0, 1, 1, 0]);
+    const badge = rows()[2].querySelector(".sb-trait-badge")!;
+    expect(badge.getAttribute("aria-label")).toBe("Fast model");
+    expect(badge.getAttribute("title")).toBe("Fast model");
+    expect(badge.getAttribute("data-trait")).toBe("fast");
+    const star = rows()[1].querySelector(".sb-trait-badge")!;
+    expect(star.getAttribute("aria-label")).toBe("Most capable");
+    expect(star.getAttribute("data-trait")).toBe("frontier");
+  });
+  it("labels the other trait chip, skips redundant and unknown ones, and keeps the check", () => {
+    mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[claudeModels]} onSelect={() => {}} onClose={() => {}} />);
+    expect(rows().map((row) => row.querySelector(".sb-trait-chip")?.getAttribute("aria-label") ?? null)).toEqual([null, "Most capable", null, null]);
+    expect(rows()[3].querySelector(".sb-trait-badge")).toBeNull();
+    expect(rows().map((row) => Boolean(row.querySelector(".sb-accent")))).toEqual([true, false, false, false]);
+    expect(rows().map((row) => row.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "false"]);
+  });
+  it("applies an explicit fast switch to the current model only", () => {
+    const fastSwitch: ConfigOptionView = { id: "fast", name: "Fast", currentValue: "true", choices: [{ value: "true", name: "On" }, { value: "false", name: "Off" }] };
+    mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[{ ...claudeModels, currentValue: "opus" }, fastSwitch]} onSelect={() => {}} onClose={() => {}} />);
+    expect(rows().slice(0, 4).map((row) => row.querySelectorAll(".sb-trait-badge").length)).toEqual([0, 1, 1, 0]);
+  });
+  it("keeps keyboard focus on the selected model", async () => {
+    mount(() => <ModelPopover agentName="Claude" brand={{ id: "claude-acp" }} options={[claudeModels]} onSelect={() => {}} onClose={() => {}} />);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(rows()[0]);
+  });
+});
+
 describe("ModelPopover", () => {
-  it("builds sections from the config options and selects by value", () => {
+  it("builds the model list and the effort slider from the config options and selects by value", () => {
     const picked: string[] = [];
     const closed = vi.fn();
     const host = mount(() => (
-      <ModelPopover agentName="Claude" options={options} agents={[{ id: "claude", name: "Claude", current: true }, { id: "gemini", name: "Gemini" }]}
-        onSelect={(id, value) => picked.push(`${id}=${value}`)} onSwitchAgent={(id) => picked.push(`agent:${id}`)} onClose={closed} />
+      <ModelPopover agentName="Claude" options={options} onSelect={(id, value) => picked.push(`${id}=${value}`)} onOpenAgents={() => picked.push("agents")} onClose={closed} />
     ));
-    expect(host.querySelectorAll("[role=radiogroup]")).toHaveLength(3);
-    const bars = host.querySelectorAll<HTMLButtonElement>(".sb-level-bar");
-    expect([...bars].map((bar) => bar.getAttribute("aria-label"))).toEqual(["Brief", "Normal", "Thorough", "Exhaustive"]);
-    expect([...host.querySelectorAll(".sb-level-fill")].map((fill) => fill.classList.contains("on"))).toEqual([true, true, false, false]);
-    expect(text(host.querySelector(".sb-level-name"))).toBe("Normal");
-    bars[3].click();
-    host.querySelector<HTMLButtonElement>("[role=radio][aria-checked=false]:not(.sb-level-bar)")!.click();
-    const gemini = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Gemini"))!;
-    gemini.click();
-    expect(picked).toEqual(["effort=d", "model=deep", "agent:gemini"]);
-    const current = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Connected"))!;
-    expect(current.disabled).toBe(true);
+    expect([...host.querySelectorAll("[role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Model"]);
+    expect(host.textContent).not.toContain("Ask");
+    const slider = host.querySelector<HTMLElement>("[role=slider]")!;
+    expect(slider.getAttribute("aria-label")).toBe("Reasoning");
+    expect([slider.getAttribute("aria-valuemin"), slider.getAttribute("aria-valuemax"), slider.getAttribute("aria-valuenow")]).toEqual(["0", "3", "1"]);
+    expect(slider.getAttribute("aria-valuetext")).toBe("Normal");
+    expect(text(host.querySelector(".fx-label:not(.fx-label-out)"))).toBe("Normal");
+    key("End", {}, slider);
+    host.querySelector<HTMLElement>(".fx-track")!.dispatchEvent(new KeyboardEvent("keyup", { key: "End", bubbles: true }));
+    host.querySelector<HTMLButtonElement>("[role=radio][aria-checked=false]")!.click();
+    host.querySelector<HTMLButtonElement>(".sb-provider")!.click();
+    expect(picked).toEqual(["effort=d", "model=deep", "agents"]);
     key("Escape");
     expect(closed).toHaveBeenCalledOnce();
   });
 
-  it("omits the level control and agent list when the agent reports neither", () => {
+  it("omits the level control and the provider row when the agent reports no level and no switch is offered", () => {
     const host = mount(() => <ModelPopover agentName="A" options={[options[0]]} onSelect={() => {}} onClose={() => {}} />);
-    expect(host.querySelector(".sb-level")).toBeNull();
-    expect(host.textContent).not.toContain("Agent");
+    expect(host.querySelector(".fx")).toBeNull();
+    expect(host.querySelector(".sb-provider")).toBeNull();
   });
 
-  it("derives bar heights without naming levels", () => {
-    expect(barHeight(0, 4)).toBe("48%");
-    expect(barHeight(3, 4)).toBe("100%");
+  it("keeps arrow keys on the slider and the model line focuses the selected model", () => {
+    const host = mount(() => <ModelPopover agentName="A" options={options} onSelect={() => {}} onClose={() => {}} />);
+    const slider = host.querySelector<HTMLElement>("[role=slider]")!;
+    slider.focus();
+    key("ArrowDown", {}, slider);
+    expect(document.activeElement).toBe(slider);
+    expect(slider.getAttribute("aria-valuenow")).toBe("0");
+    const model = host.querySelector<HTMLButtonElement>(".fx-model")!;
+    expect(text(model)).toBe("Fast");
+    model.click();
+    expect(document.activeElement?.textContent).toContain("Fast");
+    expect(document.activeElement?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("moves focus with arrow keys", () => {
-    const host = mount(() => <ModelPopover agentName="A" options={[options[2]]} onSelect={() => {}} onClose={() => {}} />);
+    const host = mount(() => <ModelPopover agentName="A" options={[options[0]]} onSelect={() => {}} onClose={() => {}} />);
     const [first, second] = [...host.querySelectorAll<HTMLButtonElement>("button")];
     first.focus();
     key("ArrowDown", {}, first);
     expect(document.activeElement).toBe(second);
+  });
+
+  it("keeps keyboard focus and the rows when a config update delivers new option objects", () => {
+    const fresh = (current: string) => options.map((option) => ({ ...option, choices: option.choices.map((choice) => ({ ...choice })), currentValue: option.id === "model" ? current : option.currentValue }));
+    const [list, setList] = createSignal(fresh("fast"));
+    const host = mount(() => <ModelPopover agentName="A" options={list()} onSelect={() => {}} onClose={() => {}} />);
+    const deep = [...host.querySelectorAll<HTMLButtonElement>("button[role=radio]")].find((b) => b.textContent?.includes("Deep"))!;
+    deep.focus();
+    setList(fresh("deep"));
+    const after = [...host.querySelectorAll<HTMLButtonElement>("button[role=radio]")].find((b) => b.textContent?.includes("Deep"))!;
+    expect(after).toBe(deep);
+    expect(document.activeElement).toBe(deep);
+    expect(deep.getAttribute("aria-checked")).toBe("true");
   });
 });
 
@@ -215,7 +280,7 @@ describe("QueuePanel", () => {
     const host = mount(() => (
       <QueuePanel items={items} onEdit={(id, t) => calls.push(`edit:${id}:${t}`)} onRemove={(id) => calls.push(`rm:${id}`)} onSendNow={(id) => calls.push(`now:${id}`)} onClear={() => calls.push("clear")} />
     ));
-    expect(text(host.querySelector(".sb-queue-head"))).toContain("2 queued");
+    expect(text(host.querySelector(".sb-queue-head"))).toContain("Queued · 2");
     host.querySelector<HTMLButtonElement>("[aria-label='Remove queued message 2']")!.click();
     host.querySelector<HTMLButtonElement>("[aria-label='Send queued message 1 now']")!.click();
     host.querySelector<HTMLButtonElement>(".sb-queue-head button")!.click();

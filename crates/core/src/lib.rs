@@ -12,8 +12,12 @@ mod run_config;
 mod run_detection;
 mod search;
 mod session;
+mod session_meta;
 mod settings;
 mod tools;
+mod transcript_export;
+mod uploads;
+pub mod version;
 mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
@@ -27,11 +31,24 @@ pub use recent::{RecentProject, RecentProjectStore};
 pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
+pub use session_meta::{
+    patch_for_file_stats, patch_for_model_selected, patch_for_turn_complete, patch_for_turn_start,
+    patches_for_delegation, workspace_hash, workspace_key, AgentUse, FileChangeStats, ModelUse,
+    ModelUsePatch, SessionMeta, SessionMetaPatch, SessionMetaStore, SessionParent,
+    SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS, SESSION_META_SCHEMA_VERSION,
+};
 pub use settings::{
     AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, RunToolsSettings,
-    Settings, SettingsScope, Theme, LANGUAGE_SERVER_IDS,
+    Settings, SettingsScope, Theme, UpdateSettings, LANGUAGE_SERVER_IDS,
 };
 pub use tools::{list_tools, ToolInfo};
+pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};
+pub use uploads::{
+    content_fingerprint, is_valid_upload_id, open_refusal, sniff_upload,
+    workspace_key as uploads_workspace_key, ExternalCopy, Upload, UploadChunk, UploadKind,
+    UploadLimits, UploadOrigin, UploadSource, UploadStore, UploadUsage, MAX_UPLOADS_TOTAL_BYTES,
+    MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, MAX_UPLOAD_READ_BYTES,
+};
 pub use workspace::{CoreWorkspace, FileEntry, Workspace};
 
 use std::path::Path;
@@ -66,6 +83,8 @@ pub enum CoreError {
     Search(String),
     #[error("Attachment rejected: {0}")]
     Attachment(String),
+    #[error("Upload: {0}")]
+    Upload(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

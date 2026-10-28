@@ -1,0 +1,30 @@
+{
+  "quirk": "session_info_update that carries only _meta.codex.threadStatus produces no SessionInfo event; one with a title still does.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "Reply with exactly the single word PONG. Do not use any tools."
+    }
+  ],
+  "events": [
+    {
+      "kind": "text",
+      "text": "PONG"
+    },
+    {
+      "kind": "sessionInfo",
+      "title": "Reply with exactly the single word PONG. Do not use any tools."
+    }
+  ],
+  "counts": [
+    {
+      "match": {
+        "kind": "sessionInfo"
+      },
+      "count": 1
+    }
+  ]
+}

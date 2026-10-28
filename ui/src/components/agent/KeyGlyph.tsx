@@ -1,8 +1,11 @@
 import { Show } from "solid-js";
 import Icon from "../Icon";
 
+/** The Enter key as key cap data. Pass it to KeyGlyph, which renders the library return icon, never this text glyph. */
+export const ENTER_KEY = "\u21b5";
+
 /** Glyphs that stand for the Enter key in hint data. They render as the library return icon, not as a text glyph. */
-const ENTER_GLYPHS = new Set(["\u21b5", "\u21a9", "\u23ce"]);
+const ENTER_GLYPHS = new Set([ENTER_KEY, "\u21a9", "\u23ce"]);
 
 export function isEnterGlyph(value: string): boolean {
   return ENTER_GLYPHS.has(value);

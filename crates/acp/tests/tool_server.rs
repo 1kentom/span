@@ -1887,3 +1887,48 @@ async fn a_user_cancel_right_after_delegate_ends_cancelled_not_completed() {
     assert_eq!(structured(&result)["status"], "failed");
     assert_eq!(structured(&result)["reason"], "cancelled");
 }
+
+/// Live run finding: `connect` returned before the `Ready` event reached the
+/// manager, so `open_lead` right after it saw no features in 6 of 8 connects
+/// and dropped delegation with "has not finished initialize".
+#[tokio::test]
+async fn open_lead_right_after_connect_always_sees_features() {
+    let h = harness();
+    let leads = span_acp::tools::LeadServers::default();
+    for attempt in 0..8 {
+        // A slow direct sink (the desktop's Tauri channel) delays the
+        // manager's own bookkeeping of each event, which widens the window.
+        let slow: span_acp::EventSink = Arc::new(|event: AgentEvent| {
+            if matches!(event, AgentEvent::Ready { .. }) {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        });
+        let connection = h
+            .manager
+            .connect(
+                worker(&["--name=lead", "--mcp-http"]),
+                h.directory.path().to_string_lossy().into_owned(),
+                h.workspace.clone(),
+                Some(slow),
+            )
+            .await
+            .expect("start fixture agent");
+        let features = h
+            .manager
+            .connection(&connection)
+            .and_then(|c| c.features)
+            .is_some();
+        let (key, delegation) = leads
+            .open_lead(&h.manager, &connection, Some(h.config(scaled())))
+            .await
+            .expect("open lead");
+        assert!(features, "attempt {attempt}: features unset after connect");
+        assert_eq!(
+            delegation,
+            span_acp::tools::LeadDelegation::Attached,
+            "attempt {attempt}"
+        );
+        h.manager.close(&key).await.ok();
+        h.manager.disconnect(&connection).unwrap();
+    }
+}

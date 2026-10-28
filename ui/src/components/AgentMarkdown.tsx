@@ -37,6 +37,7 @@ export function AgentMarkdown(props: AgentMarkdownProps) {
   const context = createMemo(() => ({
     documentPath: `${props.workspaceRoot}/.span-agent.md`,
     workspaceRoot: props.workspaceRoot,
+    agentPaths: true,
   }));
   let timer: number | undefined;
   let rendered: string | undefined;
