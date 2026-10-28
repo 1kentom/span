@@ -86,7 +86,7 @@ vectors) for the same reason. reqwest, already a direct dependency of
 
 ### 2. Tools
 
-Six tools, deterministic order. Full JSON schemas are in
+Six delegation tools, deterministic order. Full JSON schemas are in
 `tool_definitions()` in `crates/acp/src/tools/server.rs`; argument objects
 use `additionalProperties: false` and unknown arguments are rejected.
 
@@ -121,6 +121,30 @@ use `additionalProperties: false` and unknown arguments are rejected.
 - `record_decision {chosen, why, alternatives[]}`: stores a
   `DecisionRecord` in memory and emits `DelegationEvent::Decision`. No other
   effect (tested: no session is created).
+
+The same per-lead MCP endpoint can also offer saved workspace run
+configuration tools when the user's separate `agents.runTools.enabled`
+setting is on. This setting is off by default and is honoured only from user
+settings, never from a cloned workspace. The run tools list and read saved or
+detected configurations, propose configuration saves/deletes, start/stop/
+restart runs, list runs and read bounded output. Detected configurations are
+read only until saved as a copy. When run tools are enabled without delegation,
+the server lists only run tools; the delegation setting does not grant process
+execution access. Both tool groups require the agent to advertise MCP over
+Streamable HTTP.
+
+Every configuration mutation and process action waits for a separate user
+approval in Span. Run and Restart resolve the executable, arguments, working
+directory and environment once before showing the approval. The approval view
+shows that resolved invocation locally, while environment values remain
+hidden. After approval, Span checks the active workspace and exact saved
+configuration and manifest snapshot, then executes that same prepared plan
+through the shared desktop RunService. Execution uses direct argv without an
+implicit shell. Agent configuration reads expose environment variable names
+only, and agent edits may set a variable only with a `${env:NAME}` reference or
+remove it. Expanded environment values are not returned by the MCP tools.
+Run output is bounded by the shared service and may contain anything the
+process itself prints.
 
 Session ids are only unique per agent process, so results carry both
 `sessionId` and `connectionId`; `message` and `cancel` need `connectionId`

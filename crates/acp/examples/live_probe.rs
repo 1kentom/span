@@ -847,6 +847,8 @@ async fn probe(agent: &str, out: &Path) -> Res<()> {
         let config = ToolServerConfig {
             workspace: workspace.clone(),
             policy: ToolPolicy::default(),
+            delegation_enabled: false,
+            run_tools: None,
             installed: Vec::new(),
             events: Some(Arc::new(move |event| {
                 events_rec.write(

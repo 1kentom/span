@@ -10,6 +10,7 @@
 mod budget;
 mod host;
 mod result;
+mod run_tools;
 mod server;
 mod tasks;
 
@@ -17,6 +18,9 @@ pub use budget::{Budget, BudgetRequest, Meter};
 pub use host::{LeadDelegation, LeadServers};
 pub use result::{
     base64, file_uri, inside_workspace, mime_type, sha256_hex, Artifact, FailureReason, UsageReport,
+};
+pub use run_tools::{
+    RunConfigurationEntry, RunToolBackend, RunToolCatalog, RunToolFuture, RunToolProgress,
 };
 pub use server::{tool_definitions, ToolServer, MCP_PROTOCOL_VERSIONS, SERVER_NAME};
 pub use tasks::DecisionRecord;
@@ -177,6 +181,12 @@ pub type DelegationEventSink = Arc<dyn Fn(DelegationEvent) + Send + Sync>;
 pub struct ToolServerConfig {
     pub workspace: Arc<Mutex<CoreWorkspace>>,
     pub policy: ToolPolicy,
+    /// Whether this session was explicitly opted in for agent delegation.
+    /// Run tools do not imply delegation and vice versa.
+    pub delegation_enabled: bool,
+    /// Saved run configurations and the shared desktop execution backend,
+    /// present only when the user explicitly enabled run tools.
+    pub run_tools: Option<Arc<dyn RunToolBackend>>,
     /// Installed but not connected agents, listed for the lead. Starting
     /// them stays a user action.
     pub installed: Vec<InstalledAgent>,
