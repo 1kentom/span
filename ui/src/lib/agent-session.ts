@@ -23,9 +23,11 @@ export type PermissionEvent = Extract<AgentEvent, { kind: "permission" }>;
 export type ElicitationEvent = Extract<AgentEvent, { kind: "elicitation" }>;
 
 export type FeedItem =
-  | { id: number; kind: "user"; text: string; attachments?: Attachment[]; /** Sent by interrupting the running turn. */ steered?: boolean; /** Sent with Send now from the queue. */ sentNow?: boolean }
+  | { id: number; kind: "user"; text: string; attachments?: Attachment[]; /** Sent by interrupting the running turn. */ steered?: boolean; /** Sent with Send now from the queue. */ sentNow?: boolean; /** Carried context sent ahead of this message after an agent switch, shown as a card. */ context?: string }
   | { id: number; kind: "text" | "thought"; text: string; /** The agent's id for this message, when it sent one. */ messageId?: string }
   | { id: number; kind: "note"; text: string }
+  /** Divider after the open chat switched agent: the feed above came from the previous agent's session. */
+  | { id: number; kind: "handoff"; from: string; to: string; carried: boolean }
   | ({ id: number; kind: "signin" } & UrlRecord)
   | { id: number; kind: "notice"; severity: string; title: string; description?: string; /** Set for a notice the agent later clears. */ noticeId?: string; hint?: AgentHint }
   | { id: number; kind: "compaction"; compactionId: string; status: string; summary: string; error?: string }

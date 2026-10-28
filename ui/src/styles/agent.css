@@ -229,6 +229,49 @@
 .agent-summary[open] summary {
   margin-bottom: 6px;
 }
+/* Agent switch divider (issue #87): the title on the rule, the honest limits under it. */
+.agent-handoff {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-handoff .sb-notice .sb-ellipsis {
+  min-width: 0;
+}
+.agent-handoff-note {
+  margin: 0;
+  padding: 0 4px;
+  text-align: center;
+}
+/* The carried context sent with the first prompt after a switch. Collapsed, never hidden. */
+.agent-context-sent {
+  margin-bottom: 6px;
+}
+.agent-context-sent summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  list-style: none;
+}
+.agent-context-sent summary::-webkit-details-marker {
+  display: none;
+}
+.agent-context-sent summary .icon {
+  flex: none;
+  transition: transform 0.12s ease;
+}
+.agent-context-sent[open] summary .icon {
+  transform: rotate(90deg);
+}
+.agent-context-text {
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 11px/1.5 "JetBrains Mono", ui-monospace, monospace;
+  color: var(--sb-dim);
+}
 .agent-changes {
   display: flex;
   flex-direction: column;
