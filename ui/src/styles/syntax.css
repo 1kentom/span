@@ -1,0 +1,144 @@
+/* Generated defaults for the --syn-<id> tokens; syntax-palette.test.ts keeps this file in step with syntax-palette.ts. */
+.span-editor,
+.span-editor[data-theme="dark"] {
+  --syn-keyword: #78c8c7;
+  --syn-controlKeyword: #78c8c7;
+  --syn-operator: #b4bac0;
+  --syn-punctuation: #8d939a;
+  --syn-comment: #72777c;
+  --syn-docComment: #86a38f;
+  --syn-string: #cc8dcb;
+  --syn-number: #d9ba7e;
+  --syn-constant: #e8906a;
+  --syn-boolean: #d9ba7e;
+  --syn-function: #d9ba7e;
+  --syn-method: #d9ba7e;
+  --syn-type: #80b7ec;
+  --syn-class: #7ed39a;
+  --syn-interface: #4dd0e1;
+  --syn-enum: #f28fad;
+  --syn-typeParameter: #b8e07a;
+  --syn-variable: #e0e1e4;
+  --syn-parameter: #af9bf2;
+  --syn-property: #dcc0a0;
+  --syn-namespace: #c4a7e7;
+  --syn-importPath: #9fb0cc;
+  --syn-annotation: #f0b429;
+  --syn-macro: #e0a4e8;
+  --syn-label: #f0a8a0;
+  --syn-tag: #78c8c7;
+  --syn-attribute: #d9ba7e;
+  --syn-regexp: #ee9e7e;
+  --syn-escape: #e8c9a0;
+  --syn-invalid: #e58a8a;
+}
+
+.span-editor[data-theme="light"] {
+  --syn-keyword: #25797d;
+  --syn-controlKeyword: #25797d;
+  --syn-operator: #5b6470;
+  --syn-punctuation: #6e747c;
+  --syn-comment: #8b8d94;
+  --syn-docComment: #597461;
+  --syn-string: #a34a90;
+  --syn-number: #956322;
+  --syn-constant: #be123c;
+  --syn-boolean: #956322;
+  --syn-function: #976319;
+  --syn-method: #976319;
+  --syn-type: #3c70ad;
+  --syn-class: #2b7e46;
+  --syn-interface: #177784;
+  --syn-enum: #a21caf;
+  --syn-typeParameter: #53771c;
+  --syn-variable: #252629;
+  --syn-parameter: #7b58ad;
+  --syn-property: #906535;
+  --syn-namespace: #894fcf;
+  --syn-importPath: #536f9d;
+  --syn-annotation: #b45309;
+  --syn-macro: #5b21b6;
+  --syn-label: #a64d79;
+  --syn-tag: #25797d;
+  --syn-attribute: #976319;
+  --syn-regexp: #c0392b;
+  --syn-escape: #936324;
+  --syn-invalid: #d02f2f;
+}
+
+.span-editor[data-theme="purple"] {
+  --syn-keyword: #a6c8d4;
+  --syn-controlKeyword: #a6c8d4;
+  --syn-operator: #b4bac0;
+  --syn-punctuation: #8d939a;
+  --syn-comment: #72777c;
+  --syn-docComment: #86a38f;
+  --syn-string: #daa2cc;
+  --syn-number: #d9ba7e;
+  --syn-constant: #e8906a;
+  --syn-boolean: #d9ba7e;
+  --syn-function: #e5c49a;
+  --syn-method: #e5c49a;
+  --syn-type: #afa3ec;
+  --syn-class: #7ed39a;
+  --syn-interface: #4dd0e1;
+  --syn-enum: #f28fad;
+  --syn-typeParameter: #b8e07a;
+  --syn-variable: #eeedfd;
+  --syn-parameter: #af9bf2;
+  --syn-property: #dcc0a0;
+  --syn-namespace: #c4a7e7;
+  --syn-importPath: #9fb0cc;
+  --syn-annotation: #f0b429;
+  --syn-macro: #e0a4e8;
+  --syn-label: #f0a8a0;
+  --syn-tag: #a6c8d4;
+  --syn-attribute: #e5c49a;
+  --syn-regexp: #ee9e7e;
+  --syn-escape: #e8c9a0;
+  --syn-invalid: #e58a8a;
+}
+
+/* Tree-sitter spans arrive as cm-tree-<token id>. */
+.span-editor .cm-tree-keyword { color: var(--syn-keyword); }
+.span-editor .cm-tree-controlKeyword { color: var(--syn-controlKeyword); }
+.span-editor .cm-tree-operator { color: var(--syn-operator); }
+.span-editor .cm-tree-punctuation { color: var(--syn-punctuation); }
+.span-editor .cm-tree-comment { color: var(--syn-comment); font-style: italic; }
+.span-editor .cm-tree-docComment { color: var(--syn-docComment); font-style: italic; }
+.span-editor .cm-tree-string { color: var(--syn-string); }
+.span-editor .cm-tree-number { color: var(--syn-number); }
+.span-editor .cm-tree-constant { color: var(--syn-constant); }
+.span-editor .cm-tree-boolean { color: var(--syn-boolean); }
+.span-editor .cm-tree-function { color: var(--syn-function); }
+.span-editor .cm-tree-method { color: var(--syn-method); }
+.span-editor .cm-tree-type { color: var(--syn-type); }
+.span-editor .cm-tree-class { color: var(--syn-class); }
+.span-editor .cm-tree-interface { color: var(--syn-interface); }
+.span-editor .cm-tree-enum { color: var(--syn-enum); }
+.span-editor .cm-tree-typeParameter { color: var(--syn-typeParameter); }
+.span-editor .cm-tree-variable { color: var(--syn-variable); }
+.span-editor .cm-tree-parameter { color: var(--syn-parameter); }
+.span-editor .cm-tree-property { color: var(--syn-property); }
+.span-editor .cm-tree-namespace { color: var(--syn-namespace); }
+.span-editor .cm-tree-importPath { color: var(--syn-importPath); }
+.span-editor .cm-tree-annotation { color: var(--syn-annotation); }
+.span-editor .cm-tree-macro { color: var(--syn-macro); }
+.span-editor .cm-tree-label { color: var(--syn-label); }
+.span-editor .cm-tree-tag { color: var(--syn-tag); }
+.span-editor .cm-tree-attribute { color: var(--syn-attribute); }
+.span-editor .cm-tree-regexp { color: var(--syn-regexp); }
+.span-editor .cm-tree-escape { color: var(--syn-escape); }
+.span-editor .cm-tree-invalid { color: var(--syn-invalid); }
+
+/* Markdown block captures keep their raw tree-sitter names. */
+.span-editor .cm-tree-text-title { color: var(--syn-function); font-weight: 600; }
+.span-editor .cm-tree-text-strong { font-weight: 700; }
+.span-editor .cm-tree-text-emphasis { font-style: italic; }
+.span-editor .cm-tree-text-literal { color: var(--syn-string); }
+.span-editor .cm-tree-text-uri, .span-editor .cm-tree-text-reference { color: var(--syn-type); text-decoration: underline; }
+
+/* Where tree-sitter spans exist they win over the CodeMirror highlighter, whose
+   spans sit inside them. The CodeMirror layer keeps colouring text that has no
+   span yet, for example right after an edit. */
+.span-editor [class*="cm-tree-"] span[class^="ͼ"] { color: inherit; }
