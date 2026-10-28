@@ -350,6 +350,20 @@ fn is_prettier_config(path: &str) -> bool {
     false
 }
 
+fn project_formatter_kind(path: &str) -> Option<&'static str> {
+    match Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "dprint.json" | "dprint.jsonc" | ".dprint.json" | ".dprint.jsonc" => Some("dprint"),
+        "biome.json" | "biome.jsonc" => Some("biome"),
+        _ => None,
+    }
+}
+
 fn workspace_prettier_script(request: &FormatRequest) -> Option<PathBuf> {
     let root = Path::new(&request.workspace_root);
     let path = root.join(&request.path);
@@ -543,8 +557,7 @@ fn formatter_command(request: &FormatRequest) -> Result<(PathBuf, Vec<String>, S
             | "svelte"
     ) {
         if let Some(config) = formatter_config(request) {
-            let lower = config.to_ascii_lowercase();
-            if lower.contains("dprint") {
+            if project_formatter_kind(&config) == Some("dprint") {
                 let program = resolve_program("dprint").ok_or_else(|| {
                     CoreError::Formatter(format!(
                         "Project formatter configuration found at {config}, but dprint is unavailable"
@@ -562,7 +575,7 @@ fn formatter_command(request: &FormatRequest) -> Result<(PathBuf, Vec<String>, S
                     "Workspace dprint".into(),
                 ));
             }
-            if lower.contains("biome") {
+            if project_formatter_kind(&config) == Some("biome") {
                 let program = resolve_program("biome").ok_or_else(|| {
                     CoreError::Formatter(format!(
                         "Project formatter configuration found at {config}, but Biome is unavailable"
@@ -742,7 +755,10 @@ async fn run_process(
         .spawn()
         .map_err(|error| CoreError::Formatter(format!("Start {}: {error}", program.display())))?;
     #[cfg(unix)]
-    let process_group = ();
+    let process_group = child
+        .id()
+        .ok_or_else(|| CoreError::Formatter("Formatter process ID is unavailable".into()))?
+        as i32;
     #[cfg(windows)]
     let process_group = match WindowsProcessGroup::attach(&child) {
         Ok(group) => group,
@@ -832,14 +848,13 @@ async fn run_process(
 }
 
 #[cfg(unix)]
-async fn stop_formatter_process(child: &mut tokio::process::Child, _group: &()) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // Each formatter gets its own process group so Node wrappers and other
-        // child processes are reaped with the formatter when cancelled.
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGKILL);
-        }
+async fn stop_formatter_process(child: &mut tokio::process::Child, process_group: &i32) {
+    // Keep the group ID captured at spawn time. Child::id() becomes None after
+    // wait() reaps a formatter whose descendant still holds an output pipe.
+    // Each formatter gets its own process group so wrappers and descendants
+    // are stopped together when cancellation or timeout wins.
+    unsafe {
+        libc::kill(-*process_group, libc::SIGKILL);
     }
     let _ = child.kill().await;
 }
@@ -954,6 +969,28 @@ mod tests {
     }
 
     #[test]
+    fn project_formatter_selection_uses_config_basename_not_workspace_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let nested = directory.path().join("dprint");
+        std::fs::create_dir(&nested).unwrap();
+        let config = nested.join(".prettierrc");
+        std::fs::write(&config, "{}").unwrap();
+        let request = FormatRequest {
+            path: "dprint/main.ts".into(),
+            revision: 1,
+            text: "const x=1".into(),
+            language: "typescript".into(),
+            workspace_root: directory.path().to_string_lossy().into_owned(),
+            tab_size: 2,
+            argv: None,
+        };
+        let detected = formatter_config(&request).unwrap();
+        assert_eq!(Path::new(&detected).file_name().unwrap(), ".prettierrc");
+        assert_eq!(project_formatter_kind(&detected), None);
+        assert!(is_prettier_config(&detected));
+    }
+
+    #[test]
     fn formatted_result_cannot_replace_a_newer_rope_revision() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("draft.ts"), "const original = 1;\n").unwrap();
@@ -1023,10 +1060,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn timeout_also_bounds_inherited_output_pipe_after_parent_exits() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("formatter-descendant.pid");
+        let script = format!("sleep 30 & echo $! > '{}' ; exit 0", pid_file.display());
         let started = std::time::Instant::now();
         let error = run_process(
             Path::new("/bin/sh"),
-            &["-c".into(), "sleep 2 & exit 0".into()],
+            &["-c".into(), script, "sh".into()],
             "/",
             String::new(),
             Duration::from_millis(25),
@@ -1036,6 +1076,26 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(1));
+
+        let descendant: i32 = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let reaped = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let alive = unsafe { libc::kill(descendant, 0) == 0 };
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            reaped.is_ok(),
+            "formatter descendant {descendant} survived timeout"
+        );
     }
     #[cfg(unix)]
     #[test]

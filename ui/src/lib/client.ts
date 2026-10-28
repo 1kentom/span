@@ -304,9 +304,12 @@ export const api = {
     if (isDesktop) await commands.saveSession(session);
     else previewSession = structuredClone(session);
   },
-  async formatBuffer(path: string, expectedRevision: number): Promise<BufferSnapshot> {
+  async formatBuffer(path: string, expectedRevision: number, requestId: number): Promise<BufferSnapshot> {
     if (!isDesktop) nativeRequired('Running document formatters');
-    return commands.formatBuffer(path, expectedRevision);
+    return commands.formatBuffer(path, expectedRevision, requestId);
+  },
+  async cancelFormatBuffer(path: string, requestId: number): Promise<void> {
+    if (isDesktop) await commands.cancelFormatBuffer(path, requestId);
   },
   async openExternal(url: string): Promise<void> {
     if (isDesktop) { await commands.openExternal(url); return; }

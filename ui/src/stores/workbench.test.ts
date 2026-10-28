@@ -5,7 +5,7 @@ import type { BufferSnapshot, TextEdit, SessionState_Serialize as SessionState, 
 
 const client = vi.hoisted(() => ({
   openWorkspace: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), getSettings: vi.fn(),
-  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(),
+  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
 import { createWorkbench, settleIntent, SETTINGS_TAB } from "./workbench";
@@ -66,6 +66,7 @@ beforeEach(() => {
     const next = { ...server.get(path)!, savedRevision: revision };
     server.set(path, next); return next;
   });
+  client.cancelFormatBuffer.mockResolvedValue(undefined);
 });
 
 describe("authoritative buffer synchronization", () => {
@@ -215,12 +216,89 @@ describe("workspace views and session state", () => {
 
   it("makes manual formatting undoable through shared buffer history", async () => {
     const workbench = await setup();
+    workbench.splitEditor();
     client.formatBuffer.mockImplementation(async () => { const result = { ...initial(), text: "const value = 1;\n\n", revision: 1 }; server.set(result.path, result); return result; });
     await workbench.format("src/file.ts");
     expect(workbench.documents()["src/file.ts"].document.toString()).toBe("const value = 1;\n\n");
     workbench.applyHistory("src/file.ts");
     await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(2));
     expect(workbench.documents()["src/file.ts"].document.toString()).toBe(initial().text);
+  });
+
+  it("rebases edits made during formatting over the accepted formatter result", async () => {
+    const workbench = await setup();
+    const response = deferred<BufferSnapshot>();
+    client.formatBuffer.mockReturnValue(response.promise);
+    const formatting = workbench.format("src/file.ts");
+    await vi.waitFor(() => expect(client.formatBuffer).toHaveBeenCalled());
+    append(workbench, "// keep the user's newer edit\n");
+    await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
+    const formatted = { ...initial(), text: "const value = 1;\n\n", revision: 2 };
+    server.set(formatted.path, formatted);
+    response.resolve(formatted);
+    await formatting;
+    expect(client.cancelFormatBuffer).toHaveBeenCalledWith("src/file.ts", expect.any(Number));
+    expect(workbench.documents()[formatted.path].document.toString()).toContain("keep the user's newer edit");
+    expect(server.get(formatted.path)?.text).toContain("keep the user's newer edit");
+    expect(workbench.pendingRecovery()).toBeUndefined();
+    workbench.applyHistory(formatted.path);
+    await vi.waitFor(() => expect(server.get(formatted.path)?.text).toBe(initial().text));
+  });
+
+  it("does not reopen a file when its last editor closes during formatting", async () => {
+    const workbench = await setup();
+    const response = deferred<BufferSnapshot>();
+    client.formatBuffer.mockReturnValue(response.promise);
+    const formatting = workbench.format("src/file.ts");
+    await vi.waitFor(() => expect(client.formatBuffer).toHaveBeenCalled());
+    workbench.closeTab("src/file.ts", 1);
+    expect(client.cancelFormatBuffer).toHaveBeenCalledWith("src/file.ts", expect.any(Number));
+    response.resolve({ ...initial(), text: "OLD_FORMAT_RESULT\n", revision: 1 });
+    await formatting;
+    expect(workbench.groups().flatMap(group => group.tabs)).not.toContain("src/file.ts");
+    expect(workbench.documents()["src/file.ts"].document.toString()).toBe(initial().text);
+  });
+
+  it("does not cancel formatting while another split still displays the buffer", async () => {
+    const workbench = await setup();
+    workbench.splitEditor();
+    const response = deferred<BufferSnapshot>();
+    client.formatBuffer.mockReturnValue(response.promise);
+    const formatting = workbench.format("src/file.ts");
+    await vi.waitFor(() => expect(client.formatBuffer).toHaveBeenCalled());
+    workbench.closeTab("src/file.ts", 1);
+    expect(client.cancelFormatBuffer).not.toHaveBeenCalled();
+    const formatted = { ...initial(), text: "const value = 1;\n\n", revision: 1 };
+    server.set(formatted.path, formatted);
+    response.resolve(formatted);
+    await formatting;
+    expect(workbench.documents()[formatted.path].document.toString()).toBe(formatted.text);
+  });
+
+  it("rejects a delayed formatter result from the previous workspace", async () => {
+    const workbench = await setup();
+    const response = deferred<BufferSnapshot>();
+    client.formatBuffer.mockReturnValue(response.promise);
+    const formatting = workbench.format("src/file.ts");
+    await vi.waitFor(() => expect(client.formatBuffer).toHaveBeenCalled());
+    await workbench.openWorkspace("/replacement");
+    const replacement = { ...initial(), text: "NEW_WORKSPACE_TEXT\n", revision: 0 };
+    server.set(replacement.path, replacement);
+    await workbench.openFile(replacement.path);
+    response.resolve({ ...initial(), text: "OLD_WORKSPACE_RESULT\n", revision: 1 });
+    await formatting;
+    expect(workbench.documents()[replacement.path].document.toString()).toBe(replacement.text);
+    expect(workbench.pendingRecovery()).toBeUndefined();
+  });
+
+  it("records format-on-save output as one shared undo step", async () => {
+    const workbench = await setup();
+    const formatted = { ...initial(), text: "const value = 1;\n\n", revision: 1, savedRevision: 1 };
+    client.saveBuffer.mockImplementationOnce(async () => { server.set(formatted.path, formatted); return formatted; });
+    expect(await workbench.save("src/file.ts")).toBe(true);
+    expect(workbench.documents()[formatted.path].document.toString()).toBe(formatted.text);
+    workbench.applyHistory(formatted.path);
+    await vi.waitFor(() => expect(workbench.documents()[formatted.path].document.toString()).toBe(initial().text));
   });
 });
 

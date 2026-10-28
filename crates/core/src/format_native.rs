@@ -44,12 +44,20 @@ fn format_json(path: &Path, text: &str, tab_size: u32) -> Result<String> {
 }
 
 fn format_markdown(text: &str, tab_size: u32) -> Result<String> {
-    let config = dprint_plugin_markdown::configuration::ConfigurationBuilder::new().build();
+    let config = dprint_plugin_markdown::configuration::ConfigurationBuilder::new()
+        .code_block_preserve_indentation(true)
+        .build();
     let formatted = dprint_plugin_markdown::format_text(text, &config, |language, code, _line| {
         let language = language.trim().to_ascii_lowercase();
         let extension = match language.as_str() {
-            "js" | "javascript" | "jsx" | "mjs" | "cjs" => "js",
-            "ts" | "typescript" | "tsx" | "mts" | "cts" => "ts",
+            "js" | "javascript" => "js",
+            "jsx" => "jsx",
+            "mjs" => "mjs",
+            "cjs" => "cjs",
+            "ts" | "typescript" => "ts",
+            "tsx" => "tsx",
+            "mts" => "mts",
+            "cts" => "cts",
             "json" | "jsonc" => "jsonc",
             _ => return Ok(None),
         };
@@ -116,6 +124,22 @@ mod tests {
         let source = "# Title\n\n```ts\nconst answer=42\n```\n";
         let formatted = format(Path::new("guide.md"), source, "markdown", 2).unwrap();
         assert!(formatted.contains("const answer = 42;"));
+        assert_eq!(
+            format(Path::new("guide.md"), &formatted, "markdown", 2).unwrap(),
+            formatted
+        );
+    }
+
+    #[test]
+    fn markdown_uses_jsx_and_tsx_parsers_and_leaves_unsupported_fences_alone() {
+        let source = "```tsx\nconst View=()=> <div>{1+2}</div>\n```\n\n```jsx\nconst Card=()=> <section>{3+4}</section>\n```\n\n```custom\n  keep   this\n```\n";
+        let formatted = format(Path::new("guide.md"), source, "markdown", 2).unwrap();
+        assert!(formatted.contains("const View = () => <div>{1 + 2}</div>;"));
+        assert!(formatted.contains("const Card = () => <section>{3 + 4}</section>;"));
+        assert!(
+            formatted.contains("```custom\n  keep   this\n```"),
+            "{formatted:?}"
+        );
         assert_eq!(
             format(Path::new("guide.md"), &formatted, "markdown", 2).unwrap(),
             formatted

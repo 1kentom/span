@@ -23,8 +23,9 @@ pub struct DesktopState {
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
-    pub formatter_jobs:
-        Arc<Mutex<std::collections::HashMap<(usize, String), (u64, CancellationToken)>>>,
+    pub formatter_jobs: Arc<
+        Mutex<std::collections::HashMap<(usize, String), (u64, Option<u64>, CancellationToken)>>,
+    >,
 }
 
 async fn with_workspace<T, F>(state: DesktopState, operation: F) -> Result<T, String>
@@ -587,6 +588,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             update_settings_jsonc,
             get_settings_jsonc,
             services::format_buffer,
+            services::cancel_format_buffer,
             services::get_session,
             services::save_session,
             services::list_tools,
