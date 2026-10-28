@@ -24,7 +24,7 @@ use span_desktop_lib::language_servers::{
     production_with_fetch, CallHierarchyItemDto, CapabilitiesDto, CompletionItemDto, DiagnosticDto,
     DiagnosticsPublished, HoverDto, LanguageServerStateDto, LocationDto, LspErrorDto, LspEvent,
     LspResponse, LspService, PositionDto, RangeDto, ServerStatusDto, ServiceConfig, SymbolDto,
-    TextEditDto, TypeHierarchyItemDto,
+    TextEditDto, TrustChoice, TrustScope, TrustStore, TypeHierarchyItemDto,
 };
 use span_desktop_lib::{services, DesktopState};
 use span_lsp::servers::install::{BoxFuture, Fetch, FetchError, FetchResponse, HttpFetch};
@@ -362,6 +362,10 @@ impl Env {
             ServiceConfig::default(),
         );
         let settings = make_settings(&options);
+        // Trust decisions live in a store of their own, never in the user's real profile.
+        svc.use_trust_store(Arc::new(TrustStore::new(
+            dir.path().join("profile").join("trusted-workspaces.json"),
+        )));
         svc.workspace_changed(root.clone(), &settings);
         Env {
             _guard: guard,
@@ -2645,9 +2649,11 @@ async fn java_maven_import_only_runs_in_a_trusted_workspace() {
     .unwrap();
     assert!(!env.path(".project").exists() && !env.path(".classpath").exists());
 
-    let mut settings = env.settings.clone();
-    settings.language_servers.trusted_workspaces = vec![env.root.to_string_lossy().into_owned()];
-    env.svc.apply_settings(&settings);
+    let state = env.svc.trust_state();
+    assert!(state.needs_prompt, "{state:?}");
+    env.svc
+        .decide_trust(TrustChoice::Trusted, TrustScope::Folder)
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(420);
     while !(env.path(".project").exists() && env.path(".classpath").exists()) {
         assert!(

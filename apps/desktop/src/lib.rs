@@ -148,6 +148,11 @@ async fn open_workspace(
             Some(PathBuf::from(&result.root));
         // Closes the previous workspace's documents and servers; never waits for them.
         lsp.workspace_changed(std::path::PathBuf::from(&result.root), &settings);
+        // Trust kept in the settings by preview builds was imported into the trust store by
+        // `workspace_changed`; take the key out so older builds can read the file again.
+        if !settings.language_servers.trusted_workspaces.is_empty() && lsp.has_trust_store() {
+            drop_legacy_trust_setting(&worker_state);
+        }
         if let Err(error) = span_core::RecentProjectStore::for_current_user()
             .and_then(|store| store.record_open(std::path::Path::new(&result.root)))
         {
@@ -157,6 +162,27 @@ async fn open_workspace(
     })
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))?
+}
+
+/// Removes the deprecated `languageServers.trustedWorkspaces` key from the user settings.
+/// Best effort: a settings file that cannot be rewritten just keeps the key, which is
+/// tolerated on read and imported only once.
+fn drop_legacy_trust_setting(state: &DesktopState) {
+    let Ok(mut context) = state.user_settings.lock() else {
+        return;
+    };
+    if context.is_none() {
+        *context = CoreWorkspace::for_user_settings().ok();
+    }
+    if let Some(context) = context.as_mut() {
+        if let Err(error) = context.update_setting(
+            SettingsScope::User,
+            "languageServers.trustedWorkspaces",
+            None,
+        ) {
+            eprintln!("Could not clean up the old trust setting: {error}");
+        }
+    }
 }
 
 #[tauri::command]
@@ -824,6 +850,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::LanguageServerWorkProgress,
             language_servers::DiagnosticsPublished,
             language_servers::LanguageServerError,
+            language_servers::WorkspaceTrustChanged,
             startup::StartupRequestError,
             agents::AgentSessionStatesChanged
         ])
@@ -933,6 +960,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::lsp_cancel,
             language_servers::lsp_cancel_install,
             language_servers::lsp_trust_workspace,
+            language_servers::workspace_trust_state,
+            language_servers::workspace_trust_decide,
             language_servers::lsp_install,
             language_servers::lsp_restart,
             language_servers::lsp_status,
@@ -988,10 +1017,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             builder.mount_events(app);
             events::mark_mounted(app);
             let cache = app.path().app_cache_dir()?.join("language-servers");
-            app.manage(language_servers::production(
+            let lsp = language_servers::production(
                 cache,
                 language_servers::tauri_sink(app.handle().clone()),
-            ));
+            );
+            if let Some(store) = language_servers::TrustStore::for_current_user() {
+                lsp.use_trust_store(Arc::new(store));
+            }
+            app.manage(lsp);
             agents::watch_session_states(app.handle());
             menu::install(app.handle())?;
             if let Some(window) = app.get_webview_window("main") {

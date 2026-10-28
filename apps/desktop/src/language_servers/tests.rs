@@ -1667,37 +1667,48 @@ async fn cancel_install_stops_the_download_cleans_up_and_returns_to_needs_instal
     assert!(!staging.exists());
 }
 
-fn trusting(f: &Fixture, roots: &[&Path]) -> Settings {
-    let mut settings = Settings::default();
-    settings.language_servers.trusted_workspaces = roots
-        .iter()
-        .map(|r| r.to_string_lossy().into_owned())
-        .collect();
-    let _ = f;
-    settings
+/// A fixture whose service reads trust decisions from a temp store.
+fn with_trust_store(f: &Fixture) -> Arc<TrustStore> {
+    let store = Arc::new(TrustStore::new(
+        f.root
+            .parent()
+            .unwrap()
+            .join("trust-profile")
+            .join("trusted-workspaces.json"),
+    ));
+    f.svc.use_trust_store(store.clone());
+    store
 }
 
 #[tokio::test]
 async fn trusted_roots_start_permissive_and_untrusted_roots_stay_restricted() {
     let mut f = fixture(true, "normal", Duration::from_secs(5));
-    let settings = trusting(&f, &[&f.root]);
-    f.svc.apply_settings(&settings);
+    let store = with_trust_store(&f);
+    store.decide(&f.root, TrustChoice::Trusted).unwrap();
+    f.svc.use_trust_store(store);
     open_in(&mut f, "lib.rs", ServerId::RustAnalyzer).await;
     assert_eq!(initialize_options(&f.log)[0], serde_json::json!({}));
     f.svc.manager.shutdown_all().await;
 
-    // Another folder's trust does not carry over.
+    // Another folder's trust does not carry over, and undecided stays restricted.
     let mut g = fixture(true, "normal", Duration::from_secs(5));
+    let store = with_trust_store(&g);
     let other = g.root.parent().unwrap().join("elsewhere");
-    let settings = trusting(&g, &[&other]);
-    g.svc.apply_settings(&settings);
+    std::fs::create_dir_all(&other).unwrap();
+    store.decide(&other, TrustChoice::Trusted).unwrap();
+    g.svc.use_trust_store(store);
     open_in(&mut g, "lib.rs", ServerId::RustAnalyzer).await;
     assert_eq!(initialize_options(&g.log)[0]["checkOnSave"], false);
+    assert_eq!(
+        g.svc.trust_state().decision,
+        WorkspaceTrustDecision::Undecided
+    );
 }
 
 #[tokio::test]
-async fn trusting_restarts_build_servers_and_replays_documents_and_untrusting_restricts_again() {
+async fn deciding_restarts_build_servers_and_replays_documents_and_is_idempotent() {
     let mut f = fixture(true, "normal", Duration::from_secs(5));
+    with_trust_store(&f);
     open_in(&mut f, "lib.rs", ServerId::RustAnalyzer).await;
     assert_eq!(initialize_options(&f.log).len(), 1);
     assert_eq!(initialize_options(&f.log)[0]["procMacro"]["enable"], false);
@@ -1709,8 +1720,13 @@ async fn trusting_restarts_build_servers_and_replays_documents_and_untrusting_re
     };
     eventually("first open", || opens(&f.log) == 1).await;
 
-    let trusted = trusting(&f, &[&f.root]);
-    f.svc.apply_settings(&trusted);
+    let (root, state) = f
+        .svc
+        .decide_trust(TrustChoice::Trusted, TrustScope::Folder)
+        .unwrap();
+    assert_eq!(state.decision, WorkspaceTrustDecision::Trusted);
+    assert!(!state.inherited);
+    assert!(!root.is_empty());
     eventually("restart with permissive options", || {
         initialize_options(&f.log).len() == 2
     })
@@ -1718,11 +1734,18 @@ async fn trusting_restarts_build_servers_and_replays_documents_and_untrusting_re
     assert_eq!(initialize_options(&f.log)[1], serde_json::json!({}));
     eventually("document replayed", || opens(&f.log) == 2).await;
 
-    // Unrelated changes do not restart; removing the trust does.
-    f.svc.apply_settings(&trusted);
+    // The same decision again restarts nothing.
+    f.svc
+        .decide_trust(TrustChoice::Trusted, TrustScope::Folder)
+        .unwrap();
     f.svc.flush().await;
     assert_eq!(initialize_options(&f.log).len(), 2);
-    f.svc.apply_settings(&Settings::default());
+    // Restricting restarts with the restricted options and replays again.
+    let (_, state) = f
+        .svc
+        .decide_trust(TrustChoice::Restricted, TrustScope::Folder)
+        .unwrap();
+    assert_eq!(state.decision, WorkspaceTrustDecision::Restricted);
     eventually("restart restricted again", || {
         initialize_options(&f.log).len() == 3
     })
@@ -1732,8 +1755,66 @@ async fn trusting_restarts_build_servers_and_replays_documents_and_untrusting_re
 }
 
 #[tokio::test]
+async fn trusting_the_parent_covers_a_subfolder_and_the_state_says_where_it_came_from() {
+    let f = fixture(true, "normal", Duration::from_secs(5));
+    let store = with_trust_store(&f);
+    let parent = f.root.parent().unwrap().to_path_buf();
+    store.decide(&parent, TrustChoice::Trusted).unwrap();
+    f.svc.use_trust_store(store.clone());
+    let state = f.svc.trust_state();
+    assert_eq!(state.decision, WorkspaceTrustDecision::Trusted);
+    assert!(state.inherited);
+    assert_eq!(state.source.as_deref(), Some(key_for(&parent).as_str()));
+    assert!(!state.needs_prompt);
+    // An explicit restriction on the folder wins over the trusted parent.
+    store.decide(&f.root, TrustChoice::Restricted).unwrap();
+    f.svc.use_trust_store(store);
+    let state = f.svc.trust_state();
+    assert_eq!(state.decision, WorkspaceTrustDecision::Restricted);
+    assert!(!state.inherited);
+}
+
+#[tokio::test]
+async fn the_prompt_is_needed_only_for_undecided_folders_with_build_files() {
+    let f = fixture(true, "normal", Duration::from_secs(5));
+    let store = with_trust_store(&f);
+    let state = f.svc.trust_state();
+    assert_eq!(state.decision, WorkspaceTrustDecision::Undecided);
+    assert!(!state.needs_prompt && state.build_files.is_empty());
+    std::fs::write(f.root.join("pom.xml"), "<project/>").unwrap();
+    let state = f.svc.trust_state();
+    assert!(state.needs_prompt);
+    assert_eq!(state.build_files, vec!["pom.xml".to_string()]);
+    assert!(state.reason.as_deref().unwrap().contains("Maven"));
+    f.svc
+        .decide_trust(TrustChoice::Restricted, TrustScope::Folder)
+        .unwrap();
+    let state = f.svc.trust_state();
+    assert!(!state.needs_prompt, "a decided folder is never asked again");
+    assert_eq!(state.decision, WorkspaceTrustDecision::Restricted);
+    drop(store);
+}
+
+#[tokio::test]
+async fn legacy_trusted_workspaces_are_imported_when_a_workspace_opens() {
+    let f = fixture(true, "normal", Duration::from_secs(5));
+    let store = with_trust_store(&f);
+    let mut settings = Settings::default();
+    settings.language_servers.trusted_workspaces = vec![f.root.to_string_lossy().into_owned()];
+    f.svc.workspace_changed(f.root.clone(), &settings);
+    assert_eq!(
+        f.svc.trust_state().decision,
+        WorkspaceTrustDecision::Trusted
+    );
+    assert_eq!(store.load().len(), 1);
+    f.svc.workspace_changed(f.root.clone(), &settings);
+    assert_eq!(store.load().len(), 1, "importing again adds nothing");
+}
+
+#[tokio::test]
 async fn status_explains_when_trust_would_change_results() {
     let mut f = fixture(true, "normal", Duration::from_secs(5));
+    with_trust_store(&f);
     let row = |rows: Vec<ServerStatusDto>, id: LanguageServerId| {
         rows.into_iter().find(|s| s.server == id).unwrap()
     };
@@ -1770,8 +1851,9 @@ async fn status_explains_when_trust_would_change_results() {
     );
     assert!(!row(rows, LanguageServerId::Json).trust.needs_trust);
 
-    let settings = trusting(&f, &[&f.root]);
-    f.svc.apply_settings(&settings);
+    f.svc
+        .decide_trust(TrustChoice::Trusted, TrustScope::Folder)
+        .unwrap();
     let rows = f.svc.status().await;
     let java = row(rows, LanguageServerId::Jdtls);
     assert!(java.trust.workspace_trusted && !java.trust.needs_trust && java.trust.reason.is_none());

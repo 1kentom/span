@@ -19,6 +19,7 @@ mod navigation;
 mod paths;
 mod position;
 mod provision;
+mod trust;
 
 pub use dto::*;
 pub use intel::*;
@@ -43,6 +44,7 @@ use tauri::State;
 use tauri_specta::Event;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
+pub use trust::*;
 
 /// Documents above this size are not sent to language servers.
 const MAX_DOC_BYTES: usize = 4 * 1024 * 1024;
@@ -140,8 +142,6 @@ pub struct LspSettings {
     pub node_path: Option<PathBuf>,
     /// Let rust-analyzer and JDT LS run the project's own build code.
     pub run_project_code: bool,
-    /// Workspace roots whose build code may run (`languageServers.trustedWorkspaces`).
-    pub trusted_workspaces: Vec<PathBuf>,
     pub tab_size: u32,
 }
 
@@ -153,7 +153,6 @@ impl Default for LspSettings {
             java_home: None,
             node_path: None,
             run_project_code: false,
-            trusted_workspaces: Vec::new(),
             tab_size: 2,
         }
     }
@@ -182,12 +181,6 @@ impl From<&Settings> for LspSettings {
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute()),
             run_project_code: ls.run_project_code,
-            trusted_workspaces: ls
-                .trusted_workspaces
-                .iter()
-                .map(|p| paths::normalize_path(Path::new(p)))
-                .filter(|p| p.is_absolute())
-                .collect(),
             tab_size: settings.tab_size,
         }
     }
@@ -286,7 +279,9 @@ struct Shared {
 #[derive(Default, Clone)]
 struct TrustState {
     everything: bool,
-    roots: Vec<PathBuf>,
+    /// Decisions of `trusted-workspaces.json`.
+    entries: Entries,
+    store: Option<Arc<TrustStore>>,
 }
 
 pub struct LanguageServers {
@@ -419,7 +414,10 @@ impl LanguageServers {
         let provider_trust = trust.clone();
         manager.set_options_provider(Arc::new(move |id, root, global| {
             let t = provider_trust.read().unwrap_or_else(|e| e.into_inner());
-            catalog::initialization_options(id, is_trusted(global || t.everything, &t.roots, root))
+            catalog::initialization_options(
+                id,
+                is_trusted(global || t.everything, &t.entries, root),
+            )
         }));
         let (tx, rx) = mpsc::unbounded_channel();
         let service = Arc::new(Self {
@@ -452,13 +450,12 @@ impl LanguageServers {
     fn set_trust(&self, settings: &LspSettings) {
         let mut t = self.trust.write().unwrap_or_else(|e| e.into_inner());
         t.everything = settings.run_project_code;
-        t.roots = settings.trusted_workspaces.clone();
     }
 
     /// Whether project code may run for `root` (a server root or the workspace root).
     fn trusted(&self, root: &Path) -> bool {
         let t = self.trust.read().unwrap_or_else(|e| e.into_inner());
-        is_trusted(t.everything, &t.roots, root)
+        is_trusted(t.everything, &t.entries, root)
     }
 
     fn emit(&self, event: LspEvent) {
@@ -497,6 +494,7 @@ impl LanguageServers {
         self.provisioner.configure(&new);
         self.manager.set_run_project_code(new.run_project_code);
         self.set_trust(&new);
+        self.import_legacy_trust(&settings.language_servers.trusted_workspaces);
         let mut st = lock(&self.state);
         st.work.clear_all();
         let mut keys: HashSet<(ServerId, PathBuf)> = st.states.keys().cloned().collect();
@@ -548,9 +546,7 @@ impl LanguageServers {
                     self.push(&mut st, Op::Resume { server });
                 }
             }
-            if old.run_project_code != new.run_project_code
-                || old.trusted_workspaces != new.trusted_workspaces
-            {
+            if old.run_project_code != new.run_project_code {
                 // Running servers keep the options they were started with, so the two
                 // that execute project code are restarted with the new ones.
                 for server in PROJECT_CODE_SERVERS {
@@ -2245,39 +2241,66 @@ pub async fn lsp_cancel_install(
     Ok(())
 }
 
-/// Trust (or stop trusting) the CURRENT workspace root: rust-analyzer and JDT LS may then
-/// run the project's own build code (Maven and Gradle import, build scripts). Writes
-/// `languageServers.trustedWorkspaces` in the user settings, restarts the running servers
-/// that execute build code, and returns the updated status.
+/// Compatibility wrapper over the trust store: trust (`true`) or restrict (`false`) the
+/// CURRENT workspace folder. Same as `workspace_trust_decide` with the folder scope; returns
+/// the updated status.
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_trust_workspace(
-    state: State<'_, crate::DesktopState>,
+    app: tauri::AppHandle,
     lsp: State<'_, LspService>,
     trusted: bool,
 ) -> Result<Vec<ServerStatusDto>, String> {
-    use span_core::SettingsScope::User;
-    let root = lsp
-        .workspace_root()
-        .ok_or_else(|| "open a folder first".to_string())?;
-    let canonical = paths::normalize_path(&std::fs::canonicalize(&root).unwrap_or(root));
-    let entry = canonical.to_string_lossy().into_owned();
-    let current = crate::with_settings(state.inner().clone(), User, |w| {
-        w.get_settings_for_scope(User)
-    })
-    .await?;
-    let mut list = current.language_servers.trusted_workspaces;
-    list.retain(|r| paths::normalize_path(Path::new(r)) != canonical);
-    if trusted {
-        list.push(entry);
-    }
-    let json = serde_json::to_string(&list).map_err(|e| e.to_string())?;
-    crate::with_settings(state.inner().clone(), User, move |w| {
-        w.update_setting(User, "languageServers.trustedWorkspaces", Some(&json))
-    })
-    .await?;
-    crate::apply_effective_settings(state.inner(), lsp.inner()).await;
+    let choice = if trusted {
+        TrustChoice::Trusted
+    } else {
+        TrustChoice::Restricted
+    };
+    decide_and_emit(&app, lsp.inner(), choice, TrustScope::Folder).await?;
     Ok(lsp.inner().clone().status().await)
+}
+
+async fn decide_and_emit(
+    app: &tauri::AppHandle,
+    lsp: &LspService,
+    choice: TrustChoice,
+    scope: TrustScope,
+) -> Result<WorkspaceTrustStateDto, String> {
+    let service = lsp.clone();
+    let (root, state) =
+        tauri::async_runtime::spawn_blocking(move || service.decide_trust(choice, scope))
+            .await
+            .map_err(|e| format!("Trust task failed: {e}"))??;
+    crate::events::emit(
+        app,
+        &WorkspaceTrustChanged {
+            root,
+            decision: state.decision,
+        },
+    );
+    Ok(state)
+}
+
+/// The trust state of the open workspace folder (see [`WorkspaceTrustStateDto`]).
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_trust_state(
+    lsp: State<'_, LspService>,
+) -> Result<WorkspaceTrustStateDto, String> {
+    Ok(lsp.inner().trust_state())
+}
+
+/// Store the user's decision for the open folder (`folder`) or for its parent folder
+/// (`parent`, which then covers the folder's siblings too). Idempotent.
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_trust_decide(
+    app: tauri::AppHandle,
+    lsp: State<'_, LspService>,
+    decision: TrustChoice,
+    scope: TrustScope,
+) -> Result<WorkspaceTrustStateDto, String> {
+    decide_and_emit(&app, lsp.inner(), decision, scope).await
 }
 
 #[cfg(test)]

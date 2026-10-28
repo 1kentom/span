@@ -446,37 +446,26 @@ pub struct TrustDto {
     pub reason: Option<String>,
 }
 
-/// The build files at `root` that change what `server` can resolve, as a sentence.
+/// The build files at `root` that make `server` run project code when it is trusted.
+/// The ONE detection behind the status `needsTrust` flag and the open time trust prompt.
 /// Plain existence checks (and one small file read for Cargo).
-pub fn trust_reason(server: ServerId, root: &Path) -> Option<String> {
+pub fn project_code_files(server: ServerId, root: &Path) -> Vec<&'static str> {
     let has = |name: &str| root.join(name).is_file();
     match server {
-        ServerId::Jdtls => {
-            if has("pom.xml") {
-                Some(
-                    "This Maven project's dependencies can only be loaded by running Maven.".into(),
-                )
-            } else if [
-                "build.gradle",
-                "build.gradle.kts",
-                "settings.gradle",
-                "settings.gradle.kts",
-            ]
-            .iter()
-            .any(|f| has(f))
-            {
-                Some(
-                    "This Gradle project's dependencies can only be loaded by running Gradle."
-                        .into(),
-                )
-            } else {
-                None
-            }
-        }
+        ServerId::Jdtls => [
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        ]
+        .into_iter()
+        .filter(|f| has(f))
+        .collect(),
         ServerId::RustAnalyzer => {
             let manifest = root.join("Cargo.toml");
             if !manifest.is_file() {
-                return None;
+                return vec![];
             }
             let text = read_small(&manifest);
             let section_with_entries = |header: &str| {
@@ -491,21 +480,57 @@ pub fn trust_reason(server: ServerId, root: &Path) -> Option<String> {
                 }
                 false
             };
-            if has("build.rs")
+            let build_script = has("build.rs");
+            if build_script
                 || section_with_entries("[dependencies")
                 || section_with_entries("[build-dependencies")
                 || text.contains("[workspace")
             {
-                Some(
-                    "This Rust project's dependencies and build scripts can only be loaded by running Cargo."
-                        .into(),
-                )
+                let mut files = vec!["Cargo.toml"];
+                if build_script {
+                    files.push("build.rs");
+                }
+                files
             } else {
-                None
+                vec![]
             }
         }
-        _ => None,
+        _ => vec![],
     }
+}
+
+/// The build files at `root` that change what `server` can resolve, as a sentence.
+pub fn trust_reason(server: ServerId, root: &Path) -> Option<String> {
+    let files = project_code_files(server, root);
+    if files.is_empty() {
+        return None;
+    }
+    Some(match server {
+        ServerId::Jdtls if files.contains(&"pom.xml") => {
+            "This Maven project's dependencies can only be loaded by running Maven.".into()
+        }
+        ServerId::Jdtls => {
+            "This Gradle project's dependencies can only be loaded by running Gradle.".into()
+        }
+        _ => "This Rust project's dependencies and build scripts can only be loaded by running Cargo."
+            .into(),
+    })
+}
+
+/// Every project code build file of `root`, for any server, without duplicates.
+pub fn workspace_build_files(root: &Path) -> Vec<&'static str> {
+    let mut files = project_code_files(ServerId::Jdtls, root);
+    for f in project_code_files(ServerId::RustAnalyzer, root) {
+        if !files.contains(&f) {
+            files.push(f);
+        }
+    }
+    files
+}
+
+/// The reason the open time trust prompt gives, from the first server that needs trust.
+pub fn workspace_trust_reason(root: &Path) -> Option<String> {
+    trust_reason(ServerId::Jdtls, root).or_else(|| trust_reason(ServerId::RustAnalyzer, root))
 }
 
 fn read_small(path: &Path) -> String {
@@ -515,11 +540,6 @@ fn read_small(path: &Path) -> String {
         let _ = file.take(256 * 1024).read_to_string(&mut text);
     }
     text
-}
-
-/// Is `root` covered by the global override or by a trusted workspace root?
-pub fn is_trusted(global: bool, trusted: &[PathBuf], root: &Path) -> bool {
-    global || trusted.iter().any(|t| root.starts_with(t))
 }
 
 #[cfg(test)]

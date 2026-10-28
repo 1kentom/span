@@ -37,13 +37,24 @@ fn trust_reasons_follow_the_build_files() {
 }
 
 #[test]
-fn trust_covers_the_root_and_everything_below_it() {
-    let trusted = vec![PathBuf::from("/w/app")];
-    assert!(is_trusted(false, &trusted, Path::new("/w/app")));
-    assert!(is_trusted(false, &trusted, Path::new("/w/app/service")));
-    assert!(!is_trusted(false, &trusted, Path::new("/w/app2")));
-    assert!(!is_trusted(false, &trusted, Path::new("/w")));
-    assert!(is_trusted(true, &[], Path::new("/anywhere")));
+fn build_files_are_listed_by_the_one_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    assert!(workspace_build_files(root).is_empty());
+    assert!(workspace_trust_reason(root).is_none());
+    std::fs::write(root.join("pom.xml"), "").unwrap();
+    std::fs::write(root.join("build.gradle"), "").unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"x\"\n[dependencies]\nserde = \"1\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("build.rs"), "fn main() {}").unwrap();
+    assert_eq!(
+        workspace_build_files(root),
+        vec!["pom.xml", "build.gradle", "Cargo.toml", "build.rs"]
+    );
+    assert!(workspace_trust_reason(root).unwrap().contains("Maven"));
 }
 
 #[test]
