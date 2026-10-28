@@ -147,7 +147,12 @@ impl AgentService {
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
-    pub async fn set_config(&self, session_id: String, config_id: String, value: String) -> Result<(), String> {
+    pub async fn set_config(
+        &self,
+        session_id: String,
+        config_id: String,
+        value: String,
+    ) -> Result<(), String> {
         {
             let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
             if bridge.closed || !bridge.sessions.contains(&session_id) {
@@ -648,7 +653,13 @@ fn config_options(options: &[SessionConfigOption]) -> Vec<ConfigOption> {
                 }
             }
             if !loose.is_empty() {
-                groups.insert(0, ConfigGroup { name: String::new(), choices: loose });
+                groups.insert(
+                    0,
+                    ConfigGroup {
+                        name: String::new(),
+                        choices: loose,
+                    },
+                );
             }
             Some(ConfigOption {
                 id: text(&value, "id")?,
@@ -695,11 +706,16 @@ fn session_update(emit: &EventSink, session_id: String, update: Value) {
         "config_option_update" => {
             let options = update
                 .get("configOptions")
-                .and_then(|value| serde_json::from_value::<Vec<SessionConfigOption>>(value.clone()).ok())
+                .and_then(|value| {
+                    serde_json::from_value::<Vec<SessionConfigOption>>(value.clone()).ok()
+                })
                 .map(|options| config_options(&options))
                 .unwrap_or_default();
             if !options.is_empty() {
-                emit(AgentEvent::Config { session_id, options });
+                emit(AgentEvent::Config {
+                    session_id,
+                    options,
+                });
             }
         }
         "plan" => {
@@ -767,7 +783,10 @@ mod tests {
         assert_eq!(parsed[0].category.as_deref(), Some("model"));
         assert_eq!(parsed[0].current_value, "fast");
         assert_eq!(parsed[0].groups[0].choices.len(), 2);
-        assert_eq!(parsed[0].groups[0].choices[1].description.as_deref(), Some("Slower"));
+        assert_eq!(
+            parsed[0].groups[0].choices[1].description.as_deref(),
+            Some("Slower")
+        );
         assert_eq!(parsed[1].groups[0].name, "Group");
         assert_eq!(parsed[1].groups[0].choices[0].value, "b");
     }

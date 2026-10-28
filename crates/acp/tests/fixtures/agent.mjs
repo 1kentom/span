@@ -54,11 +54,20 @@ input.on('line', line => {
   if (message.method === 'initialize') {
     const fs = message.params.clientCapabilities.fs;
     if (!fs.readTextFile || !fs.writeTextFile || message.params.clientCapabilities.terminal) process.exit(8);
-    result(message.id, { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'span-test-peer', version: '1.0.0' } });
+    const agentCapabilities = process.argv.includes('--resume') ? { loadSession: true, sessionCapabilities: { list: {} } } : {};
+    result(message.id, { protocolVersion: 1, agentCapabilities, agentInfo: { name: 'span-test-peer', version: '1.0.0' } });
   } else if (message.method === 'session/new') {
     if (process.argv.includes('--hang-session')) return;
     cwd = message.params.cwd;
     result(message.id, { sessionId: `fixture-${++sessions}` });
+  } else if (message.method === 'session/list') {
+    result(message.id, { sessions: [{ sessionId: 'old-1', cwd, title: 'Earlier chat', updatedAt: '2026-10-28T09:00:00Z' }] });
+  } else if (message.method === 'session/load') {
+    const sessionId = message.params.sessionId;
+    update(sessionId, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'earlier question' } });
+    update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'earlier answer' } });
+    update(sessionId, { sessionUpdate: 'tool_call', toolCallId: 'sub-1', title: 'Read file', kind: 'read', status: 'completed', _meta: { claudeCode: { parentToolUseId: 'task-1' } } });
+    result(message.id, {});
   } else if (message.method === 'session/prompt') {
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {
