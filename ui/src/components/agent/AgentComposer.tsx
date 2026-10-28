@@ -1,5 +1,4 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
-import { BrandIcon } from "../BrandIcon";
 import { FileIcon, Icon } from "../Icon";
 import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
@@ -8,22 +7,18 @@ import { composerHints } from "../../lib/agent-hints";
 import { shouldFocusDock } from "../../lib/agent-dock-focus";
 import { delegationLine } from "../../lib/agent-delegation";
 import { canCompact, type FeedItem, type PermissionEvent } from "../../lib/agent-session";
-import { configViews, currentChoice, isSlashQuery, leaf, levelOf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
+import { isSlashQuery, leaf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { api, isDesktop } from "../../lib/client";
-import { BYPASS_MODE_EXPLANATION } from "../../lib/agent-hint-text";
-import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } from "../../lib/updates";
 import { URL_COPY, parseUrlRequest, withBrowserWait, type UrlRequestView } from "../../lib/agent-url-request";
 import { ContextBanner, PermissionBypassNote } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
 import { RunningStep } from "./RunningStep";
 import { RUN_TEXT } from "../../lib/agent-hint-text";
-import { ModelIcon, ModelPopover, currentModelTraits } from "./ModelPopover";
-import { effortColor } from "./EffortSlider";
+import { createPickers } from "./ComposerPickers";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
 import { SlashPopover } from "./SlashPopover";
-import { UpdateBadge } from "./UpdateBadge";
 import { UsageRing } from "./UsageRing";
 import type { Brand, PlanItem, SlashItem } from "./types";
 import { percent } from "./util";
@@ -84,11 +79,6 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     declinedUrls.add(ask.requestId);
     void a.respondElicitation(ask.requestId, "decline");
   });
-  const config = createMemo(() => configViews(a.state().config));
-  const model = () => config().find((option) => option.category === "model");
-  const level = () => levelOf(config().find((option) => option.category === "thought_level"));
-  const mode = () => config().find((option) => option.category === "mode");
-  const modelLabel = () => currentChoice(model())?.name ?? props.label;
   const usage = () => a.state().usage;
   const showBanner = () => {
     const current = usage();
@@ -175,11 +165,9 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   const hasPayload = () => Boolean(a.prompt().trim() || a.attachments().length);
   const loadingOnly = (reason: string) => reason === "Still loading.";
   const reportable = () => a.blocked().filter((entry) => !loadingOnly(entry.reason));
-  const toggle = (menu: "model" | "agents" | "attach") => a.setMenu(a.menu() === menu ? null : menu);
-  const closeMenu = () => {
-    a.setMenu(null);
-    input?.focus();
-  };
+  const toggle = (menu: "attach") => a.setMenu(a.menu() === menu ? null : menu);
+  const pickers = createPickers(a, props, () => input);
+
 
   /** Taller field, about 40 percent of the panel. Local view state only; Escape never touches it. */
   const [expanded, setExpanded] = createSignal(false);
@@ -346,65 +334,14 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         )}
       </Show>
       <div class="att-dropzone agent-composer" classList={{ expanded: expanded() }}>
-        <Show when={a.menu() && a.menu() !== "actions" && a.menu() !== "attach"}>
-          <button class="agent-menu-dismiss" aria-label="Close agent menu" tabindex="-1" onClick={closeMenu} />
+        <Show when={pickers.open()}>
+          <button class="agent-menu-dismiss" aria-label="Close agent menu" tabindex="-1" onClick={pickers.close} />
         </Show>
         <div class="agent-popover-anchor">
           <Show when={slashOpen() && (groups().length || a.prompt().length > 1)}>
             <SlashPopover groups={groups()} onSelect={pickSlash} onClose={() => setSlashClosedFor(a.prompt())} />
           </Show>
-          <Show when={a.menu() === "model"}>
-            <ModelPopover
-              agentName={props.label}
-              brand={props.brand}
-              options={config()}
-              agents={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: entry.version, current: entry.id === a.agentId() }))}
-              busy={a.pendingAction().startsWith("config:") || a.working() || a.running()}
-              onSelect={(id, value) => void a.setConfig(id, value)}
-              onSwitchAgent={(id) => a.connectInstalled(id)}
-              onClose={closeMenu}
-            />
-          </Show>
-          <Show when={a.menu() === "agents"}>
-            <div class="sb-popover" role="dialog" aria-label="Agents">
-              <Show when={isDesktop} fallback={<p class="sb-fine pad">Open span desktop to connect an ACP agent.</p>}>
-                <div class="sb-eyebrow">Installed agents</div>
-                <For each={a.installed()} fallback={<p class="sb-fine pad">No managed agents installed yet.</p>}>
-                  {(entry) => (
-                    <button class="sb-option" disabled={a.working()} onClick={() => a.connectInstalled(entry.id)}>
-                      <BrandIcon id={entry.id} name={a.registryName(entry.id)} size={15} />
-                      <span class="sb-option-text">
-                        <span class="sb-option-name">{a.registryName(entry.id) || entry.id}</span>
-                        <span class="sb-sub">{entry.version}</span>
-                        <UpdateBadge update={agentUpdates()?.find((update) => update.id === entry.id)} />
-                      </span>
-                    </button>
-                  )}
-                </For>
-                <button class="sb-option" disabled={agentUpdatesBusy()} onClick={() => void checkAgentUpdates(true)}>
-                  <Icon name="Refresh2" size={15} />
-                  <span class="sb-option-text">
-                    <span class="sb-option-name">{agentUpdatesBusy() ? "Checking for updates…" : "Check for updates"}</span>
-                    <Show when={agentUpdateError()}><span class="sb-sub" role="alert">{agentUpdateError()}</span></Show>
-                  </span>
-                </button>
-                <div class="sb-rule-h" />
-                <button
-                  class="sb-option"
-                  onClick={() => {
-                    a.setMenu(null);
-                    a.setView("connect");
-                  }}
-                >
-                  <Icon name="Code1" size={15} />
-                  <span class="sb-option-text">
-                    <span class="sb-option-name">Registry and custom command</span>
-                  </span>
-                  <Icon name="arrow-right4" size={11} />
-                </button>
-              </Show>
-            </div>
-          </Show>
+          <pickers.Popovers />
         </div>
         <Show when={a.menu() === "attach"}>
           <AttachMenu agentName={props.label} capabilities={a.caps()} handlers={attachHandlers()} disabledReasons={attachReasons()} onClose={() => a.setMenu(null)} returnFocus={() => plus} />
@@ -522,50 +459,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           </button>
           <input ref={uploadInput} class="att-file-input" type="file" multiple tabIndex={-1} aria-hidden="true" onChange={pickFiles} />
           <input ref={imageInput} class="att-file-input" type="file" multiple accept="image/*" tabIndex={-1} aria-hidden="true" onChange={pickFiles} />
-          <button
-            class="agent-tool-button agent-model-button"
-            aria-label={a.connected() ? `Agent and model: ${props.label}, ${modelLabel()}` : "Select agent"}
-            title={a.connected() ? "Agent and model" : "Select agent"}
-            aria-haspopup="dialog"
-            aria-expanded={a.menu() === "model" || a.menu() === "agents"}
-            onClick={() => toggle(a.connected() ? "model" : "agents")}
-          >
-            <ModelIcon id={props.brand.id} name={props.brand.name} size={15} traits={a.connected() ? currentModelTraits(config()) : []} />
-            <span class="agent-model-name">{a.connected() ? modelLabel() : "No agent"}</span>
-            <Show when={a.connected() && level()}>
-              {(current) => (
-                <span class="agent-level" aria-hidden="true" style={{ "--fx-c": effortColor(current().index - 1, current().count) }}>
-                  <For each={Array.from({ length: current().count }, (_, index) => index)}>
-                    {(index) => <span classList={{ on: index < current().index }} style={{ height: `${Math.round(30 + (70 * (index + 1)) / current().count)}%` }} />}
-                  </For>
-                </span>
-              )}
-            </Show>
-            <Icon name="arrow-down4" size={10} />
-          </button>
-          <Show when={a.connected() && mode()}>
-            {(option) => {
-              const name = () => currentChoice(option())?.name ?? option().currentValue;
-              // The backend's bypass notice is the one source for "this mode skips approval prompts".
-              const bypass = () => Boolean(a.state().permissionBypass);
-              return (
-                <button
-                  class="agent-tool-button agent-mode-button"
-                  classList={{ warn: bypass() }}
-                  aria-label={bypass() ? `${option().name}: ${name()}. ${BYPASS_MODE_EXPLANATION}` : `${option().name}: ${name()}`}
-                  title={bypass() ? `${name()}. ${BYPASS_MODE_EXPLANATION}` : undefined}
-                  aria-haspopup="dialog"
-                  onClick={() => toggle("model")}
-                >
-                  <Show when={bypass()}>
-                    <Icon name="Warning2" size={11} class="sb-glyph warn" />
-                  </Show>
-                  <span class="agent-model-name">{name()}</span>
-                  <Icon name="arrow-down4" size={10} />
-                </button>
-              );
-            }}
-          </Show>
+          <pickers.Chips />
           <span class="agent-toolbar-spacer" />
           <Show when={a.connected() && usage()}>
             <UsageRing used={usage()!.used} size={usage()!.size} cost={usage()!.cost} warnAt={BANNER_AT} />
@@ -575,6 +469,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               {a.state().turnUsage!.tokens.toLocaleString()} tokens last turn
             </span>
           </Show>
+          {/* Expand, send and stop stay together. When the row is too short they move to a second line as one group. */}
+          <span class="agent-toolbar-end">
           <button
             type="button"
             class="agent-tool-button agent-expand"
@@ -607,6 +503,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               <Icon name="Stop" size={15} />
             </button>
           </Show>
+          </span>
         </div>
         <AttachmentNotices intake={a.intake} />
       </div>

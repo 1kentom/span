@@ -39,13 +39,17 @@ export function dockKey(event: KeyboardEvent, dock: HTMLElement | undefined): bo
   return true;
 }
 
-/** Moves focus between the enabled buttons of a container with the arrow keys. */
+/** Moves focus between the enabled buttons of a container with the arrow keys, Home and End. Keys a control already handled are left alone. */
 export function arrowFocus(event: KeyboardEvent, container: HTMLElement | undefined, selector = "button:not(:disabled)") {
-  if (!container || !["ArrowDown", "ArrowUp"].includes(event.key)) return;
+  if (!container || event.defaultPrevented || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   const list = [...container.querySelectorAll<HTMLElement>(selector)];
   const current = list.indexOf(event.target as HTMLElement);
   if (!list.length) return;
   event.preventDefault();
+  if (event.key === "Home" || event.key === "End") {
+    list[event.key === "Home" ? 0 : list.length - 1].focus();
+    return;
+  }
   const step = event.key === "ArrowDown" ? 1 : -1;
   list[current < 0 ? (step > 0 ? 0 : list.length - 1) : (current + step + list.length) % list.length].focus();
 }

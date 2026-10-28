@@ -436,10 +436,14 @@
   color: var(--sb-faint);
   opacity: 1;
 }
+/* One row when it fits. When it does not, the model chip and the usage ring text give way first (small flex bases
+   that grow back to their content), and only then does a group move to the next line. Nothing is pushed out of the
+   card and the mode chip is never cut. */
 .agent-composer-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 3px;
+  gap: 4px 3px;
   min-width: 0;
   margin: 0 8px 8px;
   padding: 0;
@@ -447,8 +451,15 @@
 .agent-composer-toolbar > * {
   min-width: 0;
 }
-.agent-composer-toolbar > :is(.agent-send, .agent-tool-button:not(.agent-model-button, .agent-mode-button), .sb-ring) {
+/* Every control except the model chip and the usage ring keeps its size, the mode chip included. */
+.agent-composer-toolbar > :is(.agent-send, .agent-tool-button:not(.agent-model-button), .agent-toolbar-end) {
   flex: none;
+}
+.agent-toolbar-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
 }
 .agent-tool-button {
   display: inline-flex;
@@ -468,10 +479,18 @@
   background: var(--sb-control);
   color: var(--sb-fg);
 }
-.agent-model-button,
+/* The model chip gives way first: it is placed at its minimum and grows back to its content when there is room. */
+.agent-model-button {
+  min-width: 52px;
+  max-width: max-content;
+  flex: 10000 1000 52px;
+  color: var(--sb-fg);
+}
+/* The mode chip never shrinks: it shows its whole label up to a cap. Only past the cap does the label ellipsise, and
+   then the chip's title carries the full text. */
 .agent-mode-button {
-  min-width: 0;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
+  max-width: 168px;
   color: var(--sb-fg);
 }
 .agent-model-name {
@@ -483,12 +502,17 @@
   max-width: 128px;
 }
 .agent-mode-button .agent-model-name {
-  max-width: 96px;
   color: var(--sb-dim);
+}
+.agent-model-button .sb-trait-badge.inline {
+  position: static;
+  flex: none;
+  box-shadow: none;
 }
 /* A mode that skips approval prompts is never cut to an ambiguous "Bypass permi...": the chip grows and turns warning coloured. */
 .agent-mode-button.warn {
   flex: none;
+  max-width: none;
   gap: 4px;
 }
 .agent-mode-button.warn .agent-model-name {
@@ -562,12 +586,24 @@
 .agent-panel .sb-ring {
   flex: none;
 }
+/* The usage ring gives way after the model chip: its percentage is cut before anything wraps, the ring itself stays. */
+.agent-composer-toolbar > .sb-ring {
+  flex: 10 1 24px;
+  min-width: 24px;
+  max-width: max-content;
+  overflow: hidden;
+}
+.agent-composer-toolbar > .sb-ring > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 @container (max-width: 340px) {
   .agent-model-button .agent-model-name {
     max-width: 78px;
   }
-  .agent-mode-button:not(.warn) {
-    display: none;
+  .agent-mode-button {
+    max-width: 120px;
   }
   .agent-composer-hint > :last-child {
     display: none;

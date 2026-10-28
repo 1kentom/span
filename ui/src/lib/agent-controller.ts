@@ -53,7 +53,8 @@ export type AgentPanelProps = {
 };
 
 export type View = "session" | "history" | "connect" | "logs";
-export type Menu = "model" | "agents" | "attach" | "actions" | null;
+/** The one open composer or header popover. A single value, so opening one closes any other. */
+export type Menu = "model" | "mode" | "agents" | "attach" | "actions" | null;
 export type Queued = { id: string; text: string; message: string; attachments: PromptAttachment[]; items: Attachment[] };
 type Launch = { command: AgentCommand; name: string; id?: string };
 /** A steer waiting for its turn to end. `turn` is the turn it interrupts; a steer never outlives that turn. */
