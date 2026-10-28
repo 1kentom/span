@@ -1,5 +1,5 @@
 import { createSignal } from 'solid-js';
-import { addAttachments, createFileAttachment, newAttachmentId, createPastedText, maxBytesFor, classifyFile, resolveMime, shouldChipPastedText, type Attachment, type Rejection } from '../../lib/attachments';
+import { addAttachments, createFileAttachment, createFolderAttachment, folderOutline, newAttachmentId, createPastedText, maxBytesFor, classifyFile, resolveMime, shouldChipPastedText, type Attachment, type Rejection } from '../../lib/attachments';
 import { formatAssetBytes } from '../../lib/asset-preview';
 
 export interface IntakeOptions {
@@ -13,6 +13,8 @@ export interface IntakeOptions {
   onPending?: (placeholders: Attachment[]) => void;
   /** Called with the placeholder ids once reading finished, just before `onAdd` receives the real items. */
   onSettled?: (ids: string[]) => void;
+  /** Reads the page count of a PDF. Undefined or a failure leaves the count out rather than guessing. */
+  countPages?: (bytes: Uint8Array) => Promise<number | undefined>;
 }
 
 export interface Intake {
@@ -29,6 +31,35 @@ export interface Intake {
   addPastedText: (text: string) => void;
   /** Report refusals through the same accessible notice list. */
   reject: (rejections: readonly Rejection[]) => void;
+  /** Add ready-made items (folder outlines, exported sessions) through the same limits and notices. */
+  addItems: (items: readonly Attachment[]) => void;
+}
+
+/** The subset of the File and Directory Entries API a dropped folder needs. */
+interface DroppedEntry { name: string; isFile: boolean; isDirectory: boolean }
+interface DroppedDirectory extends DroppedEntry { createReader(): { readEntries(done: (entries: DroppedEntry[]) => void, fail?: (error: unknown) => void): void } }
+
+/** Every child of a dropped directory. `readEntries` returns batches until an empty one. */
+async function readDirectory(dir: DroppedDirectory): Promise<DroppedEntry[]> {
+  const reader = dir.createReader();
+  const all: DroppedEntry[] = [];
+  for (;;) {
+    const batch = await new Promise<DroppedEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) return all;
+    all.push(...batch);
+  }
+}
+/** Bounded outline of a dropped folder, built from the browser entries (no absolute path is available). */
+export async function droppedFolder(dir: DroppedDirectory): Promise<Attachment> {
+  const dirs = new Map<string, DroppedDirectory>([['', dir]]);
+  const outline = await folderOutline(dir.name, async relative => {
+    const current = dirs.get(relative);
+    if (!current) return [];
+    const children = await readDirectory(current);
+    for (const child of children) if (child.isDirectory) dirs.set(relative ? `${relative}/${child.name}` : child.name, child as DroppedDirectory);
+    return children.map(child => ({ name: child.name, isDir: child.isDirectory }));
+  });
+  return createFolderAttachment({ name: dir.name, ...outline, source: 'dropped' });
 }
 
 function readBytes(file: Blob): Promise<Uint8Array> {
@@ -74,7 +105,13 @@ export function createAttachmentIntake(options: IntakeOptions): Intake {
       const limit = maxBytesFor(classifyFile(name, mime), mime);
       // Check the declared size first so an oversized file is never read into memory.
       if (file.size > limit) { rejections.push({ name, reason: `Larger than the ${formatAssetBytes(limit)} limit (${formatAssetBytes(file.size)}).` }); continue; }
-      try { candidates.push(createFileAttachment({ name, mime, bytes: await readBytes(file), source })); }
+      try {
+        const item = createFileAttachment({ name, mime, bytes: await readBytes(file), source });
+        if (item.mime === 'application/pdf' && options.countPages && item.bytes) {
+          try { const pages = await options.countPages(item.bytes); if (Number.isInteger(pages) && pages! > 0) item.pages = pages; } catch { /* no reliable count: leave it out */ }
+        }
+        candidates.push(item);
+      }
       catch (cause) { rejections.push({ name, reason: cause instanceof Error ? cause.message : 'Could not read the file.' }); }
     }
     if (pending.length) options.onSettled?.(pending.map(item => item.id));
@@ -89,10 +126,26 @@ export function createAttachmentIntake(options: IntakeOptions): Intake {
     if (result.accepted.length) options.onAdd(result.accepted);
     reject(result.rejected);
   };
+  const addItems = (items: readonly Attachment[]) => {
+    if (!items.length || refuseAll(items.map(item => item.name))) return;
+    const result = addAttachments(options.items(), items);
+    if (result.accepted.length) options.onAdd(result.accepted);
+    reject(result.rejected);
+  };
+  const addFolders = async (dirs: DroppedDirectory[]) => {
+    if (!dirs.length || refuseAll(dirs.map(dir => dir.name))) return;
+    const items: Attachment[] = [];
+    const failed: Rejection[] = [];
+    for (const dir of dirs) {
+      try { items.push(await droppedFolder(dir)); } catch (cause) { failed.push({ name: dir.name, reason: cause instanceof Error ? cause.message : 'Could not read the folder.' }); }
+    }
+    reject(failed);
+    addItems(items);
+  };
   return {
     dragging, notices, reject,
     dismissNotices: () => setNotices([]),
-    addFiles, addPastedText,
+    addFiles, addPastedText, addItems,
     onPaste(event) {
       const data = event.clipboardData;
       if (!data) return;
@@ -108,7 +161,12 @@ export function createAttachmentIntake(options: IntakeOptions): Intake {
     onDrop(event) {
       if (!hasFiles(event)) return;
       event.preventDefault(); depth = 0; setDragging(false);
-      void addFiles(Array.from(event.dataTransfer?.files ?? []), 'dropped');
+      // Entries must be taken while the event runs. Folders become bounded outlines; files are read as before.
+      const items = Array.from(event.dataTransfer?.items ?? []).filter(item => item.kind === 'file');
+      const entries = items.map(item => (typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null) as DroppedEntry | null);
+      if (!entries.some(entry => entry?.isDirectory)) { void addFiles(Array.from(event.dataTransfer?.files ?? []), 'dropped'); return; }
+      const files = items.flatMap((item, index) => { if (entries[index]?.isDirectory) return []; const file = item.getAsFile(); return file ? [file] : []; });
+      void addFolders(entries.filter((entry): entry is DroppedDirectory => !!entry?.isDirectory)).then(() => addFiles(files, 'dropped'));
     },
   };
 }

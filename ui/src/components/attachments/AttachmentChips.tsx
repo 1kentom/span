@@ -1,11 +1,11 @@
 import { For, Show } from 'solid-js';
 import Icon from '../Icon';
 import { formatAssetBytes } from '../../lib/asset-preview';
-import { planAttachment, type Attachment, type AttachmentKind, type PromptCapabilities } from '../../lib/attachments';
+import { folderMeta, planAttachment, type Attachment, type AttachmentKind, type PromptCapabilities } from '../../lib/attachments';
 import '../../styles/attachments.css';
 
-export const kindLabels: Record<AttachmentKind, string> = { image: 'Image', audio: 'Audio', 'text-paste': 'Pasted text', file: 'File', selection: 'Selection' };
-const kindIcons: Record<AttachmentKind, string> = { image: 'Gallery', audio: 'Paperclip2', 'text-paste': 'DocumentText', file: 'Paperclip2', selection: 'Code1' };
+export const kindLabels: Record<AttachmentKind, string> = { image: 'Image', audio: 'Audio', 'text-paste': 'Pasted text', file: 'File', selection: 'Selection', folder: 'Folder' };
+const kindIcons: Record<AttachmentKind, string> = { image: 'Gallery', audio: 'Paperclip2', 'text-paste': 'DocumentText', file: 'Paperclip2', selection: 'Code1', folder: 'Folder2' };
 
 export function AttachmentIcon(props: { kind: AttachmentKind; size?: number }) { return <Icon name={kindIcons[props.kind]} size={props.size ?? 12} class="att-icon" />; }
 
@@ -17,7 +17,7 @@ export function attachmentBlockReason(item: Attachment, capabilities?: PromptCap
 }
 
 function describe(item: Attachment, reason?: string): string {
-  const parts = [kindLabels[item.kind], item.size ? formatAssetBytes(item.size) : '', reason ? `unavailable, ${reason}` : ''].filter(Boolean);
+  const parts = [kindLabels[item.kind], folderMeta(item) ?? (item.size ? formatAssetBytes(item.size) : ''), item.pages ? `${item.pages} ${item.pages === 1 ? 'page' : 'pages'}` : '', reason ? `unavailable, ${reason}` : ''].filter(Boolean);
   return `${item.name}, ${parts.join(', ')}. Open preview`;
 }
 

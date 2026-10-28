@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'solid-js/web';
 import { createSignal } from 'solid-js';
 import { AttachMenu, DropOverlay, AttachmentTray, attachMenuNote, linkReason } from './index';
-import { MAX_FILE_BYTES, createFileAttachment, createPastedText, createWorkspaceFile, type PromptCapabilities } from '../../lib/attachments';
+import { MAX_FILE_BYTES, createFileAttachment, createFolderAttachment, createPastedText, createWorkspaceFile, type PromptCapabilities } from '../../lib/attachments';
 import { formatAssetBytes } from '../../lib/asset-preview';
 
 const cleanup: (() => void)[] = [];
@@ -138,5 +138,33 @@ describe('AttachmentTray', () => {
     const audio = createFileAttachment({ name: 'note.mp3', mime: '', bytes: new Uint8Array(4), source: 'picked' });
     const root = mount(() => <AttachmentTray items={[createPastedText('a\n'.repeat(20)), audio]} capabilities={all} onOpen={() => {}} onRemove={() => {}} />);
     expect(tiles(root).map(t => t.querySelector('.att-tile-ext')?.textContent)).toEqual(['TXT', 'MP3']);
+  });
+});
+
+describe('uploads end to end pieces (#91)', () => {
+  const tiles = (root: Element) => [...root.querySelectorAll<HTMLElement>('.att-tile')];
+  it('lists every attach path the design names when each has a handler', () => {
+    const run = () => {};
+    const root = mount(() => <AttachMenu agentName="Claude" handlers={{ upload: run, image: run, screenshot: run, file: run, selection: run, folder: run, session: run }} onClose={() => {}} />);
+    expect(items(root).map(i => i.querySelector('.att-menu-label')?.textContent)).toEqual(['Upload files', 'Add image', 'Paste screenshot', 'Current file', 'Selection', 'Folder', 'Earlier session']);
+  });
+  it('shows the PDF page count only when it was read, and the folder file count', () => {
+    const pdf = { ...createFileAttachment({ name: 'spec.pdf', mime: 'application/pdf', bytes: new Uint8Array(2048), source: 'picked' }), pages: 12 };
+    const unread = createFileAttachment({ name: 'locked.pdf', mime: 'application/pdf', bytes: new Uint8Array(1024), source: 'picked' });
+    const folder = createFolderAttachment({ name: 'styles', text: 'outline', files: 14, truncated: false, path: 'ui/src/styles', source: 'workspace-file' });
+    const big = createFolderAttachment({ name: 'src', text: 'outline', files: 180, truncated: true, path: 'src', source: 'workspace-file' });
+    const root = mount(() => <AttachmentTray items={[pdf, unread, folder, big]} capabilities={all} onOpen={() => {}} onRemove={() => {}} />);
+    expect(tiles(root).map(t => t.querySelector('.att-tile-meta')?.textContent)).toEqual(['12 pages · 2.0 KiB', '1.0 KiB', '14 files', '180+ files']);
+    expect(tiles(root)[2].querySelector('.att-tile-ext')?.textContent).toBe('DIR');
+    expect(tiles(root)[2].title).toContain('added by Span (not an ACP content type)');
+  });
+  it('explains a stored link and shows the stored path once the copy exists', () => {
+    const caps: PromptCapabilities = { image: true, audio: false, embeddedContext: false, storeLinks: true };
+    const item = createFileAttachment({ name: 'data.bin', mime: 'application/octet-stream', bytes: new Uint8Array([1, 2]), source: 'picked' });
+    expect(linkReason(item, caps)).toBe('This agent cannot take this content inline, so Span saves it to Uploads and sends a link to that copy. The agent must be able to read that file.');
+    const stored = { ...item, uploadId: 'u1', path: '/data/uploads/open/u1/data.bin' };
+    const root = mount(() => <AttachmentTray items={[stored]} capabilities={caps} onOpen={() => {}} onRemove={() => {}} />);
+    expect(tiles(root)[0].dataset.state).toBe('link');
+    expect(tiles(root)[0].title).toContain('/data/uploads/open/u1/data.bin');
   });
 });

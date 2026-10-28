@@ -637,7 +637,12 @@ export function buildPrompt(message: string, items: readonly Attachment[], caps:
     else if (plan.mode === "text" && item.text !== undefined) {
       const mark = fence(item.text);
       inline.push(`${item.path ?? item.name}:\n${mark}\n${item.text}\n${mark}`);
-    } else blocked.push({ item, reason: plan.mode === "audio" ? "Span cannot send audio to agents yet." : "The content is no longer available." });
+    } else {
+      blocked.push({ item, reason: plan.mode === "audio" ? "Span cannot send audio to agents yet." : "The content is no longer available." });
+      continue;
+    }
+    // A folder (Span-side, not an ACP type) goes out as its outline plus a link to the folder itself.
+    if (item.kind === "folder" && item.path) attachments.push({ kind: "resourceLink", uri: fileUri(root, item.path), name: item.name, mimeType: "inode/directory", description: "Folder; the outline lists its first entries." });
   }
   return { text: inline.length ? `${message}${message ? "\n\n" : ""}Attached:\n\n${inline.join("\n\n")}` : message, attachments, blocked };
 }
