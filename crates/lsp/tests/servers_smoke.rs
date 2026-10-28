@@ -1348,13 +1348,15 @@ async fn jdtls_pom_less_project_with_two_files_and_unicode() {
     .await;
     let t = h.text("src/demo/App.java").await;
     assert!(t.contains("\"😀日本\"; int k = 0; k = sreturn Helper"));
+    let expected = before(&t, "sreturn");
+    // Wait for the diagnostic this edit causes: an earlier, unrelated one (the package
+    // mismatch) may arrive first and must not satisfy the wait.
     let d = h
         .diagnostics("src/demo/App.java", "unicode java errors", |d| {
-            !d.is_empty()
+            d.iter().any(|d| d.range.start == expected)
         })
         .await;
     let line = 4;
-    let expected = before(&t, "sreturn");
     assert!(
         d.iter().any(|d| d.range.start == expected),
         "expected a diagnostic starting at the UTF-16 position {expected:?}, got {d:?}"
