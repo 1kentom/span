@@ -21,7 +21,7 @@ import { UpdatesSettings } from "./components/UpdatesSettings";
 import { agentUpdateError, agentUpdates, agentUpdatesBusy, appUpdate, appUpdateBusy, checkAllUpdates } from "./lib/updates";
 import { absolutePath, relativePath, fileName, parentPath, contextMenuPosition, isContextMenuKey } from "./lib/navigation";
 import { SettingsPage } from "./components/SettingsPage";
-import { afterNextPaint, collectStartupTimings, markStartup, STARTUP_MARKS } from "./lib/startup";
+import { afterNextPaint, collectStartupTimings, markStartup, readBootTheme, rememberBootTheme, STARTUP_MARKS, type BootTheme } from "./lib/startup";
 import { createWorkbench, settleIntent, SETTINGS_TAB, isSettingsBuffer, tabName, type EditorGroup } from "./stores/workbench";
 import { AttachmentTab, createAttachmentTabs, type AttachmentTabView } from "./components/attachments";
 import { isViewerTab } from "./lib/viewer-tabs";
@@ -114,7 +114,10 @@ export default function App() {
   const [nativeActions, setNativeActions] = createSignal<ReadonlySet<ActionId>>(new Set(isDesktop ? ["closeTab"] : []));
   const [cursor, setCursor] = createSignal<EditorCursor>({ line: 1, column: 1, from: 0, to: 0, selectedText: "" });
   const [reveal, setReveal] = createSignal<{ path: string; line: number; column?: number }>();
-  const theme = () => w.settings().theme.toLowerCase() as "dark" | "light" | "purple";
+  // Until the saved session and settings are applied, keep the theme the last run painted with.
+  const bootTheme = readBootTheme();
+  const [settingsApplied, setSettingsApplied] = createSignal(false);
+  const theme = (): BootTheme => (!settingsApplied() && bootTheme) || w.settings().theme.toLowerCase() as BootTheme;
   const platform = currentPlatform();
   const bindings = createMemo(() => resolveKeybindings(w.settings().keybindings, platform));
   const rawKeybindings = createMemo(() => {
@@ -267,7 +270,7 @@ export default function App() {
     const observer = new ResizeObserver(entries => { const width = entries[0]?.contentRect.width; if (width) setCenterWidth(width); });
     observer.observe(centerElement); onCleanup(() => observer.disconnect());
     const resize = () => setWindowWidth(window.innerWidth); window.addEventListener("resize", resize); onCleanup(() => window.removeEventListener("resize", resize));
-    window.addEventListener("keydown", keyboard, true); window.addEventListener("beforeunload", beforeUnload); void w.initialize(applyStartup).then(async () => { markStartup(STARTUP_MARKS.sessionReady); afterNextPaint(() => void api.reportStartupTimings(collectStartupTimings()).catch(() => undefined)); await refreshRecentProjects(); const unlisten = await api.onOpenWorkspaceRequested(applyStartup); if (disposed) unlisten(); else unlistenStartup = unlisten; });
+    window.addEventListener("keydown", keyboard, true); window.addEventListener("beforeunload", beforeUnload); void w.initialize(applyStartup).then(async () => { setSettingsApplied(true); markStartup(STARTUP_MARKS.sessionReady); afterNextPaint(() => void api.reportStartupTimings(collectStartupTimings()).catch(() => undefined)); await refreshRecentProjects(); const unlisten = await api.onOpenWorkspaceRequested(applyStartup); if (disposed) unlisten(); else unlistenStartup = unlisten; });
     if (isDesktop) {
       void api.onWindowFocus(focused => { if (!focused) w.autoSaveWindowBlur(); }).then(unlisten => { if (disposed) unlisten(); else unlistenFocus = unlisten; });
       void api.onOpenRequestError(message => w.setError(message)).then(unlisten => { if (disposed) unlisten(); else unlistenOpenError = unlisten; });
@@ -279,6 +282,7 @@ export default function App() {
   });
   onCleanup(() => { window.removeEventListener("keydown", keyboard, true); window.removeEventListener("beforeunload", beforeUnload); disposed = true; unlistenClose?.(); unlistenNative?.(); unlistenResize?.(); unlistenStartup?.(); unlistenFormatWarning?.(); unlistenFocus?.(); unlistenOpenError?.(); endPanelDrag?.(); });
   createEffect(() => { document.documentElement.dataset.theme = theme(); });
+  createEffect(() => { if (settingsApplied()) rememberBootTheme(theme()); });
   const configuredZoomLevel = createMemo(() => w.settings().zoomLevel);
   createEffect(on([w.workspaceGeneration, configuredZoomLevel], ([, level], previous) => { if (level !== null) applyZoom(() => zoom.setLevel(level)); else if (previous && previous[1] !== null) applyZoom(zoom.reset); }, { defer: true }));
   createEffect(on(w.workspaceGeneration, () => { setFileAction(undefined); fileDrag.cancel(); setContext(undefined); }, { defer: true }));

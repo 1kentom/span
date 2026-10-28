@@ -51,3 +51,25 @@ export function afterNextPaint(callback: () => void, fallbackMs = 1000) {
   const timer = setTimeout(run, fallbackMs);
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => setTimeout(() => { clearTimeout(timer); run(); }, 0));
 }
+
+export type BootTheme = "dark" | "light" | "purple";
+
+/** localStorage key read by public/boot.js before the bundle loads. Keep the two in step. */
+export const THEME_STORAGE_KEY = "span.theme";
+
+/** The `--canvas` token of each theme in styles/workbench.css, painted before any UI exists. */
+export const CANVAS_COLORS: Record<BootTheme, string> = { dark: "#090909", light: "#eeeff0", purple: "#080810" };
+
+const isBootTheme = (value: unknown): value is BootTheme => value === "dark" || value === "light" || value === "purple";
+
+type StorageLike = Pick<Storage, "getItem" | "setItem">;
+const defaultStorage = (): StorageLike | undefined => { try { return typeof window === "undefined" ? undefined : window.localStorage; } catch { return undefined; } };
+
+/** The theme saved by the last run, so the first frame matches it before settings load. */
+export function readBootTheme(storage: StorageLike | undefined = defaultStorage()): BootTheme | undefined {
+  try { const value = storage?.getItem(THEME_STORAGE_KEY); return isBootTheme(value) ? value : undefined; } catch { return undefined; }
+}
+
+export function rememberBootTheme(theme: BootTheme, storage: StorageLike | undefined = defaultStorage()) {
+  try { if (storage?.getItem(THEME_STORAGE_KEY) !== theme) storage?.setItem(THEME_STORAGE_KEY, theme); } catch { /* storage can be unavailable */ }
+}
