@@ -86,10 +86,10 @@ function TraitChip(props: { trait: ModelTrait }) {
 }
 
 /** A provider-prefixed model reads without its prefix inside a cost tier ("opencode/Beam Free" becomes "Beam Free"); the full name stays in the tooltip. */
-const shownName = (choice: { value: string; name: string }) => (modelCost(choice) ? choice.name.replace(/^[^/\s]+\//, "") : choice.name);
+export const shownName = (choice: { value: string; name: string }) => (modelCost(choice) ? choice.name.replace(/^[^/\s]+\//, "") : choice.name);
 
 /** True when another model has the same name once provider prefixes are dropped, so the row needs its provider to tell them apart. */
-const ambiguous = (choices: readonly { value: string; name: string }[], choice: { value: string; name: string }) =>
+export const ambiguous = (choices: readonly { value: string; name: string }[], choice: { value: string; name: string }) =>
   Boolean(modelCost(choice)) && choices.some((other) => other.value !== choice.value && modelCost(other) && shownName(other) === shownName(choice));
 
 /** The model popover: a provider row that opens the agent popover, the agent's model list, then the effort slider. */
