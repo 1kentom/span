@@ -33,7 +33,7 @@ jobs:
       ui: ${{ github.event_name != 'pull_request' || steps.filter.outputs.ui == 'true' }}
       web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
       release: ${{ github.event_name != 'pull_request' || steps.filter.outputs.release == 'true' }}
-      full: ${{ github.event_name != 'pull_request' || steps.filter.outputs.platform == 'true' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+      servers: ${{ github.event_name != 'pull_request' || steps.filter.outputs.servers == 'true' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,7 +61,7 @@ jobs:
               - 'scripts/release/**'
               - '.github/workflows/release-*.yml'
               - '.github/workflows/refresh-release-metadata.yml'
-            platform:
+            servers:
               - 'crates/lsp/**'
               - 'crates/terminal*/**'
               - 'apps/desktop/src/menu*'
@@ -185,11 +185,11 @@ jobs:
         if: needs.changes.outputs.web == 'true'
         run: node --test apps/web/scripts/sync-releases.test.mjs
 
-  # ---------------------------------------------------------------- full set
+  # ---------------------------------------------------------------- slower jobs (path filtered or main only)
   e2e:
     name: e2e (playwright)
     needs: changes
-    if: needs.changes.outputs.ui == 'true' || needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -231,7 +231,7 @@ jobs:
   desktop-build:
     name: desktop-build (ubuntu-24.04)
     needs: changes
-    if: needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -254,17 +254,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm desktop:build --no-bundle
 
-  full:
-    name: full (${{ matrix.os }})
-    needs: changes
-    if: needs.changes.outputs.full == 'true'
+  # Windows and macOS run on every pull request, in parallel with the Linux jobs, with no path filter.
+  check:
+    name: check (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Windows is known-broken (issue #77); the owner chose to proceed without it for now.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -277,16 +274,15 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: full
+          shared-key: check
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: cargo clippy --workspace --all-targets -- -D warnings
-        if: runner.os == 'Windows'
       - name: Diagnose Windows desktop test manifests
         if: runner.os == 'Windows'
         shell: pwsh
@@ -310,12 +306,11 @@ jobs:
           # The unchanged test step below establishes runtime success or failure.
           exit 0
       - run: cargo test --workspace --no-fail-fast
-      - run: pnpm desktop:build --no-bundle
 
   real-servers:
     name: real language servers (ubuntu-24.04)
     needs: changes
-    if: needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.servers == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -331,6 +326,8 @@ jobs:
           shared-key: lsp
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Linux webview dependencies
+        run: sudo apt-get update && sudo apt-get install -y ${{ env.WEBVIEW_APT }} build-essential curl wget file
       - name: Cache downloaded language servers
         uses: actions/cache@v4
         with:
@@ -341,15 +338,23 @@ jobs:
           SPAN_LSP_TEST_CACHE: ${{ runner.temp }}/span-lsp-server-cache
         run: |
           export JAVA_HOME="$JAVA_HOME_25_X64"
-          run_servers() { cargo test -p span-lsp --features real-servers --test servers_smoke --no-fail-fast; }
-          # Language servers are flaky on shared runners (for example jdtls exit status): retry once.
-          run_servers || { echo "First attempt failed, retrying once"; run_servers; }
+          # rust-analyzer diagnostic delivery is timing sensitive: retry a failed run once.
+          cmd="cargo test -p span-lsp --features real-servers --test servers_smoke --no-fail-fast"
+          $cmd || $cmd
+      - name: Real server tests through the desktop language server service
+        env:
+          SPAN_LSP_TEST_CACHE: ${{ runner.temp }}/span-lsp-server-cache
+        run: |
+          export JAVA_HOME="$JAVA_HOME_25_X64"
+          # rust-analyzer diagnostic delivery is timing sensitive: retry a failed run once.
+          cmd="cargo test -p span-desktop --features real-servers --test real_servers --no-fail-fast"
+          $cmd || $cmd
 
   # One result to look at. Jobs skipped by the path filter count as success.
   gate:
     name: gate
     if: always()
-    needs: [changes, fmt, ui, clippy, test, meta, e2e, desktop-build, full, real-servers]
+    needs: [changes, fmt, ui, clippy, test, meta, e2e, desktop-build, check, real-servers]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -3,7 +3,7 @@ import type { Settings_Serialize as SettingsValue, SettingsScope } from "../bind
 import Icon from "./Icon";
 import "../styles/settings.css";
 
-type Section = "Appearance" | "Editor" | "Files" | "Keyboard Shortcuts" | "Agents" | "Tools" | "Workspace" | "JSONC";
+type Section = "Appearance" | "Editor" | "Files" | "Keyboard Shortcuts" | "Agents" | "Tools" | "Language servers" | "Updates" | "Workspace" | "JSONC";
 export interface SettingsPageProps {
   settings: SettingsValue;
   workspaceName?: string;
@@ -23,7 +23,9 @@ export interface SettingsPageProps {
   onSaveReady?: (save: () => Promise<boolean>) => void;
   shortcuts?: JSX.Element;
   tools?: JSX.Element;
+  languageServers?: JSX.Element;
   onOpenTools?: () => void;
+  updates?: JSX.Element;
   onOpenAgents?: () => void;
   agentStatus?: string;
 }
@@ -46,6 +48,8 @@ const sections: { name: Section; icon: string; description: string }[] = [
   { name: "Keyboard Shortcuts", icon: "Command", description: "Find commands and make their shortcuts your own." },
   { name: "Agents", icon: "collaborators", description: "Manage agent connections for this workspace." },
   { name: "Tools", icon: "Code1", description: "Inspect available command line tools on this device." },
+  { name: "Language servers", icon: "Code1", description: "Completions, hover and diagnostics from language servers." },
+  { name: "Updates", icon: "Refresh2", description: "Check whether a newer Span or agent version exists. Nothing is installed automatically." },
   { name: "Workspace", icon: "Folder2", description: "Panels and the defaults for this project." },
   { name: "JSONC", icon: "Setting2", description: "Edit workspace settings with comments and trailing commas." },
 ];
@@ -112,6 +116,9 @@ export function SettingsPage(props: SettingsPageProps) {
     { key: "fontSize", section: "Editor", label: "Editor font size", description: "Size of text in the code editor, in pixels.", kind: "number", defaultValue: 13, min: 8, max: 40 },
     { key: "tabSize", section: "Editor", label: "Tab size", description: "Number of spaces in each indentation level.", kind: "number", defaultValue: 2, min: 1, max: 8 },
     { key: "wordWrap", section: "Editor", label: "Word wrap", description: "Wrap long lines at the width of the editor.", kind: "toggle", defaultValue: false },
+    { key: "tabLimitEnabled", section: "Editor", label: "Limit open tabs", description: "Close the least recently used clean tabs when opening files beyond the limit. Unsaved tabs are kept.", kind: "toggle", defaultValue: true },
+    { key: "tabLimit", section: "Editor", label: "Maximum open tabs", description: "Maximum number of open file tabs. The limit applies across editor groups unless per-group is enabled.", kind: "number", defaultValue: 10, min: 1, max: 200 },
+    { key: "tabLimitPerGroup", section: "Editor", label: "Limit tabs per editor group", description: "Apply the maximum separately to each editor group instead of across the workspace.", kind: "toggle", defaultValue: false },
     { key: "autoSave", section: "Files", label: "Auto Save", description: "Save changed files after a delay, when the editor loses focus, or when this window loses focus. Off keeps saving manual.", kind: "select", defaultValue: "off", options: [{ value: "off", label: "Off" }, { value: "afterDelay", label: "After delay" }, { value: "onFocusChange", label: "On focus change" }, { value: "onWindowChange", label: "On window change" }] },
     { key: "autoSaveDelay", section: "Files", label: "Auto Save delay", description: "Delay in milliseconds after the last edit. Applies only when Auto Save is set to After delay.", kind: "number", defaultValue: 1000, min: 0, max: 3600000 },
     { key: "formatOnSave", section: "Files", label: "Format on save", description: "Run the formatter configured for the file language before saving. Configure formatter commands in JSONC.", kind: "toggle", defaultValue: false },
@@ -122,11 +129,11 @@ export function SettingsPage(props: SettingsPageProps) {
   const words = createMemo(() => query().replace(/(?:^|\s)@modified(?=\s|$)/gi, " ").replace(/@id:/gi, "").trim().toLowerCase().split(/\s+/).filter(Boolean));
   const searching = createMemo(() => words().length > 0 || modifiedOnly());
   const matches = (text: string) => words().every(word => text.toLowerCase().includes(word));
-  const aliases: Partial<Record<keyof SettingsValue, string>> = { autoSave: "files.autoSave", autoSaveDelay: "files.autoSaveDelay", fontSize: "editor.fontSize", editorFontFamily: "editor.fontFamily", tabSize: "editor.tabSize", wordWrap: "editor.wordWrap", formatOnSave: "editor.formatOnSave", zoomLevel: "window.zoomLevel" };
+  const aliases: Partial<Record<keyof SettingsValue, string>> = { autoSave: "files.autoSave", autoSaveDelay: "files.autoSaveDelay", fontSize: "editor.fontSize", editorFontFamily: "editor.fontFamily", tabSize: "editor.tabSize", wordWrap: "editor.wordWrap", tabLimitEnabled: "workbench.editor.limit.enabled", tabLimit: "workbench.editor.limit.value", tabLimitPerGroup: "workbench.editor.limit.perEditorGroup", formatOnSave: "editor.formatOnSave", zoomLevel: "window.zoomLevel" };
   const visiblePreferences = createMemo(() => preferences().filter(item => (!modifiedOnly() || configured(item.key, item.defaultValue)) && (searching() ? matches(`${item.label} ${item.description} ${item.key} ${aliases[item.key] || ""} ${item.section}`) : item.section === section())));
   const showThemes = () => (!modifiedOnly() || configured("theme", "Dark")) && (searching() ? matches("color theme appearance dark light purple") : section() === "Appearance");
   const page = () => sections.find(item => item.name === section())!;
-  const matchingSections = createMemo(() => searching() && !modifiedOnly() ? sections.filter(item => ["Keyboard Shortcuts", "Agents", "Tools", "JSONC"].includes(item.name) && matches(`${item.name} ${item.description}`)) : []);
+  const matchingSections = createMemo(() => searching() && !modifiedOnly() ? sections.filter(item => ["Keyboard Shortcuts", "Agents", "Tools", "Language servers", "Updates", "JSONC"].includes(item.name) && matches(`${item.name} ${item.description}`)) : []);
   const disabled = () => busy() || dirty();
   async function change(patch: Partial<SettingsValue>) {
     if (disabled()) return;
@@ -192,6 +199,8 @@ export function SettingsPage(props: SettingsPageProps) {
         <Show when={!searching() && section() === "Keyboard Shortcuts"}><Show when={!dirty()} fallback={<p class="sp-help">Keyboard preferences are available after you finish reviewing the JSONC draft.</p>}>{props.shortcuts}</Show></Show>
         <Show when={!searching() && section() === "Agents"}><div class="sp-information"><Icon name="collaborators" size={25} /><h2>Agent connections</h2><p>Install and connect an Agent Client Protocol agent from the assistant panel. Agent permissions and suggested edits stay reviewable in the workspace.</p><dl><dt>Connection</dt><dd>{props.agentStatus || "Managed in the assistant panel"}</dd></dl><Show when={props.onOpenAgents}><button class="button" onClick={props.onOpenAgents}>Manage agents<Icon name="arrow-right4" size={14} /></button></Show></div></Show>
         <Show when={!searching() && section() === "Tools"}>{props.tools}</Show>
+        <Show when={!searching() && section() === "Language servers"}><Show when={!dirty()} fallback={<p class="sp-help">Language server preferences are available after you finish reviewing the JSONC draft.</p>}>{props.languageServers}</Show></Show>
+        <Show when={!searching() && section() === "Updates"}>{props.updates}</Show>
         <Show when={!searching() && section() === "Workspace"}><div class="sp-information sp-workspace-info"><h2>Settings scope</h2><p>User settings apply across projects. Workspace settings override user values for this project. Reset removes the value in the selected scope so the inherited value takes effect. Comments and trailing commas are supported.</p><p>Current file: <code>{settingsPath()}</code></p><button class="sp-text-button" onClick={() => go("JSONC")}>Open settings JSONC<Icon name="arrow-right4" size={13} /></button></div></Show>
         <Show when={!props.onOpenJsonc && !searching() && section() === "JSONC"}><div class="sp-json-section"><div class="sp-json-path"><code>{settingsPath()}</code><span>{dirty() ? "Unsaved changes" : "Saved"}</span></div><Show when={externalChange()}><div class="sp-banner"><Icon name="Warning2" size={15} /><span>Saved settings changed while you were editing. Your draft has been kept. Reload to review the saved version.</span></div></Show><textarea class="sp-json" aria-label="Settings JSONC" aria-describedby="sp-json-help" value={json()} spellcheck={false} disabled={busy()} onInput={event => { setJson(event.currentTarget.value); setError(""); setNotice(""); }} /><p class="sp-help" id="sp-json-help">Saving validates the full settings file before applying it. An invalid draft stays here for correction. Auto Save never applies this draft.</p><Show when={reloadReview()}><div class="sp-discard-review" role="group" aria-label="Discard JSONC draft"><span>Discard your unsaved JSONC changes and load the saved file?</span><button class="button" disabled={busy()} onClick={() => setReloadReview(false)}>Keep editing</button><button class="button" disabled={busy()} onClick={() => void reload()}>Discard and reload</button></div></Show><div class="sp-json-actions"><button class="button" disabled={busy()} onClick={() => dirty() ? setReloadReview(true) : void reload()}>Reload saved</button><button class="button primary" disabled={busy() || !dirty()} onClick={() => void saveJson()}>{busy() ? "Saving…" : "Save settings"}</button></div></div></Show>
         <Show when={props.unsupportedKeys?.length}><p class="sp-help">Preserved without applying: {props.unsupportedKeys!.join(", ")}. Extension preferences and language override blocks are not implemented.</p></Show>

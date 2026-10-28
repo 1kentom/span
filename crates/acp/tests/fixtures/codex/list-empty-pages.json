@@ -1,0 +1,26 @@
+{
+  "quirk": "session/list returns empty pages that still carry a cursor (four pages to find one session in the live run): the client follows the cursor until it is null, within a time budget and a page cap, instead of stopping after five pages.",
+  "drive": [
+    {
+      "do": "listSessions",
+      "expectSessions": [
+        "01a18323-0561-7092-bf8c-f94a57ada096",
+        "01a05123-0000-7000-8000-000000000007"
+      ]
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/list",
+      "params": {
+        "cursor": null
+      }
+    },
+    {
+      "method": "session/list",
+      "params": {
+        "cursor": "2026-09-03T10:00:00Z|01a06000-0000-7000-8000-000000000006"
+      }
+    }
+  ]
+}

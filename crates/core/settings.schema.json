@@ -80,6 +80,7 @@
       "propertyNames": {
         "enum": [
           "quickOpen",
+          "toggleFiles",
           "focusFiles",
           "openFile",
           "commandPalette",
@@ -96,6 +97,7 @@
           "toggleWordWrap",
           "markdownPreview",
           "formatDocument",
+          "formatWithLanguageServer",
           "goToLine",
           "zoomIn",
           "zoomOut",
@@ -254,6 +256,88 @@
       "type": "boolean",
       "default": false,
       "description": "VS Code compatible alias for tabLimitPerGroup. Dotted keys take precedence within the same settings scope."
+    },
+    "languageServers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Language server behaviour. Servers are downloaded only when autoInstall is true or an install is requested.",
+      "properties": {
+        "autoInstall": {
+          "type": "boolean",
+          "default": false,
+          "description": "Download missing language servers on first use."
+        },
+        "enabled": {
+          "type": "object",
+          "description": "Per-server switches. A server that is not listed is enabled.",
+          "propertyNames": {
+            "enum": [
+              "vtsls",
+              "html",
+              "css",
+              "json",
+              "rust-analyzer",
+              "basedpyright",
+              "jdtls"
+            ]
+          },
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "runProjectCode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Let rust-analyzer and JDT LS run the project's own build code (build scripts, procedural macros, cargo check on save, Gradle and Maven import). Honoured only in your user settings; ignored in a workspace .span/settings.jsonc."
+        },
+        "javaHome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "description": "JDK home used to run JDT LS instead of searching the host."
+        },
+        "nodePath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "description": "Node.js executable used to run the npm based servers instead of searching the host."
+        }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": false,
+      "properties": {
+        "delegation": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Offer the span-agents delegation tools to new sessions of agents that advertise MCP over HTTP. Delegated agents' permission requests and edits still go to you. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+            }
+          }
+        }
+      }
+    },
+    "updates": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": false,
+      "properties": {
+        "checkOnLaunch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Check once per launch whether a newer Span release or agent version exists. Check-only: nothing is downloaded or installed, and the request is a plain GET with no identifiers. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+        }
+      }
     }
   },
   "description": "Span supports the documented built-in settings and selected VS Code keys. Other keys are preserved in JSONC but have no effect."

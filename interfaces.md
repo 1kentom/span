@@ -21,6 +21,7 @@ cargo run --release -p span-desktop --features dev-tools --bin export-bindings
 | `open_buffer` | Return initial text, language, revision, and saved revision. |
 | `edit_buffer_delta` | Apply ordered UTF-16 changes against an expected revision and return revision metadata without resending the full document. |
 | `save_buffer`, `discard_buffer` | Save a checked revision or restore the authoritative saved state. |
+| `format_buffer`, `cancel_format_buffer` | Format an expected buffer revision or cancel active formatting for its path. Results are guarded against newer revisions and workspace changes. |
 | `search`, `search_stream`, `cancel_search` | Run bounded search or stream channel results with a cancellation identity. |
 | `get_settings`, `update_settings`, `update_settings_jsonc` | Read and validate effective settings, including JSONC input. |
 | `syntax` | Return bounded highlighting, folds, guides, language, and revision. |

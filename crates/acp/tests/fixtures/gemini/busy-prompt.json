@@ -1,0 +1,52 @@
+{
+  "quirk": "Gemini accepts a second session/prompt by silently aborting the first: a busy session never gets a second prompt.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "promptBusy",
+      "text": "long task",
+      "second": "again",
+      "expectError": "already running"
+    }
+  ],
+  "events": [
+    {
+      "kind": "_step",
+      "do": "secondPrompt",
+      "ok": false
+    },
+    {
+      "kind": "complete",
+      "stopReason": "cancelled"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/prompt",
+      "params": {
+        "prompt": [
+          {
+            "text": "long task"
+          }
+        ]
+      }
+    },
+    {
+      "method": "session/cancel"
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/prompt",
+      "params": {
+        "prompt": [
+          {
+            "text": "again"
+          }
+        ]
+      }
+    }
+  ]
+}

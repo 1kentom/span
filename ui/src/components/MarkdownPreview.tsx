@@ -20,7 +20,17 @@ export interface MarkdownPreviewProps {
 }
 
 type Destination = { kind: "anchor" | "external" | "file"; value: string } | null;
-interface RenderContext extends Env { documentPath: string; workspaceRoot: string; canRun?: boolean }
+interface RenderContext extends Env {
+  documentPath: string;
+  workspaceRoot: string;
+  canRun?: boolean;
+  /**
+   * Agent output: agents name files by absolute path, often with a `:line` or `:line:column` suffix. With this set,
+   * an absolute path inside the workspace root is a file link and the suffix is dropped. Documents keep the
+   * relative-only policy.
+   */
+  agentPaths?: boolean;
+}
 export interface MarkdownBlock { tokens: Token[]; key: string; lines: number; headingIds: string[] }
 const escape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 
@@ -37,14 +47,23 @@ export function markdownDestination(raw: string, context: RenderContext): Destin
       return { kind: "external", value: url.href };
     } catch { return null; }
   }
-  if (/^[a-z][\w+.-]*:/i.test(raw) || raw.startsWith("/")) return null;
-  let relative: string;
-  try { relative = decodeURIComponent(raw.split(/[?#]/, 1)[0]); } catch { return null; }
-  if (!relative || /[\u0000-\u001f\u007f\\:]/.test(relative) || relative.startsWith("/")) return null;
   const root = context.workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  let path = raw;
+  let absolute = false;
+  if (context.agentPaths) {
+    path = path.replace(/(?<=[^/:]):\d+(?::\d+)?$/, "");
+    if (root && path.startsWith(`${root}/`)) {
+      path = path.slice(root.length + 1);
+      absolute = true;
+    }
+  }
+  if (/^[a-z][\w+.-]*:/i.test(path) || path.startsWith("/")) return null;
+  let relative: string;
+  try { relative = decodeURIComponent(path.split(/[?#]/, 1)[0]); } catch { return null; }
+  if (!relative || /[\u0000-\u001f\u007f\\:]/.test(relative) || relative.startsWith("/")) return null;
   const document = context.documentPath.replace(/\\/g, "/");
   if (!root || !document.startsWith(`${root}/`)) return null;
-  const segments = document.slice(root.length + 1).split("/");
+  const segments = absolute ? [""] : document.slice(root.length + 1).split("/");
   segments.pop();
   for (const segment of relative.split("/")) {
     if (segment === "..") { if (!segments.length) return null; segments.pop(); }

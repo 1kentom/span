@@ -1,0 +1,53 @@
+{
+  "quirk": "After the user rejects a permission, OpenCode ends the turn with stopReason cancelled: Complete carries hint rejectedByUser. A cancelled turn without a rejection has no hint. OpenCode's build and plan modes raise no bypass notice.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "Use your file read tool to read present.txt and tell me its content.",
+      "permission": "reject"
+    },
+    {
+      "do": "prompt",
+      "text": "Count from 1 to 300"
+    }
+  ],
+  "events": [
+    {
+      "kind": "permission"
+    },
+    {
+      "kind": "permissionResolved"
+    },
+    {
+      "kind": "tool",
+      "status": "failed"
+    },
+    {
+      "kind": "complete",
+      "stopReason": "cancelled",
+      "hint": "rejectedByUser"
+    },
+    {
+      "kind": "_step",
+      "do": "prompt"
+    },
+    {
+      "kind": "complete",
+      "stopReason": "cancelled",
+      "hint": null
+    },
+    {
+      "kind": "_step",
+      "do": "prompt"
+    }
+  ],
+  "absent": [
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    }
+  ]
+}

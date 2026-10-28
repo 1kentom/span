@@ -15,35 +15,35 @@ const SUPPORTED_AGENTS: &[&str] = &[
     "opencode",
 ];
 #[derive(Deserialize)]
-struct Registry {
+pub(crate) struct Registry {
     version: String,
-    agents: Vec<Entry>,
+    pub(crate) agents: Vec<Entry>,
 }
 #[derive(Deserialize)]
-struct Entry {
-    id: String,
-    name: String,
-    version: String,
+pub(crate) struct Entry {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) version: String,
     #[serde(default)]
     description: String,
-    repository: Option<String>,
+    pub(crate) repository: Option<String>,
     icon: Option<String>,
-    distribution: Distribution,
+    pub(crate) distribution: Distribution,
 }
 #[derive(Deserialize)]
-struct Distribution {
-    npx: Option<Npx>,
+pub(crate) struct Distribution {
+    pub(crate) npx: Option<Npx>,
 }
 #[derive(Deserialize)]
-struct Npx {
-    package: String,
+pub(crate) struct Npx {
+    pub(crate) package: String,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
 }
 
-async fn registry() -> Result<Registry, String> {
+pub(crate) async fn registry() -> Result<Registry, String> {
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()

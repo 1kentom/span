@@ -1,0 +1,5 @@
+// session/delete answers {} but the next session/list still has the session: the client hides ids the user deleted for the life of the connection and emits a notice with hint deletedStillListed.
+// Shapes from a live capture of claude-agent-acp 0.98.0 (sanitised).
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true}, "loadSession": true, "sessionCapabilities": {"close": {}, "delete": {}, "list": {}, "resume": {}}}, "agentInfo": {"name": "@agentclientprotocol/claude-agent-acp", "title": "Claude Agent", "version": "0.98.0"}, "authMethods": []}}
+{"on": "session/delete", "result": {}}
+{"on": "session/list", "result": {"sessions": [{"sessionId": "312c639d-40d2-4a77-9313-3c2610f18f00", "cwd": "$ROOT", "title": "PONG reply test", "updatedAt": "2026-10-28T15:30:07.386Z"}, {"sessionId": "419929cf-4f9d-43a2-8ffe-c751aaf52a38", "cwd": "$ROOT", "title": "Earlier chat", "updatedAt": "2026-10-28T15:20:00.000Z"}]}}

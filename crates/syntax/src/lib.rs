@@ -89,6 +89,7 @@ enum LanguageId {
     Markdown,
     Rust,
     Python,
+    Java,
 }
 
 impl LanguageId {
@@ -102,6 +103,7 @@ impl LanguageId {
             "md" | "markdown" | "mdown" => Some(Self::Markdown),
             "rs" => Some(Self::Rust),
             "py" | "pyi" => Some(Self::Python),
+            "java" | "jav" => Some(Self::Java),
             _ => None,
         }
     }
@@ -114,6 +116,7 @@ impl LanguageId {
             Self::Markdown => "markdown",
             Self::Rust => "rust",
             Self::Python => "python",
+            Self::Java => "java",
         }
     }
 
@@ -126,6 +129,7 @@ impl LanguageId {
             Self::Markdown => tree_sitter_md::LANGUAGE.into(),
             Self::Rust => tree_sitter_rust::LANGUAGE.into(),
             Self::Python => tree_sitter_python::LANGUAGE.into(),
+            Self::Java => tree_sitter_java::LANGUAGE.into(),
         }
     }
 
@@ -151,6 +155,7 @@ impl LanguageId {
             Self::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK.to_owned(),
             Self::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY.to_owned(),
             Self::Python => tree_sitter_python::HIGHLIGHTS_QUERY.to_owned(),
+            Self::Java => tree_sitter_java::HIGHLIGHTS_QUERY.to_owned(),
         }
     }
 }

@@ -1,0 +1,29 @@
+{
+  "quirk": "agent_thought_chunk text starting `Warning: ` is a warning notice, not a thought.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "hi"
+    }
+  ],
+  "events": [
+    {
+      "kind": "notice",
+      "severity": "warning",
+      "title": "Skipping 2 ignored files"
+    },
+    {
+      "kind": "thought",
+      "text": "Considering the request"
+    }
+  ],
+  "absent": [
+    {
+      "kind": "thought",
+      "text": "Warning: Skipping 2 ignored files"
+    }
+  ]
+}

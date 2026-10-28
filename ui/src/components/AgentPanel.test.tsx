@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   install: vi.fn(),
   onEvent: vi.fn(),
   prompt: vi.fn(),
+  cancel: vi.fn(),
   setConfig: vi.fn(),
   listSessions: vi.fn(),
   resumeSession: vi.fn(),
@@ -29,11 +30,18 @@ vi.mock("../lib/client", () => ({
     agentInstall: mocks.install,
     onAgentEvent: mocks.onEvent,
     agentPrompt: mocks.prompt,
+    agentCancel: mocks.cancel,
     agentSetConfig: mocks.setConfig,
     agentListSessions: mocks.listSessions,
     agentResumeSession: mocks.resumeSession,
     agentNewSession: mocks.newSession,
+    writeClipboard: vi.fn(async () => undefined),
   },
+  agentPresets: vi.fn(async () => []),
+  agentAuthenticateWith: vi.fn(async () => ""),
+  agentChildPermission: vi.fn(async () => undefined),
+  agentCancelTask: vi.fn(async () => undefined),
+  agentDelegationStatus: vi.fn(async () => ({ enabled: false, available: false, reason: null, lead: null, attached: false, tasks: [], decisions: [] })),
 }));
 const managed: InstalledAgent = {
   id: "codex-acp",
@@ -52,6 +60,7 @@ const entries: RegistryAgent[] = ["codex-acp", "claude-acp", "cursor"].map(
     installable: id !== "cursor",
   }),
 );
+const features = { loadSession: true, image: false, audio: false, embeddedContext: false, mcpHttp: false, mcpSse: false, canListSessions: true, canResumeSessions: true, canCloseSessions: false, canDeleteSessions: false };
 const disposers: (() => void)[] = [];
 const flush = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -72,17 +81,26 @@ function mount() {
     [...root.querySelectorAll<HTMLButtonElement>("button")].find((item) =>
       item.textContent?.includes(text),
     )!;
+  /** Shows the connect screen with the curated catalog. Before any session it is already the panel body. */
   const open = async () => {
-    root
-      .querySelector<HTMLButtonElement>(
-        '.agent-composer-button[aria-haspopup="dialog"]',
-      )!
-      .click();
+    await flush();
+    if (!root.querySelector(".agent-catalog")) {
+      root.querySelector<HTMLButtonElement>('[aria-label="Session actions"]')!.click();
+      await flush();
+      button("Connect another agent").click();
+      await flush();
+    }
+  };
+  /** Leaves the connect screen for the session, the way the old menu's dismiss layer closed it. */
+  const close = async () => {
+    root.querySelector<HTMLButtonElement>('[aria-label="Back to session"]')!.click();
     await flush();
   };
-  return { root, button, open, setWorkspace };
+  return { root, button, open, close, setWorkspace };
 }
+const listener = () => mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
 beforeEach(() => {
+  window.localStorage.clear();
   vi.clearAllMocks();
   HTMLElement.prototype.scrollTo = vi.fn();
   mocks.installed.mockResolvedValue([managed]);
@@ -92,6 +110,7 @@ beforeEach(() => {
   mocks.connect.mockResolvedValue("session-1");
   mocks.onEvent.mockResolvedValue(() => undefined);
   mocks.prompt.mockResolvedValue(undefined);
+  mocks.cancel.mockResolvedValue(undefined);
   mocks.setConfig.mockResolvedValue(undefined);
   mocks.listSessions.mockResolvedValue([{ sessionId: "earlier-chat", title: "Earlier fixture chat", updatedAt: null }]);
   mocks.resumeSession.mockResolvedValue("earlier-chat");
@@ -104,10 +123,13 @@ afterEach(() => {
 describe("agent menu", () => {
   it("preserves model selection, streamed Markdown, queued follow-ups and chat resume after connecting a curated agent", async () => {
     const { root, open, button } = mount(); await open(); button("Codex").click(); await flush();
-    const receive = mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
+    const receive = listener();
+    receive({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] });
     receive({ kind: "capabilities", canLoadSession: true, canListSessions: true });
-    receive({ kind: "config", sessionId: "session-1", options: [{ id: "model", name: "Model", category: "model", currentValue: "fast", groups: [{ name: "", choices: [{ value: "fast", name: "Fast model" }, { value: "deep", name: "Deep model" }] }] }] });
-    root.querySelector<HTMLButtonElement>('[aria-label="Model: Fast model"]')!.click(); button("Deep model").click(); await flush();
+    receive({ kind: "config", sessionId: "session-1", options: [{ id: "model", name: "Model", category: "model", currentValue: "fast", groups: [{ name: "", choices: [{ value: "fast", name: "Fast model" }, { value: "deep", name: "Deep model" }] }] }] } as AgentEvent);
+    await flush();
+    root.querySelector<HTMLButtonElement>('[aria-label^="Model:"]')!.click(); await flush();
+    button("Deep model").click(); await flush();
     expect(mocks.setConfig).toHaveBeenCalledWith("model", "deep");
     const input = root.querySelector<HTMLTextAreaElement>("#agent-prompt")!;
     const type = (text: string) => { input.value = text; input.dispatchEvent(new Event("input", { bubbles: true })); };
@@ -115,12 +137,13 @@ describe("agent menu", () => {
     receive({ kind: "text", sessionId: "session-1", text: "**Streamed result**\n\n- preserved formatting" }); await flush();
     expect(root.querySelector(".agent-markdown strong")?.textContent).toBe("Streamed result");
     type("follow up while busy"); root.querySelector<HTMLButtonElement>('[aria-label="Queue follow-up"]')!.click(); await flush();
-    expect(root.querySelector('[aria-label="Queued follow-ups"]')?.textContent).toContain("follow up while busy");
+    expect(root.querySelector('[aria-label="Queued messages"]')?.textContent).toContain("follow up while busy");
     expect(mocks.prompt).toHaveBeenCalledTimes(1);
     receive({ kind: "complete", sessionId: "session-1", stopReason: "end_turn" }); await flush();
-    expect(mocks.prompt).toHaveBeenLastCalledWith("follow up while busy");
+    expect(mocks.prompt).toHaveBeenCalledTimes(2);
+    expect(String(mocks.prompt.mock.lastCall?.[0])).toContain("follow up while busy");
     receive({ kind: "complete", sessionId: "session-1", stopReason: "end_turn" }); await flush();
-    root.querySelector<HTMLButtonElement>('[aria-label="Session options"]')!.click(); await flush();
+    root.querySelector<HTMLButtonElement>('[aria-label="Earlier sessions"]')!.click(); await flush();
     button("Earlier fixture chat").click(); await flush();
     expect(mocks.resumeSession).toHaveBeenCalledWith("earlier-chat");
     expect(mocks.remove).not.toHaveBeenCalled();
@@ -131,11 +154,17 @@ describe("agent menu", () => {
     expect(root.textContent).toContain("Claude Code");
     expect(root.textContent).not.toContain("/private/path/node");
     const row = [...root.querySelectorAll(".agent-catalog-row")].find((item) =>
-      item.textContent?.includes("Custom ACP command"),
+      item.textContent?.includes("Claude Code"),
     )!;
-    expect(row.children[0].classList.contains("icon")).toBe(true);
+    expect(row.children[0].classList.contains("brand-icon") || row.children[0].classList.contains("icon")).toBe(true);
     expect(row.children[1].classList.contains("agent-menu-copy")).toBe(true);
-    expect(row.children[2].classList.contains("icon")).toBe(true);
+    expect(row.children[2].classList.contains("agent-menu-trailing")).toBe(true);
+    // The custom command row keeps its three slots too: icon, text, chevron.
+    const custom = root.querySelector(".sb-custom-toggle")!;
+    expect(custom.textContent).toContain("Custom ACP command");
+    expect(custom.children[0].classList.contains("icon")).toBe(true);
+    expect(custom.children[1].classList.contains("sb-agent-text")).toBe(true);
+    expect(custom.children[2].classList.contains("icon")).toBe(true);
     const search = root.querySelector<HTMLInputElement>(
       '[placeholder="Search agents"]',
     )!;
@@ -170,10 +199,7 @@ describe("agent menu", () => {
     await open();
     button("Codex").click();
     await flush();
-    const listener = mocks.onEvent.mock.calls[0][0] as (
-      event: AgentEvent,
-    ) => void;
-    listener({
+    listener()({
       kind: "proposal",
       sessionId: "session-1",
       proposal: {
@@ -182,7 +208,7 @@ describe("agent menu", () => {
         baseRevision: 0,
         hunks: [{ id: "h1", from: 0, to: 0, before: "", after: "x" }],
       },
-    });
+    } as AgentEvent);
     await open();
     root
       .querySelector<HTMLButtonElement>('[aria-label="Manage Codex"]')!
@@ -208,9 +234,11 @@ describe("agent menu", () => {
     await flush();
     resolve("old-session");
     await flush();
-    expect(root.textContent).toContain("No agent connected");
     expect(root.textContent).not.toContain("Connected and ready");
-    expect(button("Select agent")).toBeTruthy();
+    expect(root.querySelector(".agent-catalog")).not.toBeNull();
+    expect(root.querySelector('[aria-label="Select agent"]')).not.toBeNull();
+    expect(root.querySelector('[aria-label^="Model:"]')).toBeNull();
+    expect(root.querySelector('[aria-label^="Agent:"]')).toBeNull();
   });
 
   it("keeps installation state on its row while search, close, and other agents stay usable", async () => {
@@ -225,7 +253,7 @@ describe("agent menu", () => {
       version: "1.0.0",
       launch: { command: "/managed/claude", args: [], env: {} },
     };
-    const { root, open, button } = mount();
+    const { root, open, close, button } = mount();
     await open();
 
     const claudeRow = () =>
@@ -252,7 +280,8 @@ describe("agent menu", () => {
     expect(mocks.connect).toHaveBeenCalled();
 
     await open();
-    root.querySelector<HTMLButtonElement>(".agent-menu-dismiss")!.click();
+    await close();
+    expect(root.querySelector(".agent-catalog")).toBeNull();
     await open();
     const reopenedSearch = root.querySelector<HTMLInputElement>(
       '[placeholder="Search agents"]',
@@ -371,7 +400,9 @@ describe("agent menu", () => {
 
     await open();
     root.querySelector<HTMLButtonElement>('[aria-label="Manage Codex"]')!.click();
+    expect(root.textContent).not.toContain("The connected session will disconnect first.");
     button("Remove from Span").click();
+    expect(root.textContent).toContain("The connected session will disconnect first.");
     button("Remove from Span").click();
     await flush();
     expect(mocks.disconnect).toHaveBeenCalledTimes(1);
@@ -380,5 +411,24 @@ describe("agent menu", () => {
     finishDisconnect();
     await flush();
     expect(order).toEqual(["disconnected", "removed"]);
+  });
+
+  it("puts a curated agent's local command in the custom row for review instead of running it", async () => {
+    mocks.registry.mockResolvedValue([{ ...entries[2], installable: false }]);
+    const { root, open, button } = mount();
+    await open();
+    button("Cursor").click();
+    await flush();
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(root.querySelector<HTMLInputElement>('[aria-label="ACP command"]')?.value).toBe("cursor-agent acp");
+  });
+
+  it("explains a command that cannot start an ACP session", async () => {
+    mocks.connect.mockRejectedValue(new Error("JSON-RPC error -32601: Method not found"));
+    const { root, open, button } = mount();
+    await open();
+    button("Codex").click();
+    await flush();
+    expect(root.textContent).toContain("This command could not start an ACP session.");
   });
 });

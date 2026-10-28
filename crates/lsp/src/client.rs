@@ -447,6 +447,22 @@ impl LspClient {
         .filter(|k| *k != TextDocumentSyncKind::NONE)
     }
 
+    /// Whether the server wants `textDocument/didSave`: `Some(include_text)` when it
+    /// does, `None` when it does not.
+    pub fn wants_did_save(&self) -> Option<bool> {
+        let caps = self.server_capabilities()?;
+        match caps.text_document_sync? {
+            TextDocumentSyncCapability::Kind(_) => None,
+            TextDocumentSyncCapability::Options(opts) => match opts.save? {
+                TextDocumentSyncSaveOptions::Supported(true) => Some(false),
+                TextDocumentSyncSaveOptions::Supported(false) => None,
+                TextDocumentSyncSaveOptions::SaveOptions(o) => {
+                    Some(o.include_text.unwrap_or(false))
+                }
+            },
+        }
+    }
+
     fn has_capability(&self, f: impl Fn(&ServerCapabilities) -> bool) -> bool {
         self.server_capabilities().map(|c| f(&c)).unwrap_or(false)
     }
@@ -703,6 +719,12 @@ impl LspClient {
             .await
     }
 
+    pub async fn did_save(&self, params: DidSaveTextDocumentParams) -> Result<()> {
+        let value = serde_json::to_value(params)?;
+        self.send_notification("textDocument/didSave".to_string(), Some(value))
+            .await
+    }
+
     pub async fn cancel_request(&self, id: RequestId) -> Result<()> {
         if let Some(pending) = self.pending_requests.write().await.remove(&id) {
             let _ = pending.sender.send(Err(LspError::Cancelled));
@@ -841,7 +863,7 @@ pub fn client_capabilities() -> ClientCapabilities {
                 dynamic_registration: Some(false),
                 will_save: Some(false),
                 will_save_wait_until: Some(false),
-                did_save: Some(false),
+                did_save: Some(true),
             }),
             completion: Some(CompletionClientCapabilities {
                 dynamic_registration: Some(false),

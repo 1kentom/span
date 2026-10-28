@@ -1,7 +1,7 @@
 """Minimal fake LSP server for manager tests.
 
 Usage: fake-lsp-server.py MODE
-Modes: normal, slow-init, bad-init, nodef, hang
+Modes: normal, slow-init, bad-init, nodef, hang, slow-shutdown, save-text, save
 Every message received is appended as one JSON line to $FAKE_LSP_LOG.
 """
 import json
@@ -69,6 +69,10 @@ while True:
             "completionProvider": {},
             "documentFormattingProvider": True,
         }
+        if mode == "save-text":
+            caps["textDocumentSync"]["save"] = {"includeText": True}
+        elif mode == "save":
+            caps["textDocumentSync"]["save"] = True
         if mode != "nodef":
             caps["definitionProvider"] = True
         reply(msg, {"capabilities": caps})
@@ -95,6 +99,8 @@ while True:
     elif method == "textDocument/formatting":
         reply(msg, [])
     elif method == "shutdown":
+        if mode == "slow-shutdown":
+            time.sleep(1.5)
         reply(msg, None)
     elif method == "exit":
         sys.exit(0)

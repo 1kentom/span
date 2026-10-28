@@ -1,0 +1,4 @@
+// Claude drops a stdio MCP server that carries an explicit type: "stdio": stdio servers are sent without type.
+// Recorded shape from claude-agent-acp 0.98.0 source. Not captured from a live agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": true}}, "authMethods": [], "agentInfo": {"name": "@zed-industries/claude-agent-acp", "title": "Claude Code", "version": "0.98.0"}}}
+{"on": "session/new", "result": {"sessionId": "c-1"}}

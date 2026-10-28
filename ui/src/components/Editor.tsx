@@ -10,6 +10,7 @@ import type { BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEd
 import { loadLanguage, resolveLanguageId } from "../editor/languages";
 import { completionTabSupport } from "../editor/completion-tab";
 import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/search-panel";
+import { formatWithLanguageServer, lspExtension, type LspBinding } from "../lib/lsp-codemirror";
 import "../styles/editor.css";
 
 export interface EditorEdit {
@@ -28,6 +29,8 @@ export interface EditorCommands {
   replace: () => void;
   goToLine: () => void;
   format: () => void;
+  /** Format with the language server of the file, when it can. Does nothing otherwise. */
+  formatWithLanguageServer: () => void;
   copy: () => Promise<void>;
   cut: () => Promise<void>;
   paste: () => Promise<void>;
@@ -72,6 +75,7 @@ export interface EditorProps {
   onRejectProposal?: (proposalId: string) => void;
   onCommands?: (commands: EditorCommands | undefined) => void;
   onFormat?: () => void;
+  lsp?: LspBinding;
   clipboard?: ClipboardPort;
 }
 
@@ -358,6 +362,10 @@ export default function Editor(props: EditorProps) {
     },
     goToLine: () => { if (view && props.active !== false) gotoLine(view); },
     format: () => { if (view && props.active !== false) props.onFormat?.(); },
+    formatWithLanguageServer: () => {
+      if (!view || props.active === false || !props.lsp?.getCapabilities()?.formatting) return;
+      void formatWithLanguageServer(view).catch(() => undefined);
+    },
     expandAbbreviation: () => {
       const target = view;
       if (!target || props.active === false) return;
@@ -420,6 +428,7 @@ export default function Editor(props: EditorProps) {
       language.of([]),
       appearance.of(EditorView.theme({}, { dark: props.theme !== "light" })),
       syntaxHighlighting(codeHighlighting), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      props.lsp ? lspExtension(props.buffer.path, props.lsp) : [],
       keymap.of([
         { key: "Mod-z", run: (editor) => { if (props.onUndo) { props.onUndo(); return true; } return undo(editor); }, preventDefault: true },
         { key: "Mod-Shift-z", run: (editor) => { if (props.onRedo) { props.onRedo(); return true; } return redo(editor); }, preventDefault: true },

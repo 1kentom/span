@@ -1,7 +1,8 @@
 /** Editor actions are shared by the command palette, key dispatcher, and settings. */
 export const actionDefinitions = [
   { id: "quickOpen", label: "Go to File", category: "Navigation", keys: ["Mod+P"], inputs: true },
-  { id: "focusFiles", label: "Show Files", category: "Navigation", keys: ["Mod+E", "Mod+Shift+E"], inputs: true },
+  { id: "toggleFiles", label: "Toggle Files", category: "Navigation", keys: ["Mod+E"], inputs: true },
+  { id: "focusFiles", label: "Show Files", category: "Navigation", keys: ["Mod+Shift+E"], inputs: true },
   { id: "openFile", label: "Open File", category: "File", keys: [], inputs: true },
   { id: "commandPalette", label: "Show All Commands", category: "Navigation", keys: ["Mod+Shift+P"], inputs: true },
   { id: "findInFile", label: "Find in File", category: "Editor", keys: ["Mod+F"], inputs: false },
@@ -17,6 +18,7 @@ export const actionDefinitions = [
   { id: "toggleWordWrap", label: "Toggle Word Wrap", category: "View", keys: ["Alt+Z"], inputs: false },
   { id: "markdownPreview", label: "Toggle Markdown Preview", category: "Editor", keys: ["Mod+Shift+V"], inputs: false },
   { id: "formatDocument", label: "Format Document", category: "Editor", keys: ["Alt+Shift+F"], inputs: false },
+  { id: "formatWithLanguageServer", label: "Format with Language Server", category: "Editor", keys: ["Mod+Alt+Shift+F"], inputs: false },
   { id: "zoomIn", label: "Zoom In", category: "View", keys: ["Mod+=", "Mod+Shift+="], inputs: true },
   { id: "zoomOut", label: "Zoom Out", category: "View", keys: ["Mod+-"], inputs: true },
   { id: "resetZoom", label: "Reset Zoom", category: "View", keys: ["Mod+0"], inputs: true },
@@ -58,7 +60,7 @@ export function resolveKeybindings(overrides: KeybindingOverrides = {}, platform
   return Object.fromEntries(actionDefinitions.map(action => {
     const defaults: readonly string[] = action.id === "quickOpen" && platform === "mac" ? [...action.keys, "Ctrl+P"] : action.keys;
     // A newly introduced default must not invalidate an existing explicit binding.
-    const inherited = action.id === "focusFiles" ? defaults.filter(key => !claimed.has(normalizeShortcut(key, platform))) : defaults;
+    const inherited = action.id === "toggleFiles" || action.id === "focusFiles" ? defaults.filter(key => !claimed.has(normalizeShortcut(key, platform))) : defaults;
     const keys = Object.hasOwn(overrides, action.id) ? overrides[action.id] : inherited;
     return [action.id, [...new Set(keys.map(key => normalizeShortcut(key, platform)).filter((key): key is string => Boolean(key)))]];
   })) as ResolvedKeybindings;
@@ -126,8 +128,15 @@ export function dispatchKeyboard(event: KeyboardEvent, options: { bindings: Reso
   event.preventDefault(); event.stopPropagation(); handler(); return true;
 }
 /** Only primary native accelerators are installed. Alternate keys use the same webview dispatcher. */
+/**
+ * Actions that only the keyboard dispatcher and the command palette handle. The native menu has no item
+ * for them, and sending one makes `sync_native_menu` fail with "Unknown native menu action".
+ * `commands.test.ts` checks this list against the ids in `apps/desktop/src/menu.rs`.
+ */
+const uiOnlyActions: ReadonlySet<string> = new Set(["formatWithLanguageServer"]);
+
 export function nativeMenuBindings(bindings: ResolvedKeybindings): Record<string, string[]> {
-  return Object.fromEntries(actionDefinitions.map(action => {
+  return Object.fromEntries(actionDefinitions.filter(action => !uiOnlyActions.has(action.id)).map(action => {
     const primary = bindings[action.id][0];
     // Native Alt-letter accelerators consume Option characters before a text field can receive them.
     const textSensitive = !action.inputs && primary?.startsWith("Alt+");
