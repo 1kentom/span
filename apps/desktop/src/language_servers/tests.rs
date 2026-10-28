@@ -272,7 +272,7 @@ fn alive(pid: i64) -> bool {
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .output()
         .expect("run tasklist");
-    String::from_utf8_lossy(&out.stdout).contains(&format!("\",{pid}\","))
+    String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\""))
 }
 
 #[tokio::test]
