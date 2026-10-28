@@ -130,7 +130,7 @@ describe("composer keys", () => {
 
   it("shows idle hints and no hint for permission when no option matches", async () => {
     const { host } = await composer();
-    expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["↵ Send", "⇧↵ Newline", "↑ Earlier prompts", "/ Commands", "⌥↵ Attach"]);
+    expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["↵ Send", "⇧↵ Newline", "/ Commands", "⌥↵ Attach"]);
     expect(composerHints({ dockFocused: true, permission: [] }).permission).toEqual([]);
   });
 });
