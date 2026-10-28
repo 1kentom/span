@@ -126,6 +126,8 @@ export type SessionRow = {
   updatedAt: number;
   inWorkspace: boolean;
   current?: boolean;
+  /** Agents Span's stored metadata names for the session. Absent or empty shows no agent chip. */
+  agents?: { id: string; name: string }[];
   models?: string[];
   meta?: string;
   delta?: { add: number; del: number };

@@ -445,6 +445,11 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-session-state.idle { color: var(--sb-faint); }
 .sb-session-state.attention { color: var(--sb-warning); font-weight: 600; }
 .sb-session-state .sb-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+/* History row state badge and agent chips (design frame 2c). */
+.sb-session-state.sb-badge { align-self: flex-start; height: 18px; padding: 0 6px; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 9px; background: color-mix(in srgb, currentColor 10%, transparent); font-size: 10.5px; line-height: 16px; }
+.sb-chip.agent { height: 18px; gap: 4px; padding: 0 6px 0 4px; font-size: 10.5px; color: var(--sb-dim); }
+.sb-menu-sep { margin: 4px 2px; border-top: 1px solid var(--sb-border); }
+.sb-menu-item.danger { color: var(--sb-error); }
 
 /* Background chats waiting for the user, counted on the History button. */
 .agent-history-button { position: relative; }

@@ -1,6 +1,7 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
+import { rowMeta } from "../lib/agent-chats";
 import { isNearBottom, relativeTime } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
 import type { AgentHint } from "../bindings";
@@ -85,17 +86,22 @@ export function AgentPanel(props: AgentPanelProps) {
     return actions;
   });
   const sessionRows = createMemo(() =>
-    a.sessions().map((session) => ({
-      id: session.sessionId,
-      brand: brand(),
-      title: session.title || "Untitled chat",
-      updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
-      inWorkspace: true,
-      current: session.sessionId === a.state().sessionId,
-      // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
-      locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
-      status: a.rowStatus(session.sessionId),
-    })),
+    a.sessions().map((session) => {
+      const stored = rowMeta(a.sessionMetaOf(session.sessionId));
+      return {
+        id: session.sessionId,
+        brand: brand(),
+        title: stored.title || session.title || "Untitled chat",
+        agents: stored.agents,
+        models: stored.models,
+        updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
+        inWorkspace: true,
+        current: session.sessionId === a.state().sessionId,
+        // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
+        locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
+        status: a.rowStatus(session.sessionId),
+      };
+    }),
   );
   const recents = createMemo(() =>
     a.state().canLoad
@@ -286,7 +292,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 {a.sessionsError()}
               </p>
             </Show>
-            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
+            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
               <p class="sb-fine agent-pad" role="status">
                 Loading chats…
               </p>

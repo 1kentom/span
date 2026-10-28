@@ -156,23 +156,23 @@ describe("history delete confirm", () => {
     const onClose = vi.fn();
     const host = mount(() => <HistoryList {...base} rows={rows} onDelete={onDelete} onClose={onClose} />);
     host.querySelector<HTMLButtonElement>("[aria-label='Actions for Chat A']")!.click();
-    expect([...host.querySelectorAll("[role=menuitem]")].map((item) => text(item))).toEqual(["Close session", "Delete"]);
+    expect([...host.querySelectorAll("[role=menuitem]")].map((item) => text(item))).toEqual(["Resume", "Close session", "Delete"]);
     host.querySelector<HTMLButtonElement>("[aria-label='Actions for Chat B']")!.click();
-    expect([...host.querySelectorAll("[role=menuitem]")].map((item) => text(item))).toEqual(["Delete"]);
-    host.querySelector<HTMLButtonElement>("[role=menuitem]")!.click();
+    expect([...host.querySelectorAll("[role=menuitem]")].map((item) => text(item))).toEqual(["Resume", "Delete"]);
+    host.querySelector<HTMLButtonElement>("[role=menuitem].danger")!.click();
     expect(onDelete).not.toHaveBeenCalled();
     expect(host.querySelector(".sb-confirm")).not.toBeNull();
     key("Escape");
     expect(host.querySelector(".sb-confirm")).toBeNull();
     expect(onDelete).not.toHaveBeenCalled();
     host.querySelector<HTMLButtonElement>("[aria-label='Actions for Chat B']")!.click();
-    host.querySelector<HTMLButtonElement>("[role=menuitem]")!.click();
+    host.querySelector<HTMLButtonElement>("[role=menuitem].danger")!.click();
     host.querySelector<HTMLButtonElement>(".sb-confirm .danger")!.click();
     expect(onDelete).toHaveBeenCalledWith("b");
     expect(host.querySelector(".sb-confirm")).toBeNull();
   });
-  it("shows no menu when neither callback is supplied", () => {
-    const host = mount(() => <HistoryList {...base} rows={rows} />);
+  it("shows no menu on a locked row when no callback is supplied", () => {
+    const host = mount(() => <HistoryList {...base} rows={rows.map((row) => ({ ...row, locked: true }))} />);
     expect(host.querySelector(".row-menu")).toBeNull();
   });
 });

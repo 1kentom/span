@@ -37,8 +37,9 @@ type HistoryListProps = {
   /** Epoch milliseconds used for grouping. Defaults to now. */
   now?: number;
   formatTime?: (row: SessionRow) => string;
+  /** Opens or resumes a row. The row menu offers it as Resume on rows that are not locked. */
   onOpen: (id: string) => void;
-  /** Menu entries appear only for the callbacks the app supplies. */
+  /** Other menu entries appear only for the callbacks the app supplies. */
   onRename?: (id: string, title: string) => void;
   onCopyId?: (id: string) => void;
   /** Delete appears only when supplied. The row asks for confirmation inline before calling it. */
@@ -48,6 +49,9 @@ type HistoryListProps = {
 };
 
 const defaultTime = (row: SessionRow) => new Date(row.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+/** Opens a row's menu from the keyboard: the context menu key or Shift+F10, as for a native context menu. */
+const isMenuKey = (event: KeyboardEvent) => event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
 
 /** Earlier sessions: search, scope filter, day groups, locked rows and a per-row menu. */
 export function HistoryList(props: HistoryListProps) {
@@ -64,8 +68,18 @@ export function HistoryList(props: HistoryListProps) {
     );
   });
   const groups = createMemo(() => groupSessions(visible(), props.now ?? Date.now()));
-  const hasMenu = () => Boolean(props.onRename || props.onCopyId || props.onDelete || props.onClose);
-  useEscape(() => setMenu(undefined), () => menu() !== undefined);
+  /** Where focus goes back to when the menu is dismissed with Escape. */
+  let menuReturn: HTMLElement | undefined;
+  const hasMenu = (row: SessionRow) => Boolean(!row.locked || props.onRename || props.onCopyId || props.onDelete || (props.onClose && row.current));
+  const openMenu = (row: SessionRow, from?: HTMLElement) => {
+    if (!hasMenu(row)) return;
+    menuReturn = from;
+    setMenu(row.id);
+  };
+  useEscape(() => {
+    setMenu(undefined);
+    menuReturn?.focus();
+  }, () => menu() !== undefined);
   useEscape(() => setConfirming(undefined), () => confirming() !== undefined && menu() === undefined);
   const commitRename = (id: string) => {
     const title = draft().trim();
@@ -100,25 +114,45 @@ export function HistoryList(props: HistoryListProps) {
               <div class="sb-eyebrow">{group.label}</div>
               <For each={group.rows}>
                 {(row) => (
-                  <div class="sb-session" classList={{ locked: row.locked, live: Boolean(row.status && row.status.kind !== "idle"), attention: Boolean(row.status?.attention) }}>
+                  <div
+                    class="sb-session"
+                    classList={{ locked: row.locked, live: Boolean(row.status && row.status.kind !== "idle"), attention: Boolean(row.status?.attention) }}
+                    onContextMenu={(event) => {
+                      if (renaming() === row.id || !hasMenu(row)) return;
+                      event.preventDefault();
+                      openMenu(row, event.currentTarget.querySelector<HTMLElement>(".sb-session-main:not(:disabled), .row-menu") ?? undefined);
+                    }}
+                  >
                     <Show
                       when={renaming() === row.id}
                       fallback={
-                        <button class="sb-session-main" disabled={row.locked} aria-disabled={row.locked} aria-label={row.status ? `${row.title}, ${row.status.label}` : undefined} onClick={() => props.onOpen(row.id)}>
+                        <button class="sb-session-main" disabled={row.locked} aria-disabled={row.locked} aria-label={row.status ? `${row.title}, ${row.status.label}` : undefined} onClick={() => props.onOpen(row.id)} onKeyDown={(event) => {
+                          if (!isMenuKey(event)) return;
+                          event.preventDefault();
+                          openMenu(row, event.currentTarget);
+                        }}>
                           <span class="sb-session-brand"><BrandIcon id={row.brand?.id} name={row.brand?.name} size={14} /></span>
                           <span class="sb-option-text">
                             <span class="sb-session-title">
                               <span class="sb-ellipsis">{row.title}</span>
                               <Show when={row.current}><span class="sb-tag">Current</span></Show>
                             </span>
-                            <Show when={row.models?.length}>
+                            <Show when={row.agents?.length || row.models?.length}>
                               <span class="sb-chips inline">
+                                <For each={row.agents}>
+                                  {(agent) => (
+                                    <span class="sb-chip agent">
+                                      <BrandIcon id={agent.id} name={agent.name} size={11} />
+                                      {agent.name}
+                                    </span>
+                                  )}
+                                </For>
                                 <For each={row.models}>{(model) => <span class="sb-chip mono">{model}</span>}</For>
                               </span>
                             </Show>
                             <Show when={row.status}>
                               {(status) => (
-                                <span class={`sb-session-state ${status().kind}`} classList={{ attention: status().attention }}>
+                                <span class={`sb-session-state sb-badge ${status().kind}`} classList={{ attention: status().attention }}>
                                   <Show when={status().kind !== "idle"}><span class="sb-dot" aria-hidden="true" /></Show>
                                   {status().label}
                                 </span>
@@ -160,32 +194,53 @@ export function HistoryList(props: HistoryListProps) {
                         <button class="sb-btn danger" ref={(el) => queueMicrotask(() => el.focus())} onClick={() => { setConfirming(undefined); props.onDelete?.(row.id); }}>Delete</button>
                       </div>
                     </Show>
-                    <Show when={hasMenu() && renaming() !== row.id && confirming() !== row.id}>
-                      <button class="sb-icon-btn row-menu" aria-label={`Actions for ${row.title}`} aria-haspopup="menu" aria-expanded={menu() === row.id} onClick={() => setMenu(menu() === row.id ? undefined : row.id)}>
+                    <Show when={hasMenu(row) && renaming() !== row.id && confirming() !== row.id}>
+                      <button
+                        class="sb-icon-btn row-menu"
+                        aria-label={`Actions for ${row.title}`}
+                        aria-haspopup="menu"
+                        aria-expanded={menu() === row.id}
+                        onClick={(event) => (menu() === row.id ? setMenu(undefined) : openMenu(row, event.currentTarget))}
+                        onKeyDown={(event) => {
+                          if (!isMenuKey(event)) return;
+                          event.preventDefault();
+                          openMenu(row, event.currentTarget);
+                        }}
+                      >
                         <Icon name="3DotsMore" size={13} />
                       </button>
                     </Show>
                     <Show when={menu() === row.id}>
                       <div class="sb-menu" role="menu" aria-label="Session actions" onKeyDown={(event) => arrowFocus(event, event.currentTarget, "[role='menuitem']")} ref={(el) => queueMicrotask(() => el.querySelector<HTMLElement>("[role='menuitem']")?.focus())}>
+                        <Show when={!row.locked}>
+                          <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onOpen(row.id); }}>
+                            <Icon name="u-play" size={12} /><span>Resume</span>
+                          </button>
+                        </Show>
                         <Show when={props.onRename}>
                           <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); setDraft(row.title); setRenaming(row.id); }}>
                             <Icon name="Edit2" size={12} /><span>Rename</span>
-                          </button>
-                        </Show>
-                        <Show when={props.onClose && row.current}>
-                          <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onClose?.(row.id); }}>
-                            <Icon name="CloseCircle" size={12} /><span>Close session</span>
-                          </button>
-                        </Show>
-                        <Show when={props.onDelete}>
-                          <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); setConfirming(row.id); }}>
-                            <Icon name="Trash" size={12} /><span>Delete</span>
                           </button>
                         </Show>
                         <Show when={props.onCopyId}>
                           <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onCopyId?.(row.id); }}>
                             <Icon name="Copy" size={12} /><span>Copy session ID</span>
                           </button>
+                        </Show>
+                        <Show when={(props.onClose && row.current) || props.onDelete}>
+                          <Show when={!row.locked || props.onRename || props.onCopyId}>
+                            <div class="sb-menu-sep" role="separator" />
+                          </Show>
+                          <Show when={props.onClose && row.current}>
+                            <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onClose?.(row.id); }}>
+                              <Icon name="CloseCircle" size={12} /><span>Close session</span>
+                            </button>
+                          </Show>
+                          <Show when={props.onDelete}>
+                            <button class="sb-menu-item danger" role="menuitem" onClick={() => { setMenu(undefined); setConfirming(row.id); }}>
+                              <Icon name="Trash" size={12} /><span>Delete</span>
+                            </button>
+                          </Show>
                         </Show>
                       </div>
                     </Show>

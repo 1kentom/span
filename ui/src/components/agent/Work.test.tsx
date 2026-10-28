@@ -151,13 +151,16 @@ describe("HistoryList", () => {
     expect(buttons[1].disabled).toBe(true);
     expect(host.textContent).toContain("Read-only. This agent doesn't support session/load.");
   });
-  it("shows no row menu unless an action is supported, then lists only those", () => {
-    expect(view().host.querySelector(".row-menu")).toBeNull();
+  it("offers Resume on openable rows, no menu on a locked row without actions, and only the supported actions", () => {
+    const bare = view().host;
+    expect(bare.querySelector("[aria-label='Actions for Locked chat']")).toBeNull();
+    bare.querySelector<HTMLButtonElement>("[aria-label='Actions for Fix parser']")!.click();
+    expect([...bare.querySelectorAll("[role=menuitem]")].map((el) => text(el))).toEqual(["Resume"]);
     const calls: string[] = [];
     const { host } = view({ onCopyId: (id) => calls.push(`copy:${id}`) });
     host.querySelector<HTMLButtonElement>(".row-menu")!.click();
-    expect([...host.querySelectorAll("[role=menuitem]")].map((el) => text(el))).toEqual(["Copy session ID"]);
-    host.querySelector<HTMLButtonElement>("[role=menuitem]")!.click();
+    expect([...host.querySelectorAll("[role=menuitem]")].map((el) => text(el))).toEqual(["Resume", "Copy session ID"]);
+    host.querySelectorAll<HTMLButtonElement>("[role=menuitem]")[1].click();
     expect(calls).toEqual(["copy:s1"]);
     expect(host.querySelector("[role=menu]")).toBeNull();
   });
@@ -170,7 +173,7 @@ describe("HistoryList", () => {
     key("Escape");
     expect(host.querySelector("[role=menu]")).toBeNull();
     trigger.click();
-    host.querySelector<HTMLButtonElement>("[role=menuitem]")!.click();
+    [...host.querySelectorAll<HTMLButtonElement>("[role=menuitem]")].find((el) => text(el) === "Rename")!.click();
     const input = host.querySelector<HTMLInputElement>("[aria-label='Session name']")!;
     expect(input.value).toBe("Fix parser");
     input.value = "Parser fix";
