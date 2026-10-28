@@ -6,6 +6,8 @@ import AgentPanel from "./components/AgentPanel";
 import { Explorer } from "./components/Explorer";
 import Icon, { FileIcon, MenuIcon } from "./components/Icon";
 import { Modal, modalAllowsGlobalShortcut } from "./components/Modal";
+import { WorkspaceTrustDialog } from "./components/WorkspaceTrustDialog";
+import { useWorkspaceTrust } from "./lib/workspace-trust";
 import { QuickOpen } from "./components/QuickOpen";
 import { CommandPalette } from "./components/CommandPalette";
 import { KeyboardSettings } from "./components/KeyboardSettings";
@@ -391,6 +393,9 @@ export default function App() {
   createSyntaxColorsEffect(() => document.documentElement, theme, () => w.settings().syntaxColors);
   const configuredZoomLevel = createMemo(() => w.settings().zoomLevel);
   createEffect(on([w.workspaceGeneration, configuredZoomLevel], ([, level], previous) => { if (level !== null) applyZoom(() => zoom.setLevel(level)); else if (previous && previous[1] !== null) applyZoom(zoom.reset); }, { defer: true }));
+  // Workspace trust is asked once, when a folder is opened (and when the last one is restored on startup).
+  const workspaceTrust = useWorkspaceTrust();
+  createEffect(on(() => w.workspace()?.root, root => { if (root) void workspaceTrust.check(root); else workspaceTrust.reset(); }));
   createEffect(on(w.workspaceGeneration, () => { setFileAction(undefined); fileDrag.cancel(); setContext(undefined); }, { defer: true }));
   // One check per launch, only when the user turned it on in their own settings file (ADR 0004).
   let launchChecked = false;
@@ -485,6 +490,7 @@ export default function App() {
     <Show when={w.error()}><div class="error-toast" role="alert"><Icon name="Warning2" /><span>{w.error()}</span><Show when={w.activePath() && w.failed().has(w.activePath()!)}><button onClick={() => void w.save()}>Retry</button><button onClick={() => { const path = w.activePath(); if (path) void w.acceptAgentBuffer(path); }}>Recover draft</button></Show><button class="close-button" aria-label="Dismiss notification" onClick={() => w.setError("")}>×</button></div></Show>
     <Show when={quickOpen()}><QuickOpen initialQuery={quickOpenQuery()} symbols={createSymbolSource()} onQueryFiles={w.queryFiles} indexStatus={w.indexStatus()} indexError={w.indexError()} workspaceGeneration={w.workspaceGeneration()} files={w.files()} onOpen={navigate} onClose={() => setQuickOpen(false)} onOpenFolder={requestWorkspace} workspace={w.workspace()} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} recentPaths={w.recentPaths()} handlers={handlers} bindings={bindings()} onPreview={async path => { const document = w.documents()[path]?.document; if (document) return document.sliceString(0, 64 * 1024); if (isBinaryAssetPath(path)) return "Image preview is available when opened."; return (await api.peekBuffer(path)).text.slice(0, 64 * 1024); }} onSearch={api.search} /></Show>
     <NavigationLayer line={cursor().line} column={cursor().column} />
+    <WorkspaceTrustDialog trust={workspaceTrust} root={() => w.workspace()?.root} />
     <Show when={fileAction()}>{intent => <FileOperationDialog intent={intent()} />}</Show>
     <Show when={context()}>{menu => <ContextMenu x={menu().x} y={menu().y} items={menu().items} label={menu().label} onClose={() => setContext(undefined)} />}</Show>
     <Show when={paletteOpen()}><CommandPalette bindings={bindings()} handlers={handlers} onClose={() => setPaletteOpen(false)} platform={platform} /></Show>
