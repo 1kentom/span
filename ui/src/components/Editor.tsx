@@ -8,6 +8,7 @@ import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKey
 import { tags } from "@lezer/highlight";
 import type { BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEdit } from "../bindings";
 import { loadLanguage, resolveLanguageId } from "../editor/languages";
+import { completionTabSupport } from "../editor/completion-tab";
 import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/search-panel";
 import "../styles/editor.css";
 
@@ -406,7 +407,7 @@ export default function Editor(props: EditorProps) {
     return [
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(),
       props.onUndo ? [] : history(), rectangularSelection(), crosshairCursor(), indentOnInput(), bracketMatching(),
-      closeBrackets(), autocompletion({ maxRenderedOptions: 30 }), foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
+      closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
         const marker = document.createElement("span");
         marker.className = `cm-fold-chevron ${open ? "is-open" : ""}`;
         marker.setAttribute("aria-hidden", "true");
