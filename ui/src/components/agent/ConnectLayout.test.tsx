@@ -50,11 +50,11 @@ describe("curated catalog actions", () => {
     expect(row("Claude Code")).toBeUndefined();
     expect(row("Gemini CLI")).toBeDefined();
   });
-  it("draws Install as a secondary action with the package glyph", () => {
+  it("draws Install as a secondary action with the download glyph", () => {
     const { row } = catalog();
     const install = row("Gemini CLI").querySelector(".agent-action.secondary")!;
     expect(text(install)).toBe("Install");
-    expect(install.innerHTML).toContain("package.svg");
+    expect(install.innerHTML).toContain("ActionDownload.svg");
   });
   it("puts the full subtitle in the title so the ellipsis loses nothing", () => {
     const { row } = catalog();

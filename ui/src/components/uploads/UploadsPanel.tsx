@@ -81,7 +81,7 @@ export function UploadsPanel(props: UploadsPanelProps) {
     <div class="up-rail-head">
       <h2 id={`${id}-title`} class="up-rail-title">Uploads</h2>
       <span class="vw-spacer" />
-      <Show when={props.onAdd && props.capabilities.add}><button type="button" class="up-icon-btn" aria-label="Upload files" title="Upload files" onClick={() => props.onAdd!()}><Icon name="Add" size={15} /></button></Show>
+      <Show when={props.onAdd && props.capabilities.add}><button type="button" class="up-icon-btn" aria-label="Upload files" title="Upload files" onClick={() => props.onAdd!()}><Icon name="ActionUpload" size={15} /></button></Show>
     </div>
     <Show when={props.status !== 'unavailable'}>
       <label class="up-filter"><Icon name="SearchNormal1" size={14} /><input type="search" placeholder="Filter uploads" aria-label="Filter uploads" value={query()} onInput={event => setQuery(event.currentTarget.value)} /></label>

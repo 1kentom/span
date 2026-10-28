@@ -1,14 +1,43 @@
 {
-  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
-  "scope": "The shuffle icon shown in the agent status row while agents work together. Original SVG bytes and geometry are preserved.",
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/outline (rounded outline variant)",
+  "scope": "Status row shuffle badge plus the install/download, upload, new file and rename action glyphs. Original SVG bytes and geometry are preserved.",
   "processing": "SVG XML inspected for active content and external references. Application renders the artwork with a currentColor alpha mask.",
   "rights": "Copied from the user-provided local icon library at the user’s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
   "assets": [
     {
       "asset": "Shuffle.svg",
-      "source": "arrow2/iconsax-shuffle-9b7d3e75af58-.svg",
-      "sourceSha256": "dd585b085a872b140052a5c5073512470f62bf6783182924bfa3fc39eb0421be",
-      "assetSha256": "dd585b085a872b140052a5c5073512470f62bf6783182924bfa3fc39eb0421be"
+      "source": "rounded/outline/video-audio-image/iconsax-shuffle-7f81a73cfd71-.svg",
+      "sourceSha256": "f3bc0849e703521c18e938d3aed6749e71b82be8133e4519addf0682b57726de",
+      "assetSha256": "f3bc0849e703521c18e938d3aed6749e71b82be8133e4519addf0682b57726de",
+      "note": "Agent status badge. Outline variant chosen by the owner, replacing the linear arrow2 shuffle."
+    },
+    {
+      "asset": "ActionDownload.svg",
+      "source": "rounded/outline/arrow/iconsax-download-arrow-cd81253f466e-.svg",
+      "sourceSha256": "8afabbe454b15f5ed355c83f9214784929b89d333d777aebad20c5657a73db80",
+      "assetSha256": "8afabbe454b15f5ed355c83f9214784929b89d333d777aebad20c5657a73db80",
+      "note": "Install and save-to-workspace actions. Outline variant chosen by the owner, replacing the package box."
+    },
+    {
+      "asset": "ActionUpload.svg",
+      "source": "rounded/outline/arrow/iconsax-upload-arrow-451b03816ad5-.svg",
+      "sourceSha256": "4ff1273513bfa08253a562194286caf8716cab8e950e439bb1810b286a6235a8",
+      "assetSha256": "4ff1273513bfa08253a562194286caf8716cab8e950e439bb1810b286a6235a8",
+      "note": "Upload files actions. Outline variant chosen by the owner."
+    },
+    {
+      "asset": "ActionNewFile.svg",
+      "source": "rounded/outline/files/iconsax-add-file-3ead2e940264-.svg",
+      "sourceSha256": "ae30e5520a87ed6dd2947f619ea3c00412a99c512686993e80bf210ad7b56e25",
+      "assetSha256": "ae30e5520a87ed6dd2947f619ea3c00412a99c512686993e80bf210ad7b56e25",
+      "note": "New file actions. Outline variant chosen by the owner."
+    },
+    {
+      "asset": "ActionRename.svg",
+      "source": "rounded/outline/content-edit/iconsax-edit-949de493a6da-.svg",
+      "sourceSha256": "c2b1248174cfe190ec45bda5e86131a08e004c8d2bfefca04ee6143f22213879",
+      "assetSha256": "c2b1248174cfe190ec45bda5e86131a08e004c8d2bfefca04ee6143f22213879",
+      "note": "Rename actions. Outline variant picked from the library for the owner, pencil over a line."
     }
   ]
 }

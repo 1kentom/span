@@ -2,14 +2,16 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { iconAssetPath, menuIconAssets } from "./menuIcons";
+import { iconAssetPath, menuIconAssets, outlineMenuAssets } from "./menuIcons";
 
 describe("user-provided Iconsax interface assets", () => {
   it("resolves every menu action to the selected local rounded linear artwork", () => {
     for (const [name, asset] of Object.entries(menuIconAssets)) expect(iconAssetPath(`menu-${name}`)).toBe(`/icons/rounded-linear/${asset}.svg`);
     expect(iconAssetPath("Copy")).toBe("/icons/rounded-linear/copy.svg");
     expect(iconAssetPath("Trash")).toBe("/icons/rounded-linear/trash.svg");
-    expect(iconAssetPath("menu-install")).toBe("/icons/rounded-linear/package.svg");
+    expect(iconAssetPath("menu-install")).toBe("/icons/ActionDownload.svg");
+    expect(iconAssetPath("menu-newFile")).toBe("/icons/ActionNewFile.svg");
+    expect(iconAssetPath("menu-rename")).toBe("/icons/rounded-linear/rename.svg");
     expect(iconAssetPath("SearchNormal1")).toBe("/icons/SearchNormal1.svg");
     expect(iconAssetPath("../../outside")).toBe("/icons/rounded-linear/file.svg");
   });
@@ -25,7 +27,12 @@ describe("user-provided Iconsax interface assets", () => {
       expect(geometry, `Rejected connector-folder artwork: ${file}`).not.toBe("8d6961e122f92a1ce268c41b0d87024e86335e532acfb77c58d88e6846d39602");
     }
   });
-  it("draws install as the plain package box, not the retired cloud artwork", () => {
+  it("draws install and new file with the owner-chosen rounded outline glyphs", () => {
+    expect(outlineMenuAssets).toEqual({ install: "ActionDownload", newFile: "ActionNewFile" });
+    expect(Object.keys(menuIconAssets)).not.toContain("install");
+    expect(Object.keys(menuIconAssets)).not.toContain("newFile");
+  });
+  it("keeps the retired package box artwork recorded with its linear source, not the retired cloud artwork", () => {
     const root = resolve(process.cwd(), "public/icons/rounded-linear");
     const manifest = JSON.parse(readFileSync(resolve(root, "provenance.json"), "utf8")) as { assets: { asset: string; source: string }[] };
     expect(manifest.assets.find(record => record.asset === "package.svg")?.source).toBe("essential/iconsax-box-cafb0585f97c-.svg");

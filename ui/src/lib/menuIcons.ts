@@ -2,11 +2,12 @@
 export const menuIconAssets = {
   save: "save", discard: "discard", cancel: "cancel", cut: "cut", copy: "copy", duplicate: "copy",
   paste: "paste", path: "copy", file: "file", folder: "folder", trash: "trash", rename: "rename",
-  install: "package",
-  newFile: "new-file", newFolder: "new-folder", openFolder: "open-folder",
+  newFolder: "new-folder", openFolder: "open-folder",
   search: "search", keyboard: "keyboard", filter: "filter", reset: "reset",
 } as const;
-export type MenuIconName = keyof typeof menuIconAssets;
+/** Owner-chosen rounded outline glyphs, vendored as top-level icons (see public/icons/status-provenance.json). */
+export const outlineMenuAssets = { install: "ActionDownload", newFile: "ActionNewFile" } as const;
+export type MenuIconName = keyof typeof menuIconAssets | keyof typeof outlineMenuAssets;
 
 const aliases: Record<string, string> = {
   path: "copy", Path: "copy", FolderRoute: "copy", "folder-route": "copy", FolderConnection: "copy",
@@ -17,7 +18,9 @@ const aliases: Record<string, string> = {
 };
 
 export function iconAssetPath(name: string): string {
-  const action = name.startsWith("menu-") ? menuIconAssets[name.slice(5) as MenuIconName] : undefined;
+  const key = name.startsWith("menu-") ? name.slice(5) : "";
+  if (Object.hasOwn(outlineMenuAssets, key)) return `/icons/${outlineMenuAssets[key as keyof typeof outlineMenuAssets]}.svg`;
+  const action = key ? menuIconAssets[key as keyof typeof menuIconAssets] : undefined;
   const selected = action || aliases[name];
   if (selected) return `/icons/rounded-linear/${selected}.svg`;
   return /^[\w-]+$/.test(name) ? `/icons/${name}.svg` : "/icons/rounded-linear/file.svg";

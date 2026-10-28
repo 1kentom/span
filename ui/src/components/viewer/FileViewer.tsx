@@ -257,7 +257,7 @@ export function FileViewer(props: FileViewerProps) {
         <ModeSwitch label="Image size" options={[{ id: 'fit', label: 'Fit' }, { id: 'actual', label: 'Actual size' }]} value={imageMode()} onChange={value => setImageZoom(value === 'fit' ? 'fit' : 100)} />
       </Show>
       <Show when={(props.onSaveToWorkspace && !props.inWorkspace) || props.openWith}><span class="vw-divider" aria-hidden="true" /></Show>
-      <Show when={props.onSaveToWorkspace && !props.inWorkspace}><button type="button" class="vw-btn" disabled={busy()} onClick={() => void run('Save to workspace', props.onSaveToWorkspace!)}><Icon name="Download" size={12} />Save to workspace</button></Show>
+      <Show when={props.onSaveToWorkspace && !props.inWorkspace}><button type="button" class="vw-btn" disabled={busy()} onClick={() => void run('Save to workspace', props.onSaveToWorkspace!)}><Icon name="ActionDownload" size={12} />Save to workspace</button></Show>
       <Show when={props.openWith}>
         <button type="button" class="vw-btn" aria-haspopup="menu" aria-expanded={!!menu()} onClick={event => { const bounds = event.currentTarget.getBoundingClientRect(); setMenu(menu() ? null : { x: bounds.left, y: bounds.bottom + 4 }); }}><Icon name="ExportSquare" size={12} />Open with</button>
       </Show>

@@ -133,11 +133,11 @@ export function fileMenuItems(_entry: UploadEntry, caps: UploadsCapabilities, h:
     [h.openPreview && { id: 'open', label: 'Open preview', icon: 'Eye', shortcut: keys.open, run: h.openPreview },
       h.openKeep && { id: 'keep', label: 'Open and keep', icon: 'Check', run: h.openKeep },
       openWithItem(caps, h, options.viewAs)],
-    [caps.saveToWorkspace && h.saveToWorkspace && { id: 'save', label: 'Save to workspace…', icon: 'Download', run: h.saveToWorkspace },
+    [caps.saveToWorkspace && h.saveToWorkspace && { id: 'save', label: 'Save to workspace…', icon: 'ActionDownload', run: h.saveToWorkspace },
       caps.reveal && h.reveal && { id: 'reveal', label: revealLabel(options.platform), icon: 'Folder2', shortcut: keys.reveal, run: h.reveal },
       caps.copyPath && h.copyPath && { id: 'copy-path', label: 'Copy path', icon: 'Copy', run: h.copyPath },
       h.showInSession && { id: 'session', label: 'Show in session', icon: 'Message', run: h.showInSession }],
-    [caps.rename && h.rename && { id: 'rename', label: 'Rename…', icon: 'Edit2', shortcut: keys.rename, run: h.rename },
+    [caps.rename && h.rename && { id: 'rename', label: 'Rename…', icon: 'ActionRename', shortcut: keys.rename, run: h.rename },
       caps.duplicate && h.duplicate && { id: 'duplicate', label: 'Duplicate', icon: 'Copy', run: h.duplicate }],
     [caps.remove && h.remove && { id: 'remove', label: 'Remove upload', icon: 'Trash', shortcut: keys.remove, danger: true, run: h.remove }],
   ]);

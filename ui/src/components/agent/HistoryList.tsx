@@ -358,7 +358,7 @@ export function HistoryList(props: HistoryListProps) {
                       <div class="sb-menu sb-row-menu" role="menu" aria-label="Session actions" onKeyDown={(event) => arrowFocus(event, event.currentTarget, "[role='menuitem']")} ref={(el) => queueMicrotask(() => el.querySelector<HTMLElement>("[role='menuitem']")?.focus())}>
                         <Show when={props.onRename}>
                           <button class="sb-menu-item" role="menuitem" onClick={() => startRename(row)}>
-                            <Icon name="Edit2" size={12} />
+                            <Icon name="ActionRename" size={12} />
                             <span class="sb-menu-label">Rename</span>
                             <span class="sb-menu-key">F2</span>
                           </button>

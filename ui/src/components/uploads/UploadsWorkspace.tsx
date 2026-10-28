@@ -202,7 +202,7 @@ export function UploadsWorkspace(props: UploadsWorkspaceProps) {
             <dl class="up-start-keys">
               <For each={hints()}>{hint => <div><dt>{hint.label}</dt><dd><kbd><KeyGlyph value={hint.key} size={11} /></kbd></dd></div>}</For>
             </dl>
-            <Show when={caps().add}><button type="button" class="vw-btn vw-btn-outline" onClick={() => void add()}><Icon name="Add" size={12} />Upload files</button></Show>
+            <Show when={caps().add}><button type="button" class="vw-btn vw-btn-outline" onClick={() => void add()}><Icon name="ActionUpload" size={12} />Upload files</button></Show>
           </Show>
         </div>}>{entry => {
           const a = actions(entry);
