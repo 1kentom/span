@@ -115,6 +115,7 @@ impl CoreWorkspace {
         if self.settings_only || path.starts_with("settings://") {
             return Err(CoreError::OutsideWorkspace(path.to_owned()));
         }
+        reject_non_file_path(path)?;
         let requested = Path::new(path);
         if requested
             .components()
@@ -760,6 +761,37 @@ impl CoreWorkspace {
         }
         self.update_settings_jsonc(&text)
     }
+}
+
+/// True for text that starts with a URI scheme of two or more characters, which keeps
+/// Windows drive letters (`C:` followed by a backslash) out of it. Only a scheme followed by `/`
+/// or a well known library scheme counts, so a file named `notes:v2.txt` stays openable.
+fn has_uri_scheme(path: &str) -> bool {
+    let Some((scheme, rest)) = path.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    let shaped = scheme.len() >= 2
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+    let known = [
+        "jdt", "jar", "file", "zip", "http", "https", "untitled", "data",
+    ]
+    .iter()
+    .any(|known| scheme.eq_ignore_ascii_case(known));
+    shaped && (rest.starts_with('/') || known)
+}
+
+/// Library sources (`jdt://contents/...`, `jar:file:...`) are not files of the project. They
+/// must never be joined onto the workspace root, so they are refused before any path work.
+fn reject_non_file_path(path: &str) -> Result<()> {
+    if path.contains('\0') {
+        return Err(CoreError::InvalidPath);
+    }
+    if path.contains("://") || has_uri_scheme(path) {
+        return Err(CoreError::LibrarySource(path.to_owned()));
+    }
+    Ok(())
 }
 
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {

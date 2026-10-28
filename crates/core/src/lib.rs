@@ -61,6 +61,10 @@ pub enum CoreError {
     },
     #[error("Path is outside the workspace: {0}")]
     OutsideWorkspace(String),
+    #[error("This is library source, not a file in your project: {0}")]
+    LibrarySource(String),
+    #[error("Invalid path: it contains a NUL character")]
+    InvalidPath,
     #[error("Expected revision {expected}, current revision is {actual}")]
     StaleRevision { expected: u64, actual: u64 },
     #[error("Invalid edit: {0}")]

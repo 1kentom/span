@@ -754,3 +754,75 @@ fn java_buffers_report_the_java_language() {
         .unwrap();
     assert_eq!(snapshot.language, "java");
 }
+
+const JDT_LOCATION: &str = "jdt://contents/javafx-fxml-21.0.2-mac-aarch64.jar/javafx.fxml/FXMLLoader.java?=todo/%5C/Users%5C/user%5C/.m2%5C/repository%5C/org%5C/openjfx%5C/javafx-fxml%5C/21.0.2%5C/javafx-fxml-21.0.2-mac-aarch64.jar=/maven.pomderived=/true=/=/module=/true=/=/javadoc_location=/jar:file:...";
+
+#[test]
+fn library_uris_are_refused_before_any_path_is_joined() {
+    let dir = tempdir().unwrap();
+    let mut core = CoreWorkspace::open(dir.path()).unwrap();
+    let nested = format!("sub/{JDT_LOCATION}");
+    for path in [
+        JDT_LOCATION,
+        nested.as_str(),
+        "jar:file:/tmp/x.jar!/A.class",
+        "file:///etc/passwd",
+        "jrt:/java.base/java/lang/String.class",
+        "untitled:Untitled-1",
+    ] {
+        let error = core.open_buffer(path).unwrap_err();
+        assert!(
+            matches!(error, CoreError::LibrarySource(_)),
+            "{path}: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("library source, not a file in your project"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("No such file"), "{error}");
+        assert!(matches!(
+            core.peek_buffer(path),
+            Err(CoreError::LibrarySource(_))
+        ));
+        assert!(matches!(
+            core.save_buffer(path, 0),
+            Err(CoreError::LibrarySource(_))
+        ));
+        assert!(matches!(
+            core.list_directory(path),
+            Err(CoreError::LibrarySource(_))
+        ));
+    }
+    assert!(
+        fs::read_dir(dir.path()).unwrap().next().is_none(),
+        "nothing may be created in the workspace"
+    );
+}
+
+#[test]
+fn nul_bytes_in_a_path_are_a_typed_error() {
+    let dir = tempdir().unwrap();
+    let mut core = CoreWorkspace::open(dir.path()).unwrap();
+    assert!(matches!(
+        core.open_buffer("a\0b.txt"),
+        Err(CoreError::InvalidPath)
+    ));
+    assert!(matches!(
+        core.peek_buffer("a\0b.txt"),
+        Err(CoreError::InvalidPath)
+    ));
+}
+
+#[test]
+fn colons_in_ordinary_file_names_still_open() {
+    let dir = tempdir().unwrap();
+    // A colon is not a legal file name character on Windows, so the file cannot exist there.
+    if fs::write(dir.path().join("notes:v2.txt"), "hi").is_err() {
+        return;
+    }
+    let mut core = CoreWorkspace::open(dir.path()).unwrap();
+    // Not a URI: the scheme is not followed by a slash and is not a library scheme.
+    assert!(core.open_buffer("notes:v2.txt").is_ok());
+}
