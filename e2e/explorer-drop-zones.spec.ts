@@ -68,7 +68,7 @@ test("a tab dragged to the bottom edge splits the editor below and the divider r
 
 test("dragging over the terminal panel shows no drop zone and a not-allowed cursor", async ({ page }) => {
   await ready(page);
-  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  const terminal = page.locator(".run-bottom-panel");
   if (!(await terminal.isVisible())) await page.getByRole("button", { name: "Toggle terminal panel", exact: true }).click();
   const box = await terminal.boundingBox(); if (!box) throw new Error("terminal");
   await startDrag(page, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
