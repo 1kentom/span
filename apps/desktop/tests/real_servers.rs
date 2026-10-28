@@ -2153,19 +2153,34 @@ impl Env {
                 caps.rename,
                 "rename",
                 || svc.rename(rel, decl, "renamed".into(), None),
-                |e| e.files.len() == 1 && e.files[0].edits.len() >= 3,
+                |e| {
+                    // Servers may merge neighbouring references into one edit (JDT LS
+                    // does), so the edit count is not the check: the result text is.
+                    e.files.len() == 1
+                        && apply_edits(&before_edit.text, &e.files[0].edits)
+                            .matches("renamed")
+                            .count()
+                            >= 3
+                },
             )
             .await;
         if let Some(edit) = edit {
             assert_eq!(edit.skipped_operations, 0);
             assert!(!edit.files[0].external);
             assert!(edit.files[0].path.ends_with(rel));
-            assert!(edit.files[0].edits.iter().all(|e| e.new_text == "renamed"));
-            assert!(edit.files[0].edits.iter().any(|e| e.range.start == decl));
             let applied = apply_edits(&before_edit.text, &edit.files[0].edits);
-            assert_eq!(
-                applied.matches("renamed").count(),
-                edit.files[0].edits.len()
+            assert!(applied.matches("renamed").count() >= 3, "{applied}");
+            assert!(
+                !applied.contains("target"),
+                "every reference is renamed: {applied}"
+            );
+            let key = |p: PositionDto| (p.line, p.character);
+            assert!(
+                edit.files[0]
+                    .edits
+                    .iter()
+                    .any(|e| key(e.range.start) <= key(decl) && key(decl) <= key(e.range.end)),
+                "the declaration is covered by an edit"
             );
         }
         let after_snapshot = self.snapshot(rel);

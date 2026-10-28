@@ -305,7 +305,7 @@ impl Manager {
         resolver: Arc<R>,
         config: ManagerConfig,
     ) -> Self {
-        let (events, _) = broadcast::channel(256);
+        let (events, _) = broadcast::channel(1024);
         Self {
             shared: Arc::new(ManagerShared {
                 run_project_code: AtomicBool::new(false),
@@ -1096,7 +1096,13 @@ async fn run_instance(
     }
 }
 
+/// Reports of one work token closer together than this are dropped here, so a server that
+/// reports hundreds of times a second cannot flood the event channel and push diagnostics
+/// out of a slow receiver's window. `begin` and `end` always pass.
+const PROGRESS_MIN_GAP: Duration = Duration::from_millis(100);
+
 async fn pump_events(inst: Arc<Instance>, client: Arc<LspClient>) {
+    let mut last_report: HashMap<String, std::time::Instant> = HashMap::new();
     while let Some(event) = client.next_event().await {
         match event {
             ServerEvent::Request { id, method, params } => {
@@ -1121,6 +1127,22 @@ async fn pump_events(inst: Arc<Instance>, client: Arc<LspClient>) {
                         percentage,
                     }) = params.as_ref().and_then(parse_work_progress)
                     {
+                        match kind {
+                            WorkProgressKind::Report => {
+                                let now = std::time::Instant::now();
+                                if last_report
+                                    .get(&token)
+                                    .is_some_and(|t| now.duration_since(*t) < PROGRESS_MIN_GAP)
+                                {
+                                    continue;
+                                }
+                                last_report.insert(token.clone(), now);
+                            }
+                            WorkProgressKind::End => {
+                                last_report.remove(&token);
+                            }
+                            WorkProgressKind::Begin => {}
+                        }
                         let _ = inst.events.send(ManagerEvent::Progress {
                             server: inst.id,
                             root: inst.root.clone(),

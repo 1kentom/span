@@ -1189,13 +1189,12 @@ async fn work_done_progress_is_forwarded_and_the_create_request_answered() {
         }
     }
     assert_eq!(kinds[0], WorkProgressKind::Begin);
-    assert_eq!(
-        kinds
-            .iter()
-            .filter(|k| **k == WorkProgressKind::Report)
-            .count(),
-        20
-    );
+    // The server's burst of 20 reports is thinned out before it reaches subscribers.
+    let reports = kinds
+        .iter()
+        .filter(|k| **k == WorkProgressKind::Report)
+        .count();
+    assert!(reports < 20, "{reports} reports got through");
     f.wait_log("response", 2).await;
     let answered = f.methods("response").iter().any(|e| e["id"] == "wd-1");
     assert!(answered, "window/workDoneProgress/create must be answered");
