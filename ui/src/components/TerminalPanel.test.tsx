@@ -104,6 +104,48 @@ describe("terminal panel", () => {
     await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(1));
     expect(new TextDecoder().decode(vi.mocked(view.transport.write).mock.calls[0][1])).toBe(`${code}\r`);
   });
+  it("preserves a newer draft while Run is pending and submits only once", async () => {
+    const view = mount(); await vi.waitFor(() => expect(view.controller()).toBeDefined());
+    let release!: () => void;
+    vi.mocked(view.transport.write).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    await view.controller()!.send("printf first", false);
+    const run = [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!;
+    run.click(); run.click();
+    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(1));
+    expect(run.disabled).toBe(true);
+    const input = view.root.querySelector("textarea")!;
+    input.value = "printf unsent"; input.dispatchEvent(new Event("input", { bubbles: true }));
+    release();
+    await vi.waitFor(() => expect(run.disabled).toBe(false));
+    expect(view.root.querySelector("textarea")?.value).toBe("printf unsent");
+    expect(view.transport.write).toHaveBeenCalledTimes(1);
+    run.click();
+    await vi.waitFor(() => expect(view.root.querySelector("textarea")).toBeNull());
+    expect(new TextDecoder().decode(vi.mocked(view.transport.write).mock.calls[1][1])).toBe("printf unsent\r");
+  });
+  it("keeps replacement drafts and errors when a pending Run fails", async () => {
+    const view = mount(); await vi.waitFor(() => expect(view.controller()).toBeDefined());
+    let reject!: (error: Error) => void;
+    vi.mocked(view.transport.write).mockImplementationOnce(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
+    await view.controller()!.send("printf old", false);
+    [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!.click();
+    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(1));
+    await view.controller()!.send("printf replacement", false);
+    reject(new Error("Write disconnected"));
+    await vi.waitFor(() => expect(view.root.querySelector('[role="alert"]')?.textContent).toContain("Write disconnected"));
+    expect(view.root.querySelector("textarea")?.value).toBe("printf replacement");
+  });
+  it("does not focus a disposed terminal when a pending Run completes", async () => {
+    const view = mount(); await vi.waitFor(() => expect(view.controller()).toBeDefined());
+    let release!: () => void;
+    vi.mocked(view.transport.write).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    await view.controller()!.send("printf pending", false);
+    [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!.click();
+    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(1));
+    cleanup.pop()!(); xterm.focus.mockClear(); release();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(xterm.focus).not.toHaveBeenCalled();
+  });
   it("writes explicit Run exactly, adds Enter once, and preserves binary and keyboard order", async () => {
     const view = mount();
     await vi.waitFor(() => expect(view.controller()).toBeDefined());

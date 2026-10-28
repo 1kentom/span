@@ -56,6 +56,11 @@ export function TerminalPanel(props: TerminalPanelProps) {
   const [ready, setReady] = createSignal(false);
   const [exited, setExited] = createSignal(false);
   const [draft, setDraft] = createSignal<string>();
+  const [draftRunning, setDraftRunning] = createSignal(false);
+  let draftVersion = 0;
+  let activeDraftRun: object | undefined;
+  const updateDraft = (value: string | undefined) => { draftVersion++; setDraft(value); };
+  const invalidateDraftRun = () => { activeDraftRun = undefined; setDraftRunning(false); };
   const report = (failure: unknown) => { if (disposed) return; const message = failure instanceof Error ? failure.message : String(failure); setError(message); props.onError?.(message); };
   const write = (data: Uint8Array) => {
     const currentId = sessionId;
@@ -114,7 +119,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
     props.onReady?.({
       async send(code, execute) {
         if (disposed || exited()) throw new Error("Terminal session is unavailable");
-        if (!execute) { setDraft(code); return; }
+        if (!execute) { updateDraft(code); return; }
         terminal?.focus();
         await write(new TextEncoder().encode(!/[\r\n]$/.test(code) ? `${code}\r` : code));
       },
@@ -136,6 +141,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   });
   onCleanup(() => {
     disposed = true;
+    activeDraftRun = undefined;
     generation++;
     cancelAnimationFrame(resizeFrame);
     observer?.disconnect();
@@ -150,6 +156,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
       sessionId = undefined;
     }
     generation++;
+    invalidateDraftRun();
     setReady(false);
     setExited(true);
     setStatus("Shell closed");
@@ -159,6 +166,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   const restart = async () => {
     if (sessionId) await props.transport.close(sessionId);
     generation++;
+    invalidateDraftRun();
     sessionId = undefined;
     setReady(false);
     setExited(false);
@@ -169,6 +177,22 @@ export function TerminalPanel(props: TerminalPanelProps) {
     host.replaceChildren();
     initialization = start().catch(report);
     await initialization;
+  };
+  const runDraft = async () => {
+    const code = draft();
+    if (disposed || exited() || activeDraftRun || code === undefined) return;
+    const intent = {};
+    const token = generation;
+    const version = draftVersion;
+    const id = sessionId;
+    activeDraftRun = intent;
+    setDraftRunning(true);
+    const current = () => !disposed && generation === token && sessionId === id && activeDraftRun === intent;
+    try {
+      await write(new TextEncoder().encode(!/[\r\n]$/.test(code) ? `${code}\r` : code));
+      if (current() && draftVersion === version) { updateDraft(undefined); terminal?.focus(); }
+    } catch (failure) { if (current()) report(failure); }
+    finally { if (current()) { activeDraftRun = undefined; setDraftRunning(false); } }
   };
   return <section class="terminal-panel" classList={{ "terminal-panel-hidden": !props.visible }} aria-label={props.label || "Terminal"}>
     <Show when={!props.embedded}><header class="terminal-toolbar">
@@ -188,12 +212,8 @@ export function TerminalPanel(props: TerminalPanelProps) {
     <Show when={draft() !== undefined}>
       <div class="terminal-draft">
         <label for={draftId}>Review command before running</label><div class="terminal-draft-cwd" title={props.workspaceLabel}>Working directory: {props.workspaceLabel}</div>
-        <textarea id={draftId} aria-label="Terminal command draft" spellcheck={false} value={draft() ?? ""} onInput={event => setDraft(event.currentTarget.value)} />
-        <div><button type="button" disabled={exited()} onClick={() => {
-          const code = draft();
-          if (code === undefined) return;
-          void write(new TextEncoder().encode(!/[\r\n]$/.test(code) ? `${code}\r` : code)).then(() => { setDraft(undefined); terminal?.focus(); }).catch(report);
-        }}>Run draft</button><button type="button" onClick={() => setDraft(undefined)}>Discard</button></div>
+        <textarea id={draftId} aria-label="Terminal command draft" spellcheck={false} value={draft() ?? ""} onInput={event => updateDraft(event.currentTarget.value)} />
+        <div><button type="button" disabled={exited() || draftRunning()} aria-busy={draftRunning()} onClick={() => void runDraft()}>Run draft</button><button type="button" onClick={() => updateDraft(undefined)}>Discard</button></div>
       </div>
     </Show>
     <div class="terminal-host" ref={host} />
