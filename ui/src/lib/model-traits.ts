@@ -41,8 +41,12 @@ export const NAME_RULES: readonly Rule[] = [
 
 /** Matched against the lowercased description. Keep this list small. */
 export const DESCRIPTION_RULES: readonly Rule[] = [
-  { pattern: /\bfastest\b|quick answers/, trait: "fast" },
-  { pattern: /most capable|toughest/, trait: "frontier" },
+  // "Fastest for quick answers" (Claude), "Fast and affordable model for easier tasks" (Codex).
+  { pattern: /\bfast(er|est)?\b|\bquick(er|est)?\b/, trait: "fast" },
+  // "Most capable for ..." and "Frontier intelligence for the most demanding work" (Codex).
+  { pattern: /most capable|toughest|hardest|most demanding|\bfrontier\b/, trait: "frontier" },
+  // "Latest workhorse model for coding and everyday work", "Older balanced model for straightforward work".
+  { pattern: /\bbalanced\b|\bworkhorse\b/, trait: "balanced" },
 ];
 
 export type TraitInput = { name: string; description?: string };

@@ -58,3 +58,27 @@ describe("model traits", () => {
     for (const info of Object.values(TRAIT_INFO)) if (info.icon) expect(existsSync(resolve(__dirname, `../../public/icons/${info.icon}.svg`)), info.icon).toBe(true);
   });
 });
+
+describe("real Codex and Claude model lists", () => {
+  const codex: [string, string, string[]][] = [
+    ["6.1 Sol", "Latest workhorse model for coding and everyday work.", ["balanced"]],
+    ["6 Astra", "Frontier intelligence for the most demanding work.", ["frontier"]],
+    ["6.1 Terra", "GPT-6.1 Terra Codex model.", []],
+    ["6 Sol", "Previous generation workhorse model.", ["balanced"]],
+    ["6 Luna", "Fast and affordable model for easier tasks.", ["fast"]],
+    ["5.6 Sol", "Older generation workhorse model.", ["balanced"]],
+    ["5.6 Terra", "Older balanced model for straightforward work.", ["balanced"]],
+    ["5.6 Luna", "Older fast and efficient model.", ["fast"]],
+  ];
+  it.each(codex)("%s gets the traits its description says", (name, description, expected) => {
+    expect(modelTraits({ name, description })).toEqual(expected);
+  });
+  it("marks both Codex fast models with the bolt and no others", () => {
+    const fast = codex.filter(([name, description]) => modelTraits({ name, description }).includes("fast")).map(([name]) => name);
+    expect(fast).toEqual(["6 Luna", "5.6 Luna"]);
+  });
+  it("still leaves Claude's efficient Sonnet unmarked as fast", () => {
+    expect(modelTraits({ name: "Sonnet 5.5", description: "Most efficient for simpler tasks" })).not.toContain("fast");
+    expect(modelTraits({ name: "Haiku 5.5", description: "Fastest for quick answers" })).toContain("fast");
+  });
+});
