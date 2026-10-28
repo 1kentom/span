@@ -18,6 +18,7 @@ export const actionDefinitions = [
   { id: "toggleWordWrap", label: "Toggle Word Wrap", category: "View", keys: ["Alt+Z"], inputs: false },
   { id: "markdownPreview", label: "Toggle Markdown Preview", category: "Editor", keys: ["Mod+Shift+V"], inputs: false },
   { id: "formatDocument", label: "Format Document", category: "Editor", keys: ["Alt+Shift+F"], inputs: false },
+  { id: "formatWithLanguageServer", label: "Format with Language Server", category: "Editor", keys: ["Mod+Alt+Shift+F"], inputs: false },
   { id: "zoomIn", label: "Zoom In", category: "View", keys: ["Mod+=", "Mod+Shift+="], inputs: true },
   { id: "zoomOut", label: "Zoom Out", category: "View", keys: ["Mod+-"], inputs: true },
   { id: "resetZoom", label: "Reset Zoom", category: "View", keys: ["Mod+0"], inputs: true },

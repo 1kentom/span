@@ -299,6 +299,7 @@ const COMMAND_IDS: &[&str] = &[
     "toggleWordWrap",
     "markdownPreview",
     "formatDocument",
+    "formatWithLanguageServer",
     "goToLine",
     "zoomIn",
     "zoomOut",
@@ -467,6 +468,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("toggleWordWrap", vec!["Alt+Z"]),
         ("markdownPreview", vec!["Mod+Shift+V"]),
         ("formatDocument", vec!["Alt+Shift+F"]),
+        ("formatWithLanguageServer", vec!["Mod+Alt+Shift+F"]),
         ("goToLine", vec!["Ctrl+G", "Mod+Alt+G"]),
         ("zoomIn", vec!["Mod+=", "Mod+Shift+="]),
         ("zoomOut", vec!["Mod+-"]),
@@ -1120,6 +1122,35 @@ mod file_open_shortcut_tests {
             .any(|id| id == "toggleFiles"));
         assert!(COMMAND_IDS.contains(&"focusFiles"));
         assert!(COMMAND_IDS.contains(&"toggleFiles"));
+    }
+
+    #[test]
+    fn language_server_format_shortcut_is_a_validated_action() {
+        assert!(COMMAND_IDS.contains(&"formatWithLanguageServer"));
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+        assert!(schema["properties"]["keybindings"]["propertyNames"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == "formatWithLanguageServer"));
+        let rebound = Settings {
+            keybindings: HashMap::from([(
+                "formatWithLanguageServer".into(),
+                vec!["Mod+Alt+Shift+L".into()],
+            )]),
+            ..Default::default()
+        };
+        rebound.validate().unwrap();
+        let conflict = Settings {
+            keybindings: HashMap::from([("save".into(), vec!["Mod+Alt+Shift+F".into()])]),
+            ..Default::default()
+        };
+        assert!(conflict
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("conflicts"));
     }
 
     #[test]

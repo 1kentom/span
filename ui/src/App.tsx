@@ -234,7 +234,7 @@ export default function App() {
     settings: openSettings, closeTab: () => { const path = w.activeTab(); if (path) requestCloseTab(path, w.activeGroup()); else requestCloseGroup(w.activeGroup()); }, save: saveActive, openFolder: requestWorkspace,
     splitEditor: () => w.splitEditor(), toggleProject: () => setShowLeft(!showLeft()), toggleAssistant: () => setShowRight(!showRight()), toggleTerminal: () => setShowBottom(!showBottom()),
     markdownPreview: () => { const path = w.activePath(); if (path && w.isMarkdown(path)) w.setMarkdownView(path, w.markdownView(path) === "preview" ? "source" : "preview"); },
-    formatDocument: () => { void w.format(); }, goToLine: () => runEditor("goToLine"),
+    formatDocument: () => { void w.format(); }, formatWithLanguageServer: () => runEditor("formatWithLanguageServer"), goToLine: () => runEditor("goToLine"),
     zoomIn: () => applyZoom(zoom.zoomIn), zoomOut: () => applyZoom(zoom.zoomOut), resetZoom: () => applyZoom(zoom.reset),
     toggleWordWrap: () => { void w.updateEffectiveSetting("wordWrap", !w.settings().wordWrap).catch(error => w.setError(String(error))); },
   };

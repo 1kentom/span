@@ -58,6 +58,20 @@ describe("central keyboard commands", () => {
     expect(dispatchKeyboard(key("e", { metaKey: true, shiftKey: true }), native)).toBe(true);
     expect(files).toHaveBeenCalledTimes(2); expect(toggleFiles).toHaveBeenCalledOnce(); expect(pick).not.toHaveBeenCalled();
   });
+  it("registers the language server format shortcut as a rebindable action", () => {
+    expect(resolveKeybindings({}, "mac").formatWithLanguageServer).toEqual(["Meta+Alt+Shift+F"]);
+    expect(resolveKeybindings({}, "linux").formatWithLanguageServer).toEqual(["Ctrl+Alt+Shift+F"]);
+    const format = vi.fn();
+    const target = document.createElement("div"); target.className = "cm-editor";
+    const defaults = resolveKeybindings({}, "linux");
+    expect(dispatchKeyboard(key("F", { ctrlKey: true, altKey: true, shiftKey: true, code: "KeyF" }, target), { bindings: defaults, handlers: { formatWithLanguageServer: format } })).toBe(true);
+    expect(format).toHaveBeenCalledOnce();
+    const rebound = resolveKeybindings({ formatWithLanguageServer: ["Mod+K"] }, "linux");
+    expect(dispatchKeyboard(key("F", { ctrlKey: true, altKey: true, shiftKey: true, code: "KeyF" }, target), { bindings: rebound, handlers: { formatWithLanguageServer: format } })).toBe(false);
+    expect(dispatchKeyboard(key("k", { ctrlKey: true }, target), { bindings: rebound, handlers: { formatWithLanguageServer: format } })).toBe(true);
+    expect(validateKeybindings({ save: ["Mod+Alt+Shift+F"] }, "linux")[0].message).toContain("already assigned");
+    expect(validateKeybindings({ formatWithLanguageServer: ["Mod+Alt+Shift+F"] }, "linux")).toEqual([]);
+  });
   it("rebinds and disables actions without retaining their defaults", () => {
     const bindings = resolveKeybindings({ quickOpen: ["Mod+K"], save: [] }, "linux");
     const open = vi.fn(); const save = vi.fn();

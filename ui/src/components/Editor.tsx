@@ -10,7 +10,7 @@ import type { BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEd
 import { loadLanguage, resolveLanguageId } from "../editor/languages";
 import { completionTabSupport } from "../editor/completion-tab";
 import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/search-panel";
-import { lspExtension, type LspBinding } from "../lib/lsp-codemirror";
+import { formatWithLanguageServer, lspExtension, type LspBinding } from "../lib/lsp-codemirror";
 import "../styles/editor.css";
 
 export interface EditorEdit {
@@ -29,6 +29,8 @@ export interface EditorCommands {
   replace: () => void;
   goToLine: () => void;
   format: () => void;
+  /** Format with the language server of the file, when it can. Does nothing otherwise. */
+  formatWithLanguageServer: () => void;
   copy: () => Promise<void>;
   cut: () => Promise<void>;
   paste: () => Promise<void>;
@@ -360,6 +362,10 @@ export default function Editor(props: EditorProps) {
     },
     goToLine: () => { if (view && props.active !== false) gotoLine(view); },
     format: () => { if (view && props.active !== false) props.onFormat?.(); },
+    formatWithLanguageServer: () => {
+      if (!view || props.active === false || !props.lsp?.getCapabilities()?.formatting) return;
+      void formatWithLanguageServer(view).catch(() => undefined);
+    },
     expandAbbreviation: () => {
       const target = view;
       if (!target || props.active === false) return;

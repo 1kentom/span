@@ -97,6 +97,7 @@
           "toggleWordWrap",
           "markdownPreview",
           "formatDocument",
+          "formatWithLanguageServer",
           "goToLine",
           "zoomIn",
           "zoomOut",

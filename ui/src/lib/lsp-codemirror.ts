@@ -510,7 +510,7 @@ export async function formatWithLanguageServer(view: EditorView): Promise<Format
 
 // --------------------------------------------------------------- extension
 
-/** Adds language server features to one editor view. Separate extension entries, no keymap overlap with the editor. */
+/** Adds language server features to one editor view. Separate extension entries. Formatting is the shared `formatWithLanguageServer` action, so it can be rebound. */
 export function lspExtension(path: string, binding: LspBinding): Extension {
   const runtime: Runtime = { path, binding, session: binding.createSession(), destroyed: false };
   const source = createCompletionSource(runtime);
@@ -531,7 +531,6 @@ export function lspExtension(path: string, binding: LspBinding): Extension {
     }),
     keymap.of([
       { key: "F12", run: goToDefinition, preventDefault: true },
-      { key: "Mod-Alt-Shift-f", run: view => { if (!runtimeOf(view)?.binding.getCapabilities()?.formatting) return false; void formatWithLanguageServer(view).catch(() => undefined); return true; }, preventDefault: true },
     ]),
   ];
 }
