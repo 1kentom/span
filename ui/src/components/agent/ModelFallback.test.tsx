@@ -104,7 +104,6 @@ describe("terminal sign-in on the card", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(iconOf(toggle)).toContain("arrow-up3");
     expect(document.getElementById(toggle.getAttribute("aria-controls")!)).not.toBeNull();
-    expect(text(host.querySelector(".sb-auth-hint"))).toBe("Run opencode auth login in a terminal, then retry");
     expect(text(host.querySelector(".sb-terminal-command"))).toBe("opencode auth login");
     const retry = [...host.querySelectorAll<HTMLButtonElement>(".sb-terminal-login .sb-btn")].find((button) => text(button) === "I have signed in, retry")!;
     expect(retry.classList.contains("primary")).toBe(false);

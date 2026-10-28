@@ -158,7 +158,7 @@ export function SignIn(props: SignInProps) {
   const [asking, setAsking] = createSignal<string>();
   const [terminalOpen, setTerminalOpen] = createSignal(false);
   const hasModels = () => Boolean(props.models?.length && props.onUseModel);
-  /** With a model list to lead, the terminal sign-in and its hint fold under a disclosure. */
+  /** With a model list to lead, the terminal sign-in folds under a disclosure, and the hint line that repeats its command is not drawn. */
   const folded = () => hasModels() && Boolean(terminalCommand(props.hint));
   return (
     <section class="sb-signin" aria-labelledby="sb-signin-title">
@@ -181,7 +181,6 @@ export function SignIn(props: SignInProps) {
               </button>
               <Show when={terminalOpen()}>
                 <div id="sb-terminal-panel" class="sb-terminal-panel">
-                  <p class="sb-fine sb-auth-hint" role="note"><HintLine text={props.hint!} /></p>
                   <TerminalLogin command={command()} onRetry={props.onRetry} />
                 </div>
               </Show>
@@ -189,33 +188,35 @@ export function SignIn(props: SignInProps) {
           </Show>
         )}
       </Show>
-      <div class="sb-methods">
-        <For each={props.methods}>
-          {(method, index) => (
-            <>
-              <button
-                class="sb-method"
-                classList={{ primary: !props.secondary && index() === 0 && !method.input }}
-                disabled={props.busy}
-                aria-expanded={method.input ? asking() === method.id : undefined}
-                onClick={() => (method.input ? setAsking(asking() === method.id ? undefined : method.id) : props.onPick(method.id))}
-              >
-                <span class="sb-method-name">{method.name}</span>
-                <Show when={method.description}><span class="sb-method-desc">{method.description}</span></Show>
-              </button>
-              <Show when={method.input && asking() === method.id}>
-                <AuthForm
-                  kind={method.input!}
-                  methodName={method.name}
-                  busy={props.busy}
-                  onSubmit={(secret) => props.onSubmit?.(method.id, secret)}
-                  onCancel={() => setAsking(undefined)}
-                />
-              </Show>
-            </>
-          )}
-        </For>
-      </div>
+      <Show when={props.methods.length}>
+        <div class="sb-methods">
+          <For each={props.methods}>
+            {(method, index) => (
+              <>
+                <button
+                  class="sb-method"
+                  classList={{ primary: !props.secondary && index() === 0 && !method.input }}
+                  disabled={props.busy}
+                  aria-expanded={method.input ? asking() === method.id : undefined}
+                  onClick={() => (method.input ? setAsking(asking() === method.id ? undefined : method.id) : props.onPick(method.id))}
+                >
+                  <span class="sb-method-name">{method.name}</span>
+                  <Show when={method.description}><span class="sb-method-desc">{method.description}</span></Show>
+                </button>
+                <Show when={method.input && asking() === method.id}>
+                  <AuthForm
+                    kind={method.input!}
+                    methodName={method.name}
+                    busy={props.busy}
+                    onSubmit={(secret) => props.onSubmit?.(method.id, secret)}
+                    onCancel={() => setAsking(undefined)}
+                  />
+                </Show>
+              </>
+            )}
+          </For>
+        </div>
+      </Show>
       <Show when={!props.methods.some((method) => method.input)} fallback={<p class="sb-fine">A key or gateway you type here is passed to the agent once. Span does not store it.</p>}>
         <p class="sb-fine">Credentials stay with the agent. Span never sees them.</p>
       </Show>
