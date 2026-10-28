@@ -737,3 +737,20 @@ fn peek_buffer_reads_without_opening_a_buffer() {
     assert_eq!(core.peek_buffer("a.rs").unwrap().text, "pub fn a() {}\n");
     assert!(core.peek_buffer("../outside.rs").is_err());
 }
+
+#[test]
+fn java_buffers_report_the_java_language() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/com/example/todo")).unwrap();
+    fs::write(
+        dir.path()
+            .join("src/main/java/com/example/todo/Controller.java"),
+        "package com.example.todo;\npublic class Controller {}\n",
+    )
+    .unwrap();
+    let mut core = CoreWorkspace::open(dir.path()).unwrap();
+    let snapshot = core
+        .open_buffer("src/main/java/com/example/todo/Controller.java")
+        .unwrap();
+    assert_eq!(snapshot.language, "java");
+}
