@@ -30,6 +30,23 @@ pub enum NativeAction {
     MarkdownPreview,
     FormatDocument,
     GoToLine,
+    FormatWithLanguageServer,
+    GoToDefinition,
+    GoToTypeDefinition,
+    GoToImplementation,
+    PeekDefinition,
+    PeekTypeDefinition,
+    PeekImplementation,
+    FindReferences,
+    PeekReferences,
+    GoToSymbolInFile,
+    GoToSymbolInWorkspace,
+    QuickInfo,
+    ShowCallHierarchy,
+    ShowTypeHierarchy,
+    RenameSymbol,
+    GoBack,
+    GoForward,
     ZoomIn,
     ZoomOut,
     ResetZoom,
@@ -92,6 +109,79 @@ const ACTIONS: &[(&str, &str, NativeAction)] = &[
         "Toggle Word Wrap",
         NativeAction::ToggleWordWrap,
     ),
+    (
+        "formatWithLanguageServer",
+        "Format with Language Server",
+        NativeAction::FormatWithLanguageServer,
+    ),
+    (
+        "goToDefinition",
+        "Go to Definition",
+        NativeAction::GoToDefinition,
+    ),
+    (
+        "goToTypeDefinition",
+        "Go to Type Definition",
+        NativeAction::GoToTypeDefinition,
+    ),
+    (
+        "goToImplementation",
+        "Go to Implementation",
+        NativeAction::GoToImplementation,
+    ),
+    (
+        "peekDefinition",
+        "Peek Definition",
+        NativeAction::PeekDefinition,
+    ),
+    (
+        "peekTypeDefinition",
+        "Peek Type Definition",
+        NativeAction::PeekTypeDefinition,
+    ),
+    (
+        "peekImplementation",
+        "Peek Implementation",
+        NativeAction::PeekImplementation,
+    ),
+    (
+        "findReferences",
+        "Find All References",
+        NativeAction::FindReferences,
+    ),
+    (
+        "peekReferences",
+        "Peek References",
+        NativeAction::PeekReferences,
+    ),
+    (
+        "goToSymbolInFile",
+        "Go to Symbol in File...",
+        NativeAction::GoToSymbolInFile,
+    ),
+    (
+        "goToSymbolInWorkspace",
+        "Go to Symbol in Workspace...",
+        NativeAction::GoToSymbolInWorkspace,
+    ),
+    (
+        "quickInfo",
+        "Show Quick Definition",
+        NativeAction::QuickInfo,
+    ),
+    (
+        "showCallHierarchy",
+        "Show Call Hierarchy",
+        NativeAction::ShowCallHierarchy,
+    ),
+    (
+        "showTypeHierarchy",
+        "Show Type Hierarchy",
+        NativeAction::ShowTypeHierarchy,
+    ),
+    ("renameSymbol", "Rename Symbol", NativeAction::RenameSymbol),
+    ("goBack", "Go Back", NativeAction::GoBack),
+    ("goForward", "Go Forward", NativeAction::GoForward),
     ("zoomIn", "Zoom In", NativeAction::ZoomIn),
     ("zoomOut", "Zoom Out", NativeAction::ZoomOut),
     ("resetZoom", "Reset Zoom", NativeAction::ResetZoom),
@@ -155,6 +245,8 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["findInFile"],
             &items["searchWorkspace"],
             &items["formatDocument"],
+            &items["formatWithLanguageServer"],
+            &items["renameSymbol"],
         ],
     )?;
     let view = Submenu::with_items(
@@ -176,7 +268,31 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["resetZoom"],
         ],
     )?;
-    let go = Submenu::with_items(app, "Go", true, &[&items["quickOpen"], &items["goToLine"]])?;
+    let go = Submenu::with_items(
+        app,
+        "Go",
+        true,
+        &[
+            &items["quickOpen"],
+            &items["goToLine"],
+            &separator,
+            &items["goToDefinition"],
+            &items["goToTypeDefinition"],
+            &items["goToImplementation"],
+            &items["peekDefinition"],
+            &items["peekTypeDefinition"],
+            &items["peekImplementation"],
+            &items["findReferences"],
+            &items["peekReferences"],
+            &items["goToSymbolInFile"],
+            &items["goToSymbolInWorkspace"],
+            &items["quickInfo"],
+            &items["showCallHierarchy"],
+            &items["showTypeHierarchy"],
+            &items["goBack"],
+            &items["goForward"],
+        ],
+    )?;
     app.set_menu(Menu::with_items(
         app,
         &[&app_menu, &file, &edit, &view, &go],
@@ -233,4 +349,41 @@ pub fn sync_native_menu(
         .filter(|(id, _, _)| bindings.get(*id).is_some_and(|keys| !keys.is_empty()))
         .map(|(id, _, _)| (*id).to_owned())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_rebindable_command_has_a_native_menu_action() {
+        for id in span_core::COMMAND_IDS {
+            assert!(
+                ACTIONS.iter().any(|(action, _, _)| action == id),
+                "{id} has no native menu action"
+            );
+        }
+        for (id, _, _) in ACTIONS {
+            assert!(span_core::COMMAND_IDS.contains(id), "{id} is not a command");
+        }
+    }
+
+    #[test]
+    fn default_navigation_accelerators_are_valid_bindings() {
+        let bindings: HashMap<String, Vec<String>> = [
+            ("goToDefinition", "F12"),
+            ("peekReferences", "Shift+Alt+F12"),
+            ("goToSymbolInWorkspace", "Mod+T"),
+            ("goBack", "Mod+Alt+ArrowLeft"),
+        ]
+        .into_iter()
+        .map(|(id, key)| (id.to_owned(), vec![key.to_owned()]))
+        .collect();
+        span_core::Settings {
+            keybindings: bindings,
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
+    }
 }
