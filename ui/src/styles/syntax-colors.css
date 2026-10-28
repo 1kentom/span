@@ -8,11 +8,11 @@
 .syn-tabs>button:focus-visible,.syn-settings button:focus-visible,.syn-settings select:focus-visible,.syn-settings input:focus-visible,.syn-settings textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .syn-count{min-width:16px;padding:0 4px;border-radius:8px;background:var(--accent);color:#fff;font-size:10px;line-height:16px;text-align:center}
 .syn-note{margin:0 0 14px;color:var(--dim);font-size:11px;line-height:18px}
-.syn-preview-block{margin-bottom:14px}
+.syn-preview-block{position:sticky;top:-1px;z-index:3;margin:0 0 10px;padding:6px 0 8px;background:var(--island)}
 .syn-preview-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
 .syn-language{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:11px}
-.syn-language select{border:1px solid var(--pillBd);border-radius:4px;background:var(--pill);color:var(--text);padding:5px 8px;font-size:12px}
-.span-editor.syn-preview{height:auto;max-height:340px;border:1px solid var(--border);border-radius:6px;overflow:auto}
+.syn-language select{border:1px solid var(--pillBd);border-radius:4px;background:var(--field);color:var(--text);padding:5px 8px;font-size:12px}
+.span-editor.syn-preview{height:auto;max-height:170px;border:1px solid var(--border);border-radius:6px;overflow:auto}
 .syn-preview .span-editor-surface{overflow:visible}
 .syn-preview .cm-editor{height:auto}
 .syn-preview .cm-content{padding:10px 0}

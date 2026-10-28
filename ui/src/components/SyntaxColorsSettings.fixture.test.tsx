@@ -111,13 +111,13 @@ describe("fixture: syntax colors section", () => {
     await settle();
     expect(m.onChange).not.toHaveBeenCalled();
     named(m.root, "Reset theme").click();
-    [...m.root.querySelectorAll('[aria-label="Confirm reset"] button')].find(b => b.textContent === "Reset theme")!.click();
+    [...m.root.querySelectorAll<HTMLButtonElement>('[aria-label="Confirm reset"] button')].find(b => b.textContent === "Reset theme")!.click();
     await settle();
     expect(m.onChange.mock.calls).toEqual([["editor.syntaxColors.dark", null]]);
     m.onChange.mockClear();
     named(m.root, "Reset all").click();
     expect(m.root.querySelector('[aria-label="Confirm reset"]')!.textContent).toContain("every theme");
-    [...m.root.querySelectorAll('[aria-label="Confirm reset"] button')].find(b => b.textContent === "Reset all")!.click();
+    [...m.root.querySelectorAll<HTMLButtonElement>('[aria-label="Confirm reset"] button')].find(b => b.textContent === "Reset all")!.click();
     await settle();
     expect(m.onChange.mock.calls).toEqual([["editor.syntaxColors.dark", null], ["editor.syntaxColors.light", null]]);
   });
