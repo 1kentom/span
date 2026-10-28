@@ -13,11 +13,17 @@
 //!   against and dropped as [`LspErrorDto::Stale`] if either moved.
 
 mod dto;
+mod intel;
+mod nav_service;
+mod navigation;
 mod paths;
 mod position;
 mod provision;
+mod trust;
 
 pub use dto::*;
+pub use intel::*;
+pub use navigation::*;
 use provision::{CatalogProvisioner, GatedResolver, InstallFailure, Provisioner, RuntimeIssue};
 use serde::Serialize;
 use span_core::{BufferRevision, BufferSnapshot, CoreWorkspace, Settings, TextEdit};
@@ -38,6 +44,7 @@ use tauri::State;
 use tauri_specta::Event;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
+pub use trust::*;
 
 /// Documents above this size are not sent to language servers.
 const MAX_DOC_BYTES: usize = 4 * 1024 * 1024;
@@ -68,6 +75,13 @@ pub struct LanguageServerInstallProgress {
     pub received: Option<u64>,
     pub total: Option<u64>,
     pub message: Option<String>,
+    /// Bytes received across every artifact of the install. Never decreases.
+    pub overall_received: u64,
+    /// Bytes expected across every artifact, when known.
+    pub overall_total: Option<u64>,
+    /// Zero based index of the artifact being worked on.
+    pub artifact_index: u32,
+    pub artifact_count: u32,
 }
 
 /// `version` is the LSP document version the server reported on; `revision` is the
@@ -94,6 +108,7 @@ pub struct LanguageServerError {
 pub enum LspEvent {
     State(LanguageServerStateChanged),
     Install(LanguageServerInstallProgress),
+    WorkProgress(LanguageServerWorkProgress),
     Diagnostics(DiagnosticsPublished),
     Error(LanguageServerError),
 }
@@ -108,6 +123,7 @@ pub fn tauri_sink(app: tauri::AppHandle) -> EventSink {
         match event {
             LspEvent::State(e) => crate::events::emit(&app, &e),
             LspEvent::Install(e) => crate::events::emit(&app, &e),
+            LspEvent::WorkProgress(e) => crate::events::emit(&app, &e),
             LspEvent::Diagnostics(e) => crate::events::emit(&app, &e),
             LspEvent::Error(e) => crate::events::emit(&app, &e),
         };
@@ -251,6 +267,21 @@ struct Shared {
     states: HashMap<(ServerId, PathBuf), LanguageServerStateDto>,
     versions: HashMap<PathBuf, VecDeque<(i32, u64)>>,
     last_error: HashMap<ServerId, String>,
+    /// Running install tasks, so `lsp_cancel_install` can drop them.
+    installs: HashMap<ServerId, tauri::async_runtime::JoinHandle<()>>,
+    /// Latest overall progress of each running install.
+    install_progress: HashMap<ServerId, InstallStatusDto>,
+    work: WorkTracker,
+}
+
+/// Which folders may run project code. Shared with the options provider, which runs when
+/// a server is started and decides per server root.
+#[derive(Default, Clone)]
+struct TrustState {
+    everything: bool,
+    /// Decisions of `trusted-workspaces.json`.
+    entries: Entries,
+    store: Option<Arc<TrustStore>>,
 }
 
 pub struct LanguageServers {
@@ -258,6 +289,7 @@ pub struct LanguageServers {
     provisioner: Arc<dyn Provisioner>,
     sink: EventSink,
     state: Mutex<Shared>,
+    trust: Arc<std::sync::RwLock<TrustState>>,
     tx: mpsc::UnboundedSender<Queued>,
     processed: watch::Sender<u64>,
     requests: Mutex<HashMap<String, CancellationToken>>,
@@ -378,13 +410,22 @@ impl LanguageServers {
         config: ServiceConfig,
     ) -> LspService {
         let manager = Manager::new(catalog::all_specs(), resolver, config.manager);
-        manager.set_options_provider(Arc::new(catalog::initialization_options));
+        let trust: Arc<std::sync::RwLock<TrustState>> = Arc::default();
+        let provider_trust = trust.clone();
+        manager.set_options_provider(Arc::new(move |id, root, global| {
+            let t = provider_trust.read().unwrap_or_else(|e| e.into_inner());
+            catalog::initialization_options(
+                id,
+                is_trusted(global || t.everything, &t.entries, root),
+            )
+        }));
         let (tx, rx) = mpsc::unbounded_channel();
         let service = Arc::new(Self {
             manager,
             provisioner,
             sink,
             state: Mutex::new(Shared::default()),
+            trust,
             tx,
             processed: watch::channel(0).0,
             requests: Mutex::new(HashMap::new()),
@@ -404,6 +445,17 @@ impl LanguageServers {
         let worker = service.clone();
         tauri::async_runtime::spawn(async move { worker.run(rx).await });
         service
+    }
+
+    fn set_trust(&self, settings: &LspSettings) {
+        let mut t = self.trust.write().unwrap_or_else(|e| e.into_inner());
+        t.everything = settings.run_project_code;
+    }
+
+    /// Whether project code may run for `root` (a server root or the workspace root).
+    fn trusted(&self, root: &Path) -> bool {
+        let t = self.trust.read().unwrap_or_else(|e| e.into_inner());
+        is_trusted(t.everything, &t.entries, root)
     }
 
     fn emit(&self, event: LspEvent) {
@@ -441,7 +493,10 @@ impl LanguageServers {
         let new = LspSettings::from(settings);
         self.provisioner.configure(&new);
         self.manager.set_run_project_code(new.run_project_code);
+        self.set_trust(&new);
+        self.import_legacy_trust(&settings.language_servers.trusted_workspaces);
         let mut st = lock(&self.state);
+        st.work.clear_all();
         let mut keys: HashSet<(ServerId, PathBuf)> = st.states.keys().cloned().collect();
         keys.extend(st.docs.values().map(|d| (d.r.server, d.r.root.clone())));
         for server in ALL_SERVERS {
@@ -471,6 +526,7 @@ impl LanguageServers {
         let new = LspSettings::from(settings);
         self.provisioner.configure(&new);
         self.manager.set_run_project_code(new.run_project_code);
+        self.set_trust(&new);
         let mut pending_install = Vec::new();
         {
             let mut st = lock(&self.state);
@@ -1026,7 +1082,8 @@ impl LanguageServers {
         }
         self.set_gate(server, Gate::Installing);
         let this = self.clone();
-        tauri::async_runtime::spawn(async move { this.install_task(server).await });
+        let handle = tauri::async_runtime::spawn(async move { this.install_task(server).await });
+        lock(&self.state).installs.insert(server, handle);
     }
 
     async fn install_task(self: Arc<Self>, server: ServerId) {
@@ -1036,13 +1093,27 @@ impl LanguageServers {
         }
         let version = self.provisioner.version(server);
         let (tx, mut rx) = mpsc::channel(256);
+        let hint = self.provisioner.size_hint(server);
         let forwarder = {
             let this = self.clone();
             let version = version.clone();
             tauri::async_runtime::spawn(async move {
+                let mut tracker = OverallTracker::new(hint);
                 let mut last = Instant::now() - Duration::from_secs(1);
                 while let Some(progress) = rx.recv().await {
-                    if let Some(event) = Self::progress_event(server, &version, progress) {
+                    tracker.apply(&progress);
+                    if let Some(mut event) = Self::progress_event(server, &version, progress) {
+                        Self::stamp(&mut event, tracker.snapshot());
+                        lock(&this.state).install_progress.insert(
+                            server,
+                            InstallStatusDto {
+                                phase: event.phase,
+                                overall_received: event.overall_received,
+                                overall_total: event.overall_total,
+                                artifact_index: event.artifact_index,
+                                artifact_count: event.artifact_count,
+                            },
+                        );
                         let chunk = event.phase == InstallPhase::Downloading;
                         let done = event.received.is_some() && event.received == event.total;
                         if chunk && !done && last.elapsed() < Duration::from_millis(100) {
@@ -1052,10 +1123,16 @@ impl LanguageServers {
                         this.emit(LspEvent::Install(event));
                     }
                 }
+                tracker
             })
         };
         let result = self.provisioner.install(server, tx).await;
-        let _ = forwarder.await;
+        let mut tracker = forwarder.await.unwrap_or_default();
+        {
+            let mut st = lock(&self.state);
+            st.installs.remove(&server);
+            st.install_progress.remove(&server);
+        }
         match result {
             Ok(()) => {
                 {
@@ -1065,24 +1142,58 @@ impl LanguageServers {
                     st.last_error.remove(&server);
                     self.push(&mut st, Op::Resume { server });
                 }
-                self.emit(LspEvent::Install(Self::phase_event(
-                    server,
-                    &version,
-                    InstallPhase::Finished,
-                    None,
-                )));
+                let mut event = Self::phase_event(server, &version, InstallPhase::Finished, None);
+                Self::stamp(&mut event, tracker.complete());
+                self.emit(LspEvent::Install(event));
             }
             Err(InstallFailure { reason, retryable }) => {
-                self.emit(LspEvent::Install(Self::phase_event(
-                    server,
-                    &version,
-                    InstallPhase::Failed,
-                    Some(reason.clone()),
-                )));
+                let mut event =
+                    Self::phase_event(server, &version, InstallPhase::Failed, Some(reason.clone()));
+                Self::stamp(&mut event, tracker.snapshot());
+                self.emit(LspEvent::Install(event));
                 self.report(server, None, format!("install failed: {reason}"));
                 self.set_gate(server, Gate::InstallFailed { reason, retryable });
             }
         }
+    }
+
+    fn stamp(event: &mut LanguageServerInstallProgress, overall: Overall) {
+        event.overall_received = overall.received;
+        event.overall_total = overall.total;
+        event.artifact_index = overall.index;
+        event.artifact_count = overall.count;
+    }
+
+    /// Cancel an install in flight: drop the install (which releases its lock), remove the
+    /// staging tree with its partial downloads, and go back to `needs-install`. Quiet:
+    /// emits a `cancelled` progress event, never an error. Safe when nothing installs.
+    pub async fn cancel_install(self: &Arc<Self>, server: ServerId) {
+        let handle = {
+            let mut st = lock(&self.state);
+            if st.gates.get(&server) != Some(&Gate::Installing) {
+                return;
+            }
+            st.install_progress.remove(&server);
+            st.installs.remove(&server)
+        };
+        if let Some(handle) = handle {
+            handle.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(10), handle).await;
+        }
+        let provisioner = self.provisioner.clone();
+        let _ = tokio::task::spawn_blocking(move || provisioner.discard_partial(server)).await;
+        // A task that finished on its own just before the abort already set its result.
+        if lock(&self.state).gates.get(&server) != Some(&Gate::Installing) {
+            return;
+        }
+        self.set_gate(server, Gate::NeedsInstall);
+        let version = self.provisioner.version(server);
+        self.emit(LspEvent::Install(Self::phase_event(
+            server,
+            &version,
+            InstallPhase::Cancelled,
+            None,
+        )));
     }
 
     fn phase_event(
@@ -1098,6 +1209,10 @@ impl LanguageServers {
             received: None,
             total: None,
             message,
+            overall_received: 0,
+            overall_total: None,
+            artifact_index: 0,
+            artifact_count: 0,
         }
     }
 
@@ -1151,6 +1266,12 @@ impl LanguageServers {
                         return;
                     }
                     st.states.insert((server, root.clone()), dto.clone());
+                    if dto != LanguageServerStateDto::Ready
+                        && dto != LanguageServerStateDto::Starting
+                    {
+                        // Whatever it was busy with died with it.
+                        st.work.clear(server, &root);
+                    }
                     if dto == LanguageServerStateDto::Ready {
                         st.last_error.remove(&server);
                     }
@@ -1160,6 +1281,27 @@ impl LanguageServers {
                     root: root.to_string_lossy().into_owned(),
                     state: dto,
                 }));
+            }
+            ManagerEvent::Progress {
+                server,
+                root,
+                token,
+                kind,
+                title,
+                message,
+                percentage,
+            } => {
+                let report = span_lsp::servers::manager::WorkProgress {
+                    token,
+                    kind,
+                    title,
+                    message,
+                    percentage,
+                };
+                let event = lock(&self.state).work.apply(server, &root, report);
+                if let Some(event) = event {
+                    self.emit(LspEvent::WorkProgress(event));
+                }
             }
             ManagerEvent::Diagnostics { params, .. } => {
                 let Ok(url) = tauri::Url::parse(params.uri.as_str()) else {
@@ -1358,9 +1500,13 @@ impl LanguageServers {
             tab_size: p.tab_size,
             workspace: p.workspace.clone(),
         });
+        tokio::pin!(call);
         let outcome = tokio::select! {
-            _ = guard.token.cancelled() => return Err(LspErrorDto::Cancelled),
-            r = tokio::time::timeout(self.request_timeout, call) => r,
+            _ = guard.token.cancelled() => {
+                cancel_grace(call).await;
+                return Err(LspErrorDto::Cancelled);
+            }
+            r = tokio::time::timeout(self.request_timeout, &mut call) => r,
         };
         let data = match outcome {
             Ok(result) => result.map_err(LspErrorDto::from)?,
@@ -1551,13 +1697,14 @@ impl LanguageServers {
     }
 
     pub async fn status(self: &Arc<Self>) -> Vec<ServerStatusDto> {
-        let (settings, gates, states, epochs) = {
+        let (settings, gates, states, epochs, workspace) = {
             let st = lock(&self.state);
             (
                 st.settings.clone(),
                 st.gates.clone(),
                 st.states.clone(),
                 st.epochs.clone(),
+                st.root.clone(),
             )
         };
         let mut rows = Vec::new();
@@ -1591,12 +1738,52 @@ impl LanguageServers {
             }
             for (root, state) in entries {
                 let capabilities = match (&root, &state) {
-                    (Some(root), LanguageServerStateDto::Ready) => self
-                        .manager
-                        .capabilities(server, root)
-                        .await
-                        .map(|c| CapabilitiesDto::from(&c)),
+                    (Some(root), LanguageServerStateDto::Ready) => {
+                        match self.manager.capabilities(server, root).await {
+                            Some(c) => {
+                                let mut dto = CapabilitiesDto::from(&c);
+                                dto.type_hierarchy =
+                                    self.manager.supports_type_hierarchy(server, root).await;
+                                Some(dto)
+                            }
+                            None => None,
+                        }
+                    }
                     _ => None,
+                };
+                let basis = root.clone().or_else(|| workspace.clone());
+                let installed_size_bytes = if installed {
+                    match self.provisioner.installed_dir(server) {
+                        Some(dir) => tokio::task::spawn_blocking(move || dir_size(&dir))
+                            .await
+                            .ok(),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let runtime = Self::runtime_dto(server, gates.get(&server));
+                let (failure_reason, failure_details) = match failure(&state) {
+                    Some((reason, details)) => (Some(reason), Some(details)),
+                    None => (None, None),
+                };
+                let workspace_trusted = basis.as_deref().is_some_and(|b| self.trusted(b));
+                let reason = if workspace_trusted || !enabled {
+                    None
+                } else {
+                    basis
+                        .as_deref()
+                        .filter(|_| PROJECT_CODE_SERVERS.contains(&server))
+                        .and_then(|b| trust_reason(server, b))
+                };
+                let (activity, install) = {
+                    let st = lock(&self.state);
+                    (
+                        root.as_deref()
+                            .map(|r| st.work.activity(server, r))
+                            .unwrap_or_default(),
+                        st.install_progress.get(&server).cloned(),
+                    )
                 };
                 rows.push(ServerStatusDto {
                     server: server.into(),
@@ -1607,10 +1794,50 @@ impl LanguageServers {
                     version: self.provisioner.version(server),
                     epoch,
                     capabilities,
+                    display_name: display_name(server).to_owned(),
+                    languages: languages(server),
+                    installed_size_bytes,
+                    runtime,
+                    failure_reason,
+                    failure_details,
+                    trust: TrustDto {
+                        workspace_trusted,
+                        needs_trust: reason.is_some(),
+                        reason,
+                    },
+                    activity,
+                    install,
                 });
             }
         }
         rows
+    }
+
+    /// The open workspace root, as the service tracks it.
+    pub fn workspace_root(&self) -> Option<PathBuf> {
+        lock(&self.state).root.clone()
+    }
+
+    fn runtime_dto(server: ServerId, gate: Option<&Gate>) -> Option<RuntimeDto> {
+        let req = catalog::spec(server).runtime;
+        let name = match req.runtime {
+            span_lsp::servers::spec::Runtime::Node => "Node.js",
+            span_lsp::servers::spec::Runtime::Java => "JDK",
+            span_lsp::servers::spec::Runtime::None => return None,
+        };
+        let (found_version, found_path) = match gate {
+            Some(Gate::RuntimeMissing(issue)) => (
+                issue.found.first().cloned(),
+                issue.found_paths.first().cloned(),
+            ),
+            _ => (None, None),
+        };
+        Some(RuntimeDto {
+            name: name.to_owned(),
+            required_version: req.min_major,
+            found_version,
+            found_path,
+        })
     }
 
     /// App exit: stop every server, bounded so quitting can never hang.
@@ -1622,6 +1849,12 @@ impl LanguageServers {
             manager.shutdown_all_within(Some(limit)).await;
         });
     }
+}
+
+/// After a cancel the request future gets this long to put `$/cancelRequest` on the wire
+/// (it observes the same token) before it is dropped.
+async fn cancel_grace<F: Future>(call: std::pin::Pin<&mut F>) {
+    let _ = tokio::time::timeout(Duration::from_millis(250), call).await;
 }
 
 struct Prepared {
@@ -1750,6 +1983,324 @@ pub async fn lsp_restart(
 #[specta::specta]
 pub async fn lsp_status(lsp: State<'_, LspService>) -> Result<Vec<ServerStatusDto>, String> {
     Ok(lsp.inner().clone().status().await)
+}
+
+// ---------------------------------------------------------------------------
+// Navigation commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_references(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    include_declaration: bool,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<LocationDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .references(&path, position, include_declaration, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_implementation(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<LocationDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .implementation(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_type_definition(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<LocationDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .type_definition(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_declaration(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<LocationDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .declaration(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_document_symbols(
+    lsp: State<'_, LspService>,
+    path: String,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<SymbolDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .document_symbols(&path, request_id)
+        .await
+}
+
+/// Capped at 200 results. With `path_hint` the server of that file answers; without it
+/// every ready server is asked.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_workspace_symbols(
+    lsp: State<'_, LspService>,
+    query: String,
+    path_hint: Option<String>,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<WorkspaceSymbolDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .workspace_symbols(query, path_hint, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_call_hierarchy_prepare(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<CallHierarchyItemDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .call_hierarchy_prepare(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_call_hierarchy_incoming(
+    lsp: State<'_, LspService>,
+    item: CallHierarchyItemDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<IncomingCallDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .call_hierarchy_incoming(&item, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_call_hierarchy_outgoing(
+    lsp: State<'_, LspService>,
+    item: CallHierarchyItemDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<OutgoingCallDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .call_hierarchy_outgoing(&item, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_type_hierarchy_prepare(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<TypeHierarchyItemDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .type_hierarchy_prepare(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_type_hierarchy_supertypes(
+    lsp: State<'_, LspService>,
+    item: TypeHierarchyItemDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<TypeHierarchyItemDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .type_hierarchy_supertypes(&item, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_type_hierarchy_subtypes(
+    lsp: State<'_, LspService>,
+    item: TypeHierarchyItemDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<TypeHierarchyItemDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .type_hierarchy_subtypes(&item, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_document_highlights(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Vec<DocumentHighlightDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .document_highlights(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_signature_help(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Option<SignatureHelpDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .signature_help(&path, position, request_id)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_prepare_rename(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    request_id: Option<String>,
+) -> Result<LspResponse<Option<PrepareRenameDto>>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .prepare_rename(&path, position, request_id)
+        .await
+}
+
+/// Returns the edit as data (UTF-16 per file). The buffers are not changed: the UI
+/// applies it through the buffer edit path.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_rename(
+    lsp: State<'_, LspService>,
+    path: String,
+    position: PositionDto,
+    new_name: String,
+    request_id: Option<String>,
+) -> Result<LspResponse<WorkspaceEditDto>, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .rename(&path, position, new_name, request_id)
+        .await
+}
+
+/// A read-only excerpt for peeks, hover previews and library source. At most 1 MiB, and
+/// at most 400 lines of context on each side.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_read_source(
+    lsp: State<'_, LspService>,
+    location: LocationDto,
+    context_lines: u32,
+) -> Result<SourceSnippetDto, LspErrorDto> {
+    lsp.inner()
+        .clone()
+        .read_source(location, context_lines)
+        .await
+}
+
+/// Cancel an install in flight. Quiet and safe when nothing is installing: the server goes
+/// back to `needs-install` and a `cancelled` install progress event is emitted.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_cancel_install(
+    lsp: State<'_, LspService>,
+    server: LanguageServerId,
+) -> Result<(), String> {
+    lsp.inner().clone().cancel_install(server.into()).await;
+    Ok(())
+}
+
+/// Compatibility wrapper over the trust store: trust (`true`) or restrict (`false`) the
+/// CURRENT workspace folder. Same as `workspace_trust_decide` with the folder scope; returns
+/// the updated status.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_trust_workspace(
+    app: tauri::AppHandle,
+    lsp: State<'_, LspService>,
+    trusted: bool,
+) -> Result<Vec<ServerStatusDto>, String> {
+    let choice = if trusted {
+        TrustChoice::Trusted
+    } else {
+        TrustChoice::Restricted
+    };
+    decide_and_emit(&app, lsp.inner(), choice, TrustScope::Folder).await?;
+    Ok(lsp.inner().clone().status().await)
+}
+
+async fn decide_and_emit(
+    app: &tauri::AppHandle,
+    lsp: &LspService,
+    choice: TrustChoice,
+    scope: TrustScope,
+) -> Result<WorkspaceTrustStateDto, String> {
+    let service = lsp.clone();
+    let (root, state) =
+        tauri::async_runtime::spawn_blocking(move || service.decide_trust(choice, scope))
+            .await
+            .map_err(|e| format!("Trust task failed: {e}"))??;
+    crate::events::emit(
+        app,
+        &WorkspaceTrustChanged {
+            root,
+            decision: state.decision,
+        },
+    );
+    Ok(state)
+}
+
+/// The trust state of the open workspace folder (see [`WorkspaceTrustStateDto`]).
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_trust_state(
+    lsp: State<'_, LspService>,
+) -> Result<WorkspaceTrustStateDto, String> {
+    Ok(lsp.inner().trust_state())
+}
+
+/// Store the user's decision for the open folder (`folder`) or for its parent folder
+/// (`parent`, which then covers the folder's siblings too). Idempotent.
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_trust_decide(
+    app: tauri::AppHandle,
+    lsp: State<'_, LspService>,
+    decision: TrustChoice,
+    scope: TrustScope,
+) -> Result<WorkspaceTrustStateDto, String> {
+    decide_and_emit(&app, lsp.inner(), decision, scope).await
 }
 
 #[cfg(test)]

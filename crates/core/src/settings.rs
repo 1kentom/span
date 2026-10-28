@@ -13,8 +13,12 @@ pub enum Theme {
 }
 
 /// Language server behaviour, stored under the `languageServers` settings key.
+///
+/// Nested settings objects ignore keys this build does not know, so a file written by a
+/// newer build still loads in an older one (and is rewritten without losing them, see
+/// `keep_unknown_nested`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct LanguageServerSettings {
     /// Download missing language servers on first use. When false, nothing is
     /// downloaded until the user asks for an install.
@@ -30,12 +34,22 @@ pub struct LanguageServerSettings {
     /// procedural macros, `cargo check` on save, Gradle and Maven import). Off by default
     /// because opening an untrusted project would otherwise execute its code.
     pub run_project_code: bool,
+    /// DEPRECATED, read only. Preview builds stored per-workspace trust here. It is now kept
+    /// in `trusted-workspaces.json` beside the other per-user state; a value found here is
+    /// imported into that store once and never written back. `run_project_code` stays as a
+    /// global override meaning "trust every folder".
+    pub trusted_workspaces: Vec<String>,
 }
 
 /// Settings under `languageServers` that choose executables or trigger downloads. They are
 /// honoured from user settings only: a workspace file is untrusted input.
 pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] =
     &["autoInstall", "javaHome", "nodePath", "runProjectCode"];
+
+/// Keys under `languageServers` that older preview builds wrote. They are accepted when
+/// reading (never an error), dropped from workspace files like the user-only keys, and
+/// refused for writing.
+pub const DEPRECATED_LANGUAGE_SERVER_KEYS: &[&str] = &["trustedWorkspaces"];
 
 /// Absolute on any OS, judged from the text alone: `/x`, `C:\x`, `C:/x` or `\\server\share`.
 pub(crate) fn is_absolute_path_text(path: &str) -> bool {
@@ -140,6 +154,12 @@ pub struct Settings {
     pub keybindings: HashMap<String, Vec<String>>,
     pub formatters: HashMap<String, Vec<String>>,
     pub language_servers: LanguageServerSettings,
+    /// `editor.syntaxColors`: per theme (`dark`, `light`, `purple`) overrides of the built in
+    /// syntax palette, keyed by token id (see `SYNTAX_TOKEN_IDS`) with `#rgb`, `#rrggbb` or
+    /// `#rrggbbaa` values. Empty means the UI default palettes. Optional in TypeScript so
+    /// existing literals stay valid.
+    #[specta(optional)]
+    pub syntax_colors: HashMap<String, HashMap<String, String>>,
     /// Agent features. Optional in TypeScript so existing literals stay valid;
     /// a missing value means the defaults.
     #[specta(optional)]
@@ -151,7 +171,7 @@ pub struct Settings {
 
 /// `updates.*`: update checks for the app and for agents (ADR 0004).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct UpdateSettings {
     /// Check once per launch, check-only, with a plain GET. Off by default.
     /// Honoured only from the user's own settings file.
@@ -160,7 +180,7 @@ pub struct UpdateSettings {
 
 /// `agents.*` settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct AgentSettings {
     pub delegation: DelegationSettings,
     pub run_tools: RunToolsSettings,
@@ -168,7 +188,7 @@ pub struct AgentSettings {
 
 /// `agents.delegation.*`: the span-agents tool server (#52).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct DelegationSettings {
     /// Offer the delegation tools to new lead sessions of agents that
     /// advertise MCP over HTTP. Off by default.
@@ -177,7 +197,7 @@ pub struct DelegationSettings {
 
 /// `agents.runTools.*`: workspace run configuration tools offered to agents.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct RunToolsSettings {
     /// Offer run configuration tools to new lead sessions. Off by default.
     pub enabled: bool,
@@ -205,6 +225,7 @@ impl Default for Settings {
             keybindings: HashMap::new(),
             formatters: HashMap::new(),
             language_servers: LanguageServerSettings::default(),
+            syntax_colors: HashMap::new(),
             agents: AgentSettings::default(),
             updates: UpdateSettings::default(),
         }
@@ -275,6 +296,7 @@ impl Settings {
         }
         validate_shortcut_collisions(&self.keybindings)?;
         self.language_servers.validate()?;
+        validate_syntax_colors(&self.syntax_colors)?;
         for (language, argv) in &self.formatters {
             if language.is_empty()
                 || language.len() > 64
@@ -302,7 +324,9 @@ impl Settings {
     }
 }
 
-const COMMAND_IDS: &[&str] = &[
+/// Every rebindable command id. The TypeScript `actionDefinitions` table and the JSON schema
+/// list the same ids in the same order, and tests compare them.
+pub const COMMAND_IDS: &[&str] = &[
     "quickOpen",
     "toggleFiles",
     "focusFiles",
@@ -331,7 +355,131 @@ const COMMAND_IDS: &[&str] = &[
     "zoomIn",
     "zoomOut",
     "resetZoom",
+    "goToDefinition",
+    "goToTypeDefinition",
+    "goToImplementation",
+    "peekDefinition",
+    "peekTypeDefinition",
+    "peekImplementation",
+    "findReferences",
+    "peekReferences",
+    "goToSymbolInFile",
+    "goToSymbolInWorkspace",
+    "quickInfo",
+    "showCallHierarchy",
+    "showTypeHierarchy",
+    "renameSymbol",
+    "goBack",
+    "goForward",
+    "focusBreadcrumbs",
 ];
+
+/// Commands introduced after shortcuts could already be saved. Like Toggle Files,
+/// a default is dropped when an explicit binding already claims the same key, so adding a default
+/// never invalidates an existing settings file.
+const INHERITED_DEFAULT_IDS: &[&str] = &[
+    "toggleFiles",
+    "focusFiles",
+    "showSourceControl",
+    "splitEditorDown",
+    "newFile",
+    "newFolder",
+    "newFromTemplate",
+    "goToDefinition",
+    "goToTypeDefinition",
+    "goToImplementation",
+    "peekDefinition",
+    "peekTypeDefinition",
+    "peekImplementation",
+    "findReferences",
+    "peekReferences",
+    "goToSymbolInFile",
+    "goToSymbolInWorkspace",
+    "quickInfo",
+    "showCallHierarchy",
+    "showTypeHierarchy",
+    "renameSymbol",
+    "goBack",
+    "goForward",
+    "focusBreadcrumbs",
+];
+
+/// Themes that can carry `editor.syntaxColors`.
+pub const SYNTAX_THEMES: &[&str] = &["dark", "light", "purple"];
+
+/// Token ids that `editor.syntaxColors.<theme>` can colour. The TypeScript `syntaxTokenIds`
+/// list is identical and tested equal.
+pub const SYNTAX_TOKEN_IDS: &[&str] = &[
+    "keyword",
+    "controlKeyword",
+    "operator",
+    "punctuation",
+    "comment",
+    "docComment",
+    "string",
+    "number",
+    "constant",
+    "boolean",
+    "function",
+    "method",
+    "type",
+    "class",
+    "interface",
+    "enum",
+    "typeParameter",
+    "variable",
+    "parameter",
+    "property",
+    "namespace",
+    "importPath",
+    "annotation",
+    "macro",
+    "label",
+    "tag",
+    "attribute",
+    "regexp",
+    "escape",
+    "invalid",
+];
+
+/// Only literal hex colours: `#rgb`, `#rrggbb` or `#rrggbbaa`. Nothing that a stylesheet could
+/// evaluate (functions, variables, names) is accepted.
+fn is_hex_color(value: &str) -> bool {
+    let Some(digits) = value.strip_prefix('#') else {
+        return false;
+    };
+    matches!(digits.len(), 3 | 6 | 8) && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_syntax_colors(colors: &HashMap<String, HashMap<String, String>>) -> Result<()> {
+    let mut total = 0;
+    for (theme, tokens) in colors {
+        if !SYNTAX_THEMES.contains(&theme.as_str()) {
+            return Err(CoreError::Settings(format!(
+                "editor.syntaxColors: unknown theme \"{theme}\" (use dark, light or purple)"
+            )));
+        }
+        for (token, color) in tokens {
+            if !SYNTAX_TOKEN_IDS.contains(&token.as_str()) {
+                return Err(CoreError::Settings(format!(
+                    "editor.syntaxColors.{theme}: unknown token \"{token}\""
+                )));
+            }
+            if !is_hex_color(color) {
+                return Err(CoreError::Settings(format!(
+                    "editor.syntaxColors.{theme}.{token}: colour must be #rgb, #rrggbb or #rrggbbaa"
+                )));
+            }
+            total += 1;
+        }
+    }
+    if total > SYNTAX_THEMES.len() * SYNTAX_TOKEN_IDS.len() {
+        return Err(CoreError::Settings(
+            "editor.syntaxColors has too many entries".into(),
+        ));
+    }
+    Ok(())
+}
 
 // Normalize keyboard naming variants before validation and collision checks.
 fn normalize_zoom_shortcut(shortcut: &str) -> String {
@@ -372,9 +520,16 @@ fn validate_shortcut(shortcut: &str) -> Result<()> {
     if key.is_empty() || key.chars().any(char::is_control) || key.contains(' ') {
         return Err(invalid());
     }
-    if !modifiers
-        .iter()
-        .any(|modifier| matches!(*modifier, "Mod" | "Ctrl" | "Alt" | "Meta" | "Cmd"))
+    // Function keys may stand alone or with Shift only (F12, Shift+F12). Every other key needs
+    // a command modifier so ordinary typing is never captured.
+    let function_key = key
+        .strip_prefix('F')
+        .and_then(|value| value.parse::<u8>().ok())
+        .is_some_and(|value| (1..=24).contains(&value));
+    if !function_key
+        && !modifiers
+            .iter()
+            .any(|modifier| matches!(*modifier, "Mod" | "Ctrl" | "Alt" | "Meta" | "Cmd"))
     {
         return Err(invalid());
     }
@@ -404,10 +559,6 @@ fn validate_shortcut(shortcut: &str) -> Result<()> {
             | "ArrowLeft"
             | "ArrowRight"
     );
-    let function_key = key
-        .strip_prefix('F')
-        .and_then(|value| value.parse::<u8>().ok())
-        .is_some_and(|value| (1..=24).contains(&value));
     let single_key = key.len() == 1
         && key
             .as_bytes()
@@ -505,6 +656,23 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("zoomIn", vec!["Mod+=", "Mod+Shift+="]),
         ("zoomOut", vec!["Mod+-"]),
         ("resetZoom", vec!["Mod+0"]),
+        ("goToDefinition", vec!["F12"]),
+        ("goToTypeDefinition", vec!["Mod+Shift+F12"]),
+        ("goToImplementation", vec!["Mod+F12"]),
+        ("peekDefinition", vec!["Alt+F12"]),
+        ("peekTypeDefinition", vec![]),
+        ("peekImplementation", vec![]),
+        ("findReferences", vec!["Shift+F12"]),
+        ("peekReferences", vec!["Shift+Alt+F12"]),
+        ("goToSymbolInFile", vec!["Mod+Shift+O"]),
+        ("goToSymbolInWorkspace", vec!["Mod+T"]),
+        ("quickInfo", vec!["Mod+Shift+I"]),
+        ("showCallHierarchy", vec!["Shift+Alt+H"]),
+        ("showTypeHierarchy", vec!["Mod+Alt+H"]),
+        ("renameSymbol", vec!["F2"]),
+        ("goBack", vec!["Mod+Alt+ArrowLeft"]),
+        ("goForward", vec!["Mod+Alt+ArrowRight"]),
+        ("focusBreadcrumbs", vec!["Mod+Shift+."]),
     ];
     let claimed = overrides
         .values()
@@ -513,16 +681,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         .collect::<Result<std::collections::HashSet<_>>>()?;
     let mut assigned = HashMap::new();
     for (command, mut defaults) in defaults {
-        if matches!(
-            command,
-            "toggleFiles"
-                | "focusFiles"
-                | "splitEditorDown"
-                | "newFile"
-                | "newFolder"
-                | "newFromTemplate"
-                | "showSourceControl"
-        ) {
+        if INHERITED_DEFAULT_IDS.contains(&command) {
             defaults.retain(|shortcut| {
                 !claimed.contains(&shortcut_conflict_key(shortcut).expect("valid default shortcut"))
             });
@@ -564,9 +723,9 @@ pub(crate) fn load(user: Option<&Path>, workspace: &Path) -> Result<Settings> {
 /// Settings honoured only from the user's own settings file. A workspace
 /// `.span/settings.jsonc` arrives with the repository, so a cloned project
 /// must not be able to switch these on: `agents.delegation.enabled` lets an
-/// agent start other agents (ADR 0003), or run a saved process. These keys
-/// are dropped from workspace settings before merging; unknown sibling keys
-/// are still rejected.
+/// agent start other agents (ADR 0003), and `agents.runTools.enabled` lets an
+/// agent run a saved process. These keys are dropped from workspace settings
+/// before merging.
 const USER_ONLY: &[&[&str]] = &[
     &["agents", "delegation", "enabled"],
     &["agents", "runTools", "enabled"],
@@ -733,7 +892,10 @@ fn drop_user_only(value: &mut Value) {
         .get_mut("languageServers")
         .and_then(Value::as_object_mut)
     {
-        for key in USER_ONLY_LANGUAGE_SERVER_KEYS {
+        for key in USER_ONLY_LANGUAGE_SERVER_KEYS
+            .iter()
+            .chain(DEPRECATED_LANGUAGE_SERVER_KEYS)
+        {
             servers.remove(*key);
         }
     }
@@ -772,6 +934,73 @@ fn user_only_error(key: &str) -> CoreError {
     ))
 }
 
+/// Nested settings objects (dotted path) whose keys are a fixed list in this build.
+const STRUCT_PATHS: &[&[&str]] = &[
+    &["languageServers"],
+    &["agents"],
+    &["agents", "delegation"],
+    &["updates"],
+];
+
+fn at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter().try_fold(value, |node, key| node.get(*key))
+}
+
+/// Loading ignores nested keys this build does not know (they may come from a newer build).
+/// An explicit edit of the settings text is still checked: a typo in a nested key is an
+/// error, unless the previous text already held that key (it arrived from elsewhere and an
+/// unrelated edit must not fail because of it).
+pub(crate) fn reject_new_unknown_nested(previous: &str, text: &str) -> Result<()> {
+    let now = normalize(parse(text)?)?;
+    let before = parse(previous).and_then(normalize).unwrap_or(Value::Null);
+    let template = serde_json::to_value(Settings::default())
+        .map_err(|error| CoreError::Settings(error.to_string()))?;
+    for path in STRUCT_PATHS {
+        let (Some(Value::Object(current)), Some(Value::Object(known))) =
+            (at_path(&now, path), at_path(&template, path))
+        else {
+            continue;
+        };
+        for key in current.keys() {
+            let is_known = known.contains_key(key);
+            let was_there = at_path(&before, path).and_then(|b| b.get(key)).is_some();
+            if !is_known && !was_there {
+                return Err(CoreError::Settings(format!(
+                    "unknown field `{key}` in {}",
+                    path.join(".")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A typed save rewrites a whole nested object. Keys this build does not know are carried
+/// over from the raw file verbatim so a write never drops what a newer build stored.
+pub(crate) fn keep_unknown_nested(raw: &Value, key: &str, value: &mut Value) {
+    for path in STRUCT_PATHS {
+        if path[0] != key {
+            continue;
+        }
+        let rest = &path[1..];
+        let (Some(Value::Object(old)), Some(target)) = (
+            at_path(raw, &path[..1]).and_then(|v| at_path(v, rest)),
+            rest.iter()
+                .try_fold(&mut *value, |node, k| node.get_mut(*k)),
+        ) else {
+            continue;
+        };
+        let Some(new) = target.as_object_mut() else {
+            continue;
+        };
+        for (k, v) in old {
+            if !new.contains_key(k) {
+                new.insert(k.clone(), v.clone());
+            }
+        }
+    }
+}
+
 pub(crate) fn parse(text: &str) -> Result<Value> {
     let mut value: Value = serde_json::from_str(&strip_jsonc(text)?)
         .map_err(|e| CoreError::Settings(e.to_string()))?;
@@ -799,6 +1028,7 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("editor.fontFamily", "editorFontFamily"),
     ("editor.tabSize", "tabSize"),
     ("editor.formatOnSave", "formatOnSave"),
+    ("editor.syntaxColors", "syntaxColors"),
     ("window.zoomLevel", "zoomLevel"),
     ("workbench.editor.limit.enabled", "tabLimitEnabled"),
     ("workbench.editor.limit.value", "tabLimit"),
@@ -852,6 +1082,12 @@ pub(crate) fn patch_in_scope(
     key: &str,
     value_json: Option<&str>,
 ) -> Result<String> {
+    if let Some(rest) = key
+        .strip_prefix("editor.syntaxColors.")
+        .or_else(|| key.strip_prefix("syntaxColors."))
+    {
+        return patch_syntax_color(text, rest, value_json);
+    }
     let Some(rest) = key.strip_prefix("languageServers.") else {
         return patch(text, key, value_json);
     };
@@ -934,6 +1170,13 @@ pub(crate) fn patch_in_scope(
                 )))
             }
         }
+    } else if DEPRECATED_LANGUAGE_SERVER_KEYS.contains(&rest)
+        && scope == crate::SettingsScope::User
+        && value.is_none()
+    {
+        // Only removal: the key is never written again, but it can be cleaned out once its
+        // entries were imported, which also lets older builds read the file.
+        servers.remove(rest);
     } else {
         return Err(unsupported());
     }
@@ -945,6 +1188,94 @@ pub(crate) fn patch_in_scope(
             "languageServers",
             Some(&Value::Object(servers).to_string()),
         )
+    }
+}
+
+/// Sets or removes `editor.syntaxColors.<theme>.<token>`, or removes `editor.syntaxColors.<theme>`
+/// as a whole. Empty parent objects are removed. Both scopes may set colours.
+fn patch_syntax_color(text: &str, rest: &str, value_json: Option<&str>) -> Result<String> {
+    let (theme, token) = match rest.split_once('.') {
+        Some((theme, token)) => (theme, Some(token)),
+        None => (rest, None),
+    };
+    if !SYNTAX_THEMES.contains(&theme) {
+        return Err(CoreError::Settings(format!(
+            "editor.syntaxColors: unknown theme \"{theme}\" (use dark, light or purple)"
+        )));
+    }
+    let value = value_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|error| CoreError::Settings(error.to_string()))?
+        .filter(|v| !v.is_null());
+    let root = parse(text)?;
+    // Reuse the member name the file already uses so comments and layout stay put.
+    let member = if root.get("editor.syntaxColors").is_some() || root.get("syntaxColors").is_none()
+    {
+        "editor.syntaxColors"
+    } else {
+        "syntaxColors"
+    };
+    let mut colors = match normalize(root)?.get("syntaxColors").cloned() {
+        None => serde_json::Map::new(),
+        Some(Value::Object(map)) => map,
+        Some(_) => {
+            return Err(CoreError::Settings(
+                "editor.syntaxColors must be an object".into(),
+            ))
+        }
+    };
+    match token {
+        None => {
+            if value.is_some() {
+                return Err(CoreError::Settings(format!(
+                    "editor.syntaxColors.{theme} can only be removed; set a token as editor.syntaxColors.{theme}.<token>"
+                )));
+            }
+            colors.remove(theme);
+        }
+        Some(token) => {
+            if !SYNTAX_TOKEN_IDS.contains(&token) {
+                return Err(CoreError::Settings(format!(
+                    "editor.syntaxColors.{theme}: unknown token \"{token}\""
+                )));
+            }
+            let mut tokens = match colors.remove(theme) {
+                None => serde_json::Map::new(),
+                Some(Value::Object(map)) => map,
+                Some(_) => {
+                    return Err(CoreError::Settings(format!(
+                        "editor.syntaxColors.{theme} must be an object"
+                    )))
+                }
+            };
+            match value {
+                None => {
+                    tokens.remove(token);
+                }
+                Some(Value::String(color)) => {
+                    if !is_hex_color(&color) {
+                        return Err(CoreError::Settings(format!(
+                            "editor.syntaxColors.{theme}.{token}: colour must be #rgb, #rrggbb or #rrggbbaa"
+                        )));
+                    }
+                    tokens.insert(token.into(), Value::String(color));
+                }
+                Some(_) => {
+                    return Err(CoreError::Settings(format!(
+                        "editor.syntaxColors.{theme}.{token} must be a colour string"
+                    )))
+                }
+            }
+            if !tokens.is_empty() {
+                colors.insert(theme.into(), Value::Object(tokens));
+            }
+        }
+    }
+    if colors.is_empty() {
+        patch(text, member, None)
+    } else {
+        patch(text, member, Some(&Value::Object(colors).to_string()))
     }
 }
 
@@ -1220,10 +1551,15 @@ mod language_server_tests {
             r#"{ "languageServers": { "enabled": { "gopls": true } } }"#,
             r#"{ "languageServers": { "javaHome": "" } }"#,
             r#"{ "languageServers": { "nodePath": "a\u0000b" } }"#,
-            r#"{ "languageServers": { "bogus": 1 } }"#,
         ] {
             assert!(load_with_texts(text, "{}").is_err(), "{text}");
         }
+        // An unknown sibling key is no longer a load error (it may come from a newer build),
+        // but a hand edit that introduces one is still refused, see
+        // `explicit_edits_reject_new_unknown_nested_keys_but_tolerate_existing_ones`.
+        let unknown = r#"{ "languageServers": { "bogus": 1 } }"#;
+        assert!(load_with_texts(unknown, "{}").is_ok());
+        assert!(reject_new_unknown_nested("{}", unknown).is_err());
     }
 }
 
@@ -1686,6 +2022,98 @@ mod language_server_key_tests {
     }
 
     #[test]
+    fn deprecated_trusted_workspaces_is_read_but_never_written() {
+        // A preview build wrote the key. It loads (even with odd entries), and a workspace
+        // file cannot use it.
+        let file = r#"{ "languageServers": { "trustedWorkspaces": ["/home/me/a", "C:\\work\\b", "rel", ""] } }"#;
+        let s = load_with_texts(file, "{}").unwrap().language_servers;
+        assert_eq!(s.trusted_workspaces.len(), 4);
+        let ws = r#"{ "languageServers": { "trustedWorkspaces": ["/home/me/evil"] } }"#;
+        assert!(load_with_texts("{}", ws)
+            .unwrap()
+            .language_servers
+            .trusted_workspaces
+            .is_empty());
+        // Writing it is refused in both scopes; only removal is allowed in user scope.
+        for scope in [User, Workspace] {
+            assert!(set(
+                scope,
+                "{}",
+                "languageServers.trustedWorkspaces",
+                Some(r#"["/a"]"#)
+            )
+            .is_err());
+        }
+        let back = set(User, file, "languageServers.trustedWorkspaces", None).unwrap();
+        assert!(!back.contains("trustedWorkspaces"), "{back}");
+        assert!(set(Workspace, file, "languageServers.trustedWorkspaces", None).is_err());
+        assert!(!USER_ONLY_LANGUAGE_SERVER_KEYS.contains(&"trustedWorkspaces"));
+    }
+
+    #[test]
+    fn unknown_nested_keys_load_validate_and_survive_a_write() {
+        let text = "{\n  // mine\n  \"languageServers\": {\n    \"autoInstall\": true,\n    \"futureKnob\": { \"a\": [1, 2] }\n  },\n  \"agents\": { \"delegation\": { \"enabled\": true, \"mode\": \"x\" }, \"other\": 1 },\n  \"updates\": { \"channel\": \"beta\" },\n  \"someTopLevelKey\": 3\n}\n";
+        let loaded = load_with_texts(text, "{}").unwrap();
+        assert!(loaded.language_servers.auto_install);
+        assert!(loaded.agents.delegation.enabled);
+        // The write goes through the dotted key path and keeps every unknown key verbatim.
+        let written = set(User, text, "languageServers.runProjectCode", Some("true")).unwrap();
+        let value = parse(&written).unwrap();
+        assert_eq!(
+            value["languageServers"]["futureKnob"],
+            serde_json::json!({ "a": [1, 2] })
+        );
+        assert_eq!(value["languageServers"]["runProjectCode"], true);
+        assert_eq!(value["languageServers"]["autoInstall"], true);
+        assert_eq!(value["agents"]["other"], 1);
+        assert_eq!(value["agents"]["delegation"]["mode"], "x");
+        assert_eq!(value["updates"]["channel"], "beta");
+        assert_eq!(value["someTopLevelKey"], 3);
+        load_with_texts(&written, "{}").unwrap();
+        // Removing the last known key keeps the object because of the unknown one.
+        let cleared = set(User, &written, "languageServers.runProjectCode", None).unwrap();
+        assert!(cleared.contains("futureKnob"), "{cleared}");
+        // Known keys are still validated strictly.
+        assert!(load_with_texts(
+            r#"{ "languageServers": { "futureKnob": 1, "autoInstall": "yes" } }"#,
+            "{}"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn typed_nested_rewrite_keeps_unknown_keys() {
+        let raw = parse(r#"{ "languageServers": { "futureKnob": 1, "nodePath": "/n" } }"#).unwrap();
+        let mut value = serde_json::json!({ "autoInstall": false, "enabled": {} });
+        keep_unknown_nested(&raw, "languageServers", &mut value);
+        assert_eq!(value["futureKnob"], 1);
+        assert_eq!(value["autoInstall"], false);
+        // Maps are not struct paths: stale entries are not resurrected.
+        let raw = parse(r#"{ "keybindings": { "save": ["Mod+S"] } }"#).unwrap();
+        let mut value = serde_json::json!({});
+        keep_unknown_nested(&raw, "keybindings", &mut value);
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn explicit_edits_reject_new_unknown_nested_keys_but_tolerate_existing_ones() {
+        let old = r#"{ "languageServers": { "futureKnob": 1 } }"#;
+        assert!(reject_new_unknown_nested(old, old).is_ok());
+        assert!(reject_new_unknown_nested(
+            old,
+            r#"{ "languageServers": { "futureKnob": 2, "autoInstall": true } }"#
+        )
+        .is_ok());
+        assert!(reject_new_unknown_nested(
+            old,
+            r#"{ "languageServers": { "futureKnob": 1, "typo": 1 } }"#
+        )
+        .is_err());
+        assert!(reject_new_unknown_nested("{}", r#"{ "updates": { "auto": true } }"#).is_err());
+        assert!(reject_new_unknown_nested("{}", r#"{ "topLevelUnknown": true }"#).is_ok());
+    }
+
+    #[test]
     fn dotted_keys_reject_bad_input() {
         let b = "{}";
         for (scope, key, v) in [
@@ -1711,5 +2139,270 @@ mod language_server_key_tests {
         assert!(err.contains("languageServers.nodePath") && err.contains("user settings only"));
         // Removing from the workspace scope is also refused: those keys are not valid there.
         assert!(set(Workspace, b, "languageServers.javaHome", None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod code_navigation_tests {
+    use super::*;
+    use crate::SettingsScope::{User, Workspace};
+
+    fn set(scope: crate::SettingsScope, text: &str, key: &str, v: Option<&str>) -> Result<String> {
+        patch_in_scope(scope, text, key, v)
+    }
+
+    fn schema() -> serde_json::Value {
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap()
+    }
+
+    fn strings(value: &serde_json::Value) -> Vec<String> {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn schema_lists_the_same_command_ids_and_syntax_tokens_in_order() {
+        let schema = schema();
+        assert_eq!(
+            strings(&schema["properties"]["keybindings"]["propertyNames"]["enum"]),
+            COMMAND_IDS
+        );
+        let colors = &schema["properties"]["syntaxColors"];
+        assert_eq!(strings(&colors["propertyNames"]["enum"]), SYNTAX_THEMES);
+        assert_eq!(
+            strings(&colors["additionalProperties"]["propertyNames"]["enum"]),
+            SYNTAX_TOKEN_IDS
+        );
+        assert_eq!(SYNTAX_TOKEN_IDS.len(), 30);
+        let mut unique = SYNTAX_TOKEN_IDS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), SYNTAX_TOKEN_IDS.len());
+    }
+
+    #[test]
+    fn navigation_defaults_are_unique_and_function_keys_may_stand_alone() {
+        Settings::default().validate().unwrap();
+        for shortcut in ["F12", "Shift+F12", "Alt+F12", "Mod+Alt+Shift+F12", "F2"] {
+            validate_shortcut(shortcut).unwrap();
+        }
+        for shortcut in ["Shift+A", "A", "Shift+Enter"] {
+            assert!(validate_shortcut(shortcut).is_err(), "{shortcut}");
+        }
+        let clash = Settings {
+            keybindings: HashMap::from([
+                ("save".into(), vec!["F12".into()]),
+                ("closeTab".into(), vec!["F12".into()]),
+            ]),
+            ..Default::default()
+        };
+        let message = clash.validate().unwrap_err().to_string();
+        assert!(
+            message.contains("F12") && message.contains("conflicts"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_existing_binding_claims_a_new_navigation_default_without_error() {
+        let settings = Settings {
+            keybindings: HashMap::from([("save".into(), vec!["F2".into()])]),
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        let rebound = Settings {
+            keybindings: HashMap::from([("renameSymbol".into(), vec!["Mod+Alt+R".into()])]),
+            ..Default::default()
+        };
+        rebound.validate().unwrap();
+    }
+
+    fn colors(text: &str) -> HashMap<String, HashMap<String, String>> {
+        load_with_texts(text, "{}").unwrap().syntax_colors
+    }
+
+    #[test]
+    fn syntax_colors_default_empty_and_set_remove_through_dotted_keys() {
+        assert!(Settings::default().syntax_colors.is_empty());
+        for scope in [User, Workspace] {
+            let t = set(
+                scope,
+                "{}",
+                "editor.syntaxColors.dark.keyword",
+                Some("\"#ff8800\""),
+            )
+            .unwrap();
+            let t = set(
+                scope,
+                &t,
+                "editor.syntaxColors.dark.comment",
+                Some("\"#abc\""),
+            )
+            .unwrap();
+            let t = set(
+                scope,
+                &t,
+                "editor.syntaxColors.light.string",
+                Some("\"#11223344\""),
+            )
+            .unwrap();
+            let loaded = colors(&t);
+            assert_eq!(loaded["dark"]["keyword"], "#ff8800");
+            assert_eq!(loaded["dark"]["comment"], "#abc");
+            assert_eq!(loaded["light"]["string"], "#11223344");
+            let t = set(scope, &t, "editor.syntaxColors.dark.keyword", None).unwrap();
+            assert_eq!(colors(&t)["dark"].len(), 1);
+            let t = set(scope, &t, "editor.syntaxColors.dark.comment", Some("null")).unwrap();
+            let loaded = colors(&t);
+            assert!(!loaded.contains_key("dark"), "empty parent is removed");
+            assert!(loaded.contains_key("light"));
+            let t = set(scope, &t, "editor.syntaxColors.light", None).unwrap();
+            assert!(!t.contains("syntaxColors"), "{t}");
+            assert!(colors(&t).is_empty());
+        }
+    }
+
+    #[test]
+    fn removing_a_whole_theme_keeps_the_others_and_comments() {
+        let text = "{\n  // keep me\n  \"tabSize\": 4,\n  \"editor.syntaxColors\": { \"dark\": { \"keyword\": \"#fff\" }, \"purple\": { \"tag\": \"#000\" } }\n}\n";
+        let t = set(User, text, "editor.syntaxColors.dark", None).unwrap();
+        assert!(t.contains("// keep me"), "{t}");
+        let loaded = colors(&t);
+        assert!(!loaded.contains_key("dark"));
+        assert_eq!(loaded["purple"]["tag"], "#000");
+        let t = set(User, &t, "syntaxColors.purple.tag", Some("\"#123456\"")).unwrap();
+        assert_eq!(colors(&t)["purple"]["tag"], "#123456");
+        assert!(t.contains("// keep me"), "{t}");
+    }
+
+    #[test]
+    fn syntax_colors_reject_bad_colours_tokens_and_themes() {
+        for color in [
+            "\"red\"",
+            "\"url(x)\"",
+            "\"var(--a)\"",
+            "\"#12\"",
+            "\"#12345\"",
+            "\"#1234567\"",
+            "\"#123456789\"",
+            "\"#ggg\"",
+            "\"ff0000\"",
+            "\"#fff; x\"",
+            "\"calc(1)\"",
+            "\"\"",
+            "5",
+            "true",
+        ] {
+            let err = set(User, "{}", "editor.syntaxColors.dark.keyword", Some(color))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("editor.syntaxColors.dark.keyword"),
+                "{color}: {err}"
+            );
+        }
+        let err = set(
+            User,
+            "{}",
+            "editor.syntaxColors.dark.bogus",
+            Some("\"#fff\""),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown token \"bogus\""), "{err}");
+        let err = set(
+            User,
+            "{}",
+            "editor.syntaxColors.solarized.keyword",
+            Some("\"#fff\""),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown theme \"solarized\""), "{err}");
+        assert!(set(User, "{}", "editor.syntaxColors.dark", Some("{}")).is_err());
+        // Hand written files go through the same validation.
+        for text in [
+            r##"{ "editor.syntaxColors": { "dark": { "keyword": "red" } } }"##,
+            r##"{ "syntaxColors": { "dark": { "nope": "#fff" } } }"##,
+            r##"{ "syntaxColors": { "neon": { "keyword": "#fff" } } }"##,
+            r##"{ "syntaxColors": { "dark": { "keyword": 1 } } }"##,
+            r##"{ "syntaxColors": { "dark": "#fff" } }"##,
+        ] {
+            assert!(load_with_texts(text, "{}").is_err(), "{text}");
+            assert!(load_with_texts("{}", text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn every_token_in_every_theme_fits_the_entry_limit() {
+        let mut map = serde_json::Map::new();
+        for theme in SYNTAX_THEMES {
+            let tokens: serde_json::Map<String, Value> = SYNTAX_TOKEN_IDS
+                .iter()
+                .map(|token| ((*token).into(), Value::String("#abcdef".into())))
+                .collect();
+            map.insert((*theme).into(), Value::Object(tokens));
+        }
+        let text = serde_json::json!({ "syntaxColors": map }).to_string();
+        let loaded = colors(&text);
+        assert_eq!(loaded.values().map(HashMap::len).sum::<usize>(), 90);
+    }
+
+    #[test]
+    fn workspace_colours_override_user_colours_per_token() {
+        let user = r##"{ "editor.syntaxColors": { "dark": { "keyword": "#111111", "string": "#222222" }, "light": { "tag": "#333333" } } }"##;
+        let workspace = r##"{ "editor.syntaxColors": { "dark": { "keyword": "#999999" } } }"##;
+        let merged = load_with_texts(user, workspace).unwrap().syntax_colors;
+        assert_eq!(merged["dark"]["keyword"], "#999999");
+        assert_eq!(merged["dark"]["string"], "#222222");
+        assert_eq!(merged["light"]["tag"], "#333333");
+    }
+
+    #[test]
+    fn syntax_colors_are_configured_keys_resettable_and_keep_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("p");
+        std::fs::create_dir(&project).unwrap();
+        let ws = crate::CoreWorkspace::open(&project)
+            .unwrap()
+            .with_user_settings(Some(dir.path().join("user.jsonc")));
+        ws.update_settings_jsonc_for_scope(User, "{\n  // mine\n  \"tabSize\": 3\n}\n")
+            .unwrap();
+        ws.update_setting(User, "editor.syntaxColors.dark.keyword", Some("\"#fa0\""))
+            .unwrap();
+        ws.update_setting(
+            Workspace,
+            "editor.syntaxColors.dark.keyword",
+            Some("\"#0af\""),
+        )
+        .unwrap();
+        let merged = ws.get_settings().unwrap();
+        assert_eq!(merged.syntax_colors["dark"]["keyword"], "#0af");
+        assert_eq!(
+            ws.get_settings_for_scope(User).unwrap().syntax_colors["dark"]["keyword"],
+            "#fa0"
+        );
+        assert_eq!(
+            ws.get_settings_keys_for_scope(User).unwrap(),
+            ["syntaxColors", "tabSize"]
+        );
+        assert!(ws
+            .get_settings_jsonc_for_scope(User)
+            .unwrap()
+            .contains("// mine"));
+        // Reset of the whole setting uses the canonical or the dotted alias name.
+        ws.update_setting(User, "editor.syntaxColors", None)
+            .unwrap();
+        assert_eq!(ws.get_settings_keys_for_scope(User).unwrap(), ["tabSize"]);
+        ws.update_setting(Workspace, "syntaxColors", None).unwrap();
+        assert!(ws.get_settings().unwrap().syntax_colors.is_empty());
+        assert!(ws
+            .get_settings_jsonc_for_scope(User)
+            .unwrap()
+            .contains("// mine"));
     }
 }

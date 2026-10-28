@@ -58,6 +58,9 @@ pub struct LspClient {
     /// Set by the receiver task as soon as the transport is gone (child exit or EOF).
     closed: Arc<AtomicBool>,
     capabilities: Arc<StdMutex<Option<ServerCapabilities>>>,
+    /// `typeHierarchyProvider` is not modelled by `lsp-types`, so it is read from the raw
+    /// `initialize` result.
+    type_hierarchy: Arc<AtomicBool>,
     workspace_folders: Arc<StdMutex<Vec<WorkspaceFolder>>>,
     trace: Option<Arc<Trace>>,
 }
@@ -148,6 +151,7 @@ impl LspClient {
             receiver_task: Arc::new(Mutex::new(Some(receiver_task))),
             closed,
             capabilities: Arc::new(StdMutex::new(None)),
+            type_hierarchy: Arc::new(AtomicBool::new(false)),
             workspace_folders: Arc::new(StdMutex::new(Vec::new())),
             trace,
         })
@@ -393,6 +397,10 @@ impl LspClient {
             .send_request("initialize".to_string(), Some(value))
             .await?;
 
+        let type_hierarchy = match result.pointer("/capabilities/typeHierarchyProvider") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+            Some(_) => true,
+        };
         let init_result: InitializeResult = serde_json::from_value(result)?;
 
         if let Some(encoding) = &init_result.capabilities.position_encoding {
@@ -404,6 +412,7 @@ impl LspClient {
             }
         }
 
+        self.type_hierarchy.store(type_hierarchy, Ordering::SeqCst);
         if let Ok(mut guard) = self.capabilities.lock() {
             *guard = Some(init_result.capabilities.clone());
         }
@@ -422,6 +431,11 @@ impl LspClient {
     /// True once the transport is gone (child exited or stdout reached EOF).
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
+    }
+
+    /// Whether the server advertised `typeHierarchyProvider`.
+    pub fn supports_type_hierarchy(&self) -> bool {
+        self.type_hierarchy.load(Ordering::SeqCst)
     }
 
     /// Capabilities the server advertised in `initialize`, if initialized.
@@ -480,11 +494,11 @@ impl LspClient {
         }
     }
 
-    fn has_capability(&self, f: impl Fn(&ServerCapabilities) -> bool) -> bool {
+    pub(crate) fn has_capability(&self, f: impl Fn(&ServerCapabilities) -> bool) -> bool {
         self.server_capabilities().map(|c| f(&c)).unwrap_or(false)
     }
 
-    fn require(&self, supported: bool, what: &str) -> Result<()> {
+    pub(crate) fn require(&self, supported: bool, what: &str) -> Result<()> {
         if supported {
             Ok(())
         } else {
@@ -566,7 +580,7 @@ impl LspClient {
         }
     }
 
-    async fn typed_request<T: serde::de::DeserializeOwned>(
+    pub(crate) async fn typed_request<T: serde::de::DeserializeOwned>(
         &self,
         method: &str,
         params: Value,
@@ -861,11 +875,29 @@ impl LspClient {
     }
 }
 
-fn one_of_enabled<T>(opt: &Option<OneOf<bool, T>>) -> bool {
+pub(crate) fn one_of_enabled<T>(opt: &Option<OneOf<bool, T>>) -> bool {
     match opt {
         Some(OneOf::Left(b)) => *b,
         Some(OneOf::Right(_)) => true,
         None => false,
+    }
+}
+
+fn goto_capability() -> GotoCapability {
+    GotoCapability {
+        dynamic_registration: Some(false),
+        link_support: Some(true),
+    }
+}
+
+/// Every `SymbolKind` of LSP 3.17 (File 1 to TypeParameter 26).
+fn symbol_kinds() -> SymbolKindCapability {
+    SymbolKindCapability {
+        value_set: Some(
+            (1..=26u32)
+                .map(|n| serde_json::from_value(Value::from(n)).expect("symbol kind"))
+                .collect(),
+        ),
     }
 }
 
@@ -910,9 +942,44 @@ pub fn client_capabilities() -> ClientCapabilities {
                 dynamic_registration: Some(false),
                 content_format: markup,
             }),
-            definition: Some(GotoCapability {
+            definition: Some(goto_capability()),
+            implementation: Some(goto_capability()),
+            type_definition: Some(goto_capability()),
+            declaration: Some(goto_capability()),
+            references: Some(ReferenceClientCapabilities {
                 dynamic_registration: Some(false),
-                link_support: Some(false),
+            }),
+            document_highlight: Some(DocumentHighlightClientCapabilities {
+                dynamic_registration: Some(false),
+            }),
+            document_symbol: Some(DocumentSymbolClientCapabilities {
+                dynamic_registration: Some(false),
+                symbol_kind: Some(symbol_kinds()),
+                hierarchical_document_symbol_support: Some(true),
+                tag_support: None,
+            }),
+            call_hierarchy: Some(CallHierarchyClientCapabilities {
+                dynamic_registration: Some(false),
+            }),
+            type_hierarchy: Some(TypeHierarchyClientCapabilities {
+                dynamic_registration: Some(false),
+            }),
+            signature_help: Some(SignatureHelpClientCapabilities {
+                dynamic_registration: Some(false),
+                signature_information: Some(SignatureInformationSettings {
+                    documentation_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                    parameter_information: Some(ParameterInformationSettings {
+                        label_offset_support: Some(true),
+                    }),
+                    active_parameter_support: Some(true),
+                }),
+                context_support: Some(false),
+            }),
+            rename: Some(RenameClientCapabilities {
+                dynamic_registration: Some(false),
+                prepare_support: Some(true),
+                prepare_support_default_behavior: Some(PrepareSupportDefaultBehavior::IDENTIFIER),
+                honors_change_annotations: Some(false),
             }),
             formatting: Some(DocumentFormattingClientCapabilities {
                 dynamic_registration: Some(false),
@@ -928,6 +995,18 @@ pub fn client_capabilities() -> ClientCapabilities {
             ..Default::default()
         }),
         workspace: Some(WorkspaceClientCapabilities {
+            symbol: Some(WorkspaceSymbolClientCapabilities {
+                dynamic_registration: Some(false),
+                symbol_kind: Some(symbol_kinds()),
+                ..Default::default()
+            }),
+            // Text edits only: Span applies a rename through its buffer edit path, so
+            // servers must not send file create, rename or delete operations.
+            workspace_edit: Some(WorkspaceEditClientCapabilities {
+                document_changes: Some(true),
+                resource_operations: Some(vec![]),
+                ..Default::default()
+            }),
             configuration: Some(true),
             workspace_folders: Some(true),
             ..Default::default()

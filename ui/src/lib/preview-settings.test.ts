@@ -63,3 +63,27 @@ describe('browser scoped settings fixture', () => {
     expect(() => fixture.updateJsonc('workspace', '{"editor.wordWrap":"bounded"}')).toThrow();
   });
 });
+
+describe('browser settings fixture nested keys', () => {
+  it('writes, merges per token across scopes and removes dotted syntax colour keys', () => {
+    const fixture = createPreviewSettings();
+    fixture.update('user', 'editor.syntaxColors.dark.importPath', '"#112233"');
+    fixture.update('user', 'editor.syntaxColors.dark.keyword', '"#445566"');
+    fixture.update('workspace', 'editor.syntaxColors.dark.keyword', '"#aabbcc"');
+    expect(fixture.get('user').syntaxColors).toEqual({ dark: { importPath: '#112233', keyword: '#445566' } });
+    expect(fixture.get().syntaxColors).toEqual({ dark: { importPath: '#112233', keyword: '#aabbcc' } });
+    expect(fixture.keys('workspace')).toEqual(['syntaxColors']);
+    fixture.update('workspace', 'editor.syntaxColors.dark.keyword', null);
+    expect(fixture.get().syntaxColors).toEqual({ dark: { importPath: '#112233', keyword: '#445566' } });
+    expect(fixture.keys('workspace')).toEqual([]);
+    fixture.update('user', 'editor.syntaxColors.dark', null);
+    expect(fixture.get().syntaxColors).toEqual({});
+    expect(fixture.keys('user')).toEqual([]);
+  });
+
+  it('rejects an invalid colour and an unknown token', () => {
+    const fixture = createPreviewSettings();
+    expect(() => fixture.update('user', 'editor.syntaxColors.dark.keyword', '"red"')).toThrow();
+    expect(() => fixture.update('user', 'editor.syntaxColors.dark.nonsense', '"#fff"')).toThrow();
+  });
+});

@@ -115,6 +115,7 @@ impl CoreWorkspace {
         if self.settings_only || path.starts_with("settings://") {
             return Err(CoreError::OutsideWorkspace(path.to_owned()));
         }
+        reject_non_file_path(path)?;
         let requested = Path::new(path);
         if requested
             .components()
@@ -695,6 +696,10 @@ impl CoreWorkspace {
     ) -> Result<Settings> {
         // Validate the edited scope independently so a narrower override cannot hide invalid data.
         crate::settings::load_with_texts(text, "{}")?;
+        crate::settings::reject_new_unknown_nested(
+            &self.get_settings_jsonc_for_scope(scope)?,
+            text,
+        )?;
         if scope == crate::SettingsScope::Workspace {
             // Workspace files may not choose executables or trigger downloads. A key the
             // file already holds is ignored on read, so it does not block other writes.
@@ -755,6 +760,9 @@ impl CoreWorkspace {
             // `without_user_only` also drops the languageServers user-only keys, so
             // neither kind of user-only key is written into the workspace file.
             if before.get(key) != Some(value) || raw.get(key) != raw_allowed.get(key) {
+                // Keys a newer build stored in a nested object survive the rewrite.
+                let mut value = value.clone();
+                crate::settings::keep_unknown_nested(&raw_allowed, key, &mut value);
                 text = crate::settings::patch(&text, key, Some(&value.to_string()))?;
             }
         }
@@ -762,7 +770,39 @@ impl CoreWorkspace {
     }
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+/// True for text that starts with a URI scheme of two or more characters, which keeps
+/// Windows drive letters (`C:` followed by a backslash) out of it. Only a scheme followed by `/`
+/// or a well known library scheme counts, so a file named `notes:v2.txt` stays openable.
+fn has_uri_scheme(path: &str) -> bool {
+    let Some((scheme, rest)) = path.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    let shaped = scheme.len() >= 2
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+    let known = [
+        "jdt", "jar", "file", "zip", "http", "https", "untitled", "data",
+    ]
+    .iter()
+    .any(|known| scheme.eq_ignore_ascii_case(known));
+    shaped && (rest.starts_with('/') || known)
+}
+
+/// Library sources (`jdt://contents/...`, `jar:file:...`) are not files of the project. They
+/// must never be joined onto the workspace root, so they are refused before any path work.
+fn reject_non_file_path(path: &str) -> Result<()> {
+    if path.contains('\0') {
+        return Err(CoreError::InvalidPath);
+    }
+    if path.contains("://") || has_uri_scheme(path) {
+        return Err(CoreError::LibrarySource(path.to_owned()));
+    }
+    Ok(())
+}
+
+/// Writes `bytes` to a temp file beside `path`, flushes it and renames it over `path`.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| CoreError::OutsideWorkspace(path.display().to_string()))?;

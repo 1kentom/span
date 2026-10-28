@@ -106,7 +106,24 @@
           "goToLine",
           "zoomIn",
           "zoomOut",
-          "resetZoom"
+          "resetZoom",
+          "goToDefinition",
+          "goToTypeDefinition",
+          "goToImplementation",
+          "peekDefinition",
+          "peekTypeDefinition",
+          "peekImplementation",
+          "findReferences",
+          "peekReferences",
+          "goToSymbolInFile",
+          "goToSymbolInWorkspace",
+          "quickInfo",
+          "showCallHierarchy",
+          "showTypeHierarchy",
+          "renameSymbol",
+          "goBack",
+          "goForward",
+          "focusBreadcrumbs"
         ]
       },
       "additionalProperties": {
@@ -118,7 +135,7 @@
           "maxLength": 80
         }
       },
-      "description": "Portable shortcuts. Mod means Command on macOS and Control elsewhere. An empty array disables an action."
+      "description": "Portable shortcuts. Mod means Command on macOS and Control elsewhere. Function keys (F1 to F24) may be used alone or with Shift. An empty array disables an action."
     },
     "formatters": {
       "type": "object",
@@ -136,6 +153,117 @@
         }
       },
       "description": "Per-language executable argv. Document text is sent on stdin. Arguments may contain {path}. Commands never run through a shell implicitly."
+    },
+    "syntaxColors": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "enum": [
+          "dark",
+          "light",
+          "purple"
+        ]
+      },
+      "maxProperties": 3,
+      "additionalProperties": {
+        "type": "object",
+        "propertyNames": {
+          "enum": [
+            "keyword",
+            "controlKeyword",
+            "operator",
+            "punctuation",
+            "comment",
+            "docComment",
+            "string",
+            "number",
+            "constant",
+            "boolean",
+            "function",
+            "method",
+            "type",
+            "class",
+            "interface",
+            "enum",
+            "typeParameter",
+            "variable",
+            "parameter",
+            "property",
+            "namespace",
+            "importPath",
+            "annotation",
+            "macro",
+            "label",
+            "tag",
+            "attribute",
+            "regexp",
+            "escape",
+            "invalid"
+          ]
+        },
+        "maxProperties": 30,
+        "additionalProperties": {
+          "type": "string",
+          "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+          "description": "#rgb, #rrggbb or #rrggbbaa. Names, functions and variables are rejected."
+        }
+      },
+      "description": "Syntax colour overrides per theme, keyed by token id. Missing tokens use the built in palette. Workspace values override user values per token."
+    },
+    "editor.syntaxColors": {
+      "type": "object",
+      "propertyNames": {
+        "enum": [
+          "dark",
+          "light",
+          "purple"
+        ]
+      },
+      "maxProperties": 3,
+      "additionalProperties": {
+        "type": "object",
+        "propertyNames": {
+          "enum": [
+            "keyword",
+            "controlKeyword",
+            "operator",
+            "punctuation",
+            "comment",
+            "docComment",
+            "string",
+            "number",
+            "constant",
+            "boolean",
+            "function",
+            "method",
+            "type",
+            "class",
+            "interface",
+            "enum",
+            "typeParameter",
+            "variable",
+            "parameter",
+            "property",
+            "namespace",
+            "importPath",
+            "annotation",
+            "macro",
+            "label",
+            "tag",
+            "attribute",
+            "regexp",
+            "escape",
+            "invalid"
+          ]
+        },
+        "maxProperties": 30,
+        "additionalProperties": {
+          "type": "string",
+          "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+          "description": "#rgb, #rrggbb or #rrggbbaa. Names, functions and variables are rejected."
+        }
+      },
+      "description": "Alias for syntaxColors."
     },
     "autoSave": {
       "type": "string",
@@ -294,6 +422,14 @@
           "type": "boolean",
           "default": false,
           "description": "Let rust-analyzer and JDT LS run the project's own build code (build scripts, procedural macros, cargo check on save, Gradle and Maven import). Honoured only in your user settings; ignored in a workspace .span/settings.jsonc."
+        },
+        "trustedWorkspaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "deprecated": true,
+          "description": "Deprecated and read only. Workspace trust is kept in trusted-workspaces.json beside your other per-user state; entries found here are imported once and the key is no longer written."
         },
         "javaHome": {
           "type": [

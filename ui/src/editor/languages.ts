@@ -1,6 +1,14 @@
-import { LanguageDescription, LanguageSupport, StreamLanguage, type Language, type StreamParser } from "@codemirror/language";
+import { LanguageDescription, LanguageSupport, LRLanguage, StreamLanguage, type Language, type StreamParser } from "@codemirror/language";
+import { languageStyleTags } from "./syntax-highlight";
 
 type LoadedLanguage = LanguageSupport | Language;
+/** Adds the node rules that let Lezer trees colour imports, annotations and declarations like the tree-sitter layer. */
+function withTokenTags(support: LanguageSupport, rules: string): LanguageSupport {
+  const props = languageStyleTags(rules);
+  const language = support.language;
+  if (!props || !(language instanceof LRLanguage)) return support;
+  return new LanguageSupport(language.configure({ props: [props] }), support.support);
+}
 interface LoadContext { jsx: boolean; settings: boolean }
 
 /** A language: where it is detected from (extensions, exact file names, fence aliases) and how its grammar loads. */
@@ -20,8 +28,8 @@ const extra = async () => import("./language-extra");
 
 /** Single source of truth for detection and grammars. Every id in the Rust table (crates/core/src/buffer.rs) has an entry here or is listed in `noHighlightingYet`. */
 const languageTable = {
-  typescript: { extensions: ["ts", "tsx", "mts", "cts"], load: async ({ jsx }) => (await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx }) },
-  javascript: { extensions: ["js", "jsx", "mjs", "cjs"], load: async ({ jsx }) => (await import("@codemirror/lang-javascript")).javascript({ jsx }) },
+  typescript: { extensions: ["ts", "tsx", "mts", "cts"], load: async ({ jsx }) => withTokenTags((await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx }), "typescript") },
+  javascript: { extensions: ["js", "jsx", "mjs", "cjs"], load: async ({ jsx }) => withTokenTags((await import("@codemirror/lang-javascript")).javascript({ jsx }), "typescript") },
   json: {
     extensions: ["json"],
     load: async () => {
@@ -32,9 +40,9 @@ const languageTable = {
   },
   jsonc: { extensions: ["jsonc"], load: async ({ settings }) => (await import("./settings-completion")).jsoncSupport(settings) },
   markdown: { extensions: ["md", "mdx", "markdown", "mdown", "mkd"], load: async () => markdownSupport() },
-  rust: { extensions: ["rs"], load: async () => (await import("@codemirror/lang-rust")).rust() },
-  python: { extensions: ["py", "pyi", "pyw"], load: async () => (await import("@codemirror/lang-python")).python() },
-  java: { extensions: ["java", "jav"], load: async () => (await import("@codemirror/lang-java")).java() },
+  rust: { extensions: ["rs"], load: async () => withTokenTags((await import("@codemirror/lang-rust")).rust(), "rust") },
+  python: { extensions: ["py", "pyi", "pyw"], load: async () => withTokenTags((await import("@codemirror/lang-python")).python(), "python") },
+  java: { extensions: ["java", "jav"], load: async () => withTokenTags((await import("@codemirror/lang-java")).java(), "java") },
   dotenv: { extensions: ["env"], aliases: ["dotenv"], load: async () => dotenvLanguage },
   toml: { extensions: ["toml"], filenames: ["cargo.lock", "poetry.lock", "uv.lock"], load: legacy(async () => (await import("@codemirror/legacy-modes/mode/toml")).toml) },
   yaml: { extensions: ["yaml", "yml"], load: legacy(async () => (await import("@codemirror/legacy-modes/mode/yaml")).yaml) },

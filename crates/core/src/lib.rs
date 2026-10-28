@@ -27,11 +27,11 @@ pub use format::{
     native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
     FormatResult,
 };
-pub use images::RasterImage;
 pub use git::{
-    GitChange, GitCommit, GitCommitResult, GitContext, GitDiff, GitDiffSide,
-    GitHistoryPage, GitHistoryQuery, GitRepository, GitService, GitStatus,
+    GitChange, GitCommit, GitCommitResult, GitContext, GitDiff, GitDiffSide, GitHistoryPage,
+    GitHistoryQuery, GitRepository, GitService, GitStatus,
 };
+pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
 pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
@@ -44,7 +44,8 @@ pub use session_meta::{
 };
 pub use settings::{
     AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, RunToolsSettings,
-    Settings, SettingsScope, Theme, UpdateSettings, LANGUAGE_SERVER_IDS,
+    Settings, SettingsScope, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
+    SYNTAX_THEMES, SYNTAX_TOKEN_IDS,
 };
 pub use tools::{list_tools, ToolInfo};
 pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};
@@ -54,7 +55,7 @@ pub use uploads::{
     UploadLimits, UploadOrigin, UploadSource, UploadStore, UploadUsage, MAX_UPLOADS_TOTAL_BYTES,
     MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, MAX_UPLOAD_READ_BYTES,
 };
-pub use workspace::{CoreWorkspace, FileEntry, Workspace};
+pub use workspace::{atomic_write, CoreWorkspace, FileEntry, Workspace};
 
 use std::path::Path;
 
@@ -68,6 +69,10 @@ pub enum CoreError {
     },
     #[error("Path is outside the workspace: {0}")]
     OutsideWorkspace(String),
+    #[error("This is library source, not a file in your project: {0}")]
+    LibrarySource(String),
+    #[error("Invalid path: it contains a NUL character")]
+    InvalidPath,
     #[error("Expected revision {expected}, current revision is {actual}")]
     StaleRevision { expected: u64, actual: u64 },
     #[error("Invalid edit: {0}")]

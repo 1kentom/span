@@ -12,7 +12,7 @@ import { createWorkbench, settleIntent, SETTINGS_TAB, isGitTab, tabName } from "
 
 const initial = (): BufferSnapshot => ({ path: "src/file.ts", text: "const value = 1;\n", revision: 0, savedRevision: 0, language: "typescript" });
 let server: Map<string, BufferSnapshot>;
-const preferences: Settings = { theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false } };
+const preferences: Settings = { theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] } };
 const roots: (() => void)[] = [];
 function testWorkbench() { return createRoot(dispose => { roots.push(dispose); return createWorkbench(); }); }
 afterEach(() => { for (const dispose of roots.splice(0)) dispose(); });
