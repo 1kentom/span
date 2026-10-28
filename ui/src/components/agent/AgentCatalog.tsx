@@ -1,8 +1,10 @@
 import { For, Show, createSignal } from "solid-js";
-import type { InstalledAgent } from "../../bindings";
+import type { AgentUpdate_Serialize as AgentUpdate, InstalledAgent } from "../../bindings";
 import { curatedAgent, type CatalogRow } from "../../lib/acp-catalog";
 import { BrandIcon } from "../BrandIcon";
 import { Icon, MenuIcon } from "../Icon";
+import type { PresetRow } from "./types";
+import { CopyCommand, UpdateBadge, UpdatePanel, updateLabel } from "./UpdateBadge";
 
 type AgentCatalogProps = {
   rows: CatalogRow[];
@@ -27,13 +29,35 @@ type AgentCatalogProps = {
   removalConnected: boolean;
   onCancelRemoval: () => void;
   onConfirmRemoval: () => void;
+  /** Known launch commands. A curated row with one connects it directly instead of offering the local CLI draft. */
+  presets?: PresetRow[];
+  onPreset?: (id: string) => void;
+  /** Check-only update results. A confirmed update draws a pill under its row. */
+  updates?: AgentUpdate[];
+  onOpenExternal?: (url: string) => void;
 };
+
+/** The command a curated row connects through when it is not installed and the host knows a launch command for it. */
+export function catalogPreset(row: CatalogRow, presets: readonly PresetRow[] | undefined): PresetRow | undefined {
+  if (row.installed || (row.action !== "local" && row.action !== "unavailable")) return undefined;
+  return presets?.find((preset) => preset.id === row.definition.id);
+}
 
 /** Curated ACP agents with search, per-row install state, and removal that always asks first. */
 export function AgentCatalog(props: AgentCatalogProps) {
   const [managing, setManaging] = createSignal<string>();
   const installingRow = (id: string) => props.installingIds.includes(id);
   const toggle = (id: string) => setManaging((value) => (value === id ? undefined : id));
+  const [openUpdate, setOpenUpdate] = createSignal<string>();
+  const updateFor = (id: string) => props.updates?.find((update) => update.id === id);
+  const presetFor = (row: CatalogRow) => catalogPreset(row, props.presets);
+  const pick = (row: CatalogRow) => {
+    const preset = presetFor(row);
+    if (preset && props.onPreset) props.onPreset(preset.id);
+    else props.onPick(row);
+  };
+  const subtitle = (row: CatalogRow) =>
+    row.installed ? `Installed · ${row.installed.version}` : props.installErrors[row.definition.id] ? "Installation failed. Retry." : row.definition.detail;
   const request = (entry: InstalledAgent, uninstall: boolean) => {
     setManaging(undefined);
     props.onRequestRemoval?.(entry, uninstall);
@@ -60,7 +84,9 @@ export function AgentCatalog(props: AgentCatalogProps) {
         fallback={
           <>
             <div class="agent-menu-heading">
-              <span>Agents</span>
+              <span class="sb-eyebrow-text">
+                Agents <span class="sb-count">{props.rows.length}</span>
+              </span>
               <button type="button" class="sb-icon-btn" aria-label="Refresh agent registry" disabled={props.registryBusy} onClick={() => props.onRefresh()}>
                 <Icon name="Refresh2" size={14} />
               </button>
@@ -83,18 +109,23 @@ export function AgentCatalog(props: AgentCatalogProps) {
                       classList={{ "is-installing": installingRow(row.definition.id) }}
                       disabled={
                         !props.desktop ||
-                        ((row.action === "connect" || row.action === "local") && props.working) ||
+                        ((row.action === "connect" || row.action === "local" || Boolean(presetFor(row))) && props.working) ||
                         (row.action === "install" && installingRow(row.definition.id)) ||
-                        row.action === "unavailable"
+                        (row.action === "unavailable" && !(presetFor(row) && props.onPreset))
                       }
-                      onClick={() => props.onPick(row)}
+                      onClick={() => pick(row)}
                     >
                       <Show when={row.definition.brand === "glm"} fallback={<BrandIcon id={row.definition.brand} size={20} />}>
                         <span class="agent-glm-mark" aria-hidden="true" />
                       </Show>
                       <span class="agent-menu-copy">
                         <strong>{row.definition.name}</strong>
-                        <small>{row.installed ? `Installed · ${row.installed.version}` : props.installErrors[row.definition.id] ? "Installation failed. Retry." : row.definition.detail}</small>
+                        <small classList={{ "agent-installed": Boolean(row.installed) }} title={subtitle(row)}>
+                          <Show when={row.installed}>
+                            <Icon name="TickCircle" size={11} />
+                          </Show>
+                          {subtitle(row)}
+                        </small>
                         <Show when={props.installErrors[row.definition.id]}>
                           {(message) => (
                             <small class="agent-install-error" role="status" title={message()}>
@@ -109,15 +140,15 @@ export function AgentCatalog(props: AgentCatalogProps) {
                             <span class="agent-install-spinner" aria-hidden="true" />
                             <span>Installing…</span>
                           </span>
-                        ) : row.action === "connect" ? (
-                          <Icon name="arrow-right4" size={16} />
+                        ) : row.action === "connect" || (presetFor(row) && props.onPreset) ? (
+                          <span class="agent-action primary">Connect</span>
                         ) : row.action === "install" ? (
-                          <span class="agent-install-action">
-                            <MenuIcon name="install" size={14} />
+                          <span class="agent-action secondary agent-install-action">
+                            <MenuIcon name="install" size={13} />
                             {props.installErrors[row.definition.id] ? "Retry" : "Install"}
                           </span>
                         ) : row.action === "local" ? (
-                          "Use local CLI"
+                          <span class="agent-action secondary">Use local CLI</span>
                         ) : props.registryBusy ? (
                           "Loading"
                         ) : (
@@ -125,6 +156,26 @@ export function AgentCatalog(props: AgentCatalogProps) {
                         )}
                       </span>
                     </button>
+                    <Show when={presetFor(row)}>
+                      {(preset) => (
+                        <div class="sb-command-chip agent-row-extra">
+                          <code class="sb-preset-command sb-mono" aria-label={`Command for ${preset().name}`}>
+                            {preset().command}
+                          </code>
+                          <CopyCommand command={preset().command} />
+                        </div>
+                      )}
+                    </Show>
+                    <Show when={updateLabel(updateFor(row.definition.id)) ? updateFor(row.definition.id) : undefined}>
+                      {(update) => (
+                        <div class="agent-row-extra">
+                          <UpdateBadge update={update()} expanded={openUpdate() === row.definition.id} onToggle={() => setOpenUpdate((value) => (value === row.definition.id ? undefined : row.definition.id))} />
+                          <Show when={openUpdate() === row.definition.id}>
+                            <UpdatePanel update={update()} onOpenExternal={props.onOpenExternal} />
+                          </Show>
+                        </div>
+                      )}
+                    </Show>
                     <Show when={props.onRequestRemoval ? row.installed : undefined}>
                       {(entry) => (
                         <>
