@@ -40,7 +40,7 @@ test('Mac Intel UA never selects a Mac chip and both explicit choices map exactl
   await expect(page.locator('#selected-sha')).toHaveText(assetFor('aarch64-apple-darwin').digest.slice(7));
   await choose(page, 'Architecture', 'Intel (x64)');
   await expect(page.locator('#primary-download')).toHaveAttribute('href', assetFor('x86_64-apple-darwin').browser_download_url);
-  await expect(page.locator('#selected-meta')).toContainText('19.1 MB');
+  await expect(page.locator('#selected-meta')).toContainText(`${(assetFor('x86_64-apple-darwin').size / 1000000).toFixed(1)} MB`);
   await context.close();
 });
 
