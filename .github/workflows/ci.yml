@@ -155,8 +155,9 @@ jobs:
       - name: Placeholder frontend bundle for the Tauri build script
         run: mkdir -p ui/dist && touch ui/dist/index.html
       # The real-server tests are behind the real-servers feature and run in their own job.
+      # Several tests wait out 10 to 30 second timeouts, so run more of them than cores at once.
       # The workspace has no doc tests, so there is no `cargo test --doc` step.
-      - run: cargo nextest run --workspace --no-fail-fast
+      - run: cargo nextest run --workspace --no-fail-fast --test-threads 16
 
   # Cheap script tests, no Rust toolchain and no dependency install.
   meta:
