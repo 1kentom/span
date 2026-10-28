@@ -5,9 +5,9 @@ test("empty and last-tab split groups close without closing the app", async ({ p
   await ready(page);
   await openSettings(page);
   await page.getByRole("button", { name: "Split editor", exact: true }).click();
-  const emptyGroup = page.getByRole("region", { name: "Editor group 2", exact: true });
-  await expect(emptyGroup).toContainText("No file open");
-  await expect(emptyGroup.locator(".animated-logo")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Editor group 2", exact: true })).toContainText("No file open");
+  // The welcome logo belongs to a lone empty group only; the agent panel keeps its own mark.
+  await expect(page.locator(".editor-groups .animated-logo")).toHaveCount(0);
   await page.keyboard.press(`${modifier}+w`);
   await expect(page.getByRole("region", { name: "Editor group 2", exact: true })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Settings", exact: true })).toBeVisible();
@@ -67,7 +67,7 @@ test("tabs move between groups and Explorer files drop into the target group", a
   await expect(first.getByRole("tab", { name: "package.json", exact: true })).toHaveCount(0);
   await expect(second.getByRole("textbox", { name: "Edit package.json", exact: true })).toBeVisible();
   const entry = page.getByRole("treeitem").filter({ hasText: /^\.env\.local$/ });
-  await expect(entry).not.toHaveAttribute("draggable", "true");
+  await expect(entry).toHaveAttribute("draggable", "true");
   await entry.dragTo(second.locator(".editor-documents"));
   await expect(second.getByRole("textbox", { name: "Edit .env.local", exact: true })).toBeVisible();
 });
