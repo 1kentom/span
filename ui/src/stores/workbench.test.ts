@@ -814,3 +814,62 @@ it("ignores an older workspace progress response and stops polling when disposed
     await vi.advanceTimersByTimeAsync(6000); expect(client.fileIndexStatus).toHaveBeenCalledTimes(3);
   } finally { vi.useRealTimers(); }
 });
+
+describe("editor layout directions and drop zones", () => {
+  const add = (...paths: string[]) => { for (const path of paths) server.set(path, { path, text: "x\n", revision: 0, savedRevision: 0, language: "typescript" }); };
+  it("splits right and down, and places left or up groups first", async () => {
+    const workbench = await setup();
+    workbench.splitEditor(1, undefined, "down");
+    expect(workbench.groups()).toHaveLength(2); expect(workbench.splitVertical()).toBe(true);
+    expect(workbench.groups().map(group => group.id)).toEqual([1, 2]);
+    workbench.closeGroup(2);
+    workbench.splitEditor(1, undefined, "left");
+    expect(workbench.splitVertical()).toBe(false); expect(workbench.groups().map(group => group.id)).toEqual([3, 1]);
+  });
+  it("never creates a third group", async () => {
+    const workbench = await setup();
+    workbench.splitEditor(1, undefined, "down"); workbench.splitEditor(1, undefined, "right"); workbench.splitEditor(2, undefined, "up");
+    expect(workbench.groups()).toHaveLength(2); expect(workbench.splitVertical()).toBe(true);
+  });
+  it("opens a file in a new group below for the bottom zone and in the other group when two exist", async () => {
+    const workbench = await setup(); add("src/other.ts", "src/third.ts");
+    await workbench.openInZone("src/other.ts", 1, "bottom");
+    expect(workbench.splitVertical()).toBe(true); expect(workbench.groups()).toHaveLength(2);
+    expect(workbench.groups()[1].tabs).toEqual(["src/other.ts"]); expect(workbench.groups()[0].tabs).toContain("src/file.ts");
+    await workbench.openInZone("src/third.ts", 1, "right");
+    expect(workbench.groups()).toHaveLength(2); expect(workbench.groups()[1].tabs).toContain("src/third.ts");
+  });
+  it("opens in the same group for the centre zone", async () => {
+    const workbench = await setup(); add("src/other.ts");
+    await workbench.openInZone("src/other.ts", 1, "center");
+    expect(workbench.groups()).toHaveLength(1); expect(workbench.groups()[0].tabs).toContain("src/other.ts");
+  });
+  it("moves a tab to a new group on the right edge and keeps the source group's other tabs", async () => {
+    const workbench = await setup(); add("src/two.ts");
+    await workbench.openFile("src/two.ts");
+    workbench.moveTabToZone("src/two.ts", 1, 1, "right");
+    expect(workbench.groups()).toHaveLength(2); expect(workbench.splitVertical()).toBe(false);
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts"]); expect(workbench.groups()[1].tabs).toEqual(["src/two.ts"]);
+  });
+  it("refuses to split off the only tab of the only group", async () => {
+    const workbench = await setup();
+    workbench.moveTabToZone("src/file.ts", 1, 1, "bottom");
+    expect(workbench.groups()).toHaveLength(1);
+  });
+  it("saves the stacked layout in the session and drops it with one group", async () => {
+    const session: SessionState = { workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts"], activePath: "src/file.ts" }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: false }, markdownViews: {}, splitVertical: false };
+    client.getSession.mockResolvedValue(session);
+    const workbench = testWorkbench(); await workbench.initialize();
+    workbench.splitEditor(1, undefined, "down");
+    await workbench.persistSession();
+    expect(client.saveSession).toHaveBeenLastCalledWith(expect.objectContaining({ splitVertical: true }));
+    workbench.closeGroup(2); await workbench.persistSession();
+    expect(client.saveSession).toHaveBeenLastCalledWith(expect.objectContaining({ splitVertical: false }));
+  });
+  it("restores the stacked layout from a saved session", async () => {
+    const session: SessionState = { workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts"], activePath: "src/file.ts" }, { paths: ["src/file.ts"], activePath: "src/file.ts" }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: false }, markdownViews: {}, splitVertical: true };
+    client.getSession.mockResolvedValue(session);
+    const workbench = testWorkbench(); await workbench.initialize();
+    expect(workbench.groups()).toHaveLength(2); expect(workbench.splitVertical()).toBe(true);
+  });
+});

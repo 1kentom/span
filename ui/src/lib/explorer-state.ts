@@ -40,7 +40,7 @@ export function createExplorerState(w: Workbench) {
   const listing = (folder: string): readonly FileEntry[] | undefined => w.directories[folder];
   const entryOf = (path: string) => listing(parentPath(path))?.find(entry => entry.path === path);
   const isDirectory = (path: string) => path === "" || !!entryOf(path)?.isDir;
-  const visiblePaths = () => Array.from(document.querySelectorAll<HTMLElement>('.explorer-panel .file-tree [role="treeitem"]')).map(row => row.dataset.path ?? "").filter(Boolean);
+  const visiblePaths = () => Array.from(document.querySelectorAll<HTMLElement>('.file-tree [role="treeitem"]')).map(row => row.dataset.path ?? "").filter(Boolean);
   const fail = (error: unknown) => { w.setError(String(error instanceof Error ? error.message : error)); };
 
   function selectOnly(path: string) { batch(() => { setSelection([path]); setFocus(path); setAnchor(path); }); }
@@ -58,7 +58,7 @@ export function createExplorerState(w: Workbench) {
     for (const path of chain) { if (!w.expanded().has(path)) await w.toggleDirectory(path); else if (!w.directories[path]) await w.loadDirectory(path); }
   }
   function scrollIntoView(path: string) {
-    queueMicrotask(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(`.explorer-panel .file-tree [data-path="${CSS.escape(path)}"], .explorer-panel .file-tree .tree-edit-row`)?.scrollIntoView?.({ block: "nearest" })));
+    queueMicrotask(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(`.file-tree [data-path="${CSS.escape(path)}"], .file-tree .tree-edit-row`)?.scrollIntoView?.({ block: "nearest" })));
   }
   /** Reveal a path in the tree: expand its ancestors, select it, scroll it into view. */
   async function reveal(path: string, select = true) {
