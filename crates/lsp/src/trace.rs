@@ -58,6 +58,15 @@ impl Trace {
         File::create(&self.stderr_path).ok()
     }
 
+    /// Record a client-side event (for example the child being reaped).
+    pub fn note(&self, event: &str, detail: Value) {
+        let entry = json!({ "ts": timestamp(), "dir": "local", "event": event, "detail": detail });
+        if let Ok(mut f) = self.jsonl.lock() {
+            let _ = writeln!(f, "{entry}");
+            let _ = f.flush();
+        }
+    }
+
     /// Record one message. `dir` is "send" or "recv".
     pub fn record(&self, dir: &str, message: &Value) {
         let method = message.get("method").and_then(Value::as_str);

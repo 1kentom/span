@@ -1,7 +1,7 @@
 """Minimal fake LSP server for manager tests.
 
 Usage: fake-lsp-server.py MODE
-Modes: normal, slow-init, bad-init, nodef, hang, slow-shutdown, save-text, save
+Modes: normal, slow-exit, slow-init, bad-init, nodef, hang, slow-shutdown, save-text, save
 Every message received is appended as one JSON line to $FAKE_LSP_LOG.
 """
 import json
@@ -106,6 +106,9 @@ while True:
             time.sleep(1.5)
         reply(msg, None)
     elif method == "exit":
+        if mode == "slow-exit":
+            time.sleep(float(os.environ.get("FAKE_LSP_EXIT_DELAY", "1.5")))
+            log({"method": "exited-cleanly"})
         sys.exit(0)
     elif "id" in msg:
         send({"id": msg["id"], "error": {"code": -32601, "message": "no such method"}})
