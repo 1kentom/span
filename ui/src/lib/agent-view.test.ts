@@ -153,3 +153,36 @@ describe("prompt attachments", () => {
     expect(built.blocked.map((entry) => entry.reason)).toEqual(["Span cannot send audio to agents yet."]);
   });
 });
+
+describe("workspaceRelative and toolLocations", () => {
+  it("accepts paths inside the root and rejects everything that leaves it", async () => {
+    const { workspaceRelative } = await import("./agent-view");
+    expect(workspaceRelative("/w", "/w/src/a.ts")).toBe("src/a.ts");
+    expect(workspaceRelative("/w/", "src/./a.ts")).toBe("src/a.ts");
+    expect(workspaceRelative("/w", "/w/src/../b.ts")).toBe("b.ts");
+    expect(workspaceRelative("C:\\w", "C:\\w\\src\\a.ts")).toBe("src/a.ts");
+    for (const bad of ["/etc/passwd", "/wx/a.ts", "/w", "/w/", "../a.ts", "/w/../a.ts", "src/../../a.ts", "", "file:///w/a.ts", "/w/a\0.ts"]) expect(workspaceRelative("/w", bad), bad).toBeUndefined();
+    expect(workspaceRelative(undefined, "/w/a.ts")).toBeUndefined();
+  });
+  it("reads path and line from tool locations and skips malformed entries", async () => {
+    const { toolLocations } = await import("./agent-view");
+    expect(toolLocations(JSON.stringify({ locations: [{ path: "/w/a.ts", line: 4 }, { path: "b.ts", line: -1 }, { line: 3 }, null, { path: " " }] }))).toEqual([{ path: "/w/a.ts", line: 4 }, { path: "b.ts", line: undefined }]);
+    expect(toolLocations("not json")).toEqual([]);
+    expect(toolLocations("{}")).toEqual([]);
+  });
+});
+
+describe("toStep click targets", () => {
+  it("opens a located tool target at its line and a diff at its first changed line", () => {
+    const open = (path: string, line?: number) => calls.push([path, line]);
+    const calls: [string, number | undefined][] = [];
+    const read = toStep(tool("r", { contentJson: JSON.stringify({ locations: [{ path: "/w/a.ts", line: 9 }] }) }), [], "/w", open);
+    read.onOpen!();
+    expect(calls).toEqual([["/w/a.ts", 9]]);
+    expect(toStep(tool("n"), [], "/w", open).onOpen).toBeUndefined();
+    const edit = toStep(tool("e", { toolKind: "edit", contentJson: JSON.stringify({ content: [{ type: "diff", path: "/w/b.ts", oldText: "a\nb\nc", newText: "a\nB\nc" }] }) }), [], "/w", open);
+    expect(edit.detail?.type === "diff" && edit.detail.onOpen).toBeTruthy();
+    if (edit.detail?.type === "diff") edit.detail.onOpen!();
+    expect(calls.at(-1)).toEqual(["b.ts", 2]);
+  });
+});

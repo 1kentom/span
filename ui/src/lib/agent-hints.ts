@@ -1,0 +1,47 @@
+import type { ComposerHint, ComposerHintMode } from "../components/agent/ComposerHints";
+import type { PermissionChoice } from "../components/agent/types";
+
+type HintInput = {
+  /** Options of the open permission request, if any. */
+  permission?: readonly PermissionChoice[];
+  /** The open input request, if any. */
+  elicitation?: { mode: string };
+  /** The form field currently asked, when the request is a form. */
+  field?: { options: readonly unknown[] };
+};
+
+/**
+ * Keyboard hints per composer mode. Each entry names a binding that exists in code:
+ * - idle: Enter sends, Shift+Enter inserts a newline (textarea default), ArrowUp at the start recalls earlier
+ *   prompts (recallPrompt), "/" at the start of the prompt opens commands (isSlashQuery), Alt+Enter opens the attach menu.
+ * - running: Enter steers, Tab queues (AgentComposer keydown), Escape stops the turn (AgentPanel keydown).
+ * - question: digits answer a numbered option and Escape declines (QuestionDock), Enter opens the page and Escape
+ *   declines for a URL request (UrlDock).
+ * - permission: Y picks the first allow option and N the first reject option (PermissionDock), only when those exist.
+ */
+export function composerHints(input: HintInput): Record<ComposerHintMode, ComposerHint[]> {
+  const options = input.permission ?? [];
+  const permission: ComposerHint[] = [];
+  if (options.some((option) => option.kind.startsWith("allow"))) permission.push({ keys: ["Y"], label: "Allow" });
+  if (options.some((option) => option.kind.startsWith("reject"))) permission.push({ keys: ["N"], label: "Reject" });
+  const question: ComposerHint[] = [];
+  if (input.elicitation?.mode === "url") question.push({ keys: ["↵"], label: "Open browser" });
+  else if (input.field?.options.length) question.push({ keys: ["1-9"], label: "Pick an option" });
+  if (input.elicitation) question.push({ keys: ["Esc"], label: "Decline" });
+  return {
+    idle: [
+      { keys: ["↵"], label: "Send" },
+      { keys: ["⇧", "↵"], label: "Newline" },
+      { keys: ["↑"], label: "Earlier prompts" },
+      { keys: ["/"], label: "Commands" },
+      { keys: ["⌥", "↵"], label: "Attach" },
+    ],
+    running: [
+      { keys: ["↵"], label: "Steer" },
+      { keys: ["Tab"], label: "Queue" },
+      { keys: ["Esc"], label: "Stop" },
+    ],
+    question,
+    permission,
+  };
+}

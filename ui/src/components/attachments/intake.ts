@@ -1,5 +1,5 @@
 import { createSignal } from 'solid-js';
-import { addAttachments, createFileAttachment, createPastedText, maxBytesFor, classifyFile, resolveMime, shouldChipPastedText, type Attachment, type Rejection } from '../../lib/attachments';
+import { addAttachments, createFileAttachment, newAttachmentId, createPastedText, maxBytesFor, classifyFile, resolveMime, shouldChipPastedText, type Attachment, type Rejection } from '../../lib/attachments';
 import { formatAssetBytes } from '../../lib/asset-preview';
 
 export interface IntakeOptions {
@@ -9,6 +9,10 @@ export interface IntakeOptions {
   onAdd: (items: Attachment[]) => void;
   /** Why attaching is unavailable right now (for example browser preview). Everything is refused with this message. */
   unavailable?: () => string | undefined;
+  /** Called with `loading` placeholders while file bytes are being read. They are never added through `onAdd`. */
+  onPending?: (placeholders: Attachment[]) => void;
+  /** Called with the placeholder ids once reading finished, just before `onAdd` receives the real items. */
+  onSettled?: (ids: string[]) => void;
 }
 
 export interface Intake {
@@ -55,6 +59,15 @@ export function createAttachmentIntake(options: IntakeOptions): Intake {
     if (!files.length || refuseAll(files.map(file => file.name || 'Pasted file'))) return;
     const rejections: Rejection[] = [];
     const candidates: Attachment[] = [];
+    const pending: Attachment[] = [];
+    if (options.onPending) {
+      for (const file of files) {
+        const name = file.name || (file.type.startsWith('image/') ? `Pasted image.${file.type.slice(6).replace('jpeg', 'jpg')}` : 'Pasted file');
+        const mime = resolveMime(name, file.type);
+        if (file.size <= maxBytesFor(classifyFile(name, mime), mime)) pending.push({ id: newAttachmentId(), kind: classifyFile(name, mime), name, mime, size: file.size, source, status: 'loading' });
+      }
+      if (pending.length) options.onPending(pending);
+    }
     for (const file of files) {
       const name = file.name || (file.type.startsWith('image/') ? `Pasted image.${file.type.slice(6).replace('jpeg', 'jpg')}` : 'Pasted file');
       const mime = resolveMime(name, file.type);
@@ -64,6 +77,7 @@ export function createAttachmentIntake(options: IntakeOptions): Intake {
       try { candidates.push(createFileAttachment({ name, mime, bytes: await readBytes(file), source })); }
       catch (cause) { rejections.push({ name, reason: cause instanceof Error ? cause.message : 'Could not read the file.' }); }
     }
+    if (pending.length) options.onSettled?.(pending.map(item => item.id));
     const result = addAttachments(options.items(), candidates);
     if (result.accepted.length) options.onAdd(result.accepted);
     reject([...rejections, ...result.rejected]);

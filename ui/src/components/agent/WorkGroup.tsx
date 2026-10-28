@@ -165,7 +165,9 @@ function StepRowBody(props: { step: StepView }) {
     <>
       <StepGlyph kind={props.step.kind} status={props.step.status} />
       <span class="sb-step-verb">{props.step.verb}</span>
-      <span class="sb-step-target sb-mono">{props.step.target}</span>
+      <Show when={props.step.onOpen && !props.step.detail} fallback={<span class="sb-step-target sb-mono">{props.step.target}</span>}>
+        <button type="button" class="sb-step-target sb-mono sb-link" aria-label={`Open ${props.step.target} in the editor`} onClick={() => props.step.onOpen?.()}>{props.step.target}</button>
+      </Show>
       <Show when={props.step.delta}><Delta add={props.step.delta!.add} del={props.step.delta!.del} /></Show>
       <Show when={props.step.meta}><span class="sb-sub nowrap">{props.step.meta}</span></Show>
       <Show when={props.step.status === "failed"}><span class="sb-bad-text nowrap sb-small">Failed</span></Show>

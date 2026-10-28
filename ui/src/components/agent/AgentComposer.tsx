@@ -1,14 +1,16 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { FileIcon, Icon } from "../Icon";
-import { AttachmentChips, AttachmentDropZone, AttachmentPickerButton } from "../attachments";
+import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
+import { composerHints } from "../../lib/agent-hints";
 import { formatElapsed, toolSummary } from "../../lib/agent-feed";
 import { canCompact } from "../../lib/agent-session";
 import { configViews, currentChoice, isSlashQuery, leaf, levelOf, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { isDesktop } from "../../lib/client";
 import { ContextBanner } from "./Banners";
+import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock } from "./Docks";
 import { ModelPopover } from "./ModelPopover";
 import { PlanDrawer } from "./PlanDrawer";
@@ -24,6 +26,9 @@ const BANNER_AT = 85;
 export function AgentComposer(props: { agent: AgentController; brand: Brand; label: string }) {
   const a = props.agent;
   let input: HTMLTextAreaElement | undefined;
+  let plus: HTMLButtonElement | undefined;
+  let uploadInput!: HTMLInputElement;
+  let imageInput!: HTMLInputElement;
   const [slashClosedFor, setSlashClosedFor] = createSignal<string>();
   const config = createMemo(() => configViews(a.state().config));
   const model = () => config().find((option) => option.category === "model");
@@ -66,7 +71,32 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     return tool?.kind === "tool" ? toolSummary(tool.event.contentJson) : "";
   };
   const field = () => a.fields()[a.form()?.index ?? 0];
-  const toggle = (menu: "model" | "agents" | "context") => a.setMenu(a.menu() === menu ? null : menu);
+  const unavailable = isDesktop ? undefined : ATTACH_UNAVAILABLE;
+  /** Only items with a real handler are offered. Folder, Earlier session and Paste screenshot have none (no folder picker, no session attach, no image clipboard command), so they are omitted rather than stubbed. */
+  const attachHandlers = (): Partial<Record<AttachMenuItemId, () => void>> => ({
+    upload: () => uploadInput.click(),
+    image: () => imageInput.click(),
+    file: a.addCurrentFile,
+    selection: a.showSelection,
+  });
+  const attachReasons = (): Partial<Record<AttachMenuItemId, string>> => {
+    const path = a.props.activePath;
+    return {
+      file: !path ? "No file is open" : a.contextPaths().includes(path) ? "Already added" : undefined,
+      selection: !a.props.selectionContext?.text ? "Nothing is selected" : a.selection() ? "Already included" : undefined,
+    };
+  };
+  const pickFiles = (event: Event & { currentTarget: HTMLInputElement }) => {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    void a.intake.addFiles(files, "picked");
+  };
+  const hintMode = () => (a.permission() ? "permission" : a.elicitation() ? "question" : a.running() ? "running" : "idle");
+  const hints = () => composerHints({ permission: a.permission()?.event.options, elicitation: a.elicitation(), field: field() });
+  const hasPayload = () => Boolean(a.prompt().trim() || a.attachments().length);
+  const loadingOnly = (reason: string) => reason === "Still loading.";
+  const reportable = () => a.blocked().filter((entry) => !loadingOnly(entry.reason));
+  const toggle = (menu: "model" | "agents" | "attach") => a.setMenu(a.menu() === menu ? null : menu);
   const closeMenu = () => {
     a.setMenu(null);
     input?.focus();
@@ -165,8 +195,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           </Show>
         )}
       </Show>
-      <AttachmentDropZone intake={a.intake} unavailable={isDesktop ? undefined : ATTACH_UNAVAILABLE} class="agent-composer">
-        <Show when={a.menu() && a.menu() !== "actions"}>
+      <div class="att-dropzone agent-composer">
+        <Show when={a.menu() && a.menu() !== "actions" && a.menu() !== "attach"}>
           <button class="agent-menu-dismiss" aria-label="Close agent menu" tabindex="-1" onClick={closeMenu} />
         </Show>
         <div class="agent-popover-anchor">
@@ -216,22 +246,10 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               </Show>
             </div>
           </Show>
-          <Show when={a.menu() === "context"}>
-            <div class="sb-popover" role="dialog" aria-label="Editor context">
-              <div class="sb-eyebrow">Editor context</div>
-              <button class="sb-option" disabled={!a.props.activePath} onClick={a.addCurrentFile}>
-                <Show when={a.props.activePath} fallback={<Icon name="DocumentText" size={15} />}>
-                  <FileIcon path={a.props.activePath!} />
-                </Show>
-                <span class="sb-option-text">
-                  <span class="sb-option-name">Add current file</span>
-                  <span class="sb-sub wrap">{a.props.activePath || "Open a file in the editor first"}</span>
-                </span>
-              </button>
-              <p class="sb-fine pad">Selected code is included automatically. Added files use the current editor buffer, including unsaved changes.</p>
-            </div>
-          </Show>
         </div>
+        <Show when={a.menu() === "attach"}>
+          <AttachMenu agentName={props.label} capabilities={a.caps()} handlers={attachHandlers()} disabledReasons={attachReasons()} onClose={() => a.setMenu(null)} returnFocus={() => plus} />
+        </Show>
         <Show when={a.selection() || a.contextPaths().length}>
           <ul class="att-chips agent-contexts" aria-label="Editor context">
             <Show when={a.selection()}>
@@ -262,11 +280,11 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             </For>
           </ul>
         </Show>
-        <AttachmentChips items={a.attachments()} capabilities={a.caps()} onOpen={(item) => a.setViewing(item.id)} onRemove={a.removeAttachment} onEmpty={() => input?.focus()} />
-        <Show when={a.blocked().length}>
+        <AttachmentTray items={a.attachments()} capabilities={a.caps()} onOpen={(item) => item.status !== "loading" && a.setViewing(item.id)} onRemove={a.removeAttachment} onEmpty={() => input?.focus()} />
+        <Show when={reportable().length}>
           <p class="agent-blocked" role="status">
-            {a.blocked().length === 1 ? `${a.blocked()[0].item.name} cannot be sent: ${a.blocked()[0].reason}` : `${a.blocked().length} attachments cannot be sent to ${props.label}.`} Remove{" "}
-            {a.blocked().length === 1 ? "it" : "them"} to send.
+            {reportable().length === 1 ? `${reportable()[0].item.name} cannot be sent: ${reportable()[0].reason}` : `${reportable().length} attachments cannot be sent to ${props.label}.`} Remove{" "}
+            {reportable().length === 1 ? "it" : "them"} to send.
           </p>
         </Show>
         <label class="sb-visually-hidden" for="agent-prompt">
@@ -281,7 +299,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           class="agent-input"
           rows="2"
           value={a.prompt()}
-          placeholder={a.running() ? "Queue a follow-up for after this turn…" : a.connected() ? `Ask ${props.label}…` : "Connect an agent to start"}
+          placeholder={a.running() ? "Steer the agent, or press Tab to queue…" : a.connected() ? `Ask ${props.label}…` : "Connect an agent to start"}
           spellcheck={false}
           onInput={(event) => a.setPrompt(event.currentTarget.value)}
           onPaste={a.intake.onPaste}
@@ -291,16 +309,31 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
               event.preventDefault();
               event.stopPropagation();
-              if (event.altKey) toggle("context");
+              if (event.altKey) toggle("attach");
+              // While a turn runs Enter steers (cancel, then send next) and Tab queues. Idle Enter just sends.
+              else if (a.running()) void a.steer();
               else void a.send();
+            } else if (event.key === "Tab" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && !event.isComposing && a.running() && hasPayload()) {
+              event.preventDefault();
+              void a.send();
             }
           }}
         />
         <div class="agent-composer-toolbar" role="toolbar" aria-label="Agent prompt options">
-          <button class="agent-tool-button" title="Add context" aria-label="Add editor context" aria-expanded={a.menu() === "context"} onClick={() => toggle("context")}>
+          <button
+            ref={plus}
+            class="agent-tool-button"
+            title={unavailable ?? "Attach files and context"}
+            aria-label={unavailable ? `Attach files and context, unavailable: ${unavailable}` : "Attach files and context"}
+            aria-haspopup="menu"
+            aria-expanded={a.menu() === "attach"}
+            disabled={Boolean(unavailable)}
+            onClick={() => toggle("attach")}
+          >
             <Icon name="Add" size={16} />
           </button>
-          <AttachmentPickerButton intake={a.intake} unavailable={isDesktop ? undefined : ATTACH_UNAVAILABLE} class="agent-tool-button" />
+          <input ref={uploadInput} class="att-file-input" type="file" multiple tabIndex={-1} aria-hidden="true" onChange={pickFiles} />
+          <input ref={imageInput} class="att-file-input" type="file" multiple accept="image/*" tabIndex={-1} aria-hidden="true" onChange={pickFiles} />
           <button
             class="agent-tool-button agent-model-button"
             aria-label={a.connected() ? `Agent and model: ${props.label}, ${modelLabel()}` : "Select agent"}
@@ -343,7 +376,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
                 : a.blocked().length
                   ? "Remove the attachments this agent cannot take"
                   : a.running()
-                    ? "Queue for after this turn · Enter"
+                    ? "Queue for after this turn · Tab"
                     : "Send · Enter"
             }
             disabled={!a.canSend()}
@@ -357,11 +390,14 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             </button>
           </Show>
         </div>
-      </AttachmentDropZone>
+        <AttachmentNotices intake={a.intake} />
+      </div>
       <div class="agent-composer-hint">
         <span class="sb-ellipsis">{isDesktop ? (a.connected() ? a.state().statusMessage : "Connect an ACP agent to begin") : "Browser preview · agent unavailable"}</span>
-        <span class="nowrap">{a.running() ? "↵ queue · Esc stop" : "↵ send · ⇧↵ newline · ↑ history"}</span>
       </div>
+      <Show when={a.connected()}>
+        <ComposerHints mode={hintMode()} hints={hints()} />
+      </Show>
     </footer>
   );
 }

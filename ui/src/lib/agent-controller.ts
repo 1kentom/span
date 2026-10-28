@@ -15,7 +15,7 @@ import {
   type AgentState,
   type Failure,
 } from "./agent-session";
-import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine } from "./agent-view";
+import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolLocations, workspaceRelative } from "./agent-view";
 import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
 
 export type AgentPanelProps = {
@@ -25,20 +25,22 @@ export type AgentPanelProps = {
   selectionContext?: { path: string; text: string; startLine?: number; endLine?: number };
   onBufferChanged?: (path: string, snapshot?: BufferSnapshot) => void;
   onOpenSettings?: () => void;
-  onOpenFile?: (path: string) => void;
+  /** Opens a workspace file in the editor, at `line` (1-based) when given. */
+  onOpenFile?: (path: string, line?: number) => void;
   onOpenExternal?: (url: string) => void;
   /** Called after the panel writes a file into the workspace, so the explorer can refresh. */
   onFilesChanged?: () => void;
   onProposalsChange?: (proposals: EditProposal[]) => void;
   onReviewBusyChange?: (busy: boolean) => void;
-  onReviewInEditor?: (path: string) => void;
+  onReviewInEditor?: (path: string, line?: number) => void;
   onReviewReady?: (review: (proposalId: string, acceptedHunkIds: string[]) => Promise<void>) => void;
 };
 
 export type View = "session" | "history" | "connect" | "logs";
-export type Menu = "model" | "agents" | "context" | "actions" | null;
+export type Menu = "model" | "agents" | "attach" | "actions" | null;
 export type Queued = { id: string; text: string; message: string; attachments: PromptAttachment[]; items: Attachment[] };
 type Launch = { command: AgentCommand; name: string; id?: string };
+type Steering = { entry: Queued; cancelled: boolean };
 type Connecting = { name: string; command: string; logBase: number; failed: boolean };
 
 export const ATTACH_UNAVAILABLE = "Attachments need the span desktop app, which sends them to a connected agent.";
@@ -80,12 +82,18 @@ export function createAgentController(props: AgentPanelProps) {
   const [online, setOnline] = createSignal(typeof navigator === "undefined" ? true : navigator.onLine !== false);
   const [bannerDismissed, setBannerDismissed] = createSignal(false);
   const [pinned, setPinned] = createSignal(true);
+  /** Follow the agent: open files from tool call locations. Kept in memory only, so it resets on reload. */
+  const [following, setFollowing] = createSignal(false);
+  /** Name of the file the UI just opened for the user. `equals: false` restarts the toast for the same name. */
+  const [toast, setToast] = createSignal<string | undefined>(undefined, { equals: false });
   const [turnStart, setTurnStart] = createSignal(0);
   const [clock, setClock] = createSignal(Date.now());
   const [form, setForm] = createSignal<{ requestId: string; index: number; values: Record<string, string | number | boolean>; error?: string }>();
   let history: string[] = [];
   let historyIndex = -1;
   let priority: string | undefined;
+  let steering: Steering | undefined;
+  const followed = new Set<string>();
   let disposed = false;
   let agentEpoch = 0;
   let unsubscribe: (() => void) | undefined;
@@ -130,6 +138,8 @@ export function createAgentController(props: AgentPanelProps) {
   const intake = createAttachmentIntake({
     items: attachments,
     onAdd: (added) => setAttachments((previous) => [...previous, ...added]),
+    onPending: (placeholders) => setAttachments((previous) => [...previous, ...placeholders]),
+    onSettled: (ids) => setAttachments((previous) => previous.filter((item) => !ids.includes(item.id))),
     unavailable: () => (isDesktop ? undefined : ATTACH_UNAVAILABLE),
   });
 
@@ -161,6 +171,8 @@ export function createAgentController(props: AgentPanelProps) {
     setPinned(true);
     setBannerDismissed(false);
     priority = undefined;
+    steering = undefined;
+    followed.clear();
   }
 
   createEffect(
@@ -190,7 +202,8 @@ export function createAgentController(props: AgentPanelProps) {
 
   function receive(event: AgentEvent) {
     update((current) => reduceAgentEvent(current, event));
-    if (event.kind === "complete") queueMicrotask(drainQueue);
+    if (event.kind === "tool" && following()) followTool(event);
+    if (event.kind === "complete") queueMicrotask(() => (flushSteer(), drainQueue()));
     if (event.kind === "status" && event.state === "disconnected") setConnecting((current) => (current ? { ...current, failed: true } : current));
   }
 
@@ -360,12 +373,12 @@ export function createAgentController(props: AgentPanelProps) {
     if (selected) contexts.push(`Selected code from ${selected.path}${selected.startLine ? `, line ${selected.startLine}` : ""}:\n${selected.text}`);
     return contexts.length ? `${text}\n\nEditor context:\n${contexts.join("\n\n")}` : text;
   }
-  async function dispatch(entry: Queued) {
+  async function dispatch(entry: Queued, options: { steered?: boolean } = {}) {
     const current = guard(agentEpoch);
     update((previous) =>
       addFeedItem(
         { ...previous, running: true, stopRequested: false, status: "busy", statusMessage: "Agent is working", failure: undefined },
-        { kind: "user", text: entry.text, attachments: entry.items.length ? entry.items : undefined },
+        { kind: "user", text: entry.text, attachments: entry.items.length ? entry.items : undefined, ...(options.steered ? { steered: true } : {}) },
       ),
     );
     setTurnStart(Date.now());
@@ -391,7 +404,16 @@ export function createAgentController(props: AgentPanelProps) {
     if (!connected() || running()) return;
     void dispatch({ id: `q-${++queueCounter}`, text, message: text, attachments: [], items: [] });
   };
-  async function send() {
+  /** Enter while idle, and Tab or the send button while a turn runs: sends now, or queues behind the running turn. */
+  const send = () => submit("queue");
+  /**
+   * Enter while a turn runs. ACP v1 has no steer primitive (there is no way to inject a message into a running
+   * turn), so a steer is exactly: cancel the turn, wait for the cancel request to resolve and for the turn to end,
+   * then send the message as the next prompt. The feed labels that message "Steered". Nothing here assumes the
+   * agent supports anything beyond session/cancel and session/prompt.
+   */
+  const steer = () => submit("steer");
+  async function submit(mode: "queue" | "steer") {
     const current = guard(agentEpoch);
     const capabilities = caps();
     if (!canSend() || !capabilities) return;
@@ -410,13 +432,44 @@ export function createAgentController(props: AgentPanelProps) {
       setPrompt("");
       setAttachments([]);
       const entry: Queued = { id: `q-${++queueCounter}`, text, message: built.text, attachments: built.attachments, items };
-      if (running() || !online()) setQueue((previous) => [...previous, entry]);
+      if (mode === "steer" && running() && online()) void startSteer(entry);
+      else if (running() || !online()) setQueue((previous) => [...previous, entry]);
       else void dispatch(entry);
     } catch (cause) {
       if (current()) fail({ phase: "prompt", message: `Prompt failed: ${errorText(cause)}` });
     } finally {
       if (current()) setWorking(false);
     }
+  }
+  async function startSteer(entry: Queued) {
+    const current = guard(agentEpoch);
+    if (steering) {
+      // A steer is already waiting for its turn to end, so this one waits behind it.
+      setQueue((previous) => [...previous, entry]);
+      return;
+    }
+    const pending: Steering = { entry, cancelled: false };
+    steering = pending;
+    patch({ stopRequested: true, statusMessage: "Steering the agent" });
+    try {
+      await api.agentCancel();
+    } catch (cause) {
+      if (!current()) return;
+      steering = undefined;
+      setQueue((previous) => [entry, ...previous]);
+      patch({ stopRequested: false, statusMessage: "Agent is working", failure: { phase: "prompt", message: `Could not cancel the turn, so the message was queued: ${errorText(cause)}` } });
+      return;
+    }
+    if (!current() || steering !== pending) return;
+    pending.cancelled = true;
+    flushSteer();
+  }
+  /** Sends the steer message once the cancel resolved and the cancelled turn ended. Called from both sides. */
+  function flushSteer() {
+    if (!steering?.cancelled || running()) return;
+    const { entry } = steering;
+    steering = undefined;
+    void dispatch(entry, { steered: true });
   }
   /** Queued follow-ups go out together once the agent finishes, unless one was picked with Send now. */
   function drainQueue() {
@@ -491,20 +544,24 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setSessionsBusy(false);
     }
   }
-  async function switchChat(start: () => Promise<string>, failure: string) {
+  async function switchChat(start: () => Promise<string>, failure: string, options: { keepView?: boolean } = {}) {
     const current = guard(++agentEpoch);
     setMenu(null);
     setWorking(true);
     const previous = state();
     update((snapshot) => ({ ...resetConversation(snapshot), sessionId: undefined, failure: undefined }));
     setQueue([]);
+    steering = undefined;
+    followed.clear();
     try {
       const id = await start();
       if (!current()) return;
       patch({ sessionId: id, status: "ready", statusMessage: "Connected and ready" });
-      setView("session");
-      followLatest();
-      focusPrompt();
+      if (!options.keepView) {
+        setView("session");
+        followLatest();
+        focusPrompt();
+      }
     } catch (cause) {
       if (!current()) return;
       patch({ feed: previous.feed, plan: previous.plan, usage: previous.usage, commands: previous.commands, sessionTitle: previous.sessionTitle, sessionId: previous.sessionId, failure: { phase: "session", message: `${failure}: ${errorText(cause)}` } });
@@ -514,6 +571,38 @@ export function createAgentController(props: AgentPanelProps) {
   }
   const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat");
   const resumeChat = (id: string) => switchChat(() => api.agentResumeSession(id), "Could not resume that chat");
+  const canClose = createMemo(() => Boolean(state().agent?.features.canCloseSessions));
+  const canDelete = createMemo(() => Boolean(state().agent?.features.canDeleteSessions));
+  /**
+   * Runs a close or delete on a stored session. When it was the active one, the desktop has already cleared the
+   * active session, so a new session starts at once (staying on the history list) and the list is refreshed.
+   */
+  async function endSession(id: string, run: (id: string) => Promise<void>, failure: string) {
+    const current = guard(agentEpoch);
+    const active = id === state().sessionId;
+    setPendingAction(`session:${id}`);
+    setSessionsError("");
+    try {
+      await run(id);
+    } catch (cause) {
+      if (current()) setSessionsError(`${failure}: ${errorText(cause)}`);
+      return;
+    } finally {
+      if (current()) setPendingAction("");
+    }
+    if (!current()) return;
+    setSessions((previous) => previous.filter((session) => session.sessionId !== id));
+    if (active) {
+      await switchChat(() => api.agentNewSession(), "Could not start a new chat", { keepView: true });
+      // The desktop already cleared the active session, so a failed restart must not keep pointing at it.
+      if (state().sessionId === id) patch({ sessionId: undefined });
+    }
+    if (!disposed) void loadSessions();
+  }
+  /** Deletes a stored session. Only call when `canDelete()` is true. */
+  const deleteChat = (id: string) => (canDelete() ? endSession(id, (sessionId) => api.agentDeleteSession(sessionId), "Could not delete that chat") : Promise.resolve());
+  /** Closes the live session without deleting it. Only the active session is open, so only it can be closed. */
+  const closeChat = (id: string) => (canClose() && id === state().sessionId ? endSession(id, (sessionId) => api.agentCloseSession(sessionId), "Could not close that chat") : Promise.resolve());
 
   async function stop() {
     const current = guard(agentEpoch);
@@ -654,6 +743,40 @@ export function createAgentController(props: AgentPanelProps) {
   }
   const removeAttachment = (item: Attachment) => setAttachments((items) => items.filter((other) => other.id !== item.id));
 
+  /**
+   * Opens a workspace file for the user and confirms it with a toast. The path is checked against the workspace
+   * root first, because most callers pass a path an agent supplied. `opener` lets the changes card use the
+   * review opener. Returns false when nothing was opened.
+   */
+  function openInEditor(path: string, line?: number, opener: ((path: string, line?: number) => void) | undefined = props.onOpenFile): boolean {
+    const relative = workspaceRelative(props.workspacePath, path);
+    if (!relative || !opener) return false;
+    opener(relative, line);
+    setToast(leaf(relative));
+    return true;
+  }
+  /** Follow mode: reveal the first valid, not yet shown location of a tool call. Outside-root paths are ignored. */
+  function followTool(event: Extract<AgentEvent, { kind: "tool" }>) {
+    for (const location of toolLocations(event.contentJson)) {
+      const relative = workspaceRelative(props.workspacePath, location.path);
+      if (!relative) continue;
+      const key = `${event.toolCallId}:${relative}:${location.line ?? ""}`;
+      if (followed.has(key)) return;
+      followed.add(key);
+      if (openInEditor(relative, location.line)) return;
+    }
+  }
+  const toggleFollow = () => {
+    followed.clear();
+    setFollowing(!following());
+  };
+  /** Brings the editor selection back into the prompt after it was removed from the context list. */
+  const showSelection = () => {
+    setHiddenSelection("");
+    setMenu(null);
+    focusPrompt();
+  };
+
   const scrollers: { content?: HTMLDivElement } = {};
   const scrollToLatest = (smooth = false) =>
     requestAnimationFrame(() => scrollers.content?.scrollTo({ top: scrollers.content.scrollHeight, behavior: smooth ? "smooth" : "auto" }));
@@ -711,6 +834,16 @@ export function createAgentController(props: AgentPanelProps) {
     setBannerDismissed,
     pinned,
     setPinned,
+    following,
+    toggleFollow,
+    toast,
+    clearToast: () => setToast(undefined),
+    openInEditor,
+    canClose,
+    canDelete,
+    deleteChat,
+    closeChat,
+    showSelection,
     turnStart,
     clock,
     scrollers,
@@ -728,6 +861,7 @@ export function createAgentController(props: AgentPanelProps) {
     disconnect,
     authenticate,
     send,
+    steer,
     sendText,
     drainQueue,
     sendQueuedNow,

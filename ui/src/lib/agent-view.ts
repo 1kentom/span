@@ -17,6 +17,53 @@ export const relativeTo = (root: string | undefined, path: string) => {
   return path.startsWith(base) ? path.slice(base.length) : path;
 };
 
+/**
+ * Resolves a path that came from an agent (or any untrusted source) to a workspace-relative path.
+ * Returns undefined when the path leaves the workspace root, is empty, is the root itself, or is not a plain path.
+ * This is lexical: it cannot see symlinks, so the native open still has the final say.
+ */
+export function workspaceRelative(root: string | undefined, path: string): string | undefined {
+  if (!root || !path || path.includes("\0") || path.includes("://")) return undefined;
+  const normalize = (value: string) => {
+    const out: string[] = [];
+    for (const part of value.replaceAll("\\", "/").split("/")) {
+      if (!part || part === ".") continue;
+      if (part === "..") {
+        if (!out.length) return undefined;
+        out.pop();
+      } else out.push(part);
+    }
+    return out;
+  };
+  const base = normalize(root);
+  const unified = path.replaceAll("\\", "/");
+  const absolute = unified.startsWith("/") || /^[A-Za-z]:\//.test(unified);
+  const target = normalize(absolute ? unified : `${root.replaceAll("\\", "/")}/${unified}`);
+  if (!base || !target || target.length <= base.length) return undefined;
+  if (!base.every((part, index) => part === target[index])) return undefined;
+  return target.slice(base.length).join("/");
+}
+
+export type ToolLocation = { path: string; line?: number };
+
+/** File locations an ACP tool call reports, in order. Entries without a string path are skipped. */
+export function toolLocations(contentJson: string): ToolLocation[] {
+  let update: unknown;
+  try {
+    update = JSON.parse(contentJson);
+  } catch {
+    return [];
+  }
+  const list = update && typeof update === "object" ? (update as Record<string, unknown>).locations : undefined;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((entry) => {
+    const value = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : undefined;
+    if (!value || typeof value.path !== "string" || !value.path.trim()) return [];
+    const line = typeof value.line === "number" && Number.isInteger(value.line) && value.line > 0 ? value.line : undefined;
+    return [{ path: value.path, line }];
+  });
+}
+
 /** Capability chips for the ready card, straight from what the agent reported in initialize. */
 export function capabilityChips(features: AgentFeatures): Capability[] {
   return [
@@ -175,7 +222,7 @@ const record = (value: unknown): Record<string, unknown> | undefined => (value &
 const text = (value: unknown) => (typeof value === "string" ? value : undefined);
 
 /** Maps one ACP tool call to a step row, with a diff or terminal detail only when the agent sent one. */
-export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: string, onOpen?: (path: string) => void): StepView {
+export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: string, onOpen?: (path: string, line?: number) => void): StepView {
   const kind = stepKind(tool.toolKind);
   let update: Record<string, unknown> | undefined;
   try {
@@ -191,12 +238,15 @@ export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: s
     target: relativeTo(root, toolSummary(tool.contentJson)) || undefined,
     status: stepStatus(tool.status),
   };
+  const located = toolLocations(tool.contentJson)[0];
+  if (located && onOpen) step.onOpen = () => onOpen(located.path, located.line);
   const diff = content.find((entry) => entry.type === "diff" && typeof entry.path === "string");
   if (diff) {
     const path = relativeTo(root, diff.path as string);
     const diffed = diffLines(text(diff.oldText) ?? "", text(diff.newText) ?? "");
     step.delta = { add: diffed.filter((line) => line.kind === "add").length, del: diffed.filter((line) => line.kind === "del").length };
-    step.detail = { type: "diff", path, lines: diffed, onOpen: onOpen ? () => onOpen(path) : undefined };
+    const firstChanged = diffed.find((line) => line.kind !== "ctx" && line.n !== undefined)?.n;
+    step.detail = { type: "diff", path, lines: diffed, onOpen: onOpen ? () => onOpen(path, firstChanged) : undefined };
   } else if (kind === "run") {
     const input = record(update?.rawInput);
     const command = Array.isArray(input?.command) ? input!.command.join(" ") : text(input?.command);

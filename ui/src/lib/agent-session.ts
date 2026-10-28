@@ -15,7 +15,7 @@ export type PermissionEvent = Extract<AgentEvent, { kind: "permission" }>;
 export type ElicitationEvent = Extract<AgentEvent, { kind: "elicitation" }>;
 
 export type FeedItem =
-  | { id: number; kind: "user"; text: string; attachments?: Attachment[] }
+  | { id: number; kind: "user"; text: string; attachments?: Attachment[]; /** Sent by interrupting the running turn. */ steered?: boolean }
   | { id: number; kind: "text" | "thought" | "note"; text: string }
   | { id: number; kind: "notice"; severity: string; title: string; description?: string }
   | { id: number; kind: "compaction"; compactionId: string; status: string; summary: string; error?: string }

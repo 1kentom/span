@@ -37,6 +37,10 @@ type HistoryListProps = {
   /** Menu entries appear only for the callbacks the app supplies. */
   onRename?: (id: string, title: string) => void;
   onCopyId?: (id: string) => void;
+  /** Delete appears only when supplied. The row asks for confirmation inline before calling it. */
+  onDelete?: (id: string) => void;
+  /** Close appears only when supplied, and only on the current session. */
+  onClose?: (id: string) => void;
 };
 
 const defaultTime = (row: SessionRow) => new Date(row.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -46,6 +50,7 @@ export function HistoryList(props: HistoryListProps) {
   const [menu, setMenu] = createSignal<string>();
   const [renaming, setRenaming] = createSignal<string>();
   const [draft, setDraft] = createSignal("");
+  const [confirming, setConfirming] = createSignal<string>();
   const visible = createMemo(() => {
     const query = props.query.trim().toLowerCase();
     return props.rows.filter(
@@ -55,8 +60,9 @@ export function HistoryList(props: HistoryListProps) {
     );
   });
   const groups = createMemo(() => groupSessions(visible(), props.now ?? Date.now()));
-  const hasMenu = () => Boolean(props.onRename || props.onCopyId);
+  const hasMenu = () => Boolean(props.onRename || props.onCopyId || props.onDelete || props.onClose);
   useEscape(() => setMenu(undefined), () => menu() !== undefined);
+  useEscape(() => setConfirming(undefined), () => confirming() !== undefined && menu() === undefined);
   const commitRename = (id: string) => {
     const title = draft().trim();
     setRenaming(undefined);
@@ -133,7 +139,14 @@ export function HistoryList(props: HistoryListProps) {
                         }}
                       />
                     </Show>
-                    <Show when={hasMenu() && renaming() !== row.id}>
+                    <Show when={confirming() === row.id}>
+                      <div class="sb-confirm" role="alertdialog" aria-label={`Delete ${row.title}`}>
+                        <span class="sb-confirm-text">Delete this chat? It cannot be undone.</span>
+                        <button class="sb-btn" onClick={() => setConfirming(undefined)}>Cancel</button>
+                        <button class="sb-btn danger" ref={(el) => queueMicrotask(() => el.focus())} onClick={() => { setConfirming(undefined); props.onDelete?.(row.id); }}>Delete</button>
+                      </div>
+                    </Show>
+                    <Show when={hasMenu() && renaming() !== row.id && confirming() !== row.id}>
                       <button class="sb-icon-btn row-menu" aria-label={`Actions for ${row.title}`} aria-haspopup="menu" aria-expanded={menu() === row.id} onClick={() => setMenu(menu() === row.id ? undefined : row.id)}>
                         <Icon name="3DotsMore" size={13} />
                       </button>
@@ -143,6 +156,16 @@ export function HistoryList(props: HistoryListProps) {
                         <Show when={props.onRename}>
                           <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); setDraft(row.title); setRenaming(row.id); }}>
                             <Icon name="Edit2" size={12} /><span>Rename</span>
+                          </button>
+                        </Show>
+                        <Show when={props.onClose && row.current}>
+                          <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); props.onClose?.(row.id); }}>
+                            <Icon name="CloseCircle" size={12} /><span>Close session</span>
+                          </button>
+                        </Show>
+                        <Show when={props.onDelete}>
+                          <button class="sb-menu-item" role="menuitem" onClick={() => { setMenu(undefined); setConfirming(row.id); }}>
+                            <Icon name="Trash" size={12} /><span>Delete</span>
                           </button>
                         </Show>
                         <Show when={props.onCopyId}>

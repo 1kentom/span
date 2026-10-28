@@ -68,6 +68,8 @@ export type StepView = {
   delta?: { add: number; del: number };
   detail?: StepDetail;
   children?: ChildStep[];
+  /** Opens the file this step touched, at its reported line. Set only when the agent reported a location. */
+  onOpen?: () => void;
 };
 
 export type ChangedFile = {

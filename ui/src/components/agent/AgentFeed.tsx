@@ -13,10 +13,14 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
   const a = props.agent;
   const item = props.item;
   const message = () => item() as Extract<FeedItem, { text: string }>;
+  const openFile = (path: string) => void a.openInEditor(path);
   return (
     <Switch>
       <Match when={item().kind === "user"}>
-        <div class="agent-message user">
+        <div class="agent-message user" classList={{ steered: Boolean((item() as Extract<FeedItem, { kind: "user" }>).steered) }}>
+          <Show when={(item() as Extract<FeedItem, { kind: "user" }>).steered}>
+            <div class="agent-steered-label">Steered</div>
+          </Show>
           {message().text}
           <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.setViewing(attachment.id)} />
         </div>
@@ -30,7 +34,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
             text={message().text}
             workspaceRoot={a.props.workspacePath || ""}
             streaming={a.running() && props.last()}
-            onOpenFile={a.props.onOpenFile}
+            onOpenFile={openFile}
             onOpenExternal={a.props.onOpenExternal}
           />
         </div>
@@ -64,7 +68,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
                 <Show when={compaction().summary}>
                   <details class="agent-summary">
                     <summary>Summary the agent kept</summary>
-                    <AgentMarkdown text={compaction().summary} workspaceRoot={a.props.workspacePath || ""} onOpenFile={a.props.onOpenFile} onOpenExternal={a.props.onOpenExternal} />
+                    <AgentMarkdown text={compaction().summary} workspaceRoot={a.props.workspacePath || ""} onOpenFile={openFile} onOpenExternal={a.props.onOpenExternal} />
                   </details>
                 </Show>
               </Match>
@@ -89,7 +93,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
 
 function Work(props: { agent: AgentController; block: () => Extract<Block, { type: "work" }> }) {
   const a = props.agent;
-  const steps = createMemo(() => props.block().tools.map((tool) => toStep(tool, workChildren(a.feed(), tool), a.props.workspacePath, a.props.onOpenFile)));
+  const steps = createMemo(() => props.block().tools.map((tool) => toStep(tool, workChildren(a.feed(), tool), a.props.workspacePath, (path, line) => void a.openInEditor(path, line))));
   const summary = createMemo(() => workSummary(steps()));
   return <WorkGroup headline={summary().headline} counts={summary().counts} steps={steps()} />;
 }
@@ -102,7 +106,8 @@ function Changes(props: { agent: AgentController; block: () => Extract<Block, { 
   const act = (ids: string[], accept: boolean) => {
     if (!a.pendingAction()) void a.reviewMany(ids, accept);
   };
-  const openPath = (path: string) => (a.props.onReviewInEditor ?? a.props.onOpenFile)?.(path);
+  // Proposal hunks carry character offsets, not lines, so a changes-card row opens the file without a line.
+  const openPath = (path: string) => void a.openInEditor(path, undefined, a.props.onReviewInEditor ?? a.props.onOpenFile);
   const note = () =>
     files().some((file) => file.state === "accepted")
       ? "Accepted edits are in the editor buffer. Use Save to write them to disk."

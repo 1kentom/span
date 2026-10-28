@@ -19,13 +19,17 @@ const mocks = vi.hoisted(() => {
       agentConnect: vi.fn(),
       agentAuthenticate: vi.fn(),
       agentPrompt: vi.fn(),
-      agentCancel: vi.fn(async () => undefined),
+      agentCancel: vi.fn(async (): Promise<void> => undefined),
       agentDisconnect: vi.fn(async () => undefined),
       agentElicitation: vi.fn(async () => undefined),
-      agentListSessions: vi.fn(async () => []),
+      agentListSessions: vi.fn(async (): Promise<{ sessionId: string; title: string | null; updatedAt: string | null }[]> => []),
       openExternal: vi.fn(async () => undefined),
       openBuffer: vi.fn(),
       saveAttachment: vi.fn(),
+      agentNewSession: vi.fn(async () => "s-new"),
+      agentResumeSession: vi.fn(async (id: string) => id),
+      agentDeleteSession: vi.fn(async () => undefined),
+      agentCloseSession: vi.fn(async () => undefined),
     },
   };
 });
@@ -203,5 +207,197 @@ describe("agent controller", () => {
     expect(a.form()?.error).toBe("count must be a number.");
     await a.answerForm({ text: "4" });
     expect(mocks.api.agentElicitation).toHaveBeenCalledWith("e2", "accept", JSON.stringify({ env: "prod", count: 4 }));
+  });
+});
+
+const tool = (toolCallId: string, locations: unknown): AgentEvent => ({ kind: "tool", sessionId: "s1", toolCallId, title: "Read", status: "in_progress", toolKind: "read", parentToolCallId: null, contentJson: JSON.stringify({ locations }) });
+const deferred = <T = void,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => (resolve = done));
+  return { promise, resolve };
+};
+
+describe("steer", () => {
+  it("sends the steer message only after the cancel resolved and the turn ended, labelled Steered", async () => {
+    mocks.api.agentPrompt.mockImplementation(() => new Promise(() => undefined));
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    const cancel = deferred();
+    mocks.api.agentCancel.mockImplementationOnce(() => cancel.promise);
+    a.setPrompt("change course");
+    await a.steer();
+    expect(mocks.api.agentCancel).toHaveBeenCalledTimes(1);
+    expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(1);
+    // The turn ends before the cancel call resolved: still no prompt.
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "cancelled" });
+    await tick();
+    expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(1);
+    cancel.resolve();
+    await tick();
+    expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(2);
+    expect(mocks.api.agentPrompt).toHaveBeenLastCalledWith("change course", []);
+    expect(mocks.api.agentCancel.mock.invocationCallOrder[0]).toBeLessThan(mocks.api.agentPrompt.mock.invocationCallOrder[1]);
+    expect(a.feed().filter((item) => item.kind === "user").at(-1)).toMatchObject({ text: "change course", steered: true });
+    expect(a.feed().filter((item) => item.kind === "user")[0]).not.toHaveProperty("steered");
+  });
+
+  it("also waits for the turn to end when the cancel resolves first", async () => {
+    mocks.api.agentPrompt.mockImplementation(() => new Promise(() => undefined));
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("next");
+    await a.steer();
+    await tick();
+    expect(mocks.api.agentCancel).toHaveBeenCalled();
+    expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(1);
+    mocks.emit({ kind: "complete", sessionId: "s1", stopReason: "cancelled" });
+    await tick();
+    expect(mocks.api.agentPrompt).toHaveBeenLastCalledWith("next", []);
+  });
+
+  it("queues the message instead when the cancel fails, and Tab style send queues without cancelling", async () => {
+    mocks.api.agentPrompt.mockImplementation(() => new Promise(() => undefined));
+    const a = await connected();
+    a.setPrompt("first");
+    await a.send();
+    a.setPrompt("later");
+    await a.send();
+    expect(mocks.api.agentCancel).not.toHaveBeenCalled();
+    expect(a.queue().map((entry) => entry.text)).toEqual(["later"]);
+    mocks.api.agentCancel.mockRejectedValueOnce(new Error("no turn"));
+    a.setPrompt("now");
+    await a.steer();
+    await tick();
+    expect(a.queue().map((entry) => entry.text)).toEqual(["now", "later"]);
+    expect(a.state().failure?.message).toContain("no turn");
+  });
+});
+
+describe("history delete and close", () => {
+  const rows = [{ sessionId: "s1", title: "Current", updatedAt: null }, { sessionId: "s2", title: "Old", updatedAt: null }];
+  async function withHistory(patch: Partial<AgentFeatures> = {}) {
+    mocks.api.agentListSessions.mockResolvedValue(rows);
+    const a = await connected(features({ canListSessions: true, canDeleteSessions: true, canCloseSessions: true, ...patch }));
+    mocks.emit({ kind: "capabilities", canLoadSession: true, canListSessions: true });
+    await a.loadSessions();
+    return a;
+  }
+
+  it("deletes another session and refreshes the list without touching the active one", async () => {
+    const a = await withHistory();
+    mocks.api.agentListSessions.mockClear();
+    mocks.api.agentListSessions.mockResolvedValue([rows[0]]);
+    await a.deleteChat("s2");
+    await tick();
+    expect(mocks.api.agentDeleteSession).toHaveBeenCalledWith("s2");
+    expect(mocks.api.agentNewSession).not.toHaveBeenCalled();
+    expect(a.state().sessionId).toBe("s1");
+    expect(mocks.api.agentListSessions).toHaveBeenCalled();
+    expect(a.sessions().map((row) => row.sessionId)).toEqual(["s1"]);
+  });
+
+  it("starts a new session at once after deleting the active one", async () => {
+    const a = await withHistory();
+    mocks.api.agentNewSession.mockResolvedValueOnce("s-fresh");
+    mocks.api.agentListSessions.mockResolvedValue([{ sessionId: "s-fresh", title: "New", updatedAt: null }, rows[1]]);
+    await a.deleteChat("s1");
+    await tick();
+    expect(mocks.api.agentDeleteSession).toHaveBeenCalledWith("s1");
+    expect(mocks.api.agentNewSession).toHaveBeenCalledTimes(1);
+    expect(a.state().sessionId).toBe("s-fresh");
+    expect(a.connected()).toBe(true);
+    expect(a.view()).toBe("session");
+    expect(a.sessions().some((row) => row.sessionId === "s1")).toBe(false);
+  });
+
+  it("keeps the history view when the active session is deleted from it", async () => {
+    const a = await withHistory();
+    a.setView("history");
+    await a.deleteChat("s1");
+    await tick();
+    expect(a.view()).toBe("history");
+    expect(a.state().sessionId).toBe("s-new");
+  });
+
+  it("closes only the active session and then starts a new one", async () => {
+    const a = await withHistory();
+    await a.closeChat("s2");
+    expect(mocks.api.agentCloseSession).not.toHaveBeenCalled();
+    await a.closeChat("s1");
+    await tick();
+    expect(mocks.api.agentCloseSession).toHaveBeenCalledWith("s1");
+    expect(mocks.api.agentNewSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing when the agent did not advertise the capability, and reports a failed delete", async () => {
+    const a = await withHistory({ canDeleteSessions: false, canCloseSessions: false });
+    await a.deleteChat("s2");
+    await a.closeChat("s1");
+    expect(mocks.api.agentDeleteSession).not.toHaveBeenCalled();
+    expect(mocks.api.agentCloseSession).not.toHaveBeenCalled();
+    const b = await withHistory();
+    mocks.api.agentDeleteSession.mockRejectedValueOnce(new Error("denied"));
+    await b.deleteChat("s2");
+    expect(b.sessionsError()).toContain("denied");
+    expect(b.sessions().some((row) => row.sessionId === "s2")).toBe(true);
+  });
+});
+
+describe("follow and the editor toast", () => {
+  it("opens only locations inside the workspace root, at their line, and only while following", async () => {
+    const onOpenFile = vi.fn();
+    const a = await connected(features(), { onOpenFile });
+    mocks.emit(tool("t0", [{ path: "/w/off.ts", line: 1 }]));
+    expect(onOpenFile).not.toHaveBeenCalled();
+    a.toggleFollow();
+    expect(a.following()).toBe(true);
+    mocks.emit(tool("t1", [{ path: "/etc/passwd", line: 1 }]));
+    mocks.emit(tool("t2", [{ path: "/w/../secret.txt" }]));
+    mocks.emit(tool("t3", [{ path: "/wx/a.ts" }]));
+    mocks.emit(tool("t4", [{ path: "../outside.ts" }]));
+    mocks.emit(tool("t5", [{ path: "file:///w/a.ts" }]));
+    expect(onOpenFile).not.toHaveBeenCalled();
+    expect(a.toast()).toBeUndefined();
+    mocks.emit(tool("t6", [{ path: "/etc/passwd" }, { path: "/w/src/a.ts", line: 12 }]));
+    expect(onOpenFile).toHaveBeenCalledTimes(1);
+    expect(onOpenFile).toHaveBeenCalledWith("src/a.ts", 12);
+    expect(a.toast()).toBe("a.ts");
+    mocks.emit(tool("t6", [{ path: "/w/src/a.ts", line: 12 }]));
+    expect(onOpenFile).toHaveBeenCalledTimes(1);
+    mocks.emit(tool("t7", [{ path: "b.ts" }]));
+    expect(onOpenFile).toHaveBeenLastCalledWith("b.ts", undefined);
+    a.toggleFollow();
+    mocks.emit(tool("t8", [{ path: "/w/c.ts" }]));
+    expect(onOpenFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("raises the toast for chip and tool-target opens, and not for refused paths", async () => {
+    const onOpenFile = vi.fn();
+    const onReviewInEditor = vi.fn();
+    const a = await connected(features(), { onOpenFile, onReviewInEditor });
+    expect(a.openInEditor("/outside/x.ts")).toBe(false);
+    expect(a.toast()).toBeUndefined();
+    expect(a.openInEditor("assets/shot.png")).toBe(true);
+    expect(onOpenFile).toHaveBeenCalledWith("assets/shot.png", undefined);
+    expect(a.toast()).toBe("shot.png");
+    a.clearToast();
+    expect(a.toast()).toBeUndefined();
+    expect(a.openInEditor("/w/src/main.rs", 7, onReviewInEditor)).toBe(true);
+    expect(onReviewInEditor).toHaveBeenCalledWith("src/main.rs", 7);
+    expect(a.toast()).toBe("main.rs");
+  });
+});
+
+describe("loading attachments", () => {
+  it("shows loading placeholders while bytes are read and removes them before the real item lands", async () => {
+    const a = await connected();
+    const seen: string[][] = [];
+    const run = a.intake.addFiles([file("notes.md", "text/markdown", "# hi")], "picked");
+    seen.push(a.attachments().map((item) => item.status));
+    await run;
+    seen.push(a.attachments().map((item) => item.status));
+    expect(seen).toEqual([["loading"], ["ready"]]);
   });
 });

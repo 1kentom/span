@@ -358,3 +358,12 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-toast-icon { color: var(--sb-accent-fg); }
 .sb-toast-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 @media (prefers-reduced-motion: no-preference) { .sb-toast { animation: sb-pop 0.18s ease-out both; } }
+
+/* Wiring additions: step target links, inline delete confirm, steered label, composer hints */
+.sb-step-target.sb-link { text-align: left; color: var(--sb-dim); }
+.sb-step-target.sb-link:hover { color: var(--sb-accent-fg); }
+.sb-confirm { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; flex: 1 1 100%; padding: 6px 8px; border: 1px solid var(--sb-control-border); border-radius: 6px; background: var(--sb-control); }
+.sb-confirm-text { flex: 1 1 140px; font-size: 12px; color: var(--sb-fg); }
+.agent-steered-label { margin-bottom: 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--sb-accent-fg); }
+.agent-footer .sb-hints { padding: 3px 2px 0; }
+.sb-session:has(.sb-confirm) { flex-wrap: wrap; }

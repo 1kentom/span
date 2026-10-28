@@ -1,18 +1,20 @@
 import { Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { api, isDesktop } from "../lib/client";
-import { createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
+import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
 import { isNearBottom, relativeTime } from "../lib/agent-feed";
 import { capabilityChips, classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
 import { Icon } from "./Icon";
-import { AttachmentViewer, attachmentBlockReason } from "./attachments";
+import { AttachmentViewer, DropOverlay, attachmentBlockReason } from "./attachments";
 import { AgentComposer } from "./agent/AgentComposer";
 import { AgentFeed } from "./agent/AgentFeed";
 import { ErrorCard, OfflineBar } from "./agent/Banners";
 import { ConnectingSteps, ReadyCard } from "./agent/ConnectFlow";
 import { ConnectScreen } from "./agent/ConnectScreen";
+import { EditorToast } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
+import { FollowPill } from "./agent/FollowPill";
 import { HistoryList } from "./agent/HistoryList";
 import { SignIn } from "./agent/SignIn";
 import type { ActionView, HistoryScope, KeyHint } from "./agent/types";
@@ -139,7 +141,14 @@ export function AgentPanel(props: AgentPanelProps) {
   });
 
   return (
-    <section class="agent-panel" aria-label="AI Assistant">
+    <section
+      class="agent-panel"
+      aria-label="AI Assistant"
+      onDragEnter={a.intake.onDragEnter}
+      onDragOver={a.intake.onDragOver}
+      onDragLeave={a.intake.onDragLeave}
+      onDrop={a.intake.onDrop}
+    >
       <header class="agent-header">
         <Show when={hasAgent()} fallback={<span class="agent-logo" aria-hidden="true" />}>
           <BrandIcon id={brand().id} name={brand().name} size={15} />
@@ -153,6 +162,9 @@ export function AgentPanel(props: AgentPanelProps) {
           <button class="agent-icon-button" aria-label="Back to session" title="Back to session" onClick={() => a.setView("session")}>
             <Icon name="arrow-left4" size={14} />
           </button>
+        </Show>
+        <Show when={isDesktop && a.connected()}>
+          <FollowPill following={a.following()} onToggle={a.toggleFollow} />
         </Show>
         <Show when={a.connected() && a.state().canList && a.view() !== "history"}>
           <button class="agent-icon-button" aria-label="Earlier sessions" title="Earlier sessions" onClick={openHistory}>
@@ -232,7 +244,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 {a.sessionsError()}
               </p>
             </Show>
-            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} scope={scope()} onScope={setScope} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onCopyId={(id) => void api.writeClipboard(id)} />}>
+            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} scope={scope()} onScope={setScope} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
               <p class="sb-fine agent-pad" role="status">
                 Loading chats…
               </p>
@@ -362,13 +374,15 @@ export function AgentPanel(props: AgentPanelProps) {
             onSaveToWorkspace={a.saveAttachment}
             onCopyPath={(path) => api.writeClipboard(path)}
             onOpenInEditor={(attachment) => {
-              if (attachment.path) props.onOpenFile?.(attachment.path);
+              if (attachment.path) a.openInEditor(attachment.path);
               a.setViewing(undefined);
             }}
             loadImage={(path) => api.readImage(path)}
           />
         )}
       </Show>
+      <DropOverlay visible={a.intake.dragging()} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
+      <EditorToast name={a.toast()} onDismiss={a.clearToast} />
     </section>
   );
 }
