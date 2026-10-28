@@ -25,7 +25,7 @@ function fake(disk: Record<string, FileEntry[]>, active = "") {
     if (expanded().has(path)) setExpanded(c => { const n = new Set(c); n.delete(path); return n; });
     else { if (!directories[path]) await loadDirectory(path); setExpanded(c => new Set([...c, path])); }
   };
-  const workbench = { directories, expanded, loadDirectory, toggleDirectory, activePath: () => active, dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [] };
+  const workbench = { directories, expanded, loadDirectory, toggleDirectory, activePath: () => active, dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
   const root = document.createElement("div"); document.body.append(root);
   disposers.push(render(() => <Explorer workbench={workbench as never} view="Files" onNavigate={() => {}} />, root));
   return { root, expanded, listed, setDirectories, rows: () => Array.from(root.querySelectorAll<HTMLButtonElement>('[role="treeitem"]')) };
