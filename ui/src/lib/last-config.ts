@@ -1,5 +1,4 @@
 import type { ConfigOption } from "../bindings";
-import { isDangerousChoice } from "./danger-choice";
 
 // UI-only memory of the config values the user picked per agent (model, effort, mode...), re-applied to its new sessions.
 export type SavedConfig = Record<string, string>;
@@ -30,7 +29,7 @@ export function writeLastConfig(agentId: string, configId: string, value: string
 
 /**
  * The [configId, value] pairs to apply to a new session: each saved value whose option and choice still exist and
- * differ from the current one. Modes that skip approval are never restored.
+ * differ from the current one.
  */
 export function chooseRestores(options: ConfigOption[], saved: SavedConfig): [string, string][] {
   const restores: [string, string][] = [];
@@ -38,7 +37,7 @@ export function chooseRestores(options: ConfigOption[], saved: SavedConfig): [st
     const value = saved[option.id];
     if (typeof value !== "string" || value === option.currentValue) continue;
     const choice = option.groups.flatMap((group) => group.choices).find((candidate) => candidate.value === value);
-    if (!choice || isDangerousChoice(choice.value, choice.name)) continue;
+    if (!choice) continue;
     restores.push([option.id, value]);
   }
   return restores;

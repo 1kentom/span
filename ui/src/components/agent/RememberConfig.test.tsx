@@ -129,7 +129,7 @@ describe("remembered config", () => {
     expect(a.state().status).toBe("ready");
   });
 
-  it("never restores a mode that skips approval", async () => {
+  it("restores a remembered mode that skips approval", async () => {
     writeLastConfig("codex", "mode", "agent-full-access");
     mocks.api.agentConnect.mockImplementation(async () => {
       const mode = { id: "mode", name: "Mode", description: null, category: "mode", currentValue: "default", groups: choices(["default", "agent-full-access"]) };
@@ -137,7 +137,7 @@ describe("remembered config", () => {
       return "s1";
     });
     await connected(start());
-    expect(mocks.api.agentSetConfig).not.toHaveBeenCalled();
+    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("mode", "agent-full-access");
   });
 
   it("stores nothing for an agent without a known id", async () => {

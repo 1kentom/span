@@ -18,11 +18,11 @@ describe("chooseRestores", () => {
   it("skips a choice that vanished", () => {
     expect(chooseRestores([option("model", "gpt", ["gpt"])], { model: "luna" })).toEqual([]);
   });
-  it("skips modes that skip approval", () => {
+  it("restores a remembered mode that skips approval", () => {
     const mode = option("mode", "default", ["default", "agent-full-access", "bypassPermissions", "yolo"]);
-    expect(chooseRestores([mode], { mode: "agent-full-access" })).toEqual([]);
-    expect(chooseRestores([mode], { mode: "bypassPermissions" })).toEqual([]);
-    expect(chooseRestores([mode], { mode: "yolo" })).toEqual([]);
+    expect(chooseRestores([mode], { mode: "agent-full-access" })).toEqual([["mode", "agent-full-access"]]);
+    expect(chooseRestores([mode], { mode: "bypassPermissions" })).toEqual([["mode", "bypassPermissions"]]);
+    expect(chooseRestores([mode], { mode: "yolo" })).toEqual([["mode", "yolo"]]);
   });
   it("skips options the session no longer has", () => {
     expect(chooseRestores([option("model", "gpt", ["gpt"])], { effort: "high" })).toEqual([]);
