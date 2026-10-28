@@ -593,6 +593,7 @@ button.sb-step-row:hover { background: var(--sb-hover); }
   .fx .fx-label-out { display: none; }
   .fx .fx-sparkle { animation: none; opacity: 0.7; transform: none; }
   .fx-dragging .fx-knob { transform: none; }
+}
 
 /* Queue polish: design header, grip, drag reorder, inline clear confirm, steer and sent-now tags */
 .sb-queue-head .sb-queue-title { flex: none; color: var(--sb-fg); }
