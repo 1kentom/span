@@ -272,7 +272,7 @@ export function EffortSlider(props: EffortSliderProps) {
       <Show when={props.fast}>
         {(fast) => (
           <button data-fx-part="fast" class="fx-icon fx-fast" classList={{ on: fast().on }} aria-label="Fast mode" aria-pressed={fast().on} title="Fast mode" disabled={props.disabled} onClick={() => fast().onToggle()}>
-            <Icon name="flash-linear" size={14} />
+            <Icon name="FlashLinear" size={14} />
           </button>
         )}
       </Show>
