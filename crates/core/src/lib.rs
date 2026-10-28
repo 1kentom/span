@@ -3,6 +3,7 @@
 mod attachment;
 mod buffer;
 mod format;
+mod format_native;
 mod fs_ops;
 mod images;
 mod proposal_diff;
@@ -20,7 +21,8 @@ mod workspace;
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
 pub use format::{
-    native_program_path, resolve_program, run_formatter, FormatRequest, FormatResult,
+    native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
+    FormatResult,
 };
 pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
@@ -33,7 +35,8 @@ pub use session_meta::{
     SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS, SESSION_META_SCHEMA_VERSION,
 };
 pub use settings::{
-    AgentSettings, AutoSaveMode, DelegationSettings, Settings, SettingsScope, Theme, UpdateSettings,
+    AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, Settings,
+    SettingsScope, Theme, UpdateSettings, LANGUAGE_SERVER_IDS,
 };
 pub use tools::{list_tools, ToolInfo};
 pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};

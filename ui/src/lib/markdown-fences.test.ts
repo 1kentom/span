@@ -9,7 +9,7 @@ describe("Markdown fence languages and terminal eligibility", () => {
       expect(fence.detected, hint).toBe(false);
       if (language !== "shell") expect(fence.action, hint).toBeNull();
     }
-    expect(Object.keys(markdownFenceLanguages)).toEqual(["typescript", "javascript", "json", "jsonc", "markdown", "rust", "python", "dotenv", "toml", "yaml", "html", "css", "shell", "text"]);
+    expect(Object.keys(markdownFenceLanguages)).toEqual(["typescript", "javascript", "json", "jsonc", "markdown", "rust", "python", "java", "dotenv", "toml", "yaml", "html", "css", "shell", "text"]);
     expect(describeMarkdownFence("unknown", "npm run dev")).toMatchObject({ language: "text", label: "Plain text", action: null });
     expect(describeMarkdownFence("text", "$ npm run dev")).toMatchObject({ language: "text", action: null, detected: false });
   });

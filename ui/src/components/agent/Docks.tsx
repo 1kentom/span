@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { DiffView } from "./WorkGroup";
+import { KeyGlyph } from "./KeyGlyph";
 import type { Brand, PermissionChoice, PermissionDetails, QuestionAnswer, QuestionOption } from "./types";
 import { dockKey } from "./util";
 import { DOCK_TAB_HINT } from "../../lib/agent-dock-focus";
@@ -360,7 +361,7 @@ export function UrlDock(props: UrlDockProps) {
       </Show>
       <TabHint show={!focus.focused()} />
       <div class="sb-actions">
-        <button class="sb-btn primary" disabled={Boolean(view().rejection)} onClick={props.onOpen}>{props.waiting ? URL_COPY.openAgain : URL_COPY.openBrowser}<kbd class="sb-hotkey" aria-hidden="true">{"\u21b5"}</kbd></button>
+        <button class="sb-btn primary" disabled={Boolean(view().rejection)} onClick={props.onOpen}>{props.waiting ? URL_COPY.openAgain : URL_COPY.openBrowser}<kbd class="sb-hotkey" aria-hidden="true"><KeyGlyph value="\u21b5" size={11} /></kbd></button>
         <button class="sb-btn" onClick={props.onCancel}>{props.waiting ? URL_COPY.dismiss : URL_COPY.cancel}</button>
       </div>
     </section>

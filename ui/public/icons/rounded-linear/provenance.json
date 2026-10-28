@@ -41,12 +41,6 @@
       "assetSha256": "a772917b0578a9c797019ecb1515dd733065e76d4e5ac465082ef88b9fe9a81f"
     },
     {
-      "asset": "path.svg",
-      "source": "network/iconsax-folder-route-909068edaac8-.svg",
-      "sourceSha256": "4a667e282fc92567e4f9b79df975c4b2060e51ab43ae13326710cb090e460457",
-      "assetSha256": "0e75801d2a6b3606e54fea08b24688af0dabf55aa704c7d0f5f8fb094503e402"
-    },
-    {
       "asset": "file.svg",
       "source": "files/iconsax-text-file-f1347af49678-.svg",
       "sourceSha256": "020b38a4ed683ac6fb38303f22eb9c1edeca500fd9ac6f39b56bec91fe89bbe1",
@@ -154,6 +148,13 @@
       "source": "web/iconsax-receive-cloud-3c7f35ac2dd6-.svg",
       "sourceSha256": "ba3ddce7890541e4ad990ec7e66149152e64691e9eac806b73019f83ed5fc636",
       "assetSha256": "ba3ddce7890541e4ad990ec7e66149152e64691e9eac806b73019f83ed5fc636"
+    }
+  ],
+  "excludedArtwork": [
+    {
+      "source": "network/iconsax-folder-route-909068edaac8-.svg",
+      "sourceSha256": "4a667e282fc92567e4f9b79df975c4b2060e51ab43ae13326710cb090e460457",
+      "reason": "Folder-with-connector artwork is excluded at the user request. Path-copy commands use the existing copy.svg artwork."
     }
   ]
 }

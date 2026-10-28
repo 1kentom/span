@@ -1,4 +1,5 @@
 import { For, Show } from "solid-js";
+import { KeyGlyph } from "./KeyGlyph";
 
 export type ComposerHintMode = "idle" | "running" | "question" | "permission";
 export interface ComposerHint { keys: string[]; label: string }
@@ -20,7 +21,7 @@ export function ComposerHints(props: ComposerHintsProps) {
       <ul class="sb-hints" data-mode={props.mode} aria-label="Keyboard shortcuts">
         <For each={rows()}>{(hint) => (
           <li class="sb-hint">
-            <Show when={hint.keys.length}><span class="sb-hint-keys"><For each={hint.keys}>{(k) => <kbd class="sb-hint-key">{k}</kbd>}</For></span>{" "}</Show>
+            <Show when={hint.keys.length}><span class="sb-hint-keys"><For each={hint.keys}>{(k) => <kbd class="sb-hint-key"><KeyGlyph value={k} size={11} /></kbd>}</For></span>{" "}</Show>
             <span>{hint.label}</span>
           </li>
         )}</For>

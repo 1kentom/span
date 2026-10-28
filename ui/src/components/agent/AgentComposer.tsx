@@ -610,7 +610,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         </div>
         <AttachmentNotices intake={a.intake} />
       </div>
-      <div class="agent-composer-hint">
+      <div class={a.running() ? "agent-composer-hint running" : "agent-composer-hint"}>
         <span class="sb-ellipsis">{isDesktop ? (a.connected() ? a.state().statusMessage : "Connect an ACP agent to begin") : "Browser preview · agent unavailable"}</span>
       </div>
       <Show when={a.connected()}>

@@ -2,7 +2,7 @@ import { resolveLanguageId, type LanguageId } from "../editor/languages";
 
 export const markdownFenceLanguages: Readonly<Record<LanguageId, string>> = {
   typescript: "TypeScript", javascript: "JavaScript", json: "JSON", jsonc: "JSON with comments",
-  markdown: "Markdown", rust: "Rust", python: "Python", dotenv: "Environment", toml: "TOML",
+  markdown: "Markdown", rust: "Rust", python: "Python", java: "Java", dotenv: "Environment", toml: "TOML",
   yaml: "YAML", html: "HTML", css: "CSS", shell: "Shell", text: "Plain text",
 };
 

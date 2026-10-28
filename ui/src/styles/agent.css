@@ -316,17 +316,18 @@
 .agent-footer > .sb-banner {
   margin: 0 0 6px;
 }
-.agent-footer > .sb-drawer {
-  margin: 0 6px;
+/* Everything stacked on the prompt box has the prompt box's width and top radius (20px, see .agent-composer). */
+.agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) {
+  margin: 0;
+  border-radius: 20px 20px 0 0;
 }
 .agent-footer > :is(.sb-dock, .sb-activity) {
-  margin: 0 6px;
   border: 1px solid var(--sb-accent-border);
   border-bottom: 0;
 }
 .agent-footer > .sb-activity {
+  padding-inline: 16px;
   border-color: var(--sb-border);
-  border-radius: 8px 8px 0 0;
   background: var(--sb-raised);
 }
 .agent-footer > :is(.sb-drawer, .sb-activity) + :is(.sb-drawer, .sb-activity, .sb-dock) {
@@ -533,14 +534,26 @@
   background: var(--sb-accent-surface);
   color: var(--sb-accent-fg);
 }
+/* Status line under the prompt box: a state dot, then the text, then the key hints on the next line. */
 .agent-composer-hint {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 5px 2px 0;
-  color: var(--sb-faint);
-  font-size: 10px;
+  padding: 8px 4px 0;
+  color: var(--sb-dim);
+  font-size: 11px;
+}
+.agent-composer-hint::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sb-success);
+}
+.agent-composer-hint.running::before {
+  background: var(--sb-accent);
 }
 .agent-panel .sb-ring {
   flex: none;

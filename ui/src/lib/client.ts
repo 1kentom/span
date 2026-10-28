@@ -2,10 +2,12 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
+import type { LspPort } from './lsp-client';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
+import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
 import type { PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -157,8 +159,25 @@ export const api = {
   async listFiles(): Promise<FileEntry[]> {
     return isDesktop ? commands.listFiles() : Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
   },
+  async fileIndexStatus(): Promise<FileIndexStatus | null> {
+    if (isDesktop) return commands.fileIndexStatus();
+    return { workspaceRoot: previewWorkspace.root, generation: 1, status: 'ready', scannedEntries: Object.keys(fixture).length, indexedFiles: Object.keys(fixture).length, errorCount: 0, lastError: null, watcherReady: false, watcherError: null };
+  },
+  async queryFile(query: string, limit = 100): Promise<FileIndexQueryResponse> {
+    if (isDesktop) return commands.queryFile(query, Math.max(1, Math.min(100, limit)));
+    const files = Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
+    return { workspaceRoot: previewWorkspace.root, generation: 1, requestId: 0, results: fileResults(files, query).slice(0, limit).map(file => ({ path: file.path, score: 0 })) };
+  },
   async openBuffer(path: string): Promise<BufferSnapshot> {
     return isDesktop ? commands.openBuffer(path) : previewBuffer(path);
+  },
+  /** Reads a file for a preview. Opens no buffer and never starts a language server. */
+  async peekBuffer(path: string): Promise<BufferSnapshot> {
+    return isDesktop ? commands.peekBuffer(path) : previewBuffer(path);
+  },
+  /** The last editor showing `path` closed: language servers may drop the document. */
+  async releaseBuffer(path: string): Promise<void> {
+    if (isDesktop) await commands.bufferReleased(path);
   },
   async editBuffer(path: string, expectedRevision: number, changes: TextEdit[]): Promise<BufferRevision> {
     if (isDesktop) return commands.editBufferDelta(path, expectedRevision, changes);
@@ -305,9 +324,12 @@ export const api = {
     if (isDesktop) await commands.saveSession(session);
     else previewSession = structuredClone(session);
   },
-  async formatBuffer(path: string, expectedRevision: number): Promise<BufferSnapshot> {
+  async formatBuffer(path: string, expectedRevision: number, requestId: number): Promise<BufferSnapshot> {
     if (!isDesktop) nativeRequired('Running document formatters');
-    return commands.formatBuffer(path, expectedRevision);
+    return commands.formatBuffer(path, expectedRevision, requestId);
+  },
+  async cancelFormatBuffer(path: string, requestId: number): Promise<void> {
+    if (isDesktop) await commands.cancelFormatBuffer(path, requestId);
   },
   async openExternal(url: string): Promise<void> {
     if (isDesktop) { await commands.openExternal(url); return; }
@@ -512,6 +534,25 @@ export const api = {
     agentListeners.add(listener);
     return () => { agentListeners.delete(listener); };
   },
+};
+
+const lspUnavailable = (): never => { throw { kind: 'unsupported', message: 'Language servers need the span desktop app.' }; };
+const noListener = async (): Promise<() => void> => () => undefined;
+
+/** Language server commands and events. Browser preview has none, so requests are unsupported and listeners are inert. */
+export const lspPort: LspPort = {
+  completion: (path, position, trigger, requestId) => isDesktop ? commands.lspCompletion(path, position, trigger, requestId) : lspUnavailable(),
+  hover: (path, position, requestId) => isDesktop ? commands.lspHover(path, position, requestId) : lspUnavailable(),
+  definition: (path, position, requestId) => isDesktop ? commands.lspDefinition(path, position, requestId) : lspUnavailable(),
+  format: (path, range, requestId) => isDesktop ? commands.lspFormat(path, range, requestId) : lspUnavailable(),
+  cancel: requestId => isDesktop ? commands.lspCancel(requestId) : Promise.resolve(null),
+  install: server => isDesktop ? commands.lspInstall(server) : lspUnavailable(),
+  restart: server => isDesktop ? commands.lspRestart(server) : lspUnavailable(),
+  status: () => isDesktop ? commands.lspStatus() : Promise.resolve([]),
+  onDiagnostics: listener => isDesktop ? events.diagnosticsPublished.listen(event => listener(event.payload)) : noListener(),
+  onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : noListener(),
+  onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : noListener(),
+  onError: listener => isDesktop ? events.languageServerError.listen(event => listener(event.payload)) : noListener(),
 };
 
 /** Sign in with a method whose `input` is `apiKey` or `gateway`. The secret goes to the agent only; Span does not log or store it. Returns the session id. */

@@ -109,7 +109,7 @@ describe("composer keys", () => {
     const { a, host } = await composer();
     a.setPrompt("first");
     await a.send();
-    expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["↵ Steer", "Tab Queue", "Esc Stop"]);
+    expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["Enter Steer", "Tab Queue", "Esc Stop"]);
     const area = host.querySelector<HTMLTextAreaElement>("#agent-prompt")!;
     a.setPrompt("queued one");
     const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
@@ -130,7 +130,9 @@ describe("composer keys", () => {
 
   it("shows idle hints and no hint for permission when no option matches", async () => {
     const { host } = await composer();
-    expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["↵ Send", "⇧↵ Newline", "/ Commands", "⌥↵ Attach"]);
+    expect(host.querySelectorAll(".sb-hint-key .key-enter").length).toBe(3);
+    expect(host.textContent).not.toMatch(/[\u21b5\u21a9\u23ce]/);
+    expect([...host.querySelectorAll(".sb-hint")].map((hint) => text(hint))).toEqual(["Enter Send", "⇧Enter Newline", "/ Commands", "⌥Enter Attach"]);
     expect(composerHints({ dockFocused: true, permission: [] }).permission).toEqual([]);
   });
 });

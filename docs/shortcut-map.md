@@ -6,7 +6,7 @@ The requested **Cmd+E shows and focuses the Files sidebar** and **Cmd+P opens Go
 
 | Span action | Default | Comparison or explicit choice |
 | --- | --- | --- |
-| Show Files | Mod+E / Mod+Shift+E | Requested custom mapping plus the documented Explorer factory alias. Always shows Files and focuses its tree; repeating it does not hide the sidebar. |
+| Toggle Files / Show Files | Mod+E / Mod+Shift+E | Mod+E (`toggleFiles`) closes Files when it is open and otherwise switches to Files, shows the sidebar and focuses the tree. Mod+Shift+E (`focusFiles`) always shows and focuses Files; repeating it does not hide the sidebar. |
 | Open File | Unbound | Available from the native File menu, command palette and welcome screen. It does not own Cmd+E. |
 | Go to File | Mod+P; also Ctrl+P on macOS | Mod+P matches VS Code Quick Open; macOS Control alias was requested separately. Mod+E and standalone Mod+K are no longer default Go to aliases. |
 | Open Folder | Mod+O | Existing Span choice, distinct from VS Code's Open File default. |
@@ -20,9 +20,9 @@ The requested **Cmd+E shows and focuses the Files sidebar** and **Cmd+P opens Go
 | Zoom In / Zoom Out / Reset Zoom | Mod+= (also Mod+Shift+=) / Mod+- / Mod+0 | Whole-workbench zoom. Span accepts its documented reset variant rather than requiring the numpad reset key. |
 | Go to Line | Ctrl+G / Mod+Alt+G | Ctrl+G matches the documented VS Code default; Mod+Alt+G is Span's additional alias. |
 
-Explicit user/workspace overrides remain authoritative. If an existing explicit binding claims one of the new Show Files defaults, only that overlapping inherited key becomes unassigned; the saved binding is retained. Explicit conflicting assignments are still rejected. No shortcut migration rewrites user files.
+Explicit user/workspace overrides remain authoritative. If an existing explicit binding claims one of the new Toggle Files or Show Files defaults, only that overlapping inherited key becomes unassigned; the saved binding is retained. Explicit conflicting assignments are still rejected. No shortcut migration rewrites user files.
 
-Show Files selects Files even when Search, Git or History was selected, makes the sidebar visible and focuses an existing tree item (or the empty tree). It preserves the active editor draft. The `focusFiles` command is shared by the keybinding table, palette and native View menu. Go to remains separate under Navigation and the native Go menu.
+Show Files selects Files even when Search, Git or History was selected, makes the sidebar visible and focuses an existing tree item (or the empty tree). It preserves the active editor draft. Toggle Files (`toggleFiles`) hides Files only when it is already the visible sidebar view. The `focusFiles` and `toggleFiles` commands are shared by the keybinding table, palette and native View menu. Go to remains separate under Navigation and the native Go menu.
 
 Open File requests one file through the native dialog. Cancel does nothing. A file inside the current workspace opens there without replacing it; the workspace root is checked again after the picker returns. An outside file uses the existing typed startup-request queue and unsaved-project guard. Failures are visible, and concurrent picker requests are ignored while a selection is pending. Welcome Open a file, the command palette, keybinding table and native File menu use the distinct, initially unbound `openFile` command.
 

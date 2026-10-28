@@ -12,6 +12,7 @@ use tauri_specta::Event;
 #[serde(rename_all = "camelCase")]
 pub enum NativeAction {
     QuickOpen,
+    ToggleFiles,
     FocusFiles,
     OpenFile,
     CommandPalette,
@@ -41,6 +42,7 @@ pub struct NativeActionEvent {
 
 const ACTIONS: &[(&str, &str, NativeAction)] = &[
     ("quickOpen", "Go to File...", NativeAction::QuickOpen),
+    ("toggleFiles", "Toggle Files", NativeAction::ToggleFiles),
     ("focusFiles", "Show Files", NativeAction::FocusFiles),
     ("openFile", "Open File...", NativeAction::OpenFile),
     (
@@ -161,6 +163,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
         true,
         &[
             &items["commandPalette"],
+            &items["toggleFiles"],
             &items["focusFiles"],
             &items["splitEditor"],
             &items["toggleProject"],
@@ -200,9 +203,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
                 .map(|(_, _, action)| *action)
         };
         if let Some(action) = action {
-            if let Err(error) = (NativeActionEvent { action }).emit(app) {
-                eprintln!("Could not dispatch menu action: {error}");
-            }
+            crate::events::emit(app, &NativeActionEvent { action });
         }
     });
     Ok(())

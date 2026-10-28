@@ -60,10 +60,15 @@ impl CoreWorkspace {
                     .revision
                     .checked_add(1)
                     .ok_or_else(|| CoreError::InvalidEdit("Buffer revision exhausted".into()))?;
-                let new_path = Path::new(&destination_relative)
-                    .join(suffix)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                // `join("")` would append a trailing separator to a renamed file.
+                let new_path = if suffix.as_os_str().is_empty() {
+                    destination_relative.clone()
+                } else {
+                    Path::new(&destination_relative)
+                        .join(suffix)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                };
                 if self.buffers.contains_key(&new_path) {
                     return Err(CoreError::InvalidEdit(format!(
                         "A buffer is already open at {new_path}"

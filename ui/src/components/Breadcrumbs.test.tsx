@@ -29,4 +29,24 @@ describe("path breadcrumbs", () => {
     folder.dispatchEvent(new KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true, cancelable: true }));
     expect(context.mock.calls[1][1]).toBe("src"); expect(context.mock.calls[1][2]).toBe(true);
   });
+  it("shows decorative Material icons for Java, SVG and Docker folder entries", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    const entries = [
+      { path: "src/App.java", name: "App.java", isDir: false },
+      { path: "src/Controller.java", name: "Controller.java", isDir: false },
+      { path: "src/logo.svg", name: "logo.svg", isDir: false },
+      { path: "src/docker", name: "docker", isDir: true },
+    ];
+    const open = vi.fn();
+    disposers.push(render(() => <Breadcrumbs path="src/App.java" listDirectory={async () => entries} onOpen={open} />, root));
+    root.querySelector<HTMLButtonElement>(".breadcrumb-part")!.click(); await settle();
+    const rows = [...root.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    expect(rows.map(row => row.textContent)).toEqual(["App.java", "Controller.java", "logo.svg", "docker/"]);
+    expect(rows.map(row => row.querySelector("img")?.getAttribute("src"))).toEqual(["/material-icons/java.svg", "/material-icons/java.svg", "/material-icons/svg.svg", "/material-icons/folder-docker.svg"]);
+    expect(rows.every(row => row.querySelector('.material-file-icon[aria-hidden="true"]'))).toBe(true);
+    expect(rows.every(row => [...row.querySelectorAll("img")].every(image => image.alt === "" && image.draggable === false))).toBe(true);
+    rows[1].focus(); rows[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(open).toHaveBeenCalledWith("src/Controller.java");
+  });
+
 });

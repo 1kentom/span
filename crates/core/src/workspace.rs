@@ -255,6 +255,24 @@ impl CoreWorkspace {
         self.snapshot(&relative)
     }
 
+    /// Reads the current text of a file without opening a buffer: an open buffer is
+    /// reported as it is (unsaved edits included), anything else is read from disk and
+    /// not retained. For previews, which must have no side effects.
+    pub fn peek_buffer(&self, path: &str) -> Result<BufferSnapshot> {
+        let resolved = self.resolve(path)?;
+        let relative = self.relative(&resolved)?;
+        if let Some(buffer) = self.buffers.get(&relative) {
+            return Ok(buffer.snapshot(&relative));
+        }
+        let exists = resolved.exists();
+        let text = if exists {
+            fs::read_to_string(&resolved).map_err(|e| io_error("Read file", &resolved, e))?
+        } else {
+            String::new()
+        };
+        Ok(Buffer::new(text, exists).snapshot(&relative))
+    }
+
     pub fn buffer_snapshot(&self, path: &str) -> Result<BufferSnapshot> {
         let relative = self.relative(&self.resolve(path)?)?;
         self.snapshot(&relative)
@@ -677,6 +695,12 @@ impl CoreWorkspace {
     ) -> Result<Settings> {
         // Validate the edited scope independently so a narrower override cannot hide invalid data.
         crate::settings::load_with_texts(text, "{}")?;
+        if scope == crate::SettingsScope::Workspace {
+            // Workspace files may not choose executables or trigger downloads. A key the
+            // file already holds is ignored on read, so it does not block other writes.
+            let previous = self.get_settings_jsonc_for_scope(scope)?;
+            crate::settings::reject_changed_user_only(&previous, text)?;
+        }
         let user = if scope == crate::SettingsScope::User {
             text.to_owned()
         } else {
@@ -708,7 +732,7 @@ impl CoreWorkspace {
         value_json: Option<&str>,
     ) -> Result<Settings> {
         let text = self.get_settings_jsonc_for_scope(scope)?;
-        let patched = crate::settings::patch(&text, key, value_json)?;
+        let patched = crate::settings::patch_in_scope(scope, &text, key, value_json)?;
         self.update_settings_jsonc_for_scope(scope, &patched)
     }
 
@@ -728,6 +752,8 @@ impl CoreWorkspace {
         let raw = crate::settings::parse(&text)?;
         let raw_allowed = crate::settings::without_user_only(raw.clone());
         for (key, value) in after.as_object().expect("settings object") {
+            // `without_user_only` also drops the languageServers user-only keys, so
+            // neither kind of user-only key is written into the workspace file.
             if before.get(key) != Some(value) || raw.get(key) != raw_allowed.get(key) {
                 text = crate::settings::patch(&text, key, Some(&value.to_string()))?;
             }

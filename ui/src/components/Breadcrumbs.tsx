@@ -47,6 +47,6 @@ export function Breadcrumbs(props: { path?: string; workspace?: Workspace | null
     ...loading() ? [{ id: "loading", label: "Loading folder…", disabled: true, onSelect: () => {} }] : [],
     ...error() ? [{ id: "error", label: "Could not read folder", disabled: true, onSelect: () => {} }] : [],
     ...!loading() && !error() && !entries().length ? [{ id: "empty", label: "Folder is empty", disabled: true, onSelect: () => {} }] : [],
-    ...entries().map(entry => ({ id: entry.path, label: entry.name + (entry.isDir ? "/" : ""), keepOpen: entry.isDir, onSelect: () => choose(entry) })),
+    ...entries().map(entry => ({ id: entry.path, label: entry.name + (entry.isDir ? "/" : ""), fileIcon: { path: entry.path, directory: entry.isDir }, keepOpen: entry.isDir, onSelect: () => choose(entry) })),
   ]} />}</Show></nav>;
 }
