@@ -958,8 +958,9 @@ async fn navigation_requests_return_typed_results() {
         .await
         .unwrap()
         .unwrap();
-    let changes = edit.changes.unwrap();
-    assert_eq!(changes[&uri][0].new_text, "renamed");
+    let (changed, edits) = edit.changes.unwrap().into_iter().next().unwrap();
+    assert_eq!(changed, uri);
+    assert_eq!(edits[0].new_text, "renamed");
 
     let src = m
         .class_file_contents(ID, r, "jdt://contents/Foo.class", None)
