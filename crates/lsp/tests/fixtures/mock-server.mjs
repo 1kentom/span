@@ -209,7 +209,7 @@ async function timeoutMode() {
   sendMessage({
     jsonrpc: '2.0',
     id: initMsg.id,
-    result: { capabilities: {} },
+    result: { capabilities: { completionProvider: {} } },
   });
 
   await readMessage(); // initialized
