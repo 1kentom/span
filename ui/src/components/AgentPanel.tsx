@@ -6,7 +6,8 @@ import { isNearBottom, relativeTime } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
 import type { AgentHint } from "../bindings";
 import { curatedAgent } from "../lib/acp-catalog";
-import { capabilityChips, classifyFailure, leaf } from "../lib/agent-view";
+import { capabilityChips, classifyFailure, configViews, leaf } from "../lib/agent-view";
+import { fallbackModels } from "../lib/agent-options";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
 import { Icon } from "./Icon";
@@ -434,6 +435,8 @@ export function AgentPanel(props: AgentPanelProps) {
                 busy={a.pendingAction() === "auth"}
                 onPick={(id) => void a.authenticate(id)}
                 onRetry={a.reconnect}
+                models={a.state().sessionId ? fallbackModels(configViews(a.state().config)) : []}
+                onUseModel={(value) => void a.retryWithModel(value)}
                 onSubmit={(id, secret) => void a.authenticateWith(id, secret)}
               />
               <Show when={unsupportedAuth().length}>

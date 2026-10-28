@@ -109,3 +109,12 @@ describe("isBooleanOption", () => {
     expect(isBooleanOption(select("x", "X", undefined, [...values]))).toBe(expected);
   });
 });
+
+describe("fallbackModels", () => {
+  it("lists the other models with free ones first and never the current one", async () => {
+    const { fallbackModels } = await import("./agent-options");
+    const model = { id: "model", name: "Model", category: "model", currentValue: "a/paid", choices: [{ value: "a/paid", name: "Paid" }, { value: "b/other", name: "Other" }, { value: "opencode/big-pickle", name: "Big Pickle" }, { value: "x/beam-free", name: "Beam Free" }] };
+    expect(fallbackModels([model as never]).map((choice) => choice.value)).toEqual(["opencode/big-pickle", "x/beam-free", "b/other"]);
+    expect(fallbackModels([])).toEqual([]);
+  });
+});

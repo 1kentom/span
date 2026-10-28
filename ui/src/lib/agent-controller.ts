@@ -807,6 +807,28 @@ export function createAgentController(props: AgentPanelProps) {
   }
 
   /**
+   * The provider behind the current model refused the prompt. Switch the same session to another model and send the
+   * refused prompt again, so one click recovers without a reconnect.
+   */
+  async function retryWithModel(value: string) {
+    const current = guard(agentEpoch);
+    const option = state().config.find((candidate) => candidate.category === "model");
+    const failed = [...state().feed].reverse().find((item) => item.kind === "user");
+    if (!option || !state().sessionId) return;
+    setPendingAction("auth");
+    try {
+      await api.agentSetConfig(option.id, value);
+      if (!current()) return;
+      patch({ auth: undefined, failure: undefined, status: "ready", statusMessage: "Connected and ready" });
+      if (failed && failed.kind === "user" && failed.text) sendText(failed.text);
+    } catch (cause) {
+      if (current()) fail({ phase: "session", message: `Could not change the model: ${errorText(cause)}` });
+    } finally {
+      if (current()) setPendingAction("");
+    }
+  }
+
+  /**
    * Signs in with a method that needs a typed value. The secret is a parameter of this call only: it is not put in
    * state or the feed, not logged, and not kept in a closure after the request settles.
    */
@@ -1673,6 +1695,7 @@ export function createAgentController(props: AgentPanelProps) {
     connectInstalled,
     connectCustom,
     reconnect,
+    retryWithModel,
     install,
     disconnect,
     authenticate,

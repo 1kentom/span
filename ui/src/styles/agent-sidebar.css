@@ -665,3 +665,6 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-rewind-files { max-height: 160px; overflow-y: auto; padding: 0; }
 .sb-rewind-file { padding: 0 2px; }
 .sb-rewind-file .sb-change-actions .sb-btn.ghost { padding: 0 5px; }
+.sb-model-fallback { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 2px; }
+.sb-model-fallback-row { display: flex; gap: 8px; }
+.sb-model-fallback-row .sb-select { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--sb-control-border); border-radius: 7px; background: var(--sb-field); color: var(--sb-fg); font-size: 12px; }

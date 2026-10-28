@@ -17,6 +17,9 @@ type SignInProps = Brand & {
   onPick: (methodId: string) => void;
   /** Reconnects once the user has signed in elsewhere, for agents that sign in from a terminal. */
   onRetry?: () => void;
+  /** Other models of the same agent, offered when the provider behind the current one refused the prompt. */
+  models?: { value: string; name: string }[];
+  onUseModel?: (value: string) => void;
   /** Called with a typed secret for methods that ask for an API key or a gateway. */
   onSubmit?: (methodId: string, secret: AuthSecret) => void;
 };
@@ -56,6 +59,22 @@ function TerminalLogin(props: { command: string; onRetry?: () => void }) {
   );
 }
 
+/** Another model for the same chat: pick one and the refused prompt is sent again with it. */
+function ModelFallback(props: { models: { value: string; name: string }[]; onUse: (value: string) => void; busy?: boolean }) {
+  const [picked, setPicked] = createSignal(props.models[0]?.value ?? "");
+  return (
+    <div class="sb-model-fallback">
+      <label class="sb-fine" for="sb-fallback-model">Use another model</label>
+      <div class="sb-model-fallback-row">
+        <select id="sb-fallback-model" class="sb-select" value={picked()} onChange={(event) => setPicked(event.currentTarget.value)}>
+          <For each={props.models}>{(model) => <option value={model.value}>{model.name}</option>}</For>
+        </select>
+        <button type="button" class="sb-btn primary" disabled={props.busy || !picked()} onClick={() => props.onUse(picked())}>Use and retry</button>
+      </div>
+    </div>
+  );
+}
+
 /** Authentication methods the agent advertised. The first one is the primary action. */
 export function SignIn(props: SignInProps) {
   const [asking, setAsking] = createSignal<string>();
@@ -67,6 +86,9 @@ export function SignIn(props: SignInProps) {
         <Show when={props.text}><p class="sb-lede">{props.text}</p></Show>
         <Show when={props.hint}><p class="sb-lede sb-auth-hint" role="note"><HintLine text={props.hint!} /></p></Show>
       </header>
+      <Show when={props.models?.length && props.onUseModel}>
+        <ModelFallback models={props.models!} onUse={props.onUseModel!} busy={props.busy} />
+      </Show>
       <Show when={terminalCommand(props.hint)}>{(command) => <TerminalLogin command={command()} onRetry={props.onRetry} />}</Show>
       <div class="sb-methods">
         <For each={props.methods}>
