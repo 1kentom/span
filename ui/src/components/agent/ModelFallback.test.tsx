@@ -85,3 +85,55 @@ describe("model fallback on a refused prompt", () => {
     expect(host.querySelector(".sb-model-fallback")).toBeNull();
   });
 });
+
+describe("terminal sign-in on the card", () => {
+  const hint = "Run `opencode auth login` in a terminal, then retry";
+  const card = (withModels: boolean, onRetry = () => undefined) =>
+    mount(() => <SignIn name="OpenCode" id="opencode" title="Sign in to OpenCode" hint={hint} methods={[]} onPick={() => undefined} onRetry={onRetry} models={withModels ? models : []} onUseModel={() => undefined} />);
+  const iconOf = (el: Element | null) => (el?.querySelector(".icon") as HTMLElement | null)?.style.maskImage ?? "";
+
+  it("folds the terminal sign-in under a quiet disclosure when a model list leads", () => {
+    const host = card(true);
+    const toggle = host.querySelector<HTMLButtonElement>(".sb-disclosure")!;
+    expect(text(toggle)).toBe("Sign in with the terminal");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(iconOf(toggle)).toContain("arrow-down4");
+    expect(host.querySelector(".sb-terminal-login")).toBeNull();
+    expect(host.querySelector(".sb-auth-hint")).toBeNull();
+    toggle.click();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(iconOf(toggle)).toContain("arrow-up3");
+    expect(document.getElementById(toggle.getAttribute("aria-controls")!)).not.toBeNull();
+    expect(text(host.querySelector(".sb-auth-hint"))).toBe("Run opencode auth login in a terminal, then retry");
+    expect(text(host.querySelector(".sb-terminal-command"))).toBe("opencode auth login");
+    const retry = [...host.querySelectorAll<HTMLButtonElement>(".sb-terminal-login .sb-btn")].find((button) => text(button) === "I have signed in, retry")!;
+    expect(retry.classList.contains("primary")).toBe(false);
+  });
+  it("shows the terminal sign-in open, as the primary action, when there is no model to offer", () => {
+    const retried = vi.fn();
+    const host = card(false, retried);
+    expect(host.querySelector(".sb-disclosure")).toBeNull();
+    expect(text(host.querySelector(".sb-terminal-command"))).toBe("opencode auth login");
+    host.querySelector<HTMLButtonElement>(".sb-terminal-login .sb-btn.primary")!.click();
+    expect(retried).toHaveBeenCalledTimes(1);
+  });
+  it("copies the command and says so for a moment", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    try {
+      const host = card(false);
+      host.querySelector<HTMLButtonElement>("[aria-label='Copy command']")!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(writeText).toHaveBeenCalledWith("opencode auth login");
+      expect(host.querySelector("[aria-label='Copied']")).not.toBeNull();
+      expect(text(host.querySelector(".sb-copied"))).toBe("Copied");
+      vi.advanceTimersByTime(1500);
+      expect(host.querySelector("[aria-label='Copy command']")).not.toBeNull();
+      expect(text(host.querySelector(".sb-copied"))).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

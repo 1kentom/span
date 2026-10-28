@@ -691,9 +691,22 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-warning-more { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--sb-faint); font-size: 11px; cursor: pointer; }
 .sb-warning-more:hover { color: var(--sb-fg); }
 
-.sb-terminal-login { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin: 10px 0 2px; }
-.sb-terminal-command { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--sb-control-border); border-radius: 7px; background: var(--sb-field); }
-.sb-terminal-command code { overflow-wrap: anywhere; font-size: 12px; color: var(--sb-fg); }
+/* Terminal sign-in: one slim mono chip with a ghost copy button, then the retry. Folds under a disclosure when a model list leads. */
+.sb-terminal-login { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.sb-terminal-command { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 2px 2px 8px; border-radius: 4px; background: var(--sb-field); }
+.sb-terminal-command::before { content: "$"; flex: none; color: var(--sb-faint); font: 11.5px "JetBrains Mono", ui-monospace, monospace; }
+.sb-terminal-command code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11.5px; color: var(--sb-fg); }
+.sb-terminal-login > .sb-actions { align-items: center; }
+.sb-copied { font-size: 11px; color: var(--sb-success); }
+.sb-terminal-section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--sb-border); }
+.sb-disclosure {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 2px 4px; border: 0; border-radius: 6px;
+  background: none; color: var(--sb-dim); font: 12px/18px Inter, system-ui, sans-serif; text-align: left; cursor: pointer;
+}
+.sb-disclosure:hover { color: var(--sb-fg); }
+.sb-disclosure:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 2px; }
+.sb-terminal-panel { display: flex; flex-direction: column; gap: 8px; padding: 0 4px; }
+@media (prefers-reduced-motion: no-preference) { .sb-terminal-panel { animation: sb-row-in 120ms ease-out both; } }
 /* Restore dock: files changed since a message. Revert only rejects edits still waiting for review. */
 .sb-rewind-files { max-height: 160px; overflow-y: auto; padding: 0; }
 .sb-rewind-file { padding: 0 2px; }

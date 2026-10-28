@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createSignal, onCleanup } from "solid-js";
 import { Icon } from "../Icon";
 import { BrandIcon } from "../BrandIcon";
 import { splitCode } from "../../lib/agent-hint-text";
@@ -37,14 +37,20 @@ export function terminalCommand(hint: string | undefined): string | undefined {
   return hint ? splitCode(hint).find((part) => part.code)?.text : undefined;
 }
 
-/** A terminal sign-in the app cannot run for the user: the exact command, a copy button, and a retry for afterwards. */
-function TerminalLogin(props: { command: string; onRetry?: () => void }) {
+/**
+ * A terminal sign-in the app cannot run for the user: the exact command in one slim chip with a copy button, and a
+ * retry for afterwards. The retry is the primary action only when nothing else on the card is.
+ */
+function TerminalLogin(props: { command: string; onRetry?: () => void; primary?: boolean }) {
   const [copied, setCopied] = createSignal(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(timer));
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(props.command);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      clearTimeout(timer);
+      timer = setTimeout(() => setCopied(false), 1500);
     } catch { /* the command stays selectable */ }
   };
   return (
@@ -52,12 +58,15 @@ function TerminalLogin(props: { command: string; onRetry?: () => void }) {
       <div class="sb-terminal-command">
         <code class="sb-mono">{props.command}</code>
         <button type="button" class="sb-icon-btn" aria-label={copied() ? "Copied" : "Copy command"} title={copied() ? "Copied" : "Copy command"} onClick={() => void copy()}>
-          <Icon name="Copy" size={12} />
+          <Icon name={copied() ? "TickCircle" : "Copy"} size={12} />
         </button>
       </div>
-      <Show when={props.onRetry}>
-        <button type="button" class="sb-btn primary" onClick={() => props.onRetry?.()}>I have signed in, retry</button>
-      </Show>
+      <div class="sb-actions">
+        <Show when={props.onRetry}>
+          <button type="button" class="sb-btn" classList={{ primary: props.primary }} onClick={() => props.onRetry?.()}>I have signed in, retry</button>
+        </Show>
+        <span class="sb-copied" role="status">{copied() ? "Copied" : ""}</span>
+      </div>
     </div>
   );
 }
@@ -147,18 +156,39 @@ function ModelFallback(props: Brand & { models: FallbackModel[]; onUse: (value: 
 /** Authentication methods the agent advertised. The first one is the primary action. */
 export function SignIn(props: SignInProps) {
   const [asking, setAsking] = createSignal<string>();
+  const [terminalOpen, setTerminalOpen] = createSignal(false);
+  const hasModels = () => Boolean(props.models?.length && props.onUseModel);
+  /** With a model list to lead, the terminal sign-in and its hint fold under a disclosure. */
+  const folded = () => hasModels() && Boolean(terminalCommand(props.hint));
   return (
     <section class="sb-signin" aria-labelledby="sb-signin-title">
       <BrandIcon id={props.id} name={props.name} size={26} />
       <header>
         <h2 id="sb-signin-title" class="sb-title">{props.title}</h2>
         <Show when={props.text}><p class="sb-lede">{props.text}</p></Show>
-        <Show when={props.hint}><p class="sb-lede sb-auth-hint" role="note"><HintLine text={props.hint!} /></p></Show>
+        <Show when={props.hint && !folded()}><p class="sb-lede sb-auth-hint" role="note"><HintLine text={props.hint!} /></p></Show>
       </header>
-      <Show when={props.models?.length && props.onUseModel}>
+      <Show when={hasModels()}>
         <ModelFallback id={props.id} name={props.name} models={props.models!} onUse={props.onUseModel!} busy={props.busy} />
       </Show>
-      <Show when={terminalCommand(props.hint)}>{(command) => <TerminalLogin command={command()} onRetry={props.onRetry} />}</Show>
+      <Show when={terminalCommand(props.hint)}>
+        {(command) => (
+          <Show when={folded()} fallback={<TerminalLogin command={command()} onRetry={props.onRetry} primary />}>
+            <div class="sb-terminal-section">
+              <button type="button" class="sb-disclosure" aria-expanded={terminalOpen()} aria-controls="sb-terminal-panel" onClick={() => setTerminalOpen(!terminalOpen())}>
+                <span>Sign in with the terminal</span>
+                <Icon name={terminalOpen() ? "arrow-up3" : "arrow-down4"} size={12} />
+              </button>
+              <Show when={terminalOpen()}>
+                <div id="sb-terminal-panel" class="sb-terminal-panel">
+                  <p class="sb-fine sb-auth-hint" role="note"><HintLine text={props.hint!} /></p>
+                  <TerminalLogin command={command()} onRetry={props.onRetry} />
+                </div>
+              </Show>
+            </div>
+          </Show>
+        )}
+      </Show>
       <div class="sb-methods">
         <For each={props.methods}>
           {(method, index) => (
