@@ -97,7 +97,7 @@ impl DesktopRunTools {
             // absence, slow ACKs, or a closed event channel must not kill the
             // approved process. Bound serialized output sent to that view;
             // the final state lets the UI refresh the authoritative snapshot.
-            if output.as_ref().map_or(true, |(_, _, emit)| *emit) {
+            if output.as_ref().is_none_or(|(_, _, emit)| *emit) {
                 let _ = observer(event);
             }
             if let Some((id, sequence, _)) = output {
