@@ -884,8 +884,10 @@ async fn run(
                 bridge.adapter = adapter.clone();
                 bridge.mcp_caps = mcp_caps;
             }
-            let _ = ready.send(Ok(()));
+            // Ready is delivered before `start` resolves, so a caller never sees
+            // a started service whose sink has not yet recorded its features.
             emit(ready_event);
+            let _ = ready.send(Ok(()));
             emit(AgentEvent::Capabilities { can_load_session: can_load, can_list_sessions: can_list });
             emit(AgentEvent::Status { state: "connected".into(), message: "ACP initialized. Agent process has your OS privileges.".into() });
             let mut cancel_deadline: Option<tokio::time::Instant> = None;
