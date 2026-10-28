@@ -1,26 +1,6 @@
-import type { AgentEvent, PermissionOption } from "../bindings";
+import type { AgentEvent } from "../bindings";
 
 export type ToolEvent = Extract<AgentEvent, { kind: "tool" }>;
-
-const OPTION_ORDER = ["allow_once", "allow_always", "reject_once", "reject_always"];
-
-/** Allow choices first, then reject choices, keeping the agent's order inside a kind. */
-export function sortPermissionOptions(options: PermissionOption[]): PermissionOption[] {
-  const rank = (option: PermissionOption) => {
-    const index = OPTION_ORDER.indexOf(option.kind);
-    return index < 0 ? OPTION_ORDER.length : index;
-  };
-  return options
-    .map((option, index) => ({ option, index }))
-    .sort((a, b) => rank(a.option) - rank(b.option) || a.index - b.index)
-    .map(({ option }) => option);
-}
-
-export function permissionScope(kind: string): string {
-  if (kind === "allow_always") return "Remembered for this session";
-  if (kind === "reject_always") return "Remembered for this session";
-  return "";
-}
 
 /** One line describing what a tool call will touch, from its raw ACP update. */
 export function toolSummary(contentJson: string): string {

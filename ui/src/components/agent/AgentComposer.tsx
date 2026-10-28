@@ -1,0 +1,367 @@
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { BrandIcon } from "../BrandIcon";
+import { FileIcon, Icon } from "../Icon";
+import { AttachmentChips, AttachmentDropZone, AttachmentPickerButton } from "../attachments";
+import type { AgentController } from "../../lib/agent-controller";
+import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
+import { formatElapsed, toolSummary } from "../../lib/agent-feed";
+import { canCompact } from "../../lib/agent-session";
+import { configViews, currentChoice, isSlashQuery, leaf, levelOf, slashGroups, type SpanCommand } from "../../lib/agent-view";
+import { isDesktop } from "../../lib/client";
+import { ContextBanner } from "./Banners";
+import { ActivityBar, PermissionDock, QuestionDock, UrlDock } from "./Docks";
+import { ModelPopover } from "./ModelPopover";
+import { PlanDrawer } from "./PlanDrawer";
+import { QueuePanel } from "./QueuePanel";
+import { SlashPopover } from "./SlashPopover";
+import { UsageRing } from "./UsageRing";
+import type { Brand, PlanItem, SlashItem } from "./types";
+import { percent } from "./util";
+
+const BANNER_AT = 85;
+
+/** Everything below the conversation: banners, plan, queue, docks, the prompt box and its toolbar. */
+export function AgentComposer(props: { agent: AgentController; brand: Brand; label: string }) {
+  const a = props.agent;
+  let input: HTMLTextAreaElement | undefined;
+  const [slashClosedFor, setSlashClosedFor] = createSignal<string>();
+  const config = createMemo(() => configViews(a.state().config));
+  const model = () => config().find((option) => option.category === "model");
+  const level = () => levelOf(config().find((option) => option.category === "thought_level"));
+  const mode = () => config().find((option) => option.category === "mode");
+  const modelLabel = () => currentChoice(model())?.name ?? props.label;
+  const usage = () => a.state().usage;
+  const showBanner = () => {
+    const current = usage();
+    return Boolean(current && a.connected() && !a.bannerDismissed() && percent(current.used, current.size) >= BANNER_AT);
+  };
+  const plan = createMemo<PlanItem[]>(() =>
+    a.state().plan.map((entry) => ({ text: entry.content, status: entry.status === "completed" || entry.status === "in_progress" ? entry.status : "pending" })),
+  );
+  const spanCommands = (): SpanCommand[] => [
+    ...(a.connected() && !a.running() ? [{ name: "new", description: "Start a new chat with this agent" }] : []),
+    ...(a.connected() && a.state().canList ? [{ name: "history", description: "Browse earlier chats" }] : []),
+    ...(a.props.activePath ? [{ name: "file", description: "Add the current file as context" }] : []),
+    { name: "log", description: "Show ACP traffic" },
+    ...(isDesktop ? [{ name: "agents", description: "Connect a different agent" }] : []),
+  ];
+  const slashOpen = () => isSlashQuery(a.prompt()) && slashClosedFor() !== a.prompt() && !a.menu();
+  const groups = createMemo(() => (slashOpen() ? slashGroups(a.prompt(), props.label, a.connected() ? a.state().commands : [], spanCommands()) : []));
+  function pickSlash(item: SlashItem) {
+    if (item.source === "agent") {
+      a.setPrompt(`${item.name} `);
+      queueMicrotask(() => input?.focus());
+      return;
+    }
+    a.setPrompt("");
+    const name = item.name.slice(1);
+    if (name === "new") void a.newChat();
+    else if (name === "history") a.setView("history");
+    else if (name === "file") a.addCurrentFile();
+    else if (name === "log") a.setView("logs");
+    else if (name === "agents") a.setView("connect");
+  }
+  const toolTarget = (toolCallId: string) => {
+    const tool = a.feed().find((item) => item.kind === "tool" && item.event.toolCallId === toolCallId);
+    return tool?.kind === "tool" ? toolSummary(tool.event.contentJson) : "";
+  };
+  const field = () => a.fields()[a.form()?.index ?? 0];
+  const toggle = (menu: "model" | "agents" | "context") => a.setMenu(a.menu() === menu ? null : menu);
+  const closeMenu = () => {
+    a.setMenu(null);
+    input?.focus();
+  };
+
+  createEffect(() => {
+    a.prompt();
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(180, Math.max(61, input.scrollHeight))}px`;
+  });
+
+  return (
+    <footer class="agent-footer">
+      <Show when={showBanner()}>
+        <ContextBanner
+          used={usage()!.used}
+          size={usage()!.size}
+          canCompact={canCompact(a.state().commands) && !a.running()}
+          onCompact={() => a.sendText("/compact")}
+          onDismiss={() => a.setBannerDismissed(true)}
+        />
+      </Show>
+      <Show when={plan().length}>
+        <PlanDrawer items={plan()} />
+      </Show>
+      <Show when={a.queue().length}>
+        <QueuePanel
+          items={a.queue().map((entry) => ({ id: entry.id, text: entry.text || `${entry.items.length} attachment${entry.items.length === 1 ? "" : "s"}` }))}
+          note={a.online() ? "Sent when the agent is idle" : "Sent when you're back online"}
+          onEdit={a.editQueued}
+          onRemove={a.removeQueued}
+          onSendNow={a.sendQueuedNow}
+          onClear={a.clearQueue}
+        />
+      </Show>
+      <Show when={a.running()}>
+        <ActivityBar label={`${a.state().stopRequested ? "Stopping" : "Working"} · ${formatElapsed(a.clock() - a.turnStart())}`} hint={a.state().stopRequested ? undefined : "Esc to stop"} />
+      </Show>
+      <Show when={a.permission()}>
+        {(request) => (
+          <PermissionDock
+            title={request().event.title}
+            brand={props.brand}
+            command={toolTarget(request().event.toolCallId) || undefined}
+            options={request().event.options}
+            busy={Boolean(a.pendingAction())}
+            onChoose={(optionId) => void a.answerPermission(request().event.requestId, optionId)}
+          />
+        )}
+      </Show>
+      <Show when={!a.permission() && a.elicitation()}>
+        {(request) => (
+          <Show
+            when={request().mode === "url"}
+            fallback={
+              <Show when={`${request().requestId}:${a.form()?.index ?? 0}`} keyed>
+                {(_key) => (
+                  <>
+                    <QuestionDock
+                      asker={{ ...props.brand, label: props.label }}
+                      step={a.fields().length > 1 ? `${(a.form()?.index ?? 0) + 1} of ${a.fields().length}` : undefined}
+                      prompt={
+                        !field()
+                          ? request().message
+                          : field()!.type === "unsupported"
+                            ? `${request().message} (${field()!.label}: Span cannot answer this kind of question)`
+                            : a.fields().length === 1
+                              ? request().message
+                              : `${request().message} (${field()!.label})`
+                      }
+                      options={field() ? field()!.options : [{ id: "accept", label: "Continue" }]}
+                      allowText={Boolean(field() && !field()!.options.length && field()!.type !== "unsupported")}
+                      onAnswer={(answer) => void a.answerForm(answer)}
+                      onCancel={() => void a.respondElicitation(request().requestId, "decline")}
+                    />
+                    <Show when={field()?.description}>
+                      <p class="sb-fine agent-dock-note">{field()!.description}</p>
+                    </Show>
+                    <Show when={a.form()?.error}>
+                      <p class="sb-fine agent-dock-error" role="alert">{a.form()!.error}</p>
+                    </Show>
+                  </>
+                )}
+              </Show>
+            }
+          >
+            <UrlDock
+              title="The agent asks you to open a page"
+              text={`${request().message} Span opens this address in your browser only after you choose Open browser.`}
+              brand={props.brand}
+              href={request().url ?? ""}
+              onOpen={() => void a.openElicitationUrl(request().requestId, request().url ?? "")}
+              onCancel={() => void a.respondElicitation(request().requestId, "decline")}
+            />
+          </Show>
+        )}
+      </Show>
+      <AttachmentDropZone intake={a.intake} unavailable={isDesktop ? undefined : ATTACH_UNAVAILABLE} class="agent-composer">
+        <Show when={a.menu() && a.menu() !== "actions"}>
+          <button class="agent-menu-dismiss" aria-label="Close agent menu" tabindex="-1" onClick={closeMenu} />
+        </Show>
+        <div class="agent-popover-anchor">
+          <Show when={slashOpen() && (groups().length || a.prompt().length > 1)}>
+            <SlashPopover groups={groups()} onSelect={pickSlash} onClose={() => setSlashClosedFor(a.prompt())} />
+          </Show>
+          <Show when={a.menu() === "model"}>
+            <ModelPopover
+              agentName={props.label}
+              options={config()}
+              agents={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: entry.version, current: entry.id === a.agentId() }))}
+              busy={a.pendingAction().startsWith("config:") || a.working() || a.running()}
+              onSelect={(id, value) => void a.setConfig(id, value)}
+              onSwitchAgent={(id) => a.connectInstalled(id)}
+              onClose={closeMenu}
+            />
+          </Show>
+          <Show when={a.menu() === "agents"}>
+            <div class="sb-popover" role="dialog" aria-label="Agents">
+              <Show when={isDesktop} fallback={<p class="sb-fine pad">Open span desktop to connect an ACP agent.</p>}>
+                <div class="sb-eyebrow">Installed agents</div>
+                <For each={a.installed()} fallback={<p class="sb-fine pad">No managed agents installed yet.</p>}>
+                  {(entry) => (
+                    <button class="sb-option" disabled={a.working()} onClick={() => a.connectInstalled(entry.id)}>
+                      <BrandIcon id={entry.id} name={a.registryName(entry.id)} size={15} />
+                      <span class="sb-option-text">
+                        <span class="sb-option-name">{a.registryName(entry.id) || entry.id}</span>
+                        <span class="sb-sub">{entry.version}</span>
+                      </span>
+                    </button>
+                  )}
+                </For>
+                <div class="sb-rule-h" />
+                <button
+                  class="sb-option"
+                  onClick={() => {
+                    a.setMenu(null);
+                    a.setView("connect");
+                  }}
+                >
+                  <Icon name="Code1" size={15} />
+                  <span class="sb-option-text">
+                    <span class="sb-option-name">Registry and custom command</span>
+                  </span>
+                  <Icon name="arrow-right4" size={11} />
+                </button>
+              </Show>
+            </div>
+          </Show>
+          <Show when={a.menu() === "context"}>
+            <div class="sb-popover" role="dialog" aria-label="Editor context">
+              <div class="sb-eyebrow">Editor context</div>
+              <button class="sb-option" disabled={!a.props.activePath} onClick={a.addCurrentFile}>
+                <Show when={a.props.activePath} fallback={<Icon name="DocumentText" size={15} />}>
+                  <FileIcon path={a.props.activePath!} />
+                </Show>
+                <span class="sb-option-text">
+                  <span class="sb-option-name">Add current file</span>
+                  <span class="sb-sub wrap">{a.props.activePath || "Open a file in the editor first"}</span>
+                </span>
+              </button>
+              <p class="sb-fine pad">Selected code is included automatically. Added files use the current editor buffer, including unsaved changes.</p>
+            </div>
+          </Show>
+        </div>
+        <Show when={a.selection() || a.contextPaths().length}>
+          <ul class="att-chips agent-contexts" aria-label="Editor context">
+            <Show when={a.selection()}>
+              {(selected) => (
+                <li class="att-chip agent-context-live" title={selected().path}>
+                  <span class="att-chip-open">
+                    <FileIcon path={selected().path} />
+                    <span class="att-chip-name">{leaf(selected().path)} · selection</span>
+                  </span>
+                  <button type="button" class="att-chip-remove" aria-label="Remove selected code from context" onClick={a.hideSelection}>
+                    <Icon name="CloseCircle" size={11} />
+                  </button>
+                </li>
+              )}
+            </Show>
+            <For each={a.contextPaths()}>
+              {(path) => (
+                <li class="att-chip" title={path}>
+                  <span class="att-chip-open">
+                    <FileIcon path={path} />
+                    <span class="att-chip-name">{leaf(path)}</span>
+                  </span>
+                  <button type="button" class="att-chip-remove" aria-label={`Remove ${path} from context`} onClick={() => a.removeContextPath(path)}>
+                    <Icon name="CloseCircle" size={11} />
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+        <AttachmentChips items={a.attachments()} capabilities={a.caps()} onOpen={(item) => a.setViewing(item.id)} onRemove={a.removeAttachment} onEmpty={() => input?.focus()} />
+        <Show when={a.blocked().length}>
+          <p class="agent-blocked" role="status">
+            {a.blocked().length === 1 ? `${a.blocked()[0].item.name} cannot be sent: ${a.blocked()[0].reason}` : `${a.blocked().length} attachments cannot be sent to ${props.label}.`} Remove{" "}
+            {a.blocked().length === 1 ? "it" : "them"} to send.
+          </p>
+        </Show>
+        <label class="sb-visually-hidden" for="agent-prompt">
+          Message to agent
+        </label>
+        <textarea
+          id="agent-prompt"
+          ref={(element) => {
+            input = element;
+            a.setInput(element);
+          }}
+          class="agent-input"
+          rows="2"
+          value={a.prompt()}
+          placeholder={a.running() ? "Queue a follow-up for after this turn…" : a.connected() ? `Ask ${props.label}…` : "Connect an agent to start"}
+          spellcheck={false}
+          onInput={(event) => a.setPrompt(event.currentTarget.value)}
+          onPaste={a.intake.onPaste}
+          onKeyDown={(event) => {
+            if (event.defaultPrevented) return;
+            a.recallPrompt(event);
+            if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+              event.preventDefault();
+              event.stopPropagation();
+              if (event.altKey) toggle("context");
+              else void a.send();
+            }
+          }}
+        />
+        <div class="agent-composer-toolbar" role="toolbar" aria-label="Agent prompt options">
+          <button class="agent-tool-button" title="Add context" aria-label="Add editor context" aria-expanded={a.menu() === "context"} onClick={() => toggle("context")}>
+            <Icon name="Add" size={16} />
+          </button>
+          <AttachmentPickerButton intake={a.intake} unavailable={isDesktop ? undefined : ATTACH_UNAVAILABLE} class="agent-tool-button" />
+          <button
+            class="agent-tool-button agent-model-button"
+            aria-label={a.connected() ? `Agent and model: ${props.label}, ${modelLabel()}` : "Select agent"}
+            title={a.connected() ? "Agent and model" : "Select agent"}
+            aria-haspopup="dialog"
+            aria-expanded={a.menu() === "model" || a.menu() === "agents"}
+            onClick={() => toggle(a.connected() ? "model" : "agents")}
+          >
+            <BrandIcon id={props.brand.id} name={props.brand.name} size={15} />
+            <span class="agent-model-name">{a.connected() ? modelLabel() : "No agent"}</span>
+            <Show when={a.connected() && level()}>
+              {(current) => (
+                <span class="agent-level" aria-hidden="true">
+                  <For each={Array.from({ length: current().count }, (_, index) => index)}>
+                    {(index) => <span classList={{ on: index < current().index }} style={{ height: `${Math.round(30 + (70 * (index + 1)) / current().count)}%` }} />}
+                  </For>
+                </span>
+              )}
+            </Show>
+            <Icon name="arrow-down4" size={10} />
+          </button>
+          <Show when={a.connected() && mode()}>
+            {(option) => (
+              <button class="agent-tool-button agent-mode-button" aria-label={`${option().name}: ${currentChoice(option())?.name ?? option().currentValue}`} aria-haspopup="dialog" onClick={() => toggle("model")}>
+                <span class="agent-model-name">{currentChoice(option())?.name ?? option().currentValue}</span>
+                <Icon name="arrow-down4" size={10} />
+              </button>
+            )}
+          </Show>
+          <span class="agent-toolbar-spacer" />
+          <Show when={a.connected() && usage()}>
+            <UsageRing used={usage()!.used} size={usage()!.size} cost={usage()!.cost} warnAt={BANNER_AT} />
+          </Show>
+          <button
+            class="agent-send"
+            aria-label={a.running() ? "Queue follow-up" : "Send prompt"}
+            title={
+              !a.connected()
+                ? "Connect an agent to send"
+                : a.blocked().length
+                  ? "Remove the attachments this agent cannot take"
+                  : a.running()
+                    ? "Queue for after this turn · Enter"
+                    : "Send · Enter"
+            }
+            disabled={!a.canSend()}
+            onClick={() => void a.send()}
+          >
+            <Icon name="u-send" size={16} />
+          </button>
+          <Show when={a.running()}>
+            <button class="agent-send stop" aria-label="Stop agent" disabled={a.state().stopRequested} title={a.state().stopRequested ? "Waiting for cancellation" : "Stop · Esc"} onClick={() => void a.stop()}>
+              <Icon name="Stop" size={15} />
+            </button>
+          </Show>
+        </div>
+      </AttachmentDropZone>
+      <div class="agent-composer-hint">
+        <span class="sb-ellipsis">{isDesktop ? (a.connected() ? a.state().statusMessage : "Connect an ACP agent to begin") : "Browser preview · agent unavailable"}</span>
+        <span class="nowrap">{a.running() ? "↵ queue · Esc stop" : "↵ send · ⇧↵ newline · ↑ history"}</span>
+      </div>
+    </footer>
+  );
+}

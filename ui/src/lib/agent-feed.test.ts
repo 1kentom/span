@@ -1,21 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ToolEvent } from "./agent-feed";
-import { formatElapsed, isNearBottom, isNestedTool, relativeTime, sortPermissionOptions, subagentChildren, toolSummary } from "./agent-feed";
+import { formatElapsed, isNearBottom, isNestedTool, relativeTime, subagentChildren, toolSummary } from "./agent-feed";
 
 const tool = (id: string, parent?: string): ToolEvent => ({ kind: "tool", sessionId: "s", toolCallId: id, title: id, status: "pending", toolKind: null, parentToolCallId: parent ?? null, contentJson: "{}" });
 const item = (event: ToolEvent) => ({ kind: "tool", event });
 
 describe("agent feed helpers", () => {
-  it("orders permission options with allow choices before reject choices", () => {
-    const sorted = sortPermissionOptions([
-      { optionId: "r", name: "Reject", kind: "reject_once" },
-      { optionId: "x", name: "Other", kind: "custom" },
-      { optionId: "a", name: "Always", kind: "allow_always" },
-      { optionId: "o", name: "Once", kind: "allow_once" },
-    ]);
-    expect(sorted.map((option) => option.optionId)).toEqual(["o", "a", "r", "x"]);
-  });
-
   it("summarizes the target of a tool call", () => {
     expect(toolSummary(JSON.stringify({ rawInput: { command: "git  status\n--short" } }))).toBe("git status --short");
     expect(toolSummary(JSON.stringify({ locations: [{ path: "/w/a.ts" }] }))).toBe("/w/a.ts");

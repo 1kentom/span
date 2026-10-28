@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -14,6 +14,20 @@ describe("agent sidebar icons", () => {
       const svg = readFileSync(file, "utf8");
       expect(svg).not.toMatch(/c2pa|<script|href=/i);
     }
+  });
+});
+
+describe("agent sidebar icon references", () => {
+  it("only names icons that exist in public/icons", () => {
+    const sources = ["src/components/AgentPanel.tsx", ...["agent", "attachments"].flatMap((dir) => readdirSync(resolve(root, `src/components/${dir}`)).filter((name) => name.endsWith(".tsx") && !name.includes(".test.")).map((name) => `src/components/${dir}/${name}`))];
+    const names = new Set<string>();
+    for (const source of sources) {
+      const text = readFileSync(resolve(root, source), "utf8");
+      for (const tag of text.match(/<Icon\b[^>]*?name=(?:"[^"]*"|\{[^}]*\})/g) ?? []) for (const [, name] of tag.matchAll(/(?<![=!]==\s*)"([A-Za-z0-9-]+)"/g)) names.add(name);
+      for (const map of text.match(/(?:KIND_ICON|kindIcons)[^=]*=\s*\{[^}]*\}/g) ?? []) for (const [, name] of map.matchAll(/:\s*"([A-Za-z0-9-]+)"/g)) names.add(name);
+    }
+    expect(names.size).toBeGreaterThan(10);
+    for (const name of names) expect(existsSync(resolve(root, `public/icons/${name}.svg`)), name).toBe(true);
   });
 });
 

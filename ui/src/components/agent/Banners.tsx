@@ -33,7 +33,7 @@ export function ErrorCard(props: ErrorCardProps) {
   return (
     <section class={`sb-card alert ${props.level}`} role={props.level === "error" ? "alert" : "status"}>
       <div class="sb-alert-head">
-        <Icon name={props.level === "error" ? "Danger" : "Warning"} size={14} class={`sb-glyph ${props.level}`} />
+        <Icon name={props.level === "error" ? "Danger" : "Warning2"} size={14} class={`sb-glyph ${props.level}`} />
         <span class="sb-alert-text">
           <span class="sb-card-title">{props.title}</span>
           <Show when={props.text}><span class="sb-body">{props.text}</span></Show>

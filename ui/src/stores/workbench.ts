@@ -73,6 +73,11 @@ export function createWorkbench() {
     const version = workspaceVersion;
     try { const entries = await api.listDirectory(path); if (version === workspaceVersion) setDirectories(path, entries); } catch (e) { if (version === workspaceVersion) report(e); }
   }
+  /** Re-reads the file list and every loaded directory after files were written to disk. */
+  function refreshTree() {
+    void api.listFiles().then(setFiles).catch(report);
+    for (const directory of Object.keys(directories)) if (directories[directory]) void loadDirectory(directory);
+  }
   async function toggleDirectory(path: string) {
     if (expanded().has(path)) setExpanded(current => { const next = new Set(current); next.delete(path); return next; });
     else { if (!directories[path]) await loadDirectory(path); setExpanded(current => new Set([...current, path])); }
@@ -200,8 +205,7 @@ export function createWorkbench() {
       const current = accepted.get(path);
       accepted.set(path, current && current.revision > result.revision ? { ...current, savedRevision: Math.max(current.savedRevision, result.savedRevision) } : result);
       setBuffers(path, "savedRevision", Math.max(buffers[path].savedRevision, result.savedRevision));
-      void api.listFiles().then(setFiles).catch(report);
-      for (const directory of Object.keys(directories)) if (directories[directory]) void loadDirectory(directory);
+      refreshTree();
       if (path === ".span/settings.jsonc") setSettings(await api.getSettings());
       return true;
     } catch (e) {
@@ -328,6 +332,6 @@ export function createWorkbench() {
     if (dirty(path)) { setError("This file has unsaved changes. Save or close it before loading agent edits."); return; }
     try { const result = await api.openBuffer(path); accepted.set(path, result); setBuffers(path, result); setDocuments(current => ({ ...current, [path]: { document: Text.of(result.text.split("\n")) } })); } catch (e) { report(e); }
   }
-  return { workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, toggleDirectory, openFile, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, confirmClose, splitEditor, search, updateSettings, refreshBuffer };
+  return { workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, confirmClose, splitEditor, search, updateSettings, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;
