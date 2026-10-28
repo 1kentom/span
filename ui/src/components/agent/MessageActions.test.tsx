@@ -259,7 +259,7 @@ describe("message actions in the feed", () => {
     expect(button(host, 0, "Restore").disabled).toBe(false);
   });
 
-  it("shows the branch divider and the context card note after a fork", async () => {
+  it("shows the branch divider after a fork and carries the earlier turns without drawing them", async () => {
     const { a, host } = await twoTurns();
     button(host, 0, "Fork").click();
     await tick();
@@ -269,7 +269,8 @@ describe("message actions in the feed", () => {
     a.setPrompt("go on");
     a.send();
     await tick();
-    expect(text(host.querySelector(".agent-context-sent summary"))).toContain("earlier turns of this chat");
+    expect(host.querySelector(".agent-context-sent")).toBeNull();
+    expect(String(mocks.api.agentPrompt.mock.calls[0]?.[0] ?? "")).toContain("[Context from an earlier session");
   });
 });
 

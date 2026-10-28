@@ -1,5 +1,6 @@
 import { For, Match, Show, Switch, createMemo } from "solid-js";
 import { Icon, MenuIcon } from "../Icon";
+import { BrandIcon } from "../BrandIcon";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
@@ -68,14 +69,6 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           <Show when={!(item() as Extract<FeedItem, { kind: "user" }>).steered && a.sentNowIds().has(item().id)}>
             <div class="agent-steer-tag"><Icon name="arrow-right4" size={11} /><span>Sent now</span><span class="agent-steer-note"> · interrupted the current step</span></div>
           </Show>
-          <Show when={(item() as Extract<FeedItem, { kind: "user" }>).context}>
-            {(context) => (
-              <details class="agent-summary agent-context-sent">
-                <summary><Icon name="arrow-right4" size={11} /><span>Context sent</span><span class="agent-steer-note">{(item() as Extract<FeedItem, { kind: "user" }>).contextNote ?? " · carried over from the previous agent"}</span></summary>
-                <pre class="agent-context-text">{context()}</pre>
-              </details>
-            )}
-          </Show>
           {message().text}
           <MessageAttachments items={(item() as Extract<FeedItem, { kind: "user" }>).attachments ?? []} onOpen={(attachment) => a.openAttachment(attachment)} />
         </div>
@@ -105,13 +98,12 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           const switched = () => item() as Extract<FeedItem, { kind: "handoff" }>;
           const view = () => handoffDivider(switched().from, switched().to, switched().carried);
           return (
-            <div class="agent-handoff" role="separator" aria-label={view().text}>
-              <div class="sb-notice" aria-hidden="true">
-                <span class="sb-rule" />
-                <span class="sb-ellipsis">{view().title}</span>
-                <span class="sb-rule" />
-              </div>
-              <p class="sb-fine agent-handoff-note" aria-hidden="true">{view().note}</p>
+            <div class="agent-handoff" role="separator" aria-label={view().text} title={view().note}>
+              <span class="agent-handoff-from"><BrandIcon name={switched().from} size={16} /></span>
+              <Icon name="arrow-right4" size={11} class="agent-handoff-chevron" />
+              <span class="agent-handoff-to"><BrandIcon name={switched().to} size={18} /></span>
+              <span class="agent-handoff-text sb-ellipsis">{`Switched to ${switched().to}`}</span>
+              <span class="sb-rule" />
             </div>
           );
         })()}
@@ -121,13 +113,10 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           const branch = () => item() as Extract<FeedItem, { kind: "branch" }>;
           const view = () => branchDivider(branch().mode, branch().carried);
           return (
-            <div class="agent-handoff agent-branch" role="separator" aria-label={view().text}>
-              <div class="sb-notice" aria-hidden="true">
-                <span class="sb-rule" />
-                <span class="sb-ellipsis">{view().title}</span>
-                <span class="sb-rule" />
-              </div>
-              <p class="sb-fine agent-handoff-note" aria-hidden="true">{view().note}</p>
+            <div class="agent-handoff agent-branch" role="separator" aria-label={view().text} title={view().note}>
+              <Icon name="Hierarchy" size={13} />
+              <span class="agent-handoff-text sb-ellipsis">{view().title}</span>
+              <span class="sb-rule" />
             </div>
           );
         })()}
