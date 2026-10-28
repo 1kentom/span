@@ -45,13 +45,6 @@
   --editor-active-line: #e9eef6;
   --editor-selection: #cbdcf1;
   --editor-guide: #e0e1e4;
-  --syntax-keyword: #267d81;
-  --syntax-string: #a34a90;
-  --syntax-function: #976319;
-  --syntax-number: #a16b25;
-  --syntax-type: #3d72b1;
-  --syntax-comment: #8b8d94;
-  --syntax-definition: #7b58ad;
 }
 
 .span-editor[data-theme="purple"] {
@@ -61,10 +54,6 @@
   --editor-active-line: #332a49;
   --editor-selection: #4c3a69;
   --editor-guide: #393046;
-  --syntax-keyword: #a6c8d4;
-  --syntax-string: #daa2cc;
-  --syntax-function: #e5c49a;
-  --syntax-type: #afa3ec;
 }
 
 .span-editor .cm-editor { height: 100%; background: var(--editor-bg); color: var(--editor-fg); }
@@ -99,15 +88,3 @@
 .span-editor .cm-tooltip { background: var(--editor-bg); color: var(--editor-fg); border: 1px solid var(--editor-guide); border-radius: 5px; font: 12px/20px Inter, sans-serif; }
 .span-editor .cm-searchMatch { background: #c4a35544; outline: 1px solid #c4a35577; }
 .span-editor .cm-searchMatch-selected { background: #c4a35588; }
-.span-editor .cm-tree-keyword, .span-editor .cm-tree-keyword-function, .span-editor .cm-tree-keyword-return, .span-editor .cm-tree-keyword-operator { color: var(--syntax-keyword, #78c8c7); }
-.span-editor .cm-tree-string, .span-editor .cm-tree-string-special, .span-editor .cm-tree-character { color: var(--syntax-string, #cc8dcb); }
-.span-editor .cm-tree-function, .span-editor .cm-tree-function-call, .span-editor .cm-tree-method { color: var(--syntax-function, #d9ba7e); }
-.span-editor .cm-tree-number, .span-editor .cm-tree-constant-builtin, .span-editor .cm-tree-boolean { color: var(--syntax-number, #d9ba7e); }
-.span-editor .cm-tree-type, .span-editor .cm-tree-type-builtin, .span-editor .cm-tree-constructor { color: var(--syntax-type, #80b7ec); }
-.span-editor .cm-tree-comment { color: var(--syntax-comment, #72777c); font-style: italic; }
-.span-editor .cm-tree-variable-parameter { color: var(--syntax-definition, #af9bf2); }
-.span-editor .cm-tree-text-title { color: var(--syntax-function, #d9ba7e); font-weight: 600; }
-.span-editor .cm-tree-text-strong { font-weight: 700; }
-.span-editor .cm-tree-text-emphasis { font-style: italic; }
-.span-editor .cm-tree-text-literal { color: var(--syntax-string, #cc8dcb); }
-.span-editor .cm-tree-text-uri, .span-editor .cm-tree-text-reference { color: var(--syntax-type, #80b7ec); text-decoration: underline; }

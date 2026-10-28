@@ -12,11 +12,13 @@
 mod client;
 mod document;
 mod error;
+mod navigation;
 mod protocol;
 pub mod servers;
 mod trace;
 mod transport;
 
+pub use bytes::Bytes;
 pub use client::{
     build_initialize_params, client_capabilities, path_to_uri, LspClient, ServerEvent,
 };

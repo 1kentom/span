@@ -162,12 +162,16 @@ pub struct HoverDto {
 }
 
 /// `path` is workspace relative with forward slashes when inside the workspace,
-/// otherwise the absolute path.
+/// otherwise the absolute path (or the server URI, for `jdt:` class files). `external`
+/// marks everything outside the workspace and library files inside it (`node_modules`):
+/// those are read only and never become buffers. `display_path` is what to show.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LocationDto {
     pub path: String,
     pub range: RangeDto,
+    pub external: bool,
+    pub display_path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -189,8 +193,8 @@ pub struct DiagnosticDto {
     pub code: Option<String>,
 }
 
-/// What a ready server advertised. `rename` and `references` are reported for
-/// completeness; this backend exposes no commands for them yet.
+/// What a ready server advertised, as reported by `lsp_status`. A request the server did
+/// not advertise answers `Unsupported` without reaching it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilitiesDto {
@@ -200,7 +204,20 @@ pub struct CapabilitiesDto {
     pub formatting: bool,
     pub range_formatting: bool,
     pub rename: bool,
+    /// `renameProvider.prepareProvider`.
+    pub prepare_rename: bool,
     pub references: bool,
+    pub implementation: bool,
+    pub type_definition: bool,
+    pub declaration: bool,
+    pub document_symbol: bool,
+    pub workspace_symbol: bool,
+    pub call_hierarchy: bool,
+    /// Not part of `lsp_types::ServerCapabilities`: filled from the raw `initialize`
+    /// result by the service (always false from `From<&ServerCapabilities>`).
+    pub type_hierarchy: bool,
+    pub document_highlight: bool,
+    pub signature_help: bool,
 }
 
 fn provider<T>(value: &Option<lsp::OneOf<bool, T>>) -> bool {
@@ -222,7 +239,35 @@ impl From<&lsp::ServerCapabilities> for CapabilitiesDto {
             formatting: provider(&c.document_formatting_provider),
             range_formatting: provider(&c.document_range_formatting_provider),
             rename: provider(&c.rename_provider),
+            prepare_rename: matches!(
+                &c.rename_provider,
+                Some(lsp::OneOf::Right(lsp::RenameOptions {
+                    prepare_provider: Some(true),
+                    ..
+                }))
+            ),
             references: provider(&c.references_provider),
+            implementation: !matches!(
+                &c.implementation_provider,
+                None | Some(lsp::ImplementationProviderCapability::Simple(false))
+            ),
+            type_definition: !matches!(
+                &c.type_definition_provider,
+                None | Some(lsp::TypeDefinitionProviderCapability::Simple(false))
+            ),
+            declaration: !matches!(
+                &c.declaration_provider,
+                None | Some(lsp::DeclarationCapability::Simple(false))
+            ),
+            document_symbol: provider(&c.document_symbol_provider),
+            workspace_symbol: provider(&c.workspace_symbol_provider),
+            call_hierarchy: !matches!(
+                &c.call_hierarchy_provider,
+                None | Some(lsp::CallHierarchyServerCapability::Simple(false))
+            ),
+            type_hierarchy: false,
+            document_highlight: provider(&c.document_highlight_provider),
+            signature_help: c.signature_help_provider.is_some(),
         }
     }
 }
@@ -376,6 +421,24 @@ pub struct ServerStatusDto {
     pub epoch: u64,
     /// Only known while the server is ready.
     pub capabilities: Option<CapabilitiesDto>,
+    /// Human name, e.g. "Java (Eclipse JDT LS)".
+    pub display_name: String,
+    /// Human language names the server covers.
+    pub languages: Vec<String>,
+    /// Size of the installed files on disk, when installed.
+    pub installed_size_bytes: Option<u64>,
+    /// The runtime the server needs (Node.js or a JDK), with what was found.
+    pub runtime: Option<super::intel::RuntimeDto>,
+    /// Plain-language sentence for failed states.
+    pub failure_reason: Option<String>,
+    /// The technical error behind `failure_reason`.
+    pub failure_details: Option<String>,
+    /// Per-workspace trust for servers that execute project build code.
+    pub trust: super::intel::TrustDto,
+    /// Work the server reports it is doing (indexing, importing), for late subscribers.
+    pub activity: Vec<super::intel::ActivityDto>,
+    /// Overall progress while this server is installing.
+    pub install: Option<super::intel::InstallStatusDto>,
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +458,8 @@ pub enum InstallPhase {
     Finalizing,
     Finished,
     Failed,
+    /// The user cancelled; the server is back to needing an install.
+    Cancelled,
 }
 
 // ---------------------------------------------------------------------------
@@ -483,11 +548,7 @@ pub fn display_path(root: &Path, path: &Path) -> String {
 }
 
 fn location(root: &Path, uri: &lsp::Uri, range: lsp::Range) -> Option<LocationDto> {
-    let path = tauri::Url::parse(uri.as_str()).ok()?.to_file_path().ok()?;
-    Some(LocationDto {
-        path: display_path(root, &path),
-        range: range.into(),
-    })
+    Some(super::navigation::locate(root, uri.as_str(), range))
 }
 
 pub fn map_definition(root: &Path, response: Option<GotoDefinitionResponse>) -> Vec<LocationDto> {

@@ -98,6 +98,11 @@ pub fn display_path_text(root: &str, path: &str) -> String {
     path
 }
 
+/// Whether `path` is `root` or below it, across the Windows and POSIX spellings.
+pub fn is_inside_text(root: &str, path: &str) -> bool {
+    display_path_text(root, path) != normalize_path_text(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

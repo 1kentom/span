@@ -43,7 +43,7 @@ export function serverForBuffer(path: string): LanguageServerId | undefined {
 
 export const serverLabels: Readonly<Record<LanguageServerId, string>> = {
   vtsls: "vtsls", html: "HTML language server", css: "CSS language server", json: "JSON language server",
-  "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright", jdtls: "JDT LS",
+  "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright", jdtls: "Java (Eclipse JDT LS)",
 };
 
 /** CodeMirror offsets are UTF-16 code units, exactly like LSP characters, so this only clamps. */

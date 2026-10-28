@@ -335,9 +335,14 @@ pub fn initialization_options(id: ServerId, run_project_code: bool) -> serde_jso
         // https://github.com/eclipse-jdtls/eclipse.jdt.ls/wiki/Running-the-JAVA-LS-server-from-the-command-line#initialize-request
         // (`bundles`, `workspaceFolders`, `settings`). Workspace folders are
         // supplied by the client per project.
+        // `classFileContentsSupport` makes JDT LS answer definitions inside libraries with
+        // `jdt://` URIs that `java/classFileContents` can read, instead of opening files.
         ServerId::Jdtls if !run_project_code => json!({
             "bundles": [],
+            "extendedClientCapabilities": { "classFileContentsSupport": true },
             "settings": { "java": {
+                // Off by default in JDT LS even though signatureHelpProvider is advertised.
+                "signatureHelp": { "enabled": true },
                 "import": {
                     "gradle": { "enabled": false, "wrapper": { "enabled": false } },
                     "maven": { "enabled": false },
@@ -346,7 +351,11 @@ pub fn initialization_options(id: ServerId, run_project_code: bool) -> serde_jso
                 "configuration": { "updateBuildConfiguration": "disabled" },
             } },
         }),
-        ServerId::Jdtls => json!({ "bundles": [], "settings": { "java": {} } }),
+        ServerId::Jdtls => json!({
+            "bundles": [],
+            "extendedClientCapabilities": { "classFileContentsSupport": true },
+            "settings": { "java": { "signatureHelp": { "enabled": true } } },
+        }),
         // Servers whose spec options do not depend on the flag.
         _ => spec(id).initialization_options,
     }
@@ -814,7 +823,7 @@ mod tests {
         assert_eq!(java["settings"]["java"]["autobuild"]["enabled"], false);
         assert_eq!(
             initialization_options(ServerId::Jdtls, true)["settings"]["java"],
-            json!({})
+            json!({ "signatureHelp": { "enabled": true } })
         );
         // The spec carries the permissive options; other servers ignore the flag.
         assert_eq!(
