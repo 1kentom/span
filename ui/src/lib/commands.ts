@@ -1,7 +1,8 @@
 /** Editor actions are shared by the command palette, key dispatcher, and settings. */
 export const actionDefinitions = [
   { id: "quickOpen", label: "Go to File", category: "Navigation", keys: ["Mod+P"], inputs: true },
-  { id: "focusFiles", label: "Show Files", category: "Navigation", keys: ["Mod+E", "Mod+Shift+E"], inputs: true },
+  { id: "toggleFiles", label: "Toggle Files", category: "Navigation", keys: ["Mod+E"], inputs: true },
+  { id: "focusFiles", label: "Show Files", category: "Navigation", keys: ["Mod+Shift+E"], inputs: true },
   { id: "openFile", label: "Open File", category: "File", keys: [], inputs: true },
   { id: "commandPalette", label: "Show All Commands", category: "Navigation", keys: ["Mod+Shift+P"], inputs: true },
   { id: "findInFile", label: "Find in File", category: "Editor", keys: ["Mod+F"], inputs: false },
@@ -58,7 +59,7 @@ export function resolveKeybindings(overrides: KeybindingOverrides = {}, platform
   return Object.fromEntries(actionDefinitions.map(action => {
     const defaults: readonly string[] = action.id === "quickOpen" && platform === "mac" ? [...action.keys, "Ctrl+P"] : action.keys;
     // A newly introduced default must not invalidate an existing explicit binding.
-    const inherited = action.id === "focusFiles" ? defaults.filter(key => !claimed.has(normalizeShortcut(key, platform))) : defaults;
+    const inherited = action.id === "toggleFiles" || action.id === "focusFiles" ? defaults.filter(key => !claimed.has(normalizeShortcut(key, platform))) : defaults;
     const keys = Object.hasOwn(overrides, action.id) ? overrides[action.id] : inherited;
     return [action.id, [...new Set(keys.map(key => normalizeShortcut(key, platform)).filter((key): key is string => Boolean(key)))]];
   })) as ResolvedKeybindings;

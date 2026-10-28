@@ -46,7 +46,8 @@ describe("keyboard shortcut preferences", () => {
     expect(table.querySelector('[data-command="save"] .kb-source>span')?.textContent).toBe("User");
     expect(table.querySelector('[data-command="quickOpen"] .kb-source>span')?.textContent).toBe("Default");
     expect(table.querySelector('[data-command="openFile"]')?.textContent).toContain("Open File");
-    expect([...table.querySelectorAll('[data-command="focusFiles"] kbd')].map(key => key.textContent)).toEqual(["Ctrl", "E", "Ctrl", "Shift", "E"]);
+    expect([...table.querySelectorAll('[data-command="toggleFiles"] kbd')].map(key => key.textContent)).toEqual(["Ctrl", "E"]);
+    expect([...table.querySelectorAll('[data-command="focusFiles"] kbd')].map(key => key.textContent)).toEqual(["Ctrl", "Shift", "E"]);
     expect(table.querySelector('[data-command="toggleWordWrap"] .kb-context')?.textContent).toBe("Editor or non-text focus");
     expect(root.querySelector('input[aria-label*="When"]')).toBeNull();
     expect(root.textContent).toContain("Custom When expressions are not supported");

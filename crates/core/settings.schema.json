@@ -80,6 +80,7 @@
       "propertyNames": {
         "enum": [
           "quickOpen",
+          "toggleFiles",
           "focusFiles",
           "openFile",
           "commandPalette",

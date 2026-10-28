@@ -238,7 +238,7 @@ export type InstalledAgent_Serialize = {
 
 export type MarkdownView = "source" | "preview" | "both";
 
-export type NativeAction = "quickOpen" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
