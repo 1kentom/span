@@ -30,12 +30,23 @@ pub struct LanguageServerSettings {
     /// procedural macros, `cargo check` on save, Gradle and Maven import). Off by default
     /// because opening an untrusted project would otherwise execute its code.
     pub run_project_code: bool,
+    /// Canonical absolute workspace roots whose build code may run (per-workspace trust).
+    /// `run_project_code` stays as a global override meaning "trust every folder".
+    pub trusted_workspaces: Vec<String>,
 }
 
 /// Settings under `languageServers` that choose executables or trigger downloads. They are
 /// honoured from user settings only: a workspace file is untrusted input.
-pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] =
-    &["autoInstall", "javaHome", "nodePath", "runProjectCode"];
+pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] = &[
+    "autoInstall",
+    "javaHome",
+    "nodePath",
+    "runProjectCode",
+    "trustedWorkspaces",
+];
+
+/// At most this many trusted workspace roots are kept.
+pub const MAX_TRUSTED_WORKSPACES: usize = 200;
 
 /// Absolute on any OS, judged from the text alone: `/x`, `C:\x`, `C:/x` or `\\server\share`.
 pub(crate) fn is_absolute_path_text(path: &str) -> bool {
@@ -86,6 +97,23 @@ impl LanguageServerSettings {
                         "languageServers.{name} must be an absolute path"
                     )));
                 }
+            }
+        }
+        if self.trusted_workspaces.len() > MAX_TRUSTED_WORKSPACES {
+            return Err(CoreError::Settings(format!(
+                "languageServers.trustedWorkspaces holds at most {MAX_TRUSTED_WORKSPACES} entries"
+            )));
+        }
+        for root in &self.trusted_workspaces {
+            if root.trim().is_empty()
+                || root.len() > 4096
+                || root.chars().any(char::is_control)
+                || !is_absolute_path_text(root)
+            {
+                return Err(CoreError::Settings(
+                    "languageServers.trustedWorkspaces entries must be absolute paths without control characters"
+                        .into(),
+                ));
             }
         }
         Ok(())
@@ -330,6 +358,7 @@ pub const COMMAND_IDS: &[&str] = &[
     "renameSymbol",
     "goBack",
     "goForward",
+    "focusBreadcrumbs",
 ];
 
 /// Code navigation commands introduced after shortcuts could already be saved. Like Toggle Files,
@@ -354,6 +383,7 @@ const INHERITED_DEFAULT_IDS: &[&str] = &[
     "renameSymbol",
     "goBack",
     "goForward",
+    "focusBreadcrumbs",
 ];
 
 /// Themes that can carry `editor.syntaxColors`.
@@ -619,6 +649,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("renameSymbol", vec!["F2"]),
         ("goBack", vec!["Mod+Alt+ArrowLeft"]),
         ("goForward", vec!["Mod+Alt+ArrowRight"]),
+        ("focusBreadcrumbs", vec!["Mod+Shift+."]),
     ];
     let claimed = overrides
         .values()
@@ -834,7 +865,7 @@ pub(crate) fn canonical_key(key: &str) -> Option<String> {
 
 /// Edits one setting in `scope`. Besides top-level keys it accepts exactly
 /// `languageServers.enabled.<serverId>` and, in user scope only,
-/// `languageServers.autoInstall`, `languageServers.runProjectCode`, `languageServers.javaHome`
+/// `languageServers.autoInstall`, `languageServers.runProjectCode`, `languageServers.trustedWorkspaces`, `languageServers.javaHome`
 /// and `languageServers.nodePath`.
 /// A missing value removes the key.
 pub(crate) fn patch_in_scope(
@@ -915,6 +946,32 @@ pub(crate) fn patch_in_scope(
                 return Err(CoreError::Settings(format!(
                     "languageServers.{rest} must be true or false"
                 )))
+            }
+            ("trustedWorkspaces", Some(Value::Array(items))) => {
+                let roots = items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::String(s) => Ok(s),
+                        _ => Err(CoreError::Settings(
+                            "languageServers.trustedWorkspaces must be an array of strings".into(),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let candidate = LanguageServerSettings {
+                    trusted_workspaces: roots.clone(),
+                    ..Default::default()
+                };
+                candidate.validate()?;
+                if roots.is_empty() {
+                    servers.remove(rest);
+                } else {
+                    servers.insert(rest.into(), serde_json::json!(roots));
+                }
+            }
+            ("trustedWorkspaces", Some(_)) => {
+                return Err(CoreError::Settings(
+                    "languageServers.trustedWorkspaces must be an array of strings".into(),
+                ))
             }
             (_, Some(Value::String(path))) => {
                 let candidate = LanguageServerSettings {
@@ -1657,6 +1714,62 @@ mod language_server_key_tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("user settings only"));
+    }
+
+    #[test]
+    fn trusted_workspaces_are_user_only_validated_and_dotted() {
+        let roots = r#"["/home/me/a", "C:\\work\\b"]"#;
+        let t = set(User, "{}", "languageServers.trustedWorkspaces", Some(roots)).unwrap();
+        let s = load_with_texts(&t, "{}").unwrap().language_servers;
+        assert_eq!(s.trusted_workspaces, vec!["/home/me/a", "C:\\work\\b"]);
+        // A workspace file cannot trust itself: ignored on read, refused on write.
+        let ws = r#"{ "languageServers": { "trustedWorkspaces": ["/home/me/evil"] } }"#;
+        assert!(load_with_texts("{}", ws)
+            .unwrap()
+            .language_servers
+            .trusted_workspaces
+            .is_empty());
+        assert!(reject_user_only(ws).is_err());
+        assert!(set(
+            Workspace,
+            "{}",
+            "languageServers.trustedWorkspaces",
+            Some(roots)
+        )
+        .is_err());
+        // Removal and an empty list drop the key.
+        let back = set(User, &t, "languageServers.trustedWorkspaces", None).unwrap();
+        assert!(!back.contains("trustedWorkspaces"), "{back}");
+        let empty = set(User, &t, "languageServers.trustedWorkspaces", Some("[]")).unwrap();
+        assert!(!empty.contains("trustedWorkspaces"), "{empty}");
+        // Validation: absolute paths, string entries, no control characters, at most 200.
+        let many = serde_json::to_string(
+            &(0..=MAX_TRUSTED_WORKSPACES)
+                .map(|i| format!("/w/{i}"))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        for bad in [
+            r#"["relative/dir"]"#.to_string(),
+            r#"[""]"#.to_string(),
+            r#"["/a\u0000b"]"#.to_string(),
+            r#"["/a\nb"]"#.to_string(),
+            "[1]".to_string(),
+            "\"/a\"".to_string(),
+            many.clone(),
+        ] {
+            assert!(
+                set(User, "{}", "languageServers.trustedWorkspaces", Some(&bad)).is_err(),
+                "{bad}"
+            );
+        }
+        let file = format!(r#"{{ "languageServers": {{ "trustedWorkspaces": {many} }} }}"#);
+        assert!(load_with_texts(&file, "{}").is_err());
+        assert!(load_with_texts(
+            r#"{ "languageServers": { "trustedWorkspaces": ["rel"] } }"#,
+            "{}"
+        )
+        .is_err());
     }
 
     #[test]

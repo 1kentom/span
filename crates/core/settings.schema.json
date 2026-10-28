@@ -117,7 +117,8 @@
           "showTypeHierarchy",
           "renameSymbol",
           "goBack",
-          "goForward"
+          "goForward",
+          "focusBreadcrumbs"
         ]
       },
       "additionalProperties": {
@@ -416,6 +417,18 @@
           "type": "boolean",
           "default": false,
           "description": "Let rust-analyzer and JDT LS run the project's own build code (build scripts, procedural macros, cargo check on save, Gradle and Maven import). Honoured only in your user settings; ignored in a workspace .span/settings.jsonc."
+        },
+        "trustedWorkspaces": {
+          "type": "array",
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 4096,
+            "description": "Canonical absolute workspace root."
+          },
+          "default": [],
+          "description": "Workspace roots whose build code (Maven and Gradle import, build scripts, procedural macros) may run in rust-analyzer and JDT LS. Honoured only in your user settings; ignored in a workspace .span/settings.jsonc. runProjectCode trusts every folder."
         },
         "javaHome": {
           "type": [
