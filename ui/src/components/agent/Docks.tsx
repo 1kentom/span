@@ -75,6 +75,10 @@ type QuestionDockProps = DockFocusProps & {
   /** For example "2 of 3". */
   step?: string;
   prompt: string;
+  /** The step's own question text, drawn inside the card right under the prompt. */
+  detail?: string;
+  /** Why the last answer was refused, drawn inside the card above the answer row. */
+  error?: string;
   options: QuestionOption[];
   allowText?: boolean;
   /** Only the oldest open request answers number keys. */
@@ -115,19 +119,23 @@ export function QuestionDock(props: QuestionDockProps) {
         <span class="sb-flex" />
         <Show when={props.step}><span class="sb-mono dim">{props.step}</span></Show>
       </div>
-      <div class="sb-dock-prompt">{props.prompt}</div>
-      <TabHint show={!focus.focused()} />
-      <For each={props.options}>
-        {(option, index) => (
-          <button class="sb-q-option" onClick={() => props.onAnswer({ optionId: option.id })}>
-            <span class="sb-num" aria-hidden="true">{index() + 1}</span>
-            <span class="sb-option-text">
-              <span class="sb-option-name">{option.label}</span>
-              <Show when={option.description}><span class="sb-sub wrap">{option.description}</span></Show>
-            </span>
-          </button>
-        )}
-      </For>
+      <div class="sb-dock-scroll">
+        <div class="sb-dock-prompt">{props.prompt}</div>
+        <Show when={props.detail}><div class="sb-dock-question">{props.detail}</div></Show>
+        <TabHint show={!focus.focused()} />
+        <For each={props.options}>
+          {(option, index) => (
+            <button class="sb-q-option" onClick={() => props.onAnswer({ optionId: option.id })}>
+              <span class="sb-num" aria-hidden="true">{index() + 1}</span>
+              <span class="sb-option-text">
+                <span class="sb-option-name">{option.label}</span>
+                <Show when={option.description}><span class="sb-sub wrap">{option.description}</span></Show>
+              </span>
+            </button>
+          )}
+        </For>
+      </div>
+      <Show when={props.error}><p class="sb-fine sb-dock-error" role="alert">{props.error}</p></Show>
       <Show when={props.allowText}>
         <form class="sb-q-text" onSubmit={submit}>
           <input class="sb-input" aria-label="Your own answer" placeholder="Type your own answer" value={text()} onInput={(event) => setText(event.currentTarget.value)} />
