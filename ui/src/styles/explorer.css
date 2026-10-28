@@ -1,0 +1,34 @@
+/* Explorer selection, inline editor, drag feedback and the New popup. Values follow the design reference, colours come from app tokens. */
+.tree-row.sel{background:var(--sel)}
+.tree-row.cut{opacity:.5}
+.tree-row:focus-visible{box-shadow:inset 0 0 0 1px var(--accent);outline:none}
+.tree-row.droptgt{background:var(--hover);box-shadow:inset 0 0 0 1px var(--accent)}
+.tree-row.dropin{background:var(--hover)}
+.file-tree{position:relative;outline:none;border-radius:6px}
+.file-tree.dropall{box-shadow:inset 0 0 0 1px var(--accent)}
+.tree-edit-row{position:relative;display:flex;align-items:center;gap:5px;height:26px;padding-right:7px;border-radius:5px;background:var(--sel);overflow:visible;z-index:4}
+.tree-edit-input{flex:1;min-width:0;height:22px;margin:0 -4px 0 0;padding:0 5px;border:1px solid var(--accent);border-radius:6px;background:var(--field);color:var(--text);font:inherit;outline:none;user-select:text;-webkit-user-select:text}
+.tree-edit-input[aria-invalid=true]{border-color:var(--error)}
+.tree-edit-input.shake{animation:tree-shake .28s}
+.tree-edit-msg{position:absolute;left:8px;right:2px;top:24px;z-index:8;padding:6px 8px;border:1px solid var(--border);border-radius:0 0 6px 6px;background:var(--popup);color:var(--text);font-size:12px;line-height:16px;white-space:normal;box-shadow:var(--shadow)}
+.tree-edit-msg.error{border-color:var(--error)}
+.tree-edit-msg.warn{border-color:var(--warning)}
+@keyframes tree-shake{25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+.tree-notice{padding:4px 12px;color:var(--dim);font-size:12px}
+.explorer-drag-pill{position:fixed;z-index:300;pointer-events:none;padding:3px 9px;border-radius:6px;background:var(--popup);border:1px solid var(--border);color:var(--text);font:500 12px/18px var(--ui-font-family,Inter,system-ui,sans-serif);white-space:nowrap;box-shadow:var(--shadow)}
+.np-scrim{position:fixed;inset:0;z-index:1100}
+.np{position:fixed;left:-9999px;top:0;width:264px;max-width:calc(100vw - 16px);background:var(--popup);color:var(--text);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:4px;font-size:13px;line-height:18px;animation:np-in .12s cubic-bezier(.2,0,0,1);transform-origin:top left;outline:none;z-index:1101}
+.np *{box-sizing:border-box}
+.np-h{display:flex;align-items:center;gap:6px;height:26px;padding:0 6px 0 8px;color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden}
+.np-h b{color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.np-q{display:block;width:100%;height:26px;margin:2px 0 4px;padding:0 8px;border:1px solid var(--border);border-radius:6px;background:var(--field);color:var(--text);font:inherit;outline:none}
+.np-q:focus{border-color:var(--accent)}
+.np-list{max-height:min(330px,calc(100vh - 120px));overflow:auto;margin:0;padding:0;list-style:none}
+.np-i{display:flex;align-items:center;gap:8px;width:100%;height:26px;padding:0 8px;border:0;border-radius:6px;background:none;color:inherit;font:inherit;text-align:left;cursor:default;white-space:nowrap}
+.np-i.on{background:var(--accent);color:var(--strong,#fff)}
+.np-l{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.np-d{flex:none;color:var(--dim);font-family:var(--editor-font-family,monospace);font-size:11.5px}
+.np-sep{height:1px;margin:4px 6px;background:var(--border)}
+.np-none{padding:6px 8px 8px;color:var(--dim)}
+@keyframes np-in{from{opacity:0;transform:scale(.97)}}
+@media (prefers-reduced-motion:reduce){.np{animation:none}.tree-edit-input.shake{animation:none}}

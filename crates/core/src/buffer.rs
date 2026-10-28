@@ -234,11 +234,16 @@ pub(crate) fn language(path: &str) -> &'static str {
         .file_name()
         .and_then(|name| name.to_str())
         .map(str::to_ascii_lowercase);
-    if name
-        .as_deref()
-        .is_some_and(|name| name == ".env" || name.starts_with(".env."))
-    {
-        return "dotenv";
+    if let Some(name) = name.as_deref() {
+        if name == ".env" || name.starts_with(".env.") {
+            return "dotenv";
+        }
+        if name == "dockerfile" || name.starts_with("dockerfile.") {
+            return "dockerfile";
+        }
+        if let Some(language) = language_by_filename(name) {
+            return language;
+        }
     }
     match path
         .extension()
@@ -246,22 +251,77 @@ pub(crate) fn language(path: &str) -> &'static str {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("ts" | "tsx" | "mts" | "cts") => "typescript",
-        Some("js" | "jsx" | "mjs" | "cjs") => "javascript",
-        Some("json" | "jsonc") => "json",
-        Some("md" | "markdown" | "mdown" | "mkd" | "mdx") => "markdown",
-        Some("rs") => "rust",
-        Some("py" | "pyi") => "python",
-        Some("java" | "jav") => "java",
-        Some("yaml" | "yml") => "yaml",
-        Some("css") => "css",
-        Some("scss") => "scss",
-        Some("less") => "less",
-        Some("html" | "htm") => "html",
-        Some("vue") => "vue",
-        Some("svelte") => "svelte",
-        Some("toml") => "toml",
-        Some("sh" | "bash" | "zsh") => "shell",
+        Some(extension) => language_by_extension(extension),
+        None => "text",
+    }
+}
+
+/// Exact (lowercased) file names. Keep the arms one per line: the UI test parses this table.
+fn language_by_filename(name: &str) -> Option<&'static str> {
+    match name {
+        "go.mod" | "go.work" => Some("gomod"),
+        "gemfile" | "rakefile" | "podfile" => Some("ruby"),
+        "containerfile" => Some("dockerfile"),
+        "makefile" | "gnumakefile" => Some("makefile"),
+        "cmakelists.txt" => Some("cmake"),
+        ".bashrc" | ".bash_profile" | ".bash_aliases" | ".bash_logout" => Some("shell"),
+        ".zshrc" | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" => Some("shell"),
+        ".profile" | ".envrc" => Some("shell"),
+        _ => None,
+    }
+}
+
+/// Lowercased extensions. Keep the arms one per line: the UI test parses this table.
+fn language_by_extension(extension: &str) -> &'static str {
+    match extension {
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "json" | "jsonc" => "json",
+        "md" | "markdown" | "mdown" | "mkd" | "mdx" => "markdown",
+        "rs" => "rust",
+        "py" | "pyi" => "python",
+        "java" | "jav" => "java",
+        "yaml" | "yml" => "yaml",
+        "css" => "css",
+        "scss" => "scss",
+        "less" => "less",
+        "html" | "htm" => "html",
+        "vue" => "vue",
+        "svelte" => "svelte",
+        "toml" => "toml",
+        "sh" | "bash" | "zsh" | "fish" => "shell",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ipp" | "inl" => "cpp",
+        "cs" | "csx" => "csharp",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "php" | "phtml" => "php",
+        "rb" | "rake" | "gemspec" | "ru" => "ruby",
+        "sql" => "sql",
+        "xml" | "xsd" | "xsl" | "xslt" | "plist" | "csproj" | "props" | "targets" => "xml",
+        "dockerfile" => "dockerfile",
+        "mk" => "makefile",
+        "cmake" => "cmake",
+        "lua" => "lua",
+        "dart" => "dart",
+        "r" => "r",
+        "scala" | "sbt" | "sc" => "scala",
+        "groovy" | "gradle" => "groovy",
+        "pl" | "pm" => "perl",
+        "ps1" | "psm1" | "psd1" => "powershell",
+        "bat" | "cmd" => "batch",
+        "ini" | "cfg" | "conf" | "properties" => "ini",
+        "proto" => "proto",
+        "graphql" | "gql" => "graphql",
+        "tf" | "tfvars" | "hcl" => "terraform",
+        "zig" => "zig",
+        "hs" => "haskell",
+        "ex" | "exs" => "elixir",
+        "erl" => "erlang",
+        "clj" | "cljs" | "edn" => "clojure",
+        "m" | "mm" => "objectivec",
+        "diff" | "patch" => "diff",
         _ => "text",
     }
 }
@@ -471,6 +531,134 @@ mod language_tests {
         assert_eq!(language("a.py"), "python");
         assert_eq!(language(".env.local"), "dotenv");
         assert_eq!(language("notes.unknown"), "text");
-        assert_eq!(language("Makefile"), "text");
+        assert_eq!(language("LICENSE"), "text");
+        assert_eq!(language("a.svg"), "text");
+    }
+    const EXTENSIONS: &[(&str, &[&str])] = &[
+        ("go", &["go"]),
+        ("c", &["c", "h"]),
+        (
+            "cpp",
+            &[
+                "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ipp", "inl",
+            ],
+        ),
+        ("csharp", &["cs", "csx"]),
+        ("kotlin", &["kt", "kts"]),
+        ("swift", &["swift"]),
+        ("php", &["php", "phtml"]),
+        ("ruby", &["rb", "rake", "gemspec", "ru"]),
+        ("sql", &["sql"]),
+        (
+            "xml",
+            &[
+                "xml", "xsd", "xsl", "xslt", "plist", "csproj", "props", "targets",
+            ],
+        ),
+        ("dockerfile", &["dockerfile"]),
+        ("makefile", &["mk"]),
+        ("cmake", &["cmake"]),
+        ("lua", &["lua"]),
+        ("dart", &["dart"]),
+        ("r", &["r"]),
+        ("scala", &["scala", "sbt", "sc"]),
+        ("groovy", &["groovy", "gradle"]),
+        ("perl", &["pl", "pm"]),
+        ("powershell", &["ps1", "psm1", "psd1"]),
+        ("batch", &["bat", "cmd"]),
+        ("ini", &["ini", "cfg", "conf", "properties"]),
+        ("proto", &["proto"]),
+        ("graphql", &["graphql", "gql"]),
+        ("terraform", &["tf", "tfvars", "hcl"]),
+        ("zig", &["zig"]),
+        ("haskell", &["hs"]),
+        ("elixir", &["ex", "exs"]),
+        ("erlang", &["erl"]),
+        ("clojure", &["clj", "cljs", "edn"]),
+        ("objectivec", &["m", "mm"]),
+        ("diff", &["diff", "patch"]),
+        ("shell", &["sh", "bash", "zsh", "fish"]),
+    ];
+
+    #[test]
+    fn every_new_extension_maps_to_its_language_in_any_case() {
+        for (id, extensions) in EXTENSIONS {
+            for extension in *extensions {
+                assert_eq!(
+                    language(&format!("src/file.{extension}")),
+                    *id,
+                    "{extension}"
+                );
+                assert_eq!(
+                    language(&format!("SRC/FILE.{}", extension.to_ascii_uppercase())),
+                    *id,
+                    "{extension} uppercase"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_file_names_map_in_any_case() {
+        let names: &[(&str, &str)] = &[
+            ("go.mod", "gomod"),
+            ("go.work", "gomod"),
+            ("Gemfile", "ruby"),
+            ("Rakefile", "ruby"),
+            ("Podfile", "ruby"),
+            ("Dockerfile", "dockerfile"),
+            ("dockerfile", "dockerfile"),
+            ("Dockerfile.dev", "dockerfile"),
+            ("Containerfile", "dockerfile"),
+            ("api.dockerfile", "dockerfile"),
+            ("Makefile", "makefile"),
+            ("makefile", "makefile"),
+            ("GNUmakefile", "makefile"),
+            ("rules.mk", "makefile"),
+            ("CMakeLists.txt", "cmake"),
+            ("cmakelists.txt", "cmake"),
+            ("tools.cmake", "cmake"),
+            ("pom.xml", "xml"),
+            (".bashrc", "shell"),
+            (".zshrc", "shell"),
+            (".ZSHRC", "shell"),
+            (".zprofile", "shell"),
+            (".profile", "shell"),
+            ("config.fish", "shell"),
+            ("/work/app/go.sum", "text"),
+            ("notes.txt", "text"),
+            ("robots.txt", "text"),
+        ];
+        for (path, id) in names {
+            assert_eq!(language(path), *id, "{path}");
+        }
+    }
+
+    #[test]
+    fn svg_stays_an_image_asset_and_is_not_xml() {
+        assert_eq!(language("logo.svg"), "text");
+        assert_eq!(language("LOGO.SVG"), "text");
+    }
+
+    #[test]
+    fn previous_languages_keep_their_ids() {
+        for (path, id) in [
+            ("a.tsx", "typescript"),
+            ("a.mjs", "javascript"),
+            ("a.jsonc", "json"),
+            ("README.md", "markdown"),
+            ("a.pyi", "python"),
+            ("a.yml", "yaml"),
+            ("a.scss", "scss"),
+            ("a.less", "less"),
+            ("a.htm", "html"),
+            ("a.vue", "vue"),
+            ("a.svelte", "svelte"),
+            ("Cargo.toml", "toml"),
+            (".env", "dotenv"),
+            (".env.production", "dotenv"),
+        ] {
+            assert_eq!(language(path), id, "{path}");
+        }
     }
 }

@@ -1,0 +1,21 @@
+{
+  "quirk": "_auth/status_update carries the account email, plan and organization: its params are redacted from the protocol log (the method name stays), so neither log lines nor the Debug output of any event contain them.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session"
+    }
+  ],
+  "logsExclude": [
+    "person@example.com",
+    "Claude Max",
+    "ChatGPT Pro"
+  ],
+  "debugExclude": [
+    "person@example.com"
+  ]
+}

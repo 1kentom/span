@@ -303,11 +303,20 @@ pub(crate) fn event(session: &str, mut update: Value, root: &Path) -> Option<Age
             session_id,
             mode_id: text(&update, "currentModeId")?,
         },
-        "session_info_update" => AgentEvent::SessionInfo {
-            session_id,
-            title: text(&update, "title"),
-            updated_at: text(&update, "updatedAt"),
-        },
+        // Codex sends updates that carry only `_meta.codex.threadStatus`;
+        // those say nothing the UI shows, so they produce no event.
+        "session_info_update" => {
+            let title = text(&update, "title");
+            let updated_at = text(&update, "updatedAt");
+            if title.is_none() && updated_at.is_none() {
+                return None;
+            }
+            AgentEvent::SessionInfo {
+                session_id,
+                title,
+                updated_at,
+            }
+        }
         "usage_update" => AgentEvent::Usage {
             session_id,
             used: update.get("used").and_then(Value::as_u64)?,

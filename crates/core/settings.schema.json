@@ -91,6 +91,10 @@
           "save",
           "openFolder",
           "splitEditor",
+          "splitEditorDown",
+          "newFile",
+          "newFolder",
+          "newFromTemplate",
           "toggleProject",
           "toggleAssistant",
           "toggleTerminal",
@@ -324,6 +328,30 @@
               "description": "Offer the span-agents delegation tools to new sessions of agents that advertise MCP over HTTP. Delegated agents' permission requests and edits still go to you. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
             }
           }
+        },
+        "runTools": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Offer saved workspace run configuration tools to new agent sessions. Process runs still require a user approval for each request. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+            }
+          }
+        }
+      }
+    },
+    "updates": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": false,
+      "properties": {
+        "checkOnLaunch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Check once per launch whether a newer Span release or agent version exists. Check-only: nothing is downloaded or installed, and the request is a plain GET with no identifiers. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
         }
       }
     }

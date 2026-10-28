@@ -223,7 +223,7 @@ describe("hints follow dock focus", () => {
     expect(composerHints({ elicitation: { mode: "url" } }).question).toEqual([{ keys: [], label: DOCK_TAB_HINT }]);
   });
   it("leaves the idle and running rows alone", () => {
-    expect(composerHints({}).idle.length).toBe(5);
+    expect(composerHints({}).idle.length).toBe(4);
     expect(composerHints({}).running.map((hint) => hint.label)).toEqual(["Steer", "Queue", "Stop"]);
   });
 });

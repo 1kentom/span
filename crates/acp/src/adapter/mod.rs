@@ -129,6 +129,33 @@ pub(crate) struct SessionState {
     /// Options synthesised from legacy `modes` and `models`. Non-empty means
     /// changes are routed to `set_mode` and `set_model`.
     pub legacy: Vec<ConfigOption>,
+    /// The last config options the UI was sent, with mode changes applied.
+    pub config: Vec<ConfigOption>,
+    /// The current mode value that lets the agent run tools without asking,
+    /// while the permission bypass notice is raised.
+    pub bypass: Option<String>,
+}
+
+/// Mode and option values under which the agent runs tools without asking,
+/// as seen in live runs and adapter source: Claude `bypassPermissions`,
+/// Codex `agent-full-access` (and its `never` approval policy), Gemini
+/// `yolo`. Other values are not guessed.
+const BYPASS_VALUES: &[&str] = &["bypassPermissions", "agent-full-access", "yolo", "never"];
+/// The `noticeId` of the permission bypass notice.
+pub(crate) const BYPASS_NOTICE: &str = "span/permission-bypass";
+
+fn is_mode_option(option: &ConfigOption) -> bool {
+    option.category.as_deref() == Some("mode") || option.id == "mode"
+}
+
+/// The display name of `value` among the options, else the value itself.
+fn choice_name(options: &[ConfigOption], value: &str) -> String {
+    options
+        .iter()
+        .flat_map(|option| option.groups.iter().flat_map(|group| &group.choices))
+        .find(|choice| choice.value == value)
+        .map(|choice| choice.name.clone())
+        .unwrap_or_else(|| value.to_owned())
 }
 
 /// Agent specific rewriting. Every method defaults to changing nothing.
@@ -161,8 +188,9 @@ pub(crate) trait Quirks: Send + Sync {
     }
     /// Adjust an advertised sign-in method. `meta` is the method's `_meta`.
     fn auth_method(&self, _method: &mut AuthMethodInfo, _meta: Option<&Value>) {}
-    /// Shown with every `AuthRequired` from this agent.
-    fn auth_hint(&self) -> Option<AgentHint> {
+    /// Shown with an `AuthRequired` from this agent. `state` is the session
+    /// whose request failed, when there is one.
+    fn auth_hint(&self, _state: Option<&SessionState>) -> Option<AgentHint> {
         None
     }
     fn complete_hint(&self, _state: &SessionState, _stop_reason: &str) -> Option<AgentHint> {
@@ -240,10 +268,14 @@ impl Adapter {
     pub(crate) fn normalise(&self, session: &str, mut update: Value) -> Vec<AgentEvent> {
         // A new tool call without a status is pending; the typed schema drops
         // the default when it re-serializes, so it is restored here.
-        if text(&update, "sessionUpdate").as_deref() == Some("tool_call")
-            && update.get("status").is_none()
-        {
-            update["status"] = json!("pending");
+        // The same holds for kind `other` (an MCP tool call, for example).
+        if text(&update, "sessionUpdate").as_deref() == Some("tool_call") {
+            if update.get("status").is_none() {
+                update["status"] = json!("pending");
+            }
+            if update.get("kind").is_none() {
+                update["kind"] = json!("other");
+            }
         }
         let updates = self.with(session, |state| {
             let mut updates = self.quirks.update(state, update);
@@ -252,10 +284,72 @@ impl Adapter {
             }
             updates
         });
-        updates
+        let mut events = Vec::new();
+        for event in updates
             .into_iter()
             .filter_map(|update| map::event(session, update, &self.root))
-            .collect()
+        {
+            let extra = self.observe(session, &event);
+            events.push(event);
+            events.extend(extra);
+        }
+        events
+    }
+
+    /// Bookkeeping for a `Config` or `CurrentMode` event the UI is sent:
+    /// remembers the options and returns the permission bypass notice when
+    /// the mode starts letting the agent run tools without asking, or its
+    /// clearing when the mode becomes a safe one again. Other events return
+    /// nothing.
+    pub(crate) fn observe(&self, session: &str, event: &AgentEvent) -> Vec<AgentEvent> {
+        self.with(session, |state| {
+            let current = match event {
+                // An empty list (an agent answering a change with `{}`)
+                // says nothing about the mode.
+                AgentEvent::Config { options, .. } if options.is_empty() => return Vec::new(),
+                AgentEvent::Config { options, .. } => {
+                    state.config = options.clone();
+                    state
+                        .config
+                        .iter()
+                        .filter(|option| is_mode_option(option))
+                        .map(|option| option.current_value.clone())
+                        .find(|value| BYPASS_VALUES.contains(&value.as_str()))
+                }
+                AgentEvent::CurrentMode { mode_id, .. } => {
+                    for option in state.config.iter_mut().filter(|o| {
+                        is_mode_option(o)
+                            && o.groups
+                                .iter()
+                                .any(|g| g.choices.iter().any(|c| &c.value == mode_id))
+                    }) {
+                        option.current_value = mode_id.clone();
+                    }
+                    BYPASS_VALUES
+                        .contains(&mode_id.as_str())
+                        .then(|| mode_id.clone())
+                }
+                _ => return Vec::new(),
+            };
+            if current == state.bypass {
+                return Vec::new();
+            }
+            state.bypass = current.clone();
+            vec![match current {
+                Some(value) => AgentEvent::Notice {
+                    session_id: session.to_owned(),
+                    severity: "warning".into(),
+                    title: choice_name(&state.config, &value),
+                    description: None,
+                    notice_id: Some(BYPASS_NOTICE.into()),
+                    hint: Some(AgentHint::PermissionsBypassed),
+                },
+                None => AgentEvent::NoticeCleared {
+                    session_id: session.to_owned(),
+                    notice_id: BYPASS_NOTICE.into(),
+                },
+            }]
+        })
     }
 
     pub(crate) fn begin_turn(&self, session: &str, slash: bool) {
@@ -407,8 +501,13 @@ impl Adapter {
         self.quirks.auth_method(method, meta);
     }
 
-    pub(crate) fn auth_hint(&self) -> Option<AgentHint> {
-        self.quirks.auth_hint()
+    /// The hint for an `AuthRequired` raised by a request on `session`, or
+    /// by a connection level request when `None`.
+    pub(crate) fn auth_hint(&self, session: Option<&str>) -> Option<AgentHint> {
+        match session {
+            Some(session) => self.with(session, |state| self.quirks.auth_hint(Some(state))),
+            None => self.quirks.auth_hint(None),
+        }
     }
 }
 

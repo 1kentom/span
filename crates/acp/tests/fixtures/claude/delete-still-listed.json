@@ -1,0 +1,46 @@
+{
+  "quirk": "session/delete answers {} but the next session/list still has the session: the client hides ids the user deleted for the life of the connection and emits a notice with hint deletedStillListed.",
+  "drive": [
+    {
+      "do": "listSessions",
+      "expectSessions": [
+        "312c639d-40d2-4a77-9313-3c2610f18f00",
+        "419929cf-4f9d-43a2-8ffe-c751aaf52a38"
+      ]
+    },
+    {
+      "do": "deleteSession",
+      "session": "312c639d-40d2-4a77-9313-3c2610f18f00"
+    },
+    {
+      "do": "listSessions",
+      "expectSessions": [
+        "419929cf-4f9d-43a2-8ffe-c751aaf52a38"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "kind": "_step",
+      "do": "deleteSession"
+    },
+    {
+      "kind": "notice",
+      "sessionId": "312c639d-40d2-4a77-9313-3c2610f18f00",
+      "hint": "deletedStillListed"
+    },
+    {
+      "kind": "_step",
+      "do": "listSessions"
+    }
+  ],
+  "counts": [
+    {
+      "match": {
+        "kind": "notice",
+        "hint": "deletedStillListed"
+      },
+      "count": 1
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "quirk": "Only the default model's provider lacks credentials: the prompt fails with -32000 whose message already starts with Authentication required. The AuthRequired message is not prefixed twice, and because the model option offers another model the hint also suggests choosing one (runOpencodeAuthLoginOrSwitchModel).",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "Reply with exactly the single word PONG. Do not use any tools.",
+      "expectError": "provider authentication required"
+    }
+  ],
+  "events": [
+    {
+      "kind": "authRequired",
+      "message": "Authentication required: provider authentication required: {}",
+      "hint": "runOpencodeAuthLoginOrSwitchModel",
+      "agentMessage": null
+    },
+    {
+      "kind": "error"
+    }
+  ],
+  "absent": [
+    {
+      "kind": "authRequired",
+      "hint": "runOpencodeAuthLogin"
+    }
+  ]
+}

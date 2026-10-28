@@ -1,7 +1,8 @@
-import { For, Show } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import { Icon } from "../Icon";
 import type { ActionView, Level } from "./types";
 import { percent } from "./util";
+import { warningParts } from "../../lib/agent-view";
 
 function Actions(props: { actions: ActionView[] }) {
   return (
@@ -101,6 +102,38 @@ export function Notice(props: { text: string }) {
       <span class="sb-rule" />
       <span class="nowrap">{props.text}</span>
       <span class="sb-rule" />
+    </div>
+  );
+}
+
+/** Backtick spans in a notice read as inline code. */
+function withCode(text: string) {
+  return text.split(/(`[^`]+`)/).map((part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <code>{part.slice(1, -1)}</code> : part));
+}
+
+/** A warning from the agent in the feed: one quiet line, with the rest behind a chevron instead of a wall of text. */
+export function WarningNote(props: { title: string; description?: string }) {
+  const [open, setOpen] = createSignal(false);
+  const parts = () => warningParts(props.title, props.description);
+  return (
+    <div class="sb-warning-note" role="status">
+      <Icon name="Warning2" size={12} class="sb-glyph warn" />
+      <div class="sb-warning-body">
+        <p class="sb-warning-line">{withCode(parts().summary)}</p>
+        <Show when={parts().detail}>
+          {(detail) => (
+            <>
+              <Show when={open()}>
+                <p class="sb-warning-detail">{withCode(detail())}</p>
+              </Show>
+              <button type="button" class="sb-warning-more" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                {open() ? "Less" : "Details"}
+                <Icon name={open() ? "arrow-up3" : "arrow-down4"} size={9} />
+              </button>
+            </>
+          )}
+        </Show>
+      </div>
     </div>
   );
 }

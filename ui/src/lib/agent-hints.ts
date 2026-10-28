@@ -15,8 +15,9 @@ type HintInput = {
 
 /**
  * Keyboard hints per composer mode. Each entry names a binding that exists in code:
- * - idle: Enter sends, Shift+Enter inserts a newline (textarea default), ArrowUp at the start recalls earlier
- *   prompts (recallPrompt), "/" at the start of the prompt opens commands (isSlashQuery), Alt+Enter opens the attach menu.
+ * - idle: Enter sends, Shift+Enter inserts a newline (textarea default), "/" at the start of the prompt opens commands
+ *   (isSlashQuery), Alt+Enter opens the attach menu. ArrowUp still recalls earlier prompts (recallPrompt) and edits the
+ *   last queued message, but is deliberately not listed.
  * - running: Enter steers, Tab queues (AgentComposer keydown), Escape stops the turn (AgentPanel keydown).
  * - question: digits answer a numbered option and Escape declines (QuestionDock), Enter opens the page and Escape
  *   declines for a URL request (UrlDock).
@@ -40,7 +41,6 @@ export function composerHints(input: HintInput): Record<ComposerHintMode, Compos
     idle: [
       { keys: ["↵"], label: "Send" },
       { keys: ["⇧", "↵"], label: "Newline" },
-      { keys: ["↑"], label: "Earlier prompts" },
       { keys: ["/"], label: "Commands" },
       { keys: ["⌥", "↵"], label: "Attach" },
     ],

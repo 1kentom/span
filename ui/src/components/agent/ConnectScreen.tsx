@@ -2,7 +2,9 @@ import { For, Show, createEffect, createSignal, on, type JSX } from "solid-js";
 import { AnimatedLogo } from "../AnimatedLogo";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
+import type { AgentUpdate_Serialize as AgentUpdate } from "../../bindings";
 import type { FoundAgent, PresetRow, RegistryAgent } from "./types";
+import { UpdateBadge } from "./UpdateBadge";
 
 type ConnectScreenProps = {
   found: FoundAgent[];
@@ -10,6 +12,12 @@ type ConnectScreenProps = {
   /** Known launch commands for agents outside the registry. The command is shown exactly as it will run. */
   presets?: PresetRow[];
   onPreset?: (id: string) => void;
+  /** Check-only results from `agent_update_status`. Badges show only for a confirmed newer version. */
+  updates?: AgentUpdate[];
+  checkingUpdates?: boolean;
+  updateError?: string;
+  /** A user click. Nothing is checked until this runs. */
+  onCheckUpdates?: () => void;
   busy?: boolean;
   onConnect: (id: string) => void;
   onInstall: (id: string) => void;
@@ -40,6 +48,7 @@ export function ConnectScreen(props: ConnectScreenProps) {
     const value = command().trim();
     if (value) props.onCustom(value);
   };
+  const updateFor = (id: string) => props.updates?.find((update) => update.id === id);
   return (
     <section class="sb-connect" aria-labelledby="sb-connect-title">
       <header class="sb-hero">
@@ -58,6 +67,7 @@ export function ConnectScreen(props: ConnectScreenProps) {
                 <span class="sb-agent-text">
                   <span class="sb-agent-name">{agent.name}</span>
                   <Show when={agent.subtitle}><span class="sb-sub">{agent.subtitle}</span></Show>
+                  <UpdateBadge update={updateFor(agent.id)} />
                 </span>
                 <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${agent.name}`} onClick={() => props.onConnect(agent.id)}>Connect</button>
               </div>
@@ -76,6 +86,7 @@ export function ConnectScreen(props: ConnectScreenProps) {
                   <span class="sb-agent-text">
                     <span class="sb-agent-name">{preset.name}</span>
                     <Show when={preset.description}><span class="sb-sub">{preset.description}</span></Show>
+                    <UpdateBadge update={updateFor(preset.id)} />
                   </span>
                   <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${preset.name}`} onClick={() => props.onPreset?.(preset.id)}>Connect</button>
                 </div>
@@ -123,6 +134,14 @@ export function ConnectScreen(props: ConnectScreenProps) {
               </div>
             )}
           </For>
+        </div>
+      </Show>
+      <Show when={props.onCheckUpdates}>
+        <div class="sb-update-check">
+          <button class="sb-btn" disabled={props.checkingUpdates} onClick={() => props.onCheckUpdates?.()}>
+            {props.checkingUpdates ? "Checking for updates…" : "Check agents for updates"}
+          </button>
+          <Show when={props.updateError}><p class="sb-fine sb-update-error" role="alert">{props.updateError}</p></Show>
         </div>
       </Show>
       <div class="sb-custom">

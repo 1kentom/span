@@ -7,13 +7,23 @@
 //! `ToolPolicy::second` to 10 ms, so one policy second (the unit of
 //! `waitSeconds`, budgets and progress intervals) is 10 ms of real time.
 use serde_json::{json, Value};
-use span_acp::tools::{DelegationEvent, ToolPolicy, ToolServer, ToolServerConfig};
+use span_acp::tools::{
+    DelegationEvent, RunConfigurationEntry, RunToolBackend, RunToolCatalog, RunToolFuture,
+    ToolPolicy, ToolServer, ToolServerConfig,
+};
 use span_acp::{AgentCommand, AgentEvent, SessionEvent, SessionKey, SessionManager, SessionOrigin};
-use span_core::CoreWorkspace;
+use span_core::{CoreWorkspace, RunConfiguration};
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::mpsc,
+};
 
 struct Harness {
     directory: tempfile::TempDir,
@@ -82,6 +92,8 @@ impl Harness {
         ToolServerConfig {
             workspace: self.workspace.clone(),
             policy,
+            delegation_enabled: true,
+            run_tools: None,
             installed: vec![span_acp::InstalledAgent {
                 id: "gemini-cli".into(),
                 version: "1.0.0".into(),
@@ -94,7 +106,15 @@ impl Harness {
     /// A lead session with a bound server, started in the order the desktop
     /// would: server first (its entry goes into session/new), then bind.
     async fn lead(&self, connection: &str, policy: ToolPolicy) -> (SessionKey, ToolServer) {
-        let server = ToolServer::start(&self.manager, connection, self.config(policy))
+        self.lead_with_config(connection, self.config(policy)).await
+    }
+
+    async fn lead_with_config(
+        &self,
+        connection: &str,
+        config: ToolServerConfig,
+    ) -> (SessionKey, ToolServer) {
+        let server = ToolServer::start(&self.manager, connection, config)
             .await
             .expect("start span-agents");
         let lead = self
@@ -122,6 +142,161 @@ impl Harness {
         })
         .await
         .expect("matching event timed out")
+    }
+}
+
+#[derive(Default)]
+struct FakeRunTools {
+    entries: Arc<Mutex<Vec<RunConfigurationEntry>>>,
+    hold_start: bool,
+    wait_started: Arc<AtomicBool>,
+    wait_dropped: Arc<AtomicBool>,
+}
+impl FakeRunTools {
+    fn seeded() -> Self {
+        Self {
+            entries: Arc::new(Mutex::new(vec![RunConfigurationEntry {
+                configuration: RunConfiguration {
+                    id: "build".into(),
+                    name: "Build".into(),
+                    executable: "cargo".into(),
+                    args: vec!["check".into()],
+                    cwd: ".".into(),
+                    env: BTreeMap::from([("TOKEN".into(), "literal-secret-value".into())]),
+                },
+                revision: "revision-1".into(),
+                detected: false,
+            }])),
+            ..Self::default()
+        }
+    }
+
+    fn pending_start() -> Self {
+        Self {
+            hold_start: true,
+            ..Self::seeded()
+        }
+    }
+}
+impl RunToolBackend for FakeRunTools {
+    fn list_configurations<'a>(
+        &'a self,
+        _lead: &'a SessionKey,
+    ) -> RunToolFuture<'a, RunToolCatalog> {
+        let entries = self.entries.lock().unwrap().clone();
+        Box::pin(async move {
+            Ok(RunToolCatalog {
+                configurations: entries,
+                revision: "revision-1".into(),
+            })
+        })
+    }
+    fn read_configuration<'a>(
+        &'a self,
+        _lead: &'a SessionKey,
+        id: &'a str,
+    ) -> RunToolFuture<'a, Option<RunConfigurationEntry>> {
+        let entry = self
+            .entries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|entry| entry.configuration.id == id)
+            .cloned();
+        Box::pin(async move { Ok(entry) })
+    }
+    fn save_configuration<'a>(
+        &'a self,
+        _lead: &'a SessionKey,
+        configuration: RunConfiguration,
+        expected_revision: String,
+        _progress: Option<span_acp::tools::RunToolProgress>,
+    ) -> RunToolFuture<'a, RunConfigurationEntry> {
+        let store = self.entries.clone();
+        Box::pin(async move {
+            assert_eq!(expected_revision, "revision-1");
+            let mut store = store.lock().unwrap();
+            let entry = RunConfigurationEntry {
+                configuration,
+                revision: "revision-2".into(),
+                detected: false,
+            };
+            if let Some(previous) = store
+                .iter_mut()
+                .find(|previous| previous.configuration.id == entry.configuration.id)
+            {
+                *previous = entry.clone();
+            }
+            Ok(entry)
+        })
+    }
+    fn delete_configuration<'a>(
+        &'a self,
+        _lead: &'a SessionKey,
+        id: &'a str,
+        _expected_revision: String,
+        _progress: Option<span_acp::tools::RunToolProgress>,
+    ) -> RunToolFuture<'a, Value> {
+        Box::pin(async move { Ok(json!({"deleted": true, "id": id})) })
+    }
+    fn start_run<'a>(
+        &'a self,
+        _lead: &'a SessionKey,
+        id: &'a str,
+        _expected_revision: String,
+        progress: Option<span_acp::tools::RunToolProgress>,
+    ) -> RunToolFuture<'a, Value> {
+        let should_hold = self.hold_start;
+        let started = self.wait_started.clone();
+        let dropped = self.wait_dropped.clone();
+        Box::pin(async move {
+            if should_hold {
+                struct DropProbe(Arc<AtomicBool>);
+                impl Drop for DropProbe {
+                    fn drop(&mut self) {
+                        self.0.store(true, Ordering::Release);
+                    }
+                }
+                let _probe = DropProbe(dropped);
+                if let Some(progress) = progress.clone() {
+                    progress("Waiting for user approval in Span".into());
+                    let later = progress.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        later("Still waiting for user approval in Span".into());
+                    });
+                }
+                started.store(true, Ordering::Release);
+                return std::future::pending::<Result<Value, String>>().await;
+            }
+            Ok(json!({"id": "process-1", "configurationId": id, "status": "running"}))
+        })
+    }
+    fn stop_run<'a>(
+        &'a self,
+        _lead: &'a SessionKey,
+        id: &'a str,
+        _progress: Option<span_acp::tools::RunToolProgress>,
+    ) -> RunToolFuture<'a, Value> {
+        Box::pin(async move { Ok(json!({"id": id, "status": "exited"})) })
+    }
+    fn restart_run<'a>(
+        &'a self,
+        _lead: &'a SessionKey,
+        id: &'a str,
+        _progress: Option<span_acp::tools::RunToolProgress>,
+    ) -> RunToolFuture<'a, Value> {
+        Box::pin(async move { Ok(json!({"id": id, "status": "running"})) })
+    }
+    fn list_runs<'a>(&'a self, _lead: &'a SessionKey) -> RunToolFuture<'a, Value> {
+        Box::pin(async { Ok(json!([{"id": "process-1", "status": "running"}])) })
+    }
+    fn read_run_output<'a>(
+        &'a self,
+        _lead: &'a SessionKey,
+        id: &'a str,
+    ) -> RunToolFuture<'a, Value> {
+        Box::pin(async move { Ok(json!({"id": id, "text": "ok", "truncated": false})) })
     }
 }
 
@@ -328,6 +503,172 @@ async fn tools_list_and_protocol_basics_over_real_http() {
     assert_eq!(installed["delegable"], false);
     assert_eq!(structured(&agents)["maxDepth"], 1);
     assert_eq!(structured(&agents)["canDelegate"], true);
+}
+
+#[tokio::test]
+async fn run_tools_are_separately_gated_and_dispatch_over_real_mcp_calls() {
+    let h = harness();
+    let connection = h.connect(&["--name=run-lead", "--mcp-http"]).await;
+    let backend = Arc::new(FakeRunTools::seeded());
+    let mut config = h.config(scaled());
+    config.delegation_enabled = false;
+    config.run_tools = Some(backend.clone());
+    let (_lead, server) = h.lead_with_config(&connection, config).await;
+    let mut client = Client::new(&server);
+
+    let listed = client.rpc("tools/list", json!({})).await.response;
+    let names: Vec<_> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"run_configurations"));
+    assert!(names.contains(&"run_start"));
+    assert!(names.contains(&"run_output"));
+    assert!(!names.contains(&"delegate"));
+    assert!(!names.contains(&"list_agents"));
+
+    let catalog = client.tool("run_configurations", json!({})).await;
+    assert_eq!(catalog["isError"], false);
+    assert_eq!(catalog["structuredContent"]["revision"], "revision-1");
+    assert!(catalog.to_string().contains("environmentNames"));
+    assert!(!catalog.to_string().contains("literal-secret-value"));
+
+    let read = client
+        .tool("run_configuration_read", json!({"id": "build"}))
+        .await;
+    assert_eq!(read["structuredContent"]["executable"], "cargo");
+    assert_eq!(read["structuredContent"]["environmentNames"][0], "TOKEN");
+    assert!(!read.to_string().contains("literal-secret-value"));
+
+    let secret_patch = client.rpc("tools/call", json!({
+        "name": "run_configuration_save",
+        "arguments": {"id": "build", "expectedRevision": "revision-1", "env": {"TOKEN": "<redacted>"}}
+    })).await;
+    assert_eq!(secret_patch.response["error"]["code"], -32602);
+
+    let saved = client.tool("run_configuration_save", json!({
+        "id": "build", "expectedRevision": "revision-1", "name": "Check", "args": ["check", "--locked"], "env": {"NODE_ENV": "development"}
+    })).await;
+    assert_eq!(saved["structuredContent"]["name"], "Check");
+    assert_eq!(saved["structuredContent"]["args"][1], "--locked");
+    assert!(!saved.to_string().contains("literal-secret-value"));
+    assert!(saved["structuredContent"]["environmentNames"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("NODE_ENV")));
+    let stored = backend.entries.lock().unwrap()[0].configuration.clone();
+    assert_eq!(
+        stored.env.get("TOKEN").map(String::as_str),
+        Some("literal-secret-value")
+    );
+    assert_eq!(
+        stored.env.get("NODE_ENV").map(String::as_str),
+        Some("development")
+    );
+
+    let started = client
+        .tool(
+            "run_start",
+            json!({"id": "build", "expectedRevision": "revision-2"}),
+        )
+        .await;
+    assert_eq!(started["structuredContent"]["id"], "process-1");
+    let runs = client.tool("runs_list", json!({})).await;
+    assert_eq!(runs["structuredContent"][0]["status"], "running");
+    let output = client.tool("run_output", json!({"id": "process-1"})).await;
+    assert_eq!(output["structuredContent"]["text"], "ok");
+}
+
+#[tokio::test]
+async fn disabled_run_tools_are_not_advertised_or_callable() {
+    let h = harness();
+    let connection = h.connect(&["--name=plain-lead", "--mcp-http"]).await;
+    let mut config = h.config(scaled());
+    config.delegation_enabled = false;
+    config.run_tools = None;
+    let (_lead, server) = h.lead_with_config(&connection, config).await;
+    let mut client = Client::new(&server);
+    let listed = client.rpc("tools/list", json!({})).await.response;
+    assert!(listed["result"]["tools"].as_array().unwrap().is_empty());
+    let result = client
+        .rpc(
+            "tools/call",
+            json!({"name": "run_configurations", "arguments": {}}),
+        )
+        .await;
+    assert_eq!(result.response["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn run_tool_approval_wait_uses_supplied_progress_token_and_cancels_on_disconnect() {
+    let h = harness();
+    let connection = h.connect(&["--name=waiting-lead", "--mcp-http"]).await;
+    let backend = Arc::new(FakeRunTools::pending_start());
+    let mut config = h.config(scaled());
+    config.delegation_enabled = false;
+    config.run_tools = Some(backend.clone());
+    let (_lead, server) = h.lead_with_config(&connection, config).await;
+
+    let address = server
+        .url()
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap();
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    let body = serde_json::to_vec(&json!({
+        "jsonrpc": "2.0", "id": 44, "method": "tools/call",
+        "params": {
+            "name": "run_start",
+            "arguments": {"id": "build", "expectedRevision": "revision-1"},
+            "_meta": {"progressToken": "approval-44"}
+        }
+    }))
+    .unwrap();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {}\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2025-06-18\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        token_of(&server),
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.write_all(&body).await.unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(read, 0, "SSE response closed before progress arrived");
+            response.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&response);
+            if text.contains("notifications/progress") {
+                assert!(text.contains("approval-44"), "{text}");
+                assert!(text.contains("Waiting for user approval in Span"), "{text}");
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(backend.wait_started.load(Ordering::Acquire));
+
+    // reqwest may return an unread streaming response to its connection pool
+    // instead of closing the socket. Close both TCP directions so the server's
+    // next progress write observes a real disconnected caller.
+    stream
+        .into_std()
+        .unwrap()
+        .shutdown(std::net::Shutdown::Both)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !backend.wait_dropped.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dropping the MCP stream cancels the pending tool call");
 }
 
 #[tokio::test]
@@ -1545,4 +1886,49 @@ async fn a_user_cancel_right_after_delegate_ends_cancelled_not_completed() {
     let result = client.until_finished(&task).await;
     assert_eq!(structured(&result)["status"], "failed");
     assert_eq!(structured(&result)["reason"], "cancelled");
+}
+
+/// Live run finding: `connect` returned before the `Ready` event reached the
+/// manager, so `open_lead` right after it saw no features in 6 of 8 connects
+/// and dropped delegation with "has not finished initialize".
+#[tokio::test]
+async fn open_lead_right_after_connect_always_sees_features() {
+    let h = harness();
+    let leads = span_acp::tools::LeadServers::default();
+    for attempt in 0..8 {
+        // A slow direct sink (the desktop's Tauri channel) delays the
+        // manager's own bookkeeping of each event, which widens the window.
+        let slow: span_acp::EventSink = Arc::new(|event: AgentEvent| {
+            if matches!(event, AgentEvent::Ready { .. }) {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        });
+        let connection = h
+            .manager
+            .connect(
+                worker(&["--name=lead", "--mcp-http"]),
+                h.directory.path().to_string_lossy().into_owned(),
+                h.workspace.clone(),
+                Some(slow),
+            )
+            .await
+            .expect("start fixture agent");
+        let features = h
+            .manager
+            .connection(&connection)
+            .and_then(|c| c.features)
+            .is_some();
+        let (key, delegation) = leads
+            .open_lead(&h.manager, &connection, Some(h.config(scaled())))
+            .await
+            .expect("open lead");
+        assert!(features, "attempt {attempt}: features unset after connect");
+        assert_eq!(
+            delegation,
+            span_acp::tools::LeadDelegation::Attached,
+            "attempt {attempt}"
+        );
+        h.manager.close(&key).await.ok();
+        h.manager.disconnect(&connection).unwrap();
+    }
 }

@@ -1,11 +1,14 @@
+import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
+import type { TerminalEvent_Deserialize as TerminalEvent, TerminalInfo } from '../bindings';
 import type { LspPort } from './lsp-client';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
+import type { PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -136,6 +139,48 @@ function previewEntries(path: string): FileEntry[] {
 }
 
 export const api = {
+  // Interactive terminal commands always use the native PTY backend.
+  async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>): Promise<TerminalInfo> {
+    if (!isDesktop) nativeRequired('Creating terminal sessions');
+    return commands.terminalCreate(cwd, cols, rows, onEvent);
+  },
+  async terminalWrite(id: string, data: Uint8Array): Promise<void> {
+    if (!isDesktop) nativeRequired('Writing terminal input');
+    await commands.terminalWrite(id, Array.from(data));
+  },
+  async terminalResize(id: string, cols: number, rows: number): Promise<void> {
+    if (!isDesktop) nativeRequired('Resizing terminal sessions');
+    await commands.terminalResize(id, cols, rows);
+  },
+  async terminalInterrupt(id: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Interrupting terminal commands');
+    await commands.terminalInterrupt(id);
+  },
+  async terminalClose(id: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Closing terminal sessions');
+    await commands.terminalClose(id);
+  },
+  async terminalAcknowledge(id: string, sequence: number): Promise<void> {
+    if (!isDesktop) nativeRequired('Acknowledging terminal output');
+    await commands.terminalAcknowledge(id, sequence);
+  },
+  async runConfigurations(): Promise<RunCatalog> { if (!isDesktop) nativeRequired('Loading run configurations'); return commands.runConfigurations(); },
+  async saveRunConfiguration(configuration: RunConfiguration, expectedWorkspaceRoot: string): Promise<RunConfiguration> { if (!isDesktop) nativeRequired('Saving run configurations'); return commands.saveRunConfiguration(configuration, expectedWorkspaceRoot); },
+  async deleteRunConfiguration(id: string, expectedWorkspaceRoot: string): Promise<void> { if (!isDesktop) nativeRequired('Deleting run configurations'); await commands.deleteRunConfiguration(id, expectedWorkspaceRoot); },
+  async duplicateRunConfiguration(id: string, expectedWorkspaceRoot: string): Promise<RunConfiguration> { if (!isDesktop) nativeRequired('Duplicating run configurations'); return commands.duplicateRunConfiguration(id, expectedWorkspaceRoot); },
+  async startRun(configuration: RunConfiguration, expectedWorkspaceRoot: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Running configurations'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.startRun(configuration, expectedWorkspaceRoot, channel); },
+  async stopRun(id: string): Promise<RunInfo> { if (!isDesktop) nativeRequired('Stopping processes'); return commands.stopRun(id); },
+  async restartRun(id: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Restarting processes'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.restartRun(id, channel); },
+  async runContext(): Promise<RunContext> { if (!isDesktop) nativeRequired('Reading run workspace context'); return commands.runContext(); },
+  async listRuns(): Promise<RunInfo[]> { if (!isDesktop) nativeRequired('Listing process runs'); return commands.listRuns(); },
+  async runOutput(id: string): Promise<RunOutput> { if (!isDesktop) nativeRequired('Reading run output'); return commands.runOutput(id); },
+  async acknowledgeRun(id: string, sequence: number): Promise<void> { if (!isDesktop) nativeRequired('Acknowledging run output'); await commands.acknowledgeRun(id, sequence); },
+  async onRunEvent(listener: (event: RunEvent) => void): Promise<() => void> { if (!isDesktop) return () => {}; return events.runEvent.listen(event => listener(event.payload)); },
+  async pendingRunApprovals(): Promise<RunApprovalRequest[]> { if (!isDesktop) nativeRequired('Reading agent run requests'); return commands.pendingRunApprovals(); },
+  async resolveRunApproval(id: string, allow: boolean): Promise<void> { if (!isDesktop) nativeRequired('Answering agent run requests'); await commands.resolveRunApproval(id, allow); },
+  async onRunApprovalsChanged(listener: (requests: RunApprovalRequest[]) => void): Promise<() => void> { if (!isDesktop) return () => {}; return events.runApprovalsChanged.listen(event => listener(event.payload.pending)); },
+  async runToolsEnabled(): Promise<boolean> { if (!isDesktop) nativeRequired('Reading agent run tools preference'); return commands.runToolsEnabled(); },
+  async runToolsSetEnabled(enabled: boolean): Promise<void> { if (!isDesktop) nativeRequired('Changing agent run tools preference'); await commands.runToolsSetEnabled(enabled); },
   async pickFile(): Promise<string | null> {
     if (!isDesktop) nativeRequired('Opening files');
     const selected = await open({ directory: false, multiple: false, title: 'Open a file in span' });
@@ -452,9 +497,27 @@ export const api = {
     if (generation !== agentGeneration) throw new Error('Agent connection was superseded by another connection or disconnect.');
     return session;
   },
+  /**
+   * Runs a prompt in the active session. A refusal is thrown as an Error whose `prompt` field is the typed
+   * `PromptError` (`kind` busy or failed), so callers match the kind and never the message text.
+   */
   async agentPrompt(text: string, attachments: PromptAttachment[] = []): Promise<void> {
     if (!isDesktop) nativeRequired('Sending agent prompts');
-    await commands.agentPrompt(text, attachments.length ? attachments : null);
+    try {
+      await commands.agentPrompt(text, attachments.length ? attachments : null);
+    } catch (cause) {
+      if (cause && typeof cause === 'object' && 'kind' in cause && 'message' in cause) throw Object.assign(new Error(String((cause as PromptError).message)), { prompt: cause as PromptError });
+      throw cause;
+    }
+  },
+  /** Runtime state of every session on the active connection. */
+  async agentSessionStates(): Promise<SessionStates> {
+    if (!isDesktop) return { connectionId: null, sessions: [] };
+    return commands.agentSessionStates();
+  },
+  /** Session states as the backend publishes them, whenever they change. */
+  async onAgentSessionStates(listener: (states: SessionStates) => void): Promise<() => void> {
+    return isDesktop ? events.agentSessionStatesChanged.listen(event => listener(event.payload.states)) : () => undefined;
   },
   /** Sign in with an advertised method, then the blocked session is created. Returns the session id. */
   async agentAuthenticate(methodId: string): Promise<string> {
@@ -563,4 +626,111 @@ export async function agentChildPermission(connectionId: string, sessionId: stri
 export async function agentCancelTask(taskId: string): Promise<void> {
   if (!isDesktop) nativeRequired('Cancelling an agent task');
   await commands.agentCancelTask(taskId);
+}
+
+/** Check-only agent update status: Span-installed registry agents against the registry's current version, and local programs through the version probe. Unknown means unknown; nothing is installed or run to update. */
+export async function agentUpdateStatus(): Promise<import('../bindings').AgentUpdate_Serialize[]> {
+  if (!isDesktop) nativeRequired('Agent update checks');
+  return commands.agentUpdateStatus();
+}
+
+/** Check-only app update check for this build's channel against the public GitHub release list. Never downloads or installs. Open `releaseUrl` with `api.openExternal` after a user click. */
+export async function appUpdateCheck(): Promise<import('../bindings').AppUpdate_Serialize> {
+  if (!isDesktop) nativeRequired('App update checks');
+  return commands.appUpdateCheck();
+}
+
+/** Session history metadata of the active workspace (ADR 0005), most recently active first. Browser preview has no history and returns an empty list. */
+export async function sessionMetaList(): Promise<import('../bindings').SessionMeta_Serialize[]> {
+  return isDesktop ? commands.sessionMetaList() : [];
+}
+
+/** Merge a patch into one session's metadata: model and agent uses add up, counters and stop reason replace. Debouncing is the caller's job. */
+export async function sessionMetaUpdate(patch: import('../bindings').SessionMetaPatch_Deserialize): Promise<import('../bindings').SessionMeta_Serialize> {
+  if (!isDesktop) nativeRequired('Saving session history');
+  return commands.sessionMetaUpdate(patch);
+}
+
+/** Set or clear (null or blank) the user's title for a session. */
+export async function sessionMetaSetTitle(agentId: string, sessionId: string, title: string | null): Promise<import('../bindings').SessionMeta_Serialize> {
+  if (!isDesktop) nativeRequired('Renaming sessions');
+  return commands.sessionMetaSetTitle(agentId, sessionId, title);
+}
+
+export async function sessionMetaSetArchived(agentId: string, sessionId: string, archived: boolean): Promise<import('../bindings').SessionMeta_Serialize> {
+  if (!isDesktop) nativeRequired('Archiving sessions');
+  return commands.sessionMetaSetArchived(agentId, sessionId, archived);
+}
+
+/** Forget Span's metadata for a session; the agent's own session is not deleted. Resolves true when something was removed. */
+export async function sessionMetaDelete(agentId: string, sessionId: string): Promise<boolean> {
+  if (!isDesktop) nativeRequired('Removing session history');
+  return commands.sessionMetaDelete(agentId, sessionId);
+}
+
+/** Render a transcript as Markdown for "Export as Markdown"; workspace paths become `.` and the home directory `~`. */
+export async function sessionExportMarkdown(transcript: import('../bindings').Transcript_Deserialize): Promise<string> {
+  if (!isDesktop) nativeRequired('Exporting chats as Markdown');
+  return commands.sessionExportMarkdown(transcript);
+}
+
+/** Uploads panel (ADR 0006): files the user sent to agents or added, stored per workspace in app data, never in the workspace. Newest first. Browser preview has no store, so it lists nothing. */
+export async function uploadsList(): Promise<import('../bindings').Upload_Serialize[]> {
+  return isDesktop ? commands.uploadsList() : [];
+}
+
+/** Store usage and caps. Over a cap, new uploads are refused; nothing is evicted. */
+export async function uploadsUsage(): Promise<import('../bindings').UploadUsage> {
+  if (isDesktop) return commands.uploadsUsage();
+  return { count: 0, totalBytes: 0, maxCount: 2000, maxTotalBytes: 512 * 1024 * 1024, maxFileBytes: 32 * 1024 * 1024, orphanBlobs: 0, orphanBytes: 0, quarantinedIndexes: 0 };
+}
+
+/** Store a file (at most 32 MiB). `name` follows the workspace attachment naming rules. */
+export async function uploadsAdd(name: string, dataBase64: string, source: import('../bindings').UploadSource_Deserialize): Promise<import('../bindings').Upload_Serialize> {
+  if (!isDesktop) nativeRequired('Storing uploads');
+  return commands.uploadsAdd(name, dataBase64, source);
+}
+
+/** Bounded read for previews: at most 4 MiB per call, `eof` marks the last chunk. */
+export async function uploadsRead(id: string, offset: number, len: number): Promise<import('../bindings').UploadChunk> {
+  if (!isDesktop) nativeRequired('Reading uploads');
+  return commands.uploadsRead(id, offset, len);
+}
+
+export async function uploadsRename(id: string, name: string): Promise<import('../bindings').Upload_Serialize> {
+  if (!isDesktop) nativeRequired('Renaming uploads');
+  return commands.uploadsRename(id, name);
+}
+
+export async function uploadsDuplicate(id: string): Promise<import('../bindings').Upload_Serialize> {
+  if (!isDesktop) nativeRequired('Duplicating uploads');
+  return commands.uploadsDuplicate(id);
+}
+
+export async function uploadsRemove(id: string): Promise<void> {
+  if (!isDesktop) nativeRequired('Removing uploads');
+  await commands.uploadsRemove(id);
+}
+
+/** Copy into a workspace-relative folder. Never overwrites: a taken name gets a numbered suffix. */
+export async function uploadsSaveToWorkspace(id: string, dir: string): Promise<SavedAttachment> {
+  if (!isDesktop) nativeRequired('Saving uploads to the workspace');
+  return commands.uploadsSaveToWorkspace(id, dir);
+}
+
+/** App data path of a named copy, only for an explicit "Copy path". Show the upload name otherwise. */
+export async function uploadsCopyPath(id: string): Promise<string> {
+  if (!isDesktop) nativeRequired('Copying upload paths');
+  return commands.uploadsCopyPath(id);
+}
+
+export async function uploadsReveal(id: string): Promise<void> {
+  if (!isDesktop) nativeRequired('Revealing uploads');
+  await commands.uploadsReveal(id);
+}
+
+/** Open with the system default app. Programs, scripts and installers are refused with advice to save to the workspace instead. */
+export async function uploadsOpen(id: string): Promise<void> {
+  if (!isDesktop) nativeRequired('Opening uploads with another app');
+  await commands.uploadsOpen(id);
 }

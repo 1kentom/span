@@ -1,0 +1,10 @@
+// session/list returns empty pages that still carry a cursor (four pages to find one session in the live run): the client follows the cursor until it is null, within a time budget and a page cap, instead of stopping after five pages.
+// Shapes from a live capture of codex-acp 2.3.0 (sanitised). Pages four to seven extend the live sequence of empty pages.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentInfo": {"name": "@agentclientprotocol/codex-acp", "title": "Codex", "version": "2.3.0"}, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"embeddedContext": true, "image": true}, "sessionCapabilities": {"resume": {}, "list": {}, "close": {}, "delete": {}}, "mcpCapabilities": {"acp": false, "http": true, "sse": false}}, "authMethods": [{"id": "api-key", "name": "API Key", "description": "Use an API key to authenticate", "_meta": {"api-key": {"provider": "openai"}}}, {"id": "chat-gpt", "name": "ChatGPT", "description": "Use ChatGPT to authenticate"}]}}
+{"on": "session/list", "result": {"sessions": [{"sessionId": "01a18323-0561-7092-bf8c-f94a57ada096", "cwd": "$ROOT", "title": "PONG response request", "updatedAt": "2026-10-28T15:31:35.000Z"}], "nextCursor": "2026-10-13T13:35:54.561Z|01a1357a-10ba-77c3-896f-05f3d0584d5c"}}
+{"on": "session/list", "result": {"sessions": [], "nextCursor": "2026-10-09T20:03:47.674Z|01a12243-bf12-7453-b1fe-5656d01a813e"}}
+{"on": "session/list", "result": {"sessions": [], "nextCursor": "2026-09-30T15:07:06Z|01a0f691-deb6-7a60-990f-8b91b63d0fd3"}}
+{"on": "session/list", "result": {"sessions": [], "nextCursor": "2026-09-21T10:00:00Z|01a0c000-0000-7000-8000-000000000004"}}
+{"on": "session/list", "result": {"sessions": [], "nextCursor": "2026-09-12T10:00:00Z|01a09000-0000-7000-8000-000000000005"}}
+{"on": "session/list", "result": {"sessions": [], "nextCursor": "2026-09-03T10:00:00Z|01a06000-0000-7000-8000-000000000006"}}
+{"on": "session/list", "result": {"sessions": [{"sessionId": "01a05123-0000-7000-8000-000000000007", "cwd": "$ROOT", "title": "Older chat", "updatedAt": "2026-08-30T09:00:00.000Z"}], "nextCursor": null}}

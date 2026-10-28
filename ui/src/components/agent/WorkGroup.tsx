@@ -238,7 +238,17 @@ export function WorkGroup(props: WorkGroupProps) {
     if (!next.delete(key)) next.add(key);
     setInternalOpen(next);
   };
+  /** Running steps start expanded so their live output shows; the user can still collapse one. */
+  const [collapsed, setCollapsed] = createSignal(new Set<string>());
+  const isOpen = (step: StepView) => (step.status === "in_progress" ? !collapsed().has(step.id) : expanded().has(step.id));
   const toggle = (id: string) => {
+    const step = props.steps.find((candidate) => candidate.id === id);
+    if (step?.status === "in_progress") {
+      const next = new Set(collapsed());
+      if (!next.delete(id)) next.add(id);
+      setCollapsed(next);
+      return;
+    }
     const next = new Set(expanded());
     if (!next.delete(id)) next.add(id);
     setExpanded(next);
@@ -256,7 +266,7 @@ export function WorkGroup(props: WorkGroupProps) {
           <For each={segments()}>
             {(segment) =>
               segment.type === "step" ? (
-                <StepRow step={segment.step} open={expanded().has(segment.step.id)} onToggle={() => toggle(segment.step.id)} />
+                <StepRow step={segment.step} open={isOpen(segment.step)} onToggle={() => toggle(segment.step.id)} />
               ) : (
                 <div class="sb-internal">
                   <button class="sb-step-row sb-internal-row" aria-expanded={internalOpen().has(segment.key)} onClick={() => toggleInternal(segment.key)}>
@@ -265,7 +275,7 @@ export function WorkGroup(props: WorkGroupProps) {
                   </button>
                   <Show when={internalOpen().has(segment.key)}>
                     <div class="sb-internal-steps">
-                      <For each={segment.steps}>{(step) => <StepRow step={step} open={expanded().has(step.id)} onToggle={() => toggle(step.id)} />}</For>
+                      <For each={segment.steps}>{(step) => <StepRow step={step} open={isOpen(step)} onToggle={() => toggle(step.id)} />}</For>
                     </div>
                   </Show>
                 </div>
