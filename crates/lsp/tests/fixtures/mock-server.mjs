@@ -305,13 +305,28 @@ async function cancelMode() {
 
   const req = await readMessage();
 
+  sendMessage({
+    jsonrpc: '2.0',
+    method: 'span/testRequestReceived',
+    params: { id: req.id },
+  });
+
   // Wait for cancel notification
   const cancel = await readMessage();
   if (cancel.method !== '$/cancelRequest') {
     throw new Error(`Expected cancelRequest, got ${cancel.method}`);
   }
+  if (cancel.params.id !== req.id) {
+    throw new Error(`Expected cancel id ${req.id}, got ${cancel.params.id}`);
+  }
 
   // Don't respond to the original request, it was cancelled
+
+  sendMessage({
+    jsonrpc: '2.0',
+    method: 'span/cancelObserved',
+    params: { id: cancel.params.id },
+  });
 
   const shutdownMsg = await readMessage();
   sendMessage({ jsonrpc: '2.0', id: shutdownMsg.id, result: null });

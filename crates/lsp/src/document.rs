@@ -178,10 +178,6 @@ impl TrackedDocument {
         Ok(line_start + byte_offset)
     }
 
-    fn position_to_offset(&self, position: &Position) -> Result<usize> {
-        self.position_to_offset_in_content(&self.content, position)
-    }
-
     fn compute_line_offsets(content: &str) -> Vec<usize> {
         let mut offsets = vec![0];
 
