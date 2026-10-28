@@ -696,8 +696,10 @@ impl CoreWorkspace {
         // Validate the edited scope independently so a narrower override cannot hide invalid data.
         crate::settings::load_with_texts(text, "{}")?;
         if scope == crate::SettingsScope::Workspace {
-            // Workspace files may not choose executables or trigger downloads.
-            crate::settings::reject_user_only(text)?;
+            // Workspace files may not choose executables or trigger downloads. A key the
+            // file already holds is ignored on read, so it does not block other writes.
+            let previous = self.get_settings_jsonc_for_scope(scope)?;
+            crate::settings::reject_changed_user_only(&previous, text)?;
         }
         let user = if scope == crate::SettingsScope::User {
             text.to_owned()

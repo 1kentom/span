@@ -582,11 +582,25 @@ fn drop_user_only(value: &mut Value) {
 }
 
 /// Error naming the first user-only key present in workspace settings text.
+#[cfg(test)]
 pub(crate) fn reject_user_only(text: &str) -> Result<()> {
+    reject_changed_user_only("{}", text)
+}
+
+/// Like [`reject_user_only`], but a user-only key that `previous` already holds with the
+/// same value is tolerated: the file arrived that way (it is ignored on read) and an
+/// unrelated write must not fail because of it. Adding or changing one is still an error.
+pub(crate) fn reject_changed_user_only(previous: &str, text: &str) -> Result<()> {
     let value = parse(text)?;
-    if let Some(servers) = value.get("languageServers").and_then(Value::as_object) {
-        for key in USER_ONLY_LANGUAGE_SERVER_KEYS {
-            if servers.contains_key(*key) {
+    let Some(servers) = value.get("languageServers").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    // An unreadable previous file cannot excuse anything.
+    let before = parse(previous).unwrap_or(Value::Null);
+    let before = before.get("languageServers").and_then(Value::as_object);
+    for key in USER_ONLY_LANGUAGE_SERVER_KEYS {
+        if let Some(now) = servers.get(*key) {
+            if before.and_then(|b| b.get(*key)) != Some(now) {
                 return Err(user_only_error(key));
             }
         }
@@ -1325,6 +1339,52 @@ mod language_server_key_tests {
             Some("/usr/bin/node")
         );
         assert!(!merged.language_servers.is_enabled("css"));
+    }
+
+    #[test]
+    fn unrelated_workspace_writes_survive_a_preexisting_user_only_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("p");
+        std::fs::create_dir_all(project.join(".span")).unwrap();
+        let file = project.join(".span/settings.jsonc");
+        std::fs::write(
+            &file,
+            "{\n  // cloned\n  \"languageServers\": { \"nodePath\": \"/tmp/evil\", \"runProjectCode\": true }\n}\n",
+        )
+        .unwrap();
+        let ws = crate::CoreWorkspace::open(&project)
+            .unwrap()
+            .with_user_settings(Some(dir.path().join("user.jsonc")));
+        // Unrelated single key writes work, including a per server switch beside it.
+        let merged = ws
+            .update_setting(Workspace, "fontSize", Some("15"))
+            .unwrap();
+        assert_eq!(merged.font_size, 15);
+        let merged = ws
+            .update_setting(Workspace, "languageServers.enabled.css", Some("false"))
+            .unwrap();
+        assert!(!merged.language_servers.is_enabled("css"));
+        // The pre-existing keys stay ignored on read.
+        assert_eq!(merged.language_servers.node_path, None);
+        assert!(!merged.language_servers.run_project_code);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("// cloned") && text.contains("/tmp/evil"));
+        // A write that adds or changes a user-only key is still refused.
+        for (key, v) in [
+            ("languageServers.nodePath", "\"/other\""),
+            ("languageServers.autoInstall", "true"),
+            ("languageServers.runProjectCode", "false"),
+        ] {
+            let err = ws.update_setting(Workspace, key, Some(v)).unwrap_err();
+            assert!(err.to_string().contains("user settings only"), "{key}");
+        }
+        let err = ws
+            .update_settings_jsonc_for_scope(
+                Workspace,
+                r#"{ "languageServers": { "nodePath": "/tmp/evil", "javaHome": "/x" } }"#,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("user settings only"));
     }
 
     #[test]
