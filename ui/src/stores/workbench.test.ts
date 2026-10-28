@@ -202,6 +202,168 @@ describe("workspace views and session state", () => {
     expect(JSON.stringify(saved)).not.toContain("# Project");
   });
 
+  it("keeps the last requested group focused when earlier file reads finish later", async () => {
+    const workbench = await setup();
+    const first = deferred<BufferSnapshot>(); const second = deferred<BufferSnapshot>();
+    client.openBuffer.mockImplementation((path: string) => path === "src/first.ts" ? first.promise : second.promise);
+    workbench.splitEditor();
+    const openingFirst = workbench.openFile("src/first.ts", 1);
+    const openingSecond = workbench.openFile("src/second.ts", 2);
+    expect(workbench.activeGroup()).toBe(2);
+    second.resolve({ path: "src/second.ts", text: "second\n", revision: 0, savedRevision: 0, language: "typescript" });
+    await openingSecond;
+    first.resolve({ path: "src/first.ts", text: "first\n", revision: 0, savedRevision: 0, language: "typescript" });
+    await openingFirst;
+    expect(workbench.activeGroup()).toBe(2);
+    expect(workbench.groups().find(group => group.id === 1)?.active).toBe("src/first.ts");
+    expect(workbench.groups().find(group => group.id === 2)?.active).toBe("src/second.ts");
+  });
+
+  it("keeps the newest tab selection active within a group across slow reads", async () => {
+    const workbench = await setup();
+    const first = deferred<BufferSnapshot>(); const second = deferred<BufferSnapshot>();
+    client.openBuffer.mockImplementation((path: string) => path === "src/first.ts" ? first.promise : second.promise);
+    const openingFirst = workbench.openFile("src/first.ts", 1);
+    const openingSecond = workbench.openFile("src/second.ts", 1);
+    second.resolve({ path: "src/second.ts", text: "second\n", revision: 0, savedRevision: 0, language: "typescript" });
+    await openingSecond;
+    first.resolve({ path: "src/first.ts", text: "first\n", revision: 0, savedRevision: 0, language: "typescript" });
+    await openingFirst;
+    expect(workbench.groups()[0].active).toBe("src/second.ts");
+    expect(workbench.groups()[0].tabs).toContain("src/first.ts");
+  });
+
+  it("does not let an earlier file read replace a later Settings selection", async () => {
+    const workbench = await setup();
+    const loading = deferred<BufferSnapshot>();
+    client.openBuffer.mockImplementation((path: string) => path === "src/late.ts" ? loading.promise : Promise.resolve(server.get(path)!));
+    const opening = workbench.openFile("src/late.ts", 1);
+    workbench.openSettings();
+    expect(workbench.activeTab()).toBe(SETTINGS_TAB);
+    loading.resolve({ path: "src/late.ts", text: "late\n", revision: 0, savedRevision: 0, language: "typescript" });
+    await opening;
+    expect(workbench.activeTab()).toBe(SETTINGS_TAB);
+  });
+
+  it("shares one first-load snapshot when a new file opens into both groups", async () => {
+    const workbench = await setup();
+    const snapshot: BufferSnapshot = { path: "src/shared.ts", text: "shared\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const loading = deferred<BufferSnapshot>();
+    client.openBuffer.mockImplementation((path: string) => path === snapshot.path ? loading.promise : Promise.resolve(server.get(path)!));
+    workbench.splitEditor();
+    const first = workbench.openFile(snapshot.path, 1);
+    const second = workbench.openFile(snapshot.path, 2);
+    expect(client.openBuffer.mock.calls.filter(([path]) => path === snapshot.path)).toHaveLength(1);
+    loading.resolve(snapshot); await Promise.all([first, second]);
+    expect(workbench.groups().every(group => group.tabs.includes(snapshot.path))).toBe(true);
+    expect(workbench.documents()[snapshot.path].document.toString()).toBe(snapshot.text);
+    workbench.closeGroup(1);
+    expect(workbench.groups()).toHaveLength(1);
+    expect(workbench.groups()[0].tabs).toContain(snapshot.path);
+    expect(workbench.documents()[snapshot.path].document.toString()).toBe(snapshot.text);
+  });
+
+  it("opens an inactive pane's selected tab to its opposite group", async () => {
+    const workbench = await setup();
+    const side: BufferSnapshot = { path: "src/side.ts", text: "side\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(side.path, side);
+    workbench.splitEditor(); await workbench.openFile(side.path, 1);
+    workbench.setActiveGroup(2);
+    await workbench.openToSide(side.path, 1);
+    expect(workbench.groups().find(group => group.id === 1)?.active).toBe(side.path);
+    expect(workbench.groups().find(group => group.id === 2)?.active).toBe(side.path);
+    expect(workbench.activeGroup()).toBe(2);
+  });
+
+  it("splits the selected file into a new group without replacing its source view", async () => {
+    const workbench = await setup();
+    const sourceDocument = workbench.documents()["src/file.ts"].document;
+    await workbench.openToSide("src/file.ts", 1);
+    expect(workbench.groups()).toHaveLength(2);
+    expect(workbench.groups().every(group => group.tabs.includes("src/file.ts"))).toBe(true);
+    expect(workbench.groups()[0].active).toBe("src/file.ts");
+    expect(workbench.groups()[1].active).toBe("src/file.ts");
+    expect(workbench.activeGroup()).toBe(2);
+    expect(workbench.documents()["src/file.ts"].document).toBe(sourceDocument);
+  });
+
+  it("uses an empty split as a valid target for opening a file", async () => {
+    const workbench = await setup();
+    const next: BufferSnapshot = { path: "src/next.ts", text: "next\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(next.path, next);
+    workbench.openSettings(); workbench.splitEditor();
+    expect(workbench.groups().find(group => group.id === 2)?.tabs).toEqual([]);
+    await workbench.openFile(next.path, 2);
+    expect(workbench.activeGroup()).toBe(2);
+    expect(workbench.groups().find(group => group.id === 2)?.active).toBe(next.path);
+  });
+
+  it("restores the saved active file before applying the tab limit", async () => {
+    const first: BufferSnapshot = { path: "src/first.ts", text: "first\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const active: BufferSnapshot = { path: "src/active.ts", text: "active\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(first.path, first); server.set(active.path, active);
+    const session: SessionState = { workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts", first.path, active.path], activePath: active.path }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: false }, markdownViews: {} };
+    client.getSession.mockResolvedValue(session);
+    client.getSettings.mockResolvedValue({ ...preferences, tabLimit: 2 });
+    const workbench = testWorkbench(); await workbench.initialize();
+    expect(workbench.groups()[0].tabs).toEqual([first.path, active.path]);
+    expect(workbench.activePath()).toBe(active.path);
+  });
+
+  it("evicts the least recently focused clean file and keeps dirty files until saved", async () => {
+    const workbench = await setup();
+    const a: BufferSnapshot = { path: "src/a.ts", text: "a\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const b: BufferSnapshot = { path: "src/b.ts", text: "b\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const c: BufferSnapshot = { path: "src/c.ts", text: "c\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(a.path, a); server.set(b.path, b); server.set(c.path, c);
+    workbench.setSettings({ ...preferences, tabLimit: 3 });
+    await workbench.openFile(a.path); await workbench.openFile(b.path); await workbench.openFile("src/file.ts"); await workbench.openFile(c.path);
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts", b.path, c.path]);
+
+    workbench.setSettings({ ...preferences, tabLimit: 1 });
+    append(workbench, "// unsaved\n");
+    await workbench.openFile(a.path);
+    expect(workbench.groups()[0].tabs).toContain("src/file.ts");
+    expect(workbench.dirty("src/file.ts")).toBe(true);
+    await workbench.save("src/file.ts");
+    expect(workbench.dirty("src/file.ts")).toBe(false);
+    expect(workbench.groups()[0].tabs).toEqual([a.path]);
+  });
+
+  it("immediately applies a configured limit decrease", async () => {
+    let configured = { ...preferences };
+    client.getSettings.mockImplementation(async () => configured);
+    client.getSettingsForScope.mockImplementation(async () => configured);
+    client.updateSetting.mockImplementation(async (_scope: string, key: string, value: string) => {
+      configured = { ...configured, [key]: JSON.parse(value) };
+      return configured;
+    });
+    const workbench = await setup();
+    const a: BufferSnapshot = { path: "src/a.ts", text: "a\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const b: BufferSnapshot = { path: "src/b.ts", text: "b\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(a.path, a); server.set(b.path, b);
+    await workbench.openFile(a.path); await workbench.openFile(b.path);
+    await workbench.updateSettings({ tabLimit: 2 });
+    expect(workbench.settings().tabLimit).toBe(2);
+    expect(workbench.groups()[0].tabs).toEqual([a.path, b.path]);
+  });
+
+  it("does not enforce a disabled limit and counts tabs per editor group when configured", async () => {
+    const workbench = await setup();
+    const a: BufferSnapshot = { path: "src/a.ts", text: "a\n", revision: 0, savedRevision: 0, language: "typescript" };
+    const b: BufferSnapshot = { path: "src/b.ts", text: "b\n", revision: 0, savedRevision: 0, language: "typescript" };
+    server.set(a.path, a); server.set(b.path, b);
+    workbench.setSettings({ ...preferences, tabLimitEnabled: false, tabLimit: 1 });
+    await workbench.openFile(a.path); await workbench.openFile(b.path);
+    expect(workbench.groups()[0].tabs).toContain("src/file.ts");
+    expect(workbench.groups()[0].tabs).toContain(a.path);
+    expect(workbench.groups()[0].tabs).toContain(b.path);
+
+    workbench.setSettings({ ...preferences, tabLimit: 1, tabLimitPerGroup: true });
+    await workbench.openFile("src/file.ts");
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts"]);
+  });
+
   it("opens Markdown in preview by default while preserving a source override", async () => {
     const workbench = await setup(); expect(workbench.markdownView("README.md")).toBe("preview");
     workbench.setMarkdownView("README.md", "source");
