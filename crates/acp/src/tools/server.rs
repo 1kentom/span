@@ -14,7 +14,8 @@
 use super::result::{self, inside_workspace, FailureReason, ResultInput};
 use super::tasks::{DecisionRecord, Registry, TaskStatus};
 use super::{
-    hints_for, transport_for, BudgetRequest, DelegationEvent, DelegationTask, ToolServerConfig,
+    hints_for, transport_for, BudgetRequest, DelegationEvent, DelegationTask,
+    RunConfigurationEntry, RunToolBackend, ToolServerConfig,
 };
 use crate::{
     AgentControl, BackgroundState, ConnectionInfo, InstalledAgent, PromptAttachment, SessionEvent,
@@ -23,6 +24,7 @@ use crate::{
 use agent_client_protocol::schema::v1::{HttpHeader, McpServer, McpServerHttp};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use span_core::RunConfiguration;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -801,13 +803,14 @@ fn envelope(id: Value, reply: Result<Value, RpcError>) -> Value {
 /// response, then the stream ends.
 async fn stream_tool_call(
     shared: Arc<Shared>,
-    mut stream: TcpStream,
+    stream: TcpStream,
     id: Value,
     params: Value,
     token: Value,
 ) {
+    let (mut reader, mut writer) = stream.into_split();
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
-    if stream.write_all(head.as_bytes()).await.is_err() {
+    if writer.write_all(head.as_bytes()).await.is_err() {
         return;
     }
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
@@ -818,24 +821,28 @@ async fn stream_tool_call(
     };
     let call = dispatch(&shared, "tools/call", params, Some(progress));
     tokio::pin!(call);
+    let mut closed = [0u8; 1];
     let reply = loop {
         tokio::select! {
             reply = &mut call => break reply,
+            _ = reader.read(&mut closed) => {
+                // The request body is already consumed. EOF means the client closed its stream.
+                return;
+            },
             Some(note) = rx.recv() => {
                 let event = format!("event: message\ndata: {note}\n\n");
-                // A dropped stream is not a cancellation; keep working.
-                let _ = stream.write_all(event.as_bytes()).await;
+                if writer.write_all(event.as_bytes()).await.is_err() { return; }
             }
         }
     };
     while let Ok(note) = rx.try_recv() {
-        let _ = stream
+        let _ = writer
             .write_all(format!("event: message\ndata: {note}\n\n").as_bytes())
             .await;
     }
     let event = format!("event: message\ndata: {}\n\n", envelope(id, reply));
-    let _ = stream.write_all(event.as_bytes()).await;
-    let _ = stream.shutdown().await;
+    let _ = writer.write_all(event.as_bytes()).await;
+    let _ = writer.shutdown().await;
 }
 
 struct Progress {
@@ -877,11 +884,11 @@ async fn dispatch(
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": SERVER_NAME, "title": "Span agents", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Delegate work to other agents in Span. list_agents shows every agent you can use: connected ones and installed ones that are ready to start. Delegate directly to any agent marked delegable; when it is not running, Span starts it in the background and delegate waits for the start. Do not ask the user to connect or open an agent first. delegate returns a taskId; poll get_result with waitSeconds up to 30 until status is completed or failed. Permission requests, questions and edit reviews from delegated agents go to the user, never to you.",
+                "instructions": server_instructions(shared),
             }))
         }
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools": tool_definitions()})),
+        "tools/list" => Ok(json!({"tools": tool_definitions_for(shared)})),
         "tools/call" => {
             let name = params
                 .get("name")
@@ -956,14 +963,388 @@ async fn call_tool(
     progress: Option<Progress>,
 ) -> Result<Value, RpcError> {
     match name {
-        "list_agents" => list_agents(shared),
-        "delegate" => delegate(shared, parse(arguments)?).await,
-        "get_result" => get_result(shared, parse(arguments)?, progress).await,
-        "message" => message(shared, parse(arguments)?),
-        "cancel" => cancel(shared, parse(arguments)?),
-        "record_decision" => record_decision(shared, parse(arguments)?),
+        "list_agents" if shared.config.delegation_enabled => list_agents(shared),
+        "delegate" if shared.config.delegation_enabled => delegate(shared, parse(arguments)?).await,
+        "get_result" if shared.config.delegation_enabled => {
+            get_result(shared, parse(arguments)?, progress).await
+        }
+        "message" if shared.config.delegation_enabled => message(shared, parse(arguments)?),
+        "cancel" if shared.config.delegation_enabled => cancel(shared, parse(arguments)?),
+        "record_decision" if shared.config.delegation_enabled => {
+            record_decision(shared, parse(arguments)?)
+        }
+        "run_configurations" => run_configurations(shared).await,
+        "run_configuration_read" => run_configuration_read(shared, parse(arguments)?).await,
+        "run_configuration_save" => {
+            run_configuration_save(shared, parse(arguments)?, progress_sink(progress)).await
+        }
+        "run_configuration_delete" => {
+            run_configuration_delete(shared, parse(arguments)?, progress_sink(progress)).await
+        }
+        "run_start" => run_start(shared, parse(arguments)?, progress_sink(progress)).await,
+        "run_stop" => run_stop(shared, parse(arguments)?, progress_sink(progress)).await,
+        "run_restart" => run_restart(shared, parse(arguments)?, progress_sink(progress)).await,
+        "runs_list" => runs_list(shared).await,
+        "run_output" => run_output(shared, parse(arguments)?).await,
         _ => Err(invalid(format!("Unknown tool: {name}"))),
     }
+}
+
+fn run_backend(shared: &Shared) -> Result<Arc<dyn RunToolBackend>, RpcError> {
+    shared
+        .config
+        .run_tools
+        .clone()
+        .ok_or_else(|| invalid("Workspace run tools are disabled in the user's settings"))
+}
+
+fn progress_sink(progress: Option<Progress>) -> Option<super::RunToolProgress> {
+    let progress = Arc::new(std::sync::Mutex::new(progress?));
+    Some(Arc::new(move |message| {
+        if let Ok(mut progress) = progress.lock() {
+            progress.send(message);
+        }
+    }))
+}
+
+fn lead_key(shared: &Shared) -> Result<SessionKey, RpcError> {
+    Ok(shared.control()?.caller().clone())
+}
+
+fn tool_error(error: String) -> RpcError {
+    RpcError {
+        code: -32000,
+        message: error,
+    }
+}
+
+fn configuration_view(entry: RunConfigurationEntry) -> Value {
+    let configuration = entry.configuration;
+    json!({
+        "id": configuration.id,
+        "name": configuration.name,
+        "executable": configuration.executable,
+        "args": configuration.args,
+        "cwd": configuration.cwd,
+        "environmentNames": configuration.env.keys().collect::<Vec<_>>(),
+        "revision": entry.revision,
+        "detected": entry.detected,
+        "editable": !entry.detected,
+    })
+}
+
+fn run_result(summary: String, content: Value) -> Result<Value, RpcError> {
+    Ok(result::ok(summary, content))
+}
+
+async fn run_configurations(shared: &Shared) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let catalog = backend
+        .list_configurations(&lead)
+        .await
+        .map_err(tool_error)?;
+    let saved = catalog
+        .configurations
+        .iter()
+        .filter(|entry| !entry.detected)
+        .count();
+    let detected = catalog.configurations.len() - saved;
+    let views: Vec<_> = catalog
+        .configurations
+        .into_iter()
+        .map(configuration_view)
+        .collect();
+    run_result(
+        format!("Workspace run configurations: {saved} saved, {detected} detected."),
+        json!({"configurations": views, "revision": catalog.revision}),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunConfigurationIdArgs {
+    id: String,
+}
+
+async fn run_configuration_read(
+    shared: &Shared,
+    args: RunConfigurationIdArgs,
+) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let entry = backend
+        .read_configuration(&lead, &args.id)
+        .await
+        .map_err(tool_error)?
+        .ok_or_else(|| {
+            invalid("Run configuration was not found. Call run_configurations to refresh the list.")
+        })?;
+    run_result(
+        format!("Run configuration {}.", entry.configuration.name),
+        configuration_view(entry),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SaveRunConfigurationArgs {
+    id: Option<String>,
+    expected_revision: String,
+    name: Option<String>,
+    executable: Option<String>,
+    args: Option<Vec<String>>,
+    cwd: Option<String>,
+    /// Only keys in this map change. `null` removes one key. Omission keeps
+    /// every existing value, which is never returned to the agent.
+    env: Option<std::collections::BTreeMap<String, Option<String>>>,
+}
+
+async fn run_configuration_save(
+    shared: &Shared,
+    args: SaveRunConfigurationArgs,
+    progress: Option<super::RunToolProgress>,
+) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let mut configuration = if let Some(id) = args.id.as_deref() {
+        let entry = backend
+            .read_configuration(&lead, id)
+            .await
+            .map_err(tool_error)?
+            .ok_or_else(|| {
+                invalid(
+                    "Run configuration was not found. Call run_configurations to refresh the list.",
+                )
+            })?;
+        if entry.detected {
+            return Err(invalid("Detected tasks are read only. Save a copy first."));
+        }
+        if entry.revision != args.expected_revision {
+            return Err(invalid(
+                "Run configurations changed. Refresh the list and retry with its current revision.",
+            ));
+        }
+        entry.configuration
+    } else {
+        if args.expected_revision.is_empty() {
+            return Err(invalid(
+                "expectedRevision from run_configurations is required",
+            ));
+        }
+        if args.name.as_deref().is_none_or(str::is_empty)
+            || args.executable.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(invalid(
+                "Creating a run configuration requires nonempty name and executable fields.",
+            ));
+        }
+        RunConfiguration {
+            id: String::new(),
+            name: String::new(),
+            executable: String::new(),
+            args: Vec::new(),
+            cwd: ".".into(),
+            env: Default::default(),
+        }
+    };
+    let has_patch = args.name.is_some()
+        || args.executable.is_some()
+        || args.args.is_some()
+        || args.cwd.is_some()
+        || args.env.is_some();
+    if !has_patch {
+        return Err(invalid(
+            "Provide at least one configuration field to change.",
+        ));
+    }
+    if let Some(name) = args.name {
+        configuration.name = name;
+    }
+    if let Some(executable) = args.executable {
+        configuration.executable = executable;
+    }
+    if let Some(arguments) = args.args {
+        configuration.args = arguments;
+    }
+    if let Some(cwd) = args.cwd {
+        configuration.cwd = cwd;
+    }
+    if let Some(environment) = args.env {
+        for (key, value) in environment {
+            match value {
+                Some(value) => {
+                    if is_redaction_marker(&value) {
+                        return Err(invalid(
+                            "Do not send redaction placeholders as environment values. Omit unchanged keys or send null to remove a key.",
+                        ));
+                    }
+                    configuration.env.insert(key, value);
+                }
+                None => {
+                    configuration.env.remove(&key);
+                }
+            }
+        }
+    }
+    let entry = backend
+        .save_configuration(&lead, configuration, args.expected_revision, progress)
+        .await
+        .map_err(tool_error)?;
+    run_result(
+        format!(
+            "Saved run configuration {} after user approval.",
+            entry.configuration.name
+        ),
+        configuration_view(entry),
+    )
+}
+
+fn is_redaction_marker(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "<redacted>" | "[redacted]" | "(redacted)" | "[hidden]" | "<hidden>"
+    ) || (normalized.chars().count() >= 4
+        && normalized
+            .chars()
+            .all(|character| matches!(character, '*' | '•' | '●' | '█')))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunRevisionArgs {
+    id: String,
+    expected_revision: String,
+}
+
+async fn run_configuration_delete(
+    shared: &Shared,
+    args: RunRevisionArgs,
+    progress: Option<super::RunToolProgress>,
+) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let value = backend
+        .delete_configuration(&lead, &args.id, args.expected_revision, progress)
+        .await
+        .map_err(tool_error)?;
+    run_result(
+        "Deleted run configuration after user approval.".into(),
+        value,
+    )
+}
+
+async fn run_start(
+    shared: &Shared,
+    args: RunRevisionArgs,
+    progress: Option<super::RunToolProgress>,
+) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let value = backend
+        .start_run(&lead, &args.id, args.expected_revision, progress)
+        .await
+        .map_err(tool_error)?;
+    run_result(
+        "Started the saved run configuration after user approval.".into(),
+        value,
+    )
+}
+
+async fn run_stop(
+    shared: &Shared,
+    args: RunConfigurationIdArgs,
+    progress: Option<super::RunToolProgress>,
+) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let value = backend
+        .stop_run(&lead, &args.id, progress)
+        .await
+        .map_err(tool_error)?;
+    run_result("Stopped the run after user approval.".into(), value)
+}
+
+async fn run_restart(
+    shared: &Shared,
+    args: RunConfigurationIdArgs,
+    progress: Option<super::RunToolProgress>,
+) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let value = backend
+        .restart_run(&lead, &args.id, progress)
+        .await
+        .map_err(tool_error)?;
+    run_result(
+        "Restarted the saved run configuration after user approval.".into(),
+        value,
+    )
+}
+
+async fn runs_list(shared: &Shared) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let value = backend.list_runs(&lead).await.map_err(tool_error)?;
+    run_result("Runs in the active workspace.".into(), value)
+}
+
+async fn run_output(shared: &Shared, args: RunConfigurationIdArgs) -> Result<Value, RpcError> {
+    let backend = run_backend(shared)?;
+    let lead = lead_key(shared)?;
+    let value = backend
+        .read_run_output(&lead, &args.id)
+        .await
+        .map_err(tool_error)?;
+    run_result("Bounded output retained for this run.".into(), value)
+}
+
+const DELEGATION_INSTRUCTIONS: &str = "Delegate work to other agents in Span. list_agents shows every agent you can use: connected ones and installed ones that are ready to start. Delegate directly to any agent marked delegable; when it is not running, Span starts it in the background and delegate waits for the start. Do not ask the user to connect or open an agent first. delegate returns a taskId; poll get_result with waitSeconds up to 30 until status is completed or failed. Permission requests, questions and edit reviews from delegated agents go to the user, never to you.";
+
+const RUN_TOOL_INSTRUCTIONS: &str = "Saved workspace run configuration tools are available. Run configuration changes, starts, stops and restarts require user approval. Environment values are hidden from configuration results. Raw run output is arbitrary and may contain anything the process prints.";
+
+fn server_instructions(shared: &Shared) -> String {
+    match (
+        shared.config.delegation_enabled,
+        shared.config.run_tools.is_some(),
+    ) {
+        (true, true) => format!("{DELEGATION_INSTRUCTIONS} {RUN_TOOL_INSTRUCTIONS}"),
+        (true, false) => DELEGATION_INSTRUCTIONS.into(),
+        (false, true) => RUN_TOOL_INSTRUCTIONS.into(),
+        (false, false) => "No tools are enabled for this session.".into(),
+    }
+}
+
+fn tool_definitions_for(shared: &Shared) -> Value {
+    let mut tools = tool_definitions();
+    if let Some(tools) = tools.as_array_mut() {
+        if !shared.config.delegation_enabled {
+            tools.retain(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.starts_with("run_"))
+                    || tool.get("name").and_then(Value::as_str) == Some("runs_list")
+            });
+        }
+        if shared.config.run_tools.is_some() {
+            tools.extend(
+                run_tool_definitions()
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        } else {
+            tools.retain(|tool| {
+                !tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.starts_with("run_"))
+                    && tool.get("name").and_then(Value::as_str) != Some("runs_list")
+            });
+        }
+    }
+    tools
 }
 
 fn list_agents(shared: &Shared) -> Result<Value, RpcError> {
@@ -1196,7 +1577,9 @@ async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, Rpc
         return Ok(result::failure(
             &args.agent,
             FailureReason::DepthExceeded,
-            &format!("this session is at depth {depth} and the delegation depth limit is {max_depth}; the user can raise it in Span's agent settings"),
+            &format!(
+                "this session is at depth {depth} and the delegation depth limit is {max_depth}; the user can raise it in Span's agent settings"
+            ),
         ));
     }
     let connected = control.agents();
@@ -1237,7 +1620,7 @@ async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, Rpc
         _ => {
             return Err(invalid(
                 "Several agents match this name. Pass the id from list_agents.",
-            ))
+            ));
         }
     };
     if !target.open || target.features.is_none() {
@@ -1274,7 +1657,7 @@ async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, Rpc
                 &target.agent_name,
                 FailureReason::from_error(&error),
                 &error,
-            ))
+            ));
         }
     };
     let budget = shared
@@ -1313,7 +1696,7 @@ async fn delegate(shared: &Arc<Shared>, args: DelegateArgs) -> Result<Value, Rpc
                 &target.agent_name,
                 FailureReason::from_error(&error),
                 &error,
-            ))
+            ));
         }
     };
     Ok(result::ok(
@@ -1439,14 +1822,14 @@ fn message(shared: &Arc<Shared>, args: MessageArgs) -> Result<Value, RpcError> {
                 &agent,
                 FailureReason::BudgetExceeded,
                 &error,
-            ))
+            ));
         }
         Err(error) => {
             return Ok(result::failure(
                 &agent,
                 FailureReason::from_error(&error),
                 &error,
-            ))
+            ));
         }
     };
     let status = shared
@@ -1657,6 +2040,88 @@ pub fn tool_definitions() -> Value {
                 "additionalProperties": false,
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+        },
+    ])
+}
+
+fn run_tool_definitions() -> Value {
+    let config_id = json!({"id": {"type": "string", "description": "Run process ID from runs_list or run configuration ID from run_configurations, as appropriate."}});
+    json!([
+        {
+            "name": "run_configurations",
+            "title": "List run configurations",
+            "description": "List saved and detected workspace run configurations without executing them. Environment values are never returned. Use the catalog revision for create, save, delete, start and restart calls.",
+            "inputSchema": {"type": "object", "additionalProperties": false},
+            "annotations": {"readOnlyHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "run_configuration_read",
+            "title": "Read a run configuration",
+            "description": "Read one saved or detected configuration. Environment values are omitted and only variable names are returned.",
+            "inputSchema": {"type": "object", "properties": config_id, "required": ["id"], "additionalProperties": false},
+            "annotations": {"readOnlyHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "run_configuration_save",
+            "title": "Create or edit a run configuration",
+            "description": "Propose a saved configuration change. For an edit, pass the id and expectedRevision from the current catalog. For a new configuration, omit id. Omitted fields are preserved, including environment values. In env, set a value to null to remove that key. New values can be literals or ${env:NAME} references and are shown to the user for approval; do not send redaction placeholders. Span shows the proposed command and asks the user before saving. Environment references in command fields are resolved only for the local approval preview and execution; their expanded values are not returned to this tool.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "expectedRevision": {"type": "string"},
+                    "name": {"type": "string"},
+                    "executable": {"type": "string"},
+                    "args": {"type": "array", "items": {"type": "string"}},
+                    "cwd": {"type": "string"},
+                    "env": {"type": "object", "additionalProperties": {"type": ["string", "null"]}},
+                },
+                "required": ["expectedRevision"],
+                "additionalProperties": false,
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "run_configuration_delete",
+            "title": "Delete a run configuration",
+            "description": "Delete a saved configuration after user approval. Detected tasks cannot be deleted.",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "expectedRevision": {"type": "string"}}, "required": ["id", "expectedRevision"], "additionalProperties": false},
+            "annotations": {"readOnlyHint": false, "destructiveHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "run_start",
+            "title": "Run a saved configuration",
+            "description": "Start only a saved configuration by id. Span shows its configured executable, arguments and working directory and asks the user before launching. Execution uses direct argv, no implicit shell.",
+            "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "expectedRevision": {"type": "string"}}, "required": ["id", "expectedRevision"], "additionalProperties": false},
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false},
+        },
+        {
+            "name": "run_stop",
+            "title": "Stop a run",
+            "description": "Stop a running process from the active workspace after user approval. Pass its run process id from runs_list.",
+            "inputSchema": {"type": "object", "properties": config_id, "required": ["id"], "additionalProperties": false},
+            "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "run_restart",
+            "title": "Restart a saved configuration",
+            "description": "Stop this process and restart it with the same saved command after one user approval. Pass a run process id from runs_list.",
+            "inputSchema": {"type": "object", "properties": config_id, "required": ["id"], "additionalProperties": false},
+            "annotations": {"readOnlyHint": false, "destructiveHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "runs_list",
+            "title": "List runs",
+            "description": "List run process status for the active workspace.",
+            "inputSchema": {"type": "object", "additionalProperties": false},
+            "annotations": {"readOnlyHint": true, "openWorldHint": false},
+        },
+        {
+            "name": "run_output",
+            "title": "Read run output",
+            "description": "Read bounded retained stdout and stderr text for a run in the active workspace. Process output is arbitrary and may contain secrets printed by that process.",
+            "inputSchema": {"type": "object", "properties": config_id, "required": ["id"], "additionalProperties": false},
+            "annotations": {"readOnlyHint": true, "openWorldHint": false},
         },
     ])
 }

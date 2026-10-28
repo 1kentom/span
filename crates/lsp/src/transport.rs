@@ -4,9 +4,12 @@
 //! per the Language Server Protocol 3.17 specification.
 
 use crate::error::{LspError, Result};
+use crate::trace::Trace;
 use bytes::{Buf, BytesMut};
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::io::Write;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
@@ -16,16 +19,21 @@ const MAX_STDERR_BUFFER: usize = 1024 * 1024; // 1 MB
 
 pub struct StdioWriter {
     stdin: Mutex<ChildStdin>,
+    trace: Option<Arc<Trace>>,
 }
 
 impl StdioWriter {
-    pub fn new(stdin: ChildStdin) -> Self {
+    pub fn new(stdin: ChildStdin, trace: Option<Arc<Trace>>) -> Self {
         Self {
             stdin: Mutex::new(stdin),
+            trace,
         }
     }
 
     pub async fn send(&self, message: &Value) -> Result<()> {
+        if let Some(trace) = &self.trace {
+            trace.record("send", message);
+        }
         let json = serde_json::to_string(message)?;
         let content = format!("Content-Length: {}\r\n\r\n{}", json.len(), json);
         let mut stdin = self.stdin.lock().await;
@@ -39,22 +47,25 @@ pub struct StdioReader {
     stdout: BufReader<ChildStdout>,
     stderr_task: Option<tokio::task::JoinHandle<()>>,
     read_buffer: BytesMut,
+    trace: Option<Arc<Trace>>,
     pending_messages: VecDeque<Value>,
 }
 
 impl StdioReader {
-    pub fn new(stdout: ChildStdout, stderr: ChildStderr) -> Self {
-        let stderr_task = Some(tokio::spawn(Self::handle_stderr(stderr)));
+    pub fn new(stdout: ChildStdout, stderr: ChildStderr, trace: Option<Arc<Trace>>) -> Self {
+        let stderr_file = trace.as_ref().and_then(|t| t.stderr_file());
+        let stderr_task = Some(tokio::spawn(Self::handle_stderr(stderr, stderr_file)));
 
         Self {
             stdout: BufReader::new(stdout),
             stderr_task,
             read_buffer: BytesMut::with_capacity(4096),
+            trace,
             pending_messages: VecDeque::new(),
         }
     }
 
-    async fn handle_stderr(mut stderr: ChildStderr) {
+    async fn handle_stderr(mut stderr: ChildStderr, mut trace_file: Option<std::fs::File>) {
         let mut buffer = BytesMut::with_capacity(4096);
         let mut total_size = 0;
 
@@ -62,6 +73,10 @@ impl StdioReader {
             match stderr.read_buf(&mut buffer).await {
                 Ok(0) => break,
                 Ok(n) => {
+                    if let Some(f) = trace_file.as_mut() {
+                        let _ = f.write_all(&buffer[buffer.len() - n..]);
+                        let _ = f.flush();
+                    }
                     total_size += n;
                     if total_size > MAX_STDERR_BUFFER {
                         let excess = total_size - MAX_STDERR_BUFFER;
@@ -85,12 +100,14 @@ impl StdioReader {
     pub async fn receive(&mut self) -> Result<Value> {
         loop {
             if let Some(msg) = self.pending_messages.pop_front() {
+                self.trace_received(&msg);
                 return Ok(msg);
             }
 
             self.try_parse_messages()?;
 
             if let Some(msg) = self.pending_messages.pop_front() {
+                self.trace_received(&msg);
                 return Ok(msg);
             }
 
@@ -98,6 +115,12 @@ impl StdioReader {
             if n == 0 {
                 return Err(LspError::Protocol("Unexpected EOF".to_string()));
             }
+        }
+    }
+
+    fn trace_received(&self, msg: &Value) {
+        if let Some(trace) = &self.trace {
+            trace.record("recv", msg);
         }
     }
 

@@ -59,3 +59,5 @@
 .resize-handle:not(.panel-handle)::before{content:attr(aria-label);left:18px;top:50%;transform:translate(-4px,-50%)}
 .resize-handle:not(.panel-handle):hover::before,.resize-handle:not(.panel-handle):focus-visible::before{opacity:1;visibility:visible;transform:translate(0,-50%);transition-delay:180ms}
 @media(prefers-reduced-motion:reduce){.panel-rail-grip,.panel-rail-grip::before,.panel-handle-tooltip,.resize-handle:not(.panel-handle)::before,.resize-handle:not(.panel-handle)::after{transition:none}}
+
+.editor-groups.stacked{flex-direction:column}
