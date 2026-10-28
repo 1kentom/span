@@ -6,7 +6,7 @@ import type {
 } from "../bindings";
 import { createLspSession, describeLspError, runtimeMissingMessage, serverForBuffer, serverLabels, type LspPort } from "../lib/lsp-client";
 import type { LspBinding } from "../lib/lsp-codemirror";
-import { readHubFields, readInstallExt, type HubActivity, type HubPort, type HubRowFields, type WorkProgressEvent } from "../lib/lsp-hub-types";
+import { readHubFields, type HubActivity, type HubPort, type HubRowFields, type WorkProgressEvent } from "../lib/hub-port";
 import { percentOf } from "../lib/language-intelligence-copy";
 
 export type BufferLspState =
@@ -157,7 +157,7 @@ export interface LanguageServers {
 export interface LanguageServersOptions {
   /** Called for every new background failure so the app can show a toast. */
   onError?: (message: string) => void;
-  /** Commands and events newer than the generated bindings, see lsp-hub-types.ts. Without it cancel, trust and work progress are inert. */
+  /** The generated hub commands and the work progress event, see hub-port.ts. Without it cancel, trust and work progress are inert. */
   hub?: HubPort;
 }
 
@@ -319,13 +319,12 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
   }
 
   function handleProgress(event: LanguageServerInstallProgress_Deserialize) {
-    if (event.phase === "finished" || event.phase === "failed" || event.phase === "alreadyInstalled" || (event.phase as string) === "cancelled") {
+    if (event.phase === "finished" || event.phase === "failed" || event.phase === "alreadyInstalled" || event.phase === "cancelled") {
       setProgress(event.server, undefined);
       void refresh();
       return;
     }
-    const ext = readInstallExt(event);
-    advance(event.server, { phase: event.phase, received: event.received, total: event.total, message: event.message, ...ext });
+    advance(event.server, { phase: event.phase, received: event.received, total: event.total, message: event.message, overallReceived: event.overallReceived, overallTotal: event.overallTotal ?? null, artifactIndex: event.artifactIndex, artifactCount: event.artifactCount });
   }
 
   function handleWork(event: WorkProgressEvent) {

@@ -8,7 +8,7 @@ import type { NavigationPort } from './lsp-navigation';
 import { createPreviewNavigationPort, previewNavigationFiles } from './navigation-preview';
 import { previewHover, previewHoverFiles } from './hover-preview';
 import { createHubPreview } from './hub-preview';
-import type { HubPort } from './lsp-hub-types';
+import type { HubPort } from './hub-port';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
 import type { PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
@@ -547,18 +547,12 @@ const lspUnavailable = (): never => { throw { kind: 'unsupported', message: 'Lan
 const noListener = async (): Promise<() => void> => () => undefined;
 const hubPreview = isDesktop ? undefined : createHubPreview(previewWorkspace.root);
 
-/**
- * Hub commands that may be newer than the generated bindings. The generated command is used when it exists,
- * the labelled fixture (see hub-preview.ts) answers in browser preview.
- */
-type Loose = Record<string, ((...args: unknown[]) => Promise<unknown>) | undefined>;
-type LooseEvents = Record<string, { listen: (handler: (event: { payload: never }) => void) => Promise<() => void> } | undefined>;
-const missing = (name: string) => Promise.reject(new Error(`${name} is not available in this build of span.`));
+/** Hub commands and events. The generated ones in the native app, the labelled fixture (see hub-preview.ts) in browser preview. */
 export const hubPort: HubPort = {
-  cancelInstall: server => isDesktop ? ((commands as unknown as Loose).lspCancelInstall?.(server) ?? missing('Cancelling an install')) : hubPreview!.hub.cancelInstall(server),
-  trustWorkspace: trusted => isDesktop ? ((commands as unknown as Loose).lspTrustWorkspace?.(trusted) ?? missing('Folder trust')) : hubPreview!.hub.trustWorkspace(trusted),
+  cancelInstall: server => isDesktop ? commands.lspCancelInstall(server) : hubPreview!.hub.cancelInstall(server),
+  trustWorkspace: trusted => isDesktop ? commands.lspTrustWorkspace(trusted) : hubPreview!.hub.trustWorkspace(trusted),
   onWorkProgress: listener => isDesktop
-    ? ((events as unknown as LooseEvents).languageServerWorkProgress?.listen(event => listener(event.payload)) ?? noListener())
+    ? events.languageServerWorkProgress.listen(event => listener(event.payload))
     : hubPreview!.hub.onWorkProgress(listener),
   pickPath: async (kind, title) => {
     if (!isDesktop) return hubPreview!.hub.pickPath(kind, title);

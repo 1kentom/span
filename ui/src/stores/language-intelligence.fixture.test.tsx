@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot } from "solid-js";
 import { render } from "solid-js/web";
 import type { LspPort } from "../lib/lsp-client";
-import type { HubPort, WorkProgressEvent } from "../lib/lsp-hub-types";
+import type { HubPort, WorkProgressEvent } from "../lib/hub-port";
 import { LanguageIntelligenceButton } from "../components/LanguageIntelligenceButton";
 import { LanguageIntelligencePanel } from "../components/LanguageIntelligencePanel";
 import { LanguageServerStatus } from "../components/LanguageServerStatus";
@@ -22,7 +22,7 @@ async function setup(rows: any[], hubOver: Partial<HubPort> = {}) {
   const listeners: Record<string, (event: any) => void> = {};
   const listen = (name: string) => async (fn: (event: any) => void) => { listeners[name] = fn; return () => undefined; };
   const port = { completion: vi.fn(), hover: vi.fn(), definition: vi.fn(), format: vi.fn(), cancel: vi.fn(), install: vi.fn(async () => null), restart: vi.fn(async () => null), status: vi.fn(async () => rows), onDiagnostics: listen("diag"), onState: listen("state"), onInstallProgress: listen("progress"), onError: listen("error") } as unknown as LspPort;
-  const hubPort: HubPort = { cancelInstall: vi.fn(async () => undefined), trustWorkspace: vi.fn(async () => undefined), onWorkProgress: async fn => { listeners.work = fn as never; return () => undefined; }, pickPath: vi.fn(async () => "/jdk/25"), ...hubOver };
+  const hubPort: HubPort = { cancelInstall: vi.fn(async () => undefined), trustWorkspace: vi.fn(async () => []), onWorkProgress: async fn => { listeners.work = fn as never; return () => undefined; }, pickPath: vi.fn(async () => "/jdk/25"), ...hubOver };
   const root = document.createElement("div"); document.body.append(root);
   const setting = vi.fn(async () => undefined);
   const openSettings = vi.fn();

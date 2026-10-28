@@ -1,7 +1,7 @@
 /** Builders for hub view tests. Fixtures only: nothing here talks to a language server. */
 import type { CapabilitiesDto, LanguageServerId } from "../bindings";
 import { serverOrder } from "../lib/language-intelligence-copy";
-import type { HubActivity, HubRowFields } from "../lib/lsp-hub-types";
+import type { HubActivity, HubRowFields } from "../lib/hub-port";
 import { buildHubView, type HubServerSnapshot, type HubSnapshot, type HubView } from "./language-intelligence";
 import type { BufferLspState, ServerEntry } from "./language-servers";
 

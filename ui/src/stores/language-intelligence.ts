@@ -8,7 +8,7 @@ import { createMemo, createSignal, type Accessor } from "solid-js";
 import type { CapabilitiesDto, LanguageServerId } from "../bindings";
 import { serverForBuffer } from "../lib/lsp-client";
 import * as copy from "../lib/language-intelligence-copy";
-import type { HubActivity, HubPort } from "../lib/lsp-hub-types";
+import type { HubActivity, HubPort } from "../lib/hub-port";
 import { deriveBufferState, type BufferLspState, type LanguageServers, type ServerEntry } from "./language-servers";
 
 export type HubStateKind =

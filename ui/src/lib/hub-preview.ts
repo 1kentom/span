@@ -6,7 +6,7 @@
  * address or `window.__spanHubPreview.set("<name>")`. Without a scenario there are no status rows.
  */
 import type { LanguageServerId, LanguageServerInstallProgress_Deserialize, LanguageServerStateChanged_Deserialize, ServerStatusDto_Serialize } from "../bindings";
-import type { HubPort, WorkProgressEvent } from "./lsp-hub-types";
+import type { HubPort, WorkProgressEvent } from "./hub-port";
 import { previewHoverCapabilities } from "./hover-preview";
 
 export type HubScenario = "off" | "needs-install" | "installing" | "runtime-missing" | "install-failed" | "crashed" | "needs-trust" | "ready" | "disabled" | "starting";
