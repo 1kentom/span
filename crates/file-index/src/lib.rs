@@ -40,6 +40,12 @@ pub enum IndexError {
     Poisoned,
     #[error("background query worker failed: {0}")]
     Worker(#[from] tokio::task::JoinError),
+    #[error("workspace generation or query was superseded")]
+    Superseded,
+    #[error("file query is longer than 256 bytes")]
+    QueryTooLong,
+    #[error("could not start background scan: {0}")]
+    ThreadStart(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +100,13 @@ pub struct SearchResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryResults {
+    pub generation: u64,
+    pub request_id: u64,
+    pub results: Vec<SearchResult>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileEvent {
     Upsert(PathBuf),
     Remove(PathBuf),
@@ -109,16 +122,20 @@ pub struct FileIndex {
 struct Inner {
     state: RwLock<Option<State>>,
     active_scan: Mutex<Option<(u64, CancellationToken)>>,
+    open_gate: tokio::sync::Mutex<()>,
+    lifecycle_gate: Mutex<()>,
     next_generation: Mutex<u64>,
     next_scan_id: AtomicU64,
+    active_query_id: AtomicU64,
 }
 
 struct State {
     generation: u64,
     root: PathBuf,
-    files: BTreeMap<PathBuf, IndexedFile>,
+    files: Arc<BTreeMap<PathBuf, IndexedFile>>,
     scan_overlay: BTreeMap<PathBuf, Option<IndexedFile>>,
     status: ScanStatus,
+    active_scan_id: u64,
     scanned_entries: u64,
     indexed_progress: usize,
     error_count: u64,
@@ -133,12 +150,18 @@ impl FileIndex {
         &self,
         root: impl AsRef<Path>,
     ) -> Result<WorkspaceHandle, IndexError> {
+        let _open = self.inner.open_gate.lock().await;
         let root = tokio::fs::canonicalize(root)
             .await
             .map_err(IndexError::Canonicalize)?;
         if !root.is_dir() {
             return Err(IndexError::NotDirectory);
         }
+        let _lifecycle = self
+            .inner
+            .lifecycle_gate
+            .lock()
+            .map_err(|_| IndexError::Poisoned)?;
 
         if let Some((_, token)) = self
             .inner
@@ -149,6 +172,9 @@ impl FileIndex {
         {
             token.cancel();
         }
+        self.inner
+            .active_query_id
+            .fetch_add(1, AtomicOrdering::AcqRel);
 
         let generation = {
             let mut next = self
@@ -163,9 +189,10 @@ impl FileIndex {
         *self.inner.state.write().map_err(|_| IndexError::Poisoned)? = Some(State {
             generation,
             root: root.clone(),
-            files: BTreeMap::new(),
+            files: Arc::new(BTreeMap::new()),
             scan_overlay: BTreeMap::new(),
             status: ScanStatus::Idle,
+            active_scan_id: 0,
             scanned_entries: 0,
             indexed_progress: 0,
             error_count: 0,
@@ -178,6 +205,61 @@ impl FileIndex {
     /// Begin a cancellable background scan. The returned join handle is
     /// optional to await; the index remains queryable while the scan runs.
     pub fn start_scan(&self, workspace: &WorkspaceHandle) -> Result<JoinHandle<()>, IndexError> {
+        let (token, scan_id) = self.begin_scan(workspace)?;
+        let index = self.clone();
+        let workspace = workspace.clone();
+        Ok(tokio::task::spawn_blocking(move || {
+            index.scan_blocking(&workspace, token, scan_id);
+        }))
+    }
+
+    /// Start a cancellable scan on an owned OS thread. This variant is for
+    /// native watcher workers that do not run inside a Tokio reactor.
+    pub fn start_scan_thread(
+        &self,
+        workspace: &WorkspaceHandle,
+    ) -> Result<std::thread::JoinHandle<()>, IndexError> {
+        let (token, scan_id) = self.begin_scan(workspace)?;
+        let index = self.clone();
+        let workspace = workspace.clone();
+        let generation = workspace.generation;
+        match std::thread::Builder::new()
+            .name("span-file-index-scan".to_owned())
+            .spawn(move || index.scan_blocking(&workspace, token, scan_id))
+        {
+            Ok(worker) => Ok(worker),
+            Err(error) => {
+                if let Ok(mut active) = self.inner.active_scan.lock() {
+                    if active
+                        .as_ref()
+                        .is_some_and(|(current_id, _)| *current_id == scan_id)
+                    {
+                        *active = None;
+                    }
+                }
+                if let Ok(mut guard) = self.inner.state.write() {
+                    if let Some(state) = guard.as_mut().filter(|state| {
+                        state.generation == generation && state.active_scan_id == scan_id
+                    }) {
+                        state.status = ScanStatus::Failed;
+                        state.error_count = 1;
+                        state.last_error = Some(error.to_string());
+                    }
+                }
+                Err(IndexError::ThreadStart(error.to_string()))
+            }
+        }
+    }
+
+    fn begin_scan(
+        &self,
+        workspace: &WorkspaceHandle,
+    ) -> Result<(CancellationToken, u64), IndexError> {
+        let _lifecycle = self
+            .inner
+            .lifecycle_gate
+            .lock()
+            .map_err(|_| IndexError::Poisoned)?;
         self.ensure_active(workspace)?;
 
         if let Some((_, token)) = self
@@ -205,17 +287,14 @@ impl FileIndex {
             let mut guard = self.inner.state.write().map_err(|_| IndexError::Poisoned)?;
             let state = active_state_mut(&mut guard, workspace)?;
             state.status = ScanStatus::Scanning;
+            state.active_scan_id = scan_id;
             state.scanned_entries = 0;
             state.indexed_progress = 0;
             state.error_count = 0;
             state.last_error = None;
         }
 
-        let index = self.clone();
-        let workspace = workspace.clone();
-        Ok(tokio::task::spawn_blocking(move || {
-            index.scan_blocking(&workspace, token, scan_id);
-        }))
+        Ok((token, scan_id))
     }
 
     /// Apply a watcher or save/rename event. A watcher should be attached to
@@ -230,10 +309,7 @@ impl FileIndex {
         match event {
             FileEvent::Upsert(path) => self.apply_upsert(workspace, &path),
             FileEvent::Remove(path) => self.apply_remove(workspace, &path),
-            FileEvent::Rename { from, to } => {
-                self.apply_remove(workspace, &from)?;
-                self.apply_upsert(workspace, &to)
-            }
+            FileEvent::Rename { from, to } => self.apply_rename(workspace, &from, &to),
         }
     }
 
@@ -255,6 +331,43 @@ impl FileIndex {
         })
     }
 
+    pub fn contains_descendant(
+        &self,
+        workspace: &WorkspaceHandle,
+        path: impl AsRef<Path>,
+    ) -> Result<bool, IndexError> {
+        let relative = lexical_relative(&workspace.root, path.as_ref())?;
+        let guard = self.inner.state.read().map_err(|_| IndexError::Poisoned)?;
+        let state = active_state(&guard, workspace)?;
+        Ok(state
+            .files
+            .keys()
+            .any(|candidate| candidate != &relative && candidate.starts_with(&relative)))
+    }
+
+    pub fn close_workspace(&self, workspace: &WorkspaceHandle) -> Result<(), IndexError> {
+        let _lifecycle = self
+            .inner
+            .lifecycle_gate
+            .lock()
+            .map_err(|_| IndexError::Poisoned)?;
+        let mut active = self
+            .inner
+            .active_scan
+            .lock()
+            .map_err(|_| IndexError::Poisoned)?;
+        let mut state = self.inner.state.write().map_err(|_| IndexError::Poisoned)?;
+        active_state(&state, workspace)?;
+        if let Some((_, token)) = active.take() {
+            token.cancel();
+        }
+        self.inner
+            .active_query_id
+            .fetch_add(1, AtomicOrdering::AcqRel);
+        *state = None;
+        Ok(())
+    }
+
     /// Fuzzy-match indexed relative paths in a blocking worker and return at
     /// most 100 deterministic results. The per-query heap also stays bounded
     /// to the requested result count.
@@ -263,18 +376,45 @@ impl FileIndex {
         workspace: &WorkspaceHandle,
         query: impl Into<String>,
         limit: usize,
-    ) -> Result<Vec<SearchResult>, IndexError> {
+    ) -> Result<QueryResults, IndexError> {
         let query = query.into();
-        let files = {
+        if query.len() > 256 {
+            return Err(IndexError::QueryTooLong);
+        }
+        let (files, generation) = {
             let guard = self.inner.state.read().map_err(|_| IndexError::Poisoned)?;
-            active_state(&guard, workspace)?
-                .files
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
+            let state = active_state(&guard, workspace)?;
+            (Arc::clone(&state.files), state.generation)
         };
+        let request_id = self
+            .inner
+            .active_query_id
+            .fetch_add(1, AtomicOrdering::AcqRel)
+            + 1;
         let limit = limit.min(MAX_RESULTS);
-        Ok(tokio::task::spawn_blocking(move || fuzzy_query(files, &query, limit)).await?)
+        let active_query_id = Arc::clone(&self.inner);
+        let results = tokio::task::spawn_blocking(move || {
+            fuzzy_query(
+                &files,
+                &query,
+                limit,
+                &active_query_id.active_query_id,
+                request_id,
+            )
+        })
+        .await??;
+        let guard = self.inner.state.read().map_err(|_| IndexError::Poisoned)?;
+        let active = active_state(&guard, workspace)?;
+        if active.generation != generation
+            || self.inner.active_query_id.load(AtomicOrdering::Acquire) != request_id
+        {
+            return Err(IndexError::Superseded);
+        }
+        Ok(QueryResults {
+            generation,
+            request_id,
+            results,
+        })
     }
 
     fn ensure_active(&self, workspace: &WorkspaceHandle) -> Result<(), IndexError> {
@@ -286,13 +426,49 @@ impl FileIndex {
         let Some(file) = canonical_file(workspace, path)? else {
             return Ok(());
         };
+        let should_index = visible_event_file(workspace, &file.absolute_path);
         let mut guard = self.inner.state.write().map_err(|_| IndexError::Poisoned)?;
         let state = active_state_mut(&mut guard, workspace)?;
-        state.files.insert(file.relative_path.clone(), file.clone());
+        if should_index {
+            Arc::make_mut(&mut state.files).insert(file.relative_path.clone(), file.clone());
+        } else {
+            Arc::make_mut(&mut state.files).remove(&file.relative_path);
+        }
         if state.status == ScanStatus::Scanning {
             state
                 .scan_overlay
-                .insert(file.relative_path.clone(), Some(file));
+                .insert(file.relative_path.clone(), should_index.then_some(file));
+        }
+        Ok(())
+    }
+
+    fn apply_rename(
+        &self,
+        workspace: &WorkspaceHandle,
+        from: &Path,
+        to: &Path,
+    ) -> Result<(), IndexError> {
+        let old_relative = lexical_relative(&workspace.root, from)?;
+        let new_file = canonical_file(workspace, to)?;
+        let new_file = match new_file {
+            Some(file) if visible_event_file(workspace, &file.absolute_path) => Some(file),
+            _ => None,
+        };
+
+        let mut guard = self.inner.state.write().map_err(|_| IndexError::Poisoned)?;
+        let state = active_state_mut(&mut guard, workspace)?;
+        let files = Arc::make_mut(&mut state.files);
+        files.remove(&old_relative);
+        if let Some(file) = &new_file {
+            files.insert(file.relative_path.clone(), file.clone());
+        }
+        if state.status == ScanStatus::Scanning {
+            state.scan_overlay.insert(old_relative, None);
+            if let Some(file) = new_file {
+                state
+                    .scan_overlay
+                    .insert(file.relative_path.clone(), Some(file));
+            }
         }
         Ok(())
     }
@@ -301,7 +477,7 @@ impl FileIndex {
         let relative = lexical_relative(&workspace.root, path)?;
         let mut guard = self.inner.state.write().map_err(|_| IndexError::Poisoned)?;
         let state = active_state_mut(&mut guard, workspace)?;
-        state.files.remove(&relative);
+        Arc::make_mut(&mut state.files).remove(&relative);
         if state.status == ScanStatus::Scanning {
             state.scan_overlay.insert(relative, None);
         }
@@ -315,8 +491,11 @@ impl FileIndex {
         let mut last_error = None;
         let walker = WalkBuilder::new(&workspace.root)
             .hidden(false)
+            .git_ignore(true)
+            .git_exclude(true)
             .require_git(false)
             .follow_links(false)
+            .filter_entry(visible_index_entry)
             .build();
 
         for item in walker {
@@ -339,7 +518,7 @@ impl FileIndex {
                         }
                     }
                     if visited % PROGRESS_INTERVAL == 0 {
-                        self.set_progress(workspace.generation, visited, scanned.len());
+                        self.set_progress(workspace.generation, scan_id, visited, scanned.len());
                     }
                 }
                 Err(error) => {
@@ -354,10 +533,9 @@ impl FileIndex {
         }
 
         if let Ok(mut guard) = self.inner.state.write() {
-            if let Some(state) = guard
-                .as_mut()
-                .filter(|state| state.generation == workspace.generation)
-            {
+            if let Some(state) = guard.as_mut().filter(|state| {
+                state.generation == workspace.generation && state.active_scan_id == scan_id
+            }) {
                 for (path, event_file) in std::mem::take(&mut state.scan_overlay) {
                     match event_file {
                         Some(file) => {
@@ -368,7 +546,7 @@ impl FileIndex {
                         }
                     }
                 }
-                state.files = scanned;
+                state.files = Arc::new(scanned);
                 state.scanned_entries = visited;
                 state.indexed_progress = state.files.len();
                 state.error_count = error_count;
@@ -401,11 +579,11 @@ impl FileIndex {
             .unwrap_or(false)
     }
 
-    fn set_progress(&self, generation: u64, visited: u64, indexed: usize) {
+    fn set_progress(&self, generation: u64, scan_id: u64, visited: u64, indexed: usize) {
         if let Ok(mut guard) = self.inner.state.write() {
             if let Some(state) = guard
                 .as_mut()
-                .filter(|state| state.generation == generation)
+                .filter(|state| state.generation == generation && state.active_scan_id == scan_id)
             {
                 state.scanned_entries = visited;
                 state.indexed_progress = indexed;
@@ -470,6 +648,69 @@ fn canonical_file(
         return Err(IndexError::NotFile);
     }
     Ok(Some(file_from_metadata(workspace, canonical, metadata)?))
+}
+
+fn visible_event_file(workspace: &WorkspaceHandle, canonical_file: &Path) -> bool {
+    let Some(parent) = canonical_file.parent() else {
+        return false;
+    };
+    if !parent.starts_with(&workspace.root) {
+        return false;
+    }
+    let Ok(relative) = canonical_file.strip_prefix(&workspace.root) else {
+        return false;
+    };
+    let components = relative.components().collect::<Vec<_>>();
+    if components
+        .iter()
+        .any(|component| component.as_os_str() == ".git")
+    {
+        return false;
+    }
+    if components
+        .iter()
+        .take(components.len().saturating_sub(1))
+        .any(|component| component.as_os_str() == "node_modules")
+    {
+        return false;
+    }
+    let Ok(relative_parent) = parent.strip_prefix(&workspace.root) else {
+        return false;
+    };
+    let max_depth = relative_parent.components().count() + 1;
+    let filter_file = canonical_file.to_path_buf();
+    let filter_parent = parent.to_path_buf();
+    let walker = WalkBuilder::new(&workspace.root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_exclude(true)
+        .require_git(false)
+        .follow_links(false)
+        .max_depth(Some(max_depth))
+        .filter_entry(move |entry| {
+            entry.depth() == 0
+                || entry.path() == filter_file
+                || filter_parent.starts_with(entry.path())
+        })
+        .build();
+    walker.into_iter().any(|entry| {
+        entry
+            .ok()
+            .is_some_and(|entry| entry.path() == canonical_file)
+    })
+}
+
+fn visible_index_entry(entry: &ignore::DirEntry) -> bool {
+    if entry.depth() == 0 {
+        return true;
+    }
+    if entry.file_name() == ".git" {
+        return false;
+    }
+    !(entry.file_name() == "node_modules"
+        && entry
+            .file_type()
+            .is_some_and(|kind| kind.is_dir() || kind.is_symlink()))
 }
 
 fn metadata_file(root: &Path, canonical: &Path) -> Result<IndexedFile, IndexError> {
@@ -547,35 +788,47 @@ fn lexical_relative(root: &Path, path: &Path) -> Result<PathBuf, IndexError> {
     Ok(relative.to_path_buf())
 }
 
-fn fuzzy_query(files: Vec<IndexedFile>, query: &str, limit: usize) -> Vec<SearchResult> {
+fn fuzzy_query(
+    files: &BTreeMap<PathBuf, IndexedFile>,
+    query: &str,
+    limit: usize,
+    active_query_id: &AtomicU64,
+    request_id: u64,
+) -> Result<Vec<SearchResult>, IndexError> {
     if limit == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     if query.trim().is_empty() {
-        return files
-            .into_iter()
+        if active_query_id.load(AtomicOrdering::Acquire) != request_id {
+            return Err(IndexError::Superseded);
+        }
+        return Ok(files
+            .values()
             .take(limit)
             .map(|file| SearchResult {
-                relative_path: file.relative_path,
-                absolute_path: file.absolute_path,
+                relative_path: file.relative_path.clone(),
+                absolute_path: file.absolute_path.clone(),
                 score: 0,
             })
-            .collect();
+            .collect());
     }
 
     let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let mut char_buffer = Vec::new();
     let mut best = BinaryHeap::with_capacity(limit + 1);
-    for file in files {
+    for (index, file) in files.values().enumerate() {
+        if index % 32 == 0 && active_query_id.load(AtomicOrdering::Acquire) != request_id {
+            return Err(IndexError::Superseded);
+        }
         let candidate = file.relative_path.to_string_lossy();
         let candidate = Utf32Str::new(candidate.as_ref(), &mut char_buffer);
         let Some(score) = pattern.score(candidate, &mut matcher) else {
             continue;
         };
         let item = HeapItem(SearchResult {
-            relative_path: file.relative_path,
-            absolute_path: file.absolute_path,
+            relative_path: file.relative_path.clone(),
+            absolute_path: file.absolute_path.clone(),
             score,
         });
         if best.len() < limit {
@@ -595,7 +848,10 @@ fn fuzzy_query(files: Vec<IndexedFile>, query: &str, limit: usize) -> Vec<Search
             .cmp(&a.score)
             .then_with(|| a.relative_path.cmp(&b.relative_path))
     });
-    results
+    if active_query_id.load(AtomicOrdering::Acquire) != request_id {
+        return Err(IndexError::Superseded);
+    }
+    Ok(results)
 }
 
 #[derive(Debug, Eq, PartialEq)]

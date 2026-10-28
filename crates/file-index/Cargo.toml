@@ -1,18 +1,14 @@
 [package]
 name = "span-file-index"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-rust-version = "1.90"
-
-# This crate is intentionally isolated until it is added to the root workspace.
-[workspace]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
-ignore = "0.4"
-nucleo-matcher = "0.3.1"
-thiserror = "2"
-tokio = { version = "1.54.1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+ignore.workspace = true
+nucleo-matcher.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 tokio-util = { version = "0.7.20", features = ["rt"] }
 
 [dev-dependencies]

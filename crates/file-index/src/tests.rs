@@ -35,18 +35,21 @@ async fn scan_respects_gitignore_and_fuzzy_query_is_bounded_and_deterministic() 
 
     let first = index.query(&workspace, "s", 500).await.unwrap();
     let second = index.query(&workspace, "s", 500).await.unwrap();
-    assert_eq!(first.len(), 100);
-    assert_eq!(first, second);
+    assert_eq!(first.results.len(), 100);
+    assert_eq!(first.results, second.results);
     assert!(first
+        .results
         .iter()
         .any(|item| item.relative_path == Path::new("src/main.rs")));
     assert!(first
+        .results
         .iter()
         .all(|item| !item.relative_path.starts_with("target")));
     assert!(index
         .query(&workspace, "secret", 100)
         .await
         .unwrap()
+        .results
         .is_empty());
 }
 
@@ -69,8 +72,8 @@ async fn watcher_deltas_are_replayed_after_scan_and_rename_remove_are_incrementa
 
     index.start_scan(&workspace).unwrap().await.unwrap();
     let paths = index.query(&workspace, "", 100).await.unwrap();
-    assert_eq!(paths.len(), 1);
-    assert_eq!(paths[0].relative_path, Path::new("during.rs"));
+    assert_eq!(paths.results.len(), 1);
+    assert_eq!(paths.results[0].relative_path, Path::new("during.rs"));
 
     let destination = write(temp.path(), "after.rs", "renamed");
     index
@@ -83,8 +86,8 @@ async fn watcher_deltas_are_replayed_after_scan_and_rename_remove_are_incrementa
         )
         .unwrap();
     let paths = index.query(&workspace, "", 100).await.unwrap();
-    assert_eq!(paths.len(), 1);
-    assert_eq!(paths[0].relative_path, Path::new("after.rs"));
+    assert_eq!(paths.results.len(), 1);
+    assert_eq!(paths.results[0].relative_path, Path::new("after.rs"));
 }
 
 #[tokio::test]
@@ -143,13 +146,62 @@ async fn canonical_boundary_rejects_external_symlink_and_dangling_links_are_skip
             .query(&workspace, "outside", 10)
             .await
             .unwrap()
+            .results
             .is_empty());
         assert!(index
             .query(&workspace, "dangling", 10)
             .await
             .unwrap()
+            .results
             .is_empty());
     }
+}
+
+#[tokio::test]
+async fn watcher_upserts_apply_ignore_rules_and_invalid_rename_keeps_old_path() {
+    let temp = tempfile::tempdir().unwrap();
+    write(temp.path(), ".gitignore", "ignored/\n");
+    let existing = write(temp.path(), "kept.rs", "ok");
+    let (index, workspace) = indexed(temp.path()).await;
+
+    let ignored = write(temp.path(), "ignored/hidden.rs", "hidden");
+    index
+        .apply_event(&workspace, FileEvent::Upsert(ignored))
+        .unwrap();
+    let results = index.query(&workspace, "hidden", 10).await.unwrap();
+    assert!(results.results.is_empty());
+
+    let external = tempfile::tempdir().unwrap();
+    let outside = write(external.path(), "outside.rs", "outside");
+    assert!(matches!(
+        index.apply_event(
+            &workspace,
+            FileEvent::Rename {
+                from: existing,
+                to: outside,
+            }
+        ),
+        Err(IndexError::OutsideWorkspace)
+    ));
+    let results = index.query(&workspace, "kept", 10).await.unwrap();
+    assert_eq!(results.results.len(), 1);
+    assert_eq!(results.results[0].relative_path, Path::new("kept.rs"));
+}
+
+#[test]
+fn superseded_fuzzy_query_stops_before_matching_candidates() {
+    let file = IndexedFile {
+        relative_path: PathBuf::from("one.rs"),
+        absolute_path: PathBuf::from("/workspace/one.rs"),
+        size_bytes: 1,
+        modified_unix_ms: None,
+    };
+    let files = BTreeMap::from([(file.relative_path.clone(), file)]);
+    let active_query_id = std::sync::atomic::AtomicU64::new(2);
+    assert!(matches!(
+        fuzzy_query(&files, "one", 20, &active_query_id, 1),
+        Err(IndexError::Superseded)
+    ));
 }
 
 #[tokio::test]
