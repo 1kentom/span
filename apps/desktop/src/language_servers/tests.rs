@@ -1,4 +1,4 @@
-//! Service tests against a python3 fake language server.
+//! Service tests against a python fake language server (python3, python or `py -3`).
 
 use super::provision::{InstallFailure, Provisioner, RuntimeIssue};
 use super::*;
@@ -68,6 +68,33 @@ impl Provisioner for FakeProvisioner {
     fn configure(&self, _settings: &LspSettings) {}
 }
 
+/// Python interpreter as `(program, leading args)`. Prefers `python3`, then `python`, then
+/// the Windows launcher `py -3`; the first one that actually runs wins (on Windows
+/// `python3` is often a Store stub that exists but fails).
+fn python() -> (&'static str, Vec<String>) {
+    static PY: std::sync::OnceLock<(&'static str, &'static [&'static str])> =
+        std::sync::OnceLock::new();
+    let (program, pre) = *PY.get_or_init(|| {
+        let candidates: [(&str, &[&str]); 3] = [("python3", &[]), ("python", &[]), ("py", &["-3"])];
+        for (program, pre) in candidates {
+            let ok = std::process::Command::new(program)
+                .args(pre)
+                .arg("--version")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                return (program, pre);
+            }
+        }
+        ("python3", &[])
+    });
+    (program, pre.iter().map(|s| s.to_string()).collect())
+}
+
 struct FakeResolver {
     mode: Mutex<&'static str>,
     log: PathBuf,
@@ -84,12 +111,12 @@ impl LaunchResolver for FakeResolver {
         }
         let script =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-lsp-server.py");
+        let (program, mut args) = python();
+        args.push(script.to_string_lossy().into_owned());
+        args.push((*self.mode.lock().unwrap()).to_string());
         Ok(LaunchSpec {
-            program: PathBuf::from("python3"),
-            args: vec![
-                script.to_string_lossy().into_owned(),
-                (*self.mode.lock().unwrap()).to_string(),
-            ],
+            program: PathBuf::from(program),
+            args,
             env: vec![(
                 "FAKE_LSP_LOG".into(),
                 self.log.to_string_lossy().into_owned(),
@@ -121,7 +148,8 @@ fn fixture(installed: bool, mode: &'static str, request_timeout: Duration) -> Fi
     let ws = CoreWorkspace::open(&project)
         .unwrap()
         .with_user_settings(None);
-    // The production service normalizes canonical Windows verbatim roots before keying instances.
+    // The service keys servers by the normalised root (no verbatim prefix on Windows),
+    // so the tests must ask the manager for the same spelling.
     let root = paths::normalize_path(Path::new(&ws.workspace().root));
     let resolver = Arc::new(FakeResolver {
         mode: Mutex::new(mode),
@@ -230,6 +258,7 @@ impl Fixture {
     }
 }
 
+#[cfg(unix)]
 fn alive(pid: i64) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -237,6 +266,15 @@ fn alive(pid: i64) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn alive(pid: i64) -> bool {
+    let out = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .expect("run tasklist");
+    String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\""))
 }
 
 #[tokio::test]

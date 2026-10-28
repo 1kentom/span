@@ -619,8 +619,9 @@ mod tests {
         let locations = map_definition(&root, Some(response));
         assert_eq!(locations[0].path, "src/a b.rs");
         assert_eq!(locations[0].range.start.line, 1);
-        assert!(std::path::Path::new(&locations[1].path)
-            .ends_with(std::path::Path::new("elsewhere").join("c.rs")));
+        // Outside the workspace the absolute path is kept in the platform's own form,
+        // so compare by components (`/` is accepted as a separator on Windows too).
+        assert!(std::path::Path::new(&locations[1].path).ends_with("elsewhere/c.rs"));
         assert!(std::path::Path::new(&locations[1].path).is_absolute());
         assert!(map_definition(&root, None).is_empty());
     }

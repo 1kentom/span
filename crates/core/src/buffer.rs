@@ -252,6 +252,7 @@ pub(crate) fn language(path: &str) -> &'static str {
         Some("md" | "markdown" | "mdown" | "mkd" | "mdx") => "markdown",
         Some("rs") => "rust",
         Some("py" | "pyi") => "python",
+        Some("java" | "jav") => "java",
         Some("yaml" | "yml") => "yaml",
         Some("css") => "css",
         Some("scss") => "scss",
@@ -444,5 +445,32 @@ mod dirty_tests {
             )
             .unwrap();
         assert_eq!(buffer.revision, buffer.saved_revision);
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::language;
+
+    #[test]
+    fn java_files_are_java_not_text() {
+        for path in [
+            "App.java",
+            "src/main/java/com/example/todo/Controller.java",
+            "UPPER.JAVA",
+            "old.jav",
+        ] {
+            assert_eq!(language(path), "java", "{path}");
+        }
+    }
+
+    #[test]
+    fn existing_languages_and_the_text_fallback_are_unchanged() {
+        assert_eq!(language("a.ts"), "typescript");
+        assert_eq!(language("a.rs"), "rust");
+        assert_eq!(language("a.py"), "python");
+        assert_eq!(language(".env.local"), "dotenv");
+        assert_eq!(language("notes.unknown"), "text");
+        assert_eq!(language("Makefile"), "text");
     }
 }
