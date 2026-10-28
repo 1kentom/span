@@ -1,4 +1,7 @@
-use crate::{AgentCommand, AgentEvent, PermissionOption, PlanEntry};
+use crate::{
+    AgentCommand, AgentEvent, ConfigChoice, ConfigGroup, ConfigOption, PermissionOption, PlanEntry,
+    SessionSummary,
+};
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
 use serde_json::Value;
@@ -21,6 +24,9 @@ enum Command {
     NewSession(Reply<String>),
     Prompt(String, String, Reply<()>),
     Cancel(String),
+    SetConfig(String, String, String, Reply<()>),
+    ListSessions(Reply<Vec<SessionSummary>>),
+    LoadSession(String, Reply<()>),
     Shutdown,
 }
 struct Permission {
@@ -138,6 +144,35 @@ impl AgentService {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::Prompt(session_id, text, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    pub async fn set_config(&self, session_id: String, config_id: String, value: String) -> Result<(), String> {
+        {
+            let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            if bridge.closed || !bridge.sessions.contains(&session_id) {
+                return Err("Unknown or disconnected session".into());
+            }
+        }
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::SetConfig(session_id, config_id, value, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::ListSessions(tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Ask the agent to restore an earlier session. The agent replays the
+    /// conversation as notifications before this resolves.
+    pub async fn load_session(&self, session_id: String) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::LoadSession(session_id, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -402,7 +437,9 @@ async fn run(
             if initialized.as_ref().is_ok_and(|response| response.protocol_version != ProtocolVersion::V1) {
                 let _ = ready.send(Err("Agent negotiated an unsupported protocol version".into())); return Ok(());
             }
+            let (can_load, can_list) = initialized.as_ref().ok().map(|response| (response.agent_capabilities.load_session, response.agent_capabilities.session_capabilities.list.is_some())).unwrap_or((false, false));
             let _ = ready.send(Ok(()));
+            emit(AgentEvent::Capabilities { can_load_session: can_load, can_list_sessions: can_list });
             emit(AgentEvent::Status { state: "connected".into(), message: "ACP initialized. Agent process has your OS privileges.".into() });
             let mut cancel_deadline: Option<tokio::time::Instant> = None;
             loop {
@@ -426,10 +463,12 @@ async fn run(
                             Ok(result) => result,
                             Err(_) => { let _ = reply.send(Err("Agent session creation timed out after 30 seconds".into())); break; }
                         };
+                        let options = result.as_ref().ok().and_then(|response| response.config_options.as_ref()).map(|options| config_options(options)).unwrap_or_default();
                         let result = result.map(|response| response.session_id.to_string()).map_err(|e| e.to_string());
                         if let Ok(id) = &result {
                             if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                             emit(AgentEvent::Session { session_id: id.clone() });
+                            if !options.is_empty() { emit(AgentEvent::Config { session_id: id.clone(), options }); }
                         }
                         let _ = reply.send(result);
                     }
@@ -447,6 +486,73 @@ async fn run(
                             match result {
                                 Ok(response) => { prompt_emit(AgentEvent::Complete { session_id: id, stop_reason: enum_string(&response.stop_reason) }); let _ = reply.send(Ok(())); }
                                 Err(error) => { let message = error.to_string(); prompt_emit(AgentEvent::Error { message: message.clone() }); let _ = reply.send(Err(message)); }
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    Command::SetConfig(id, config_id, value, reply) => {
+                        let known = state.lock().map(|bridge| !bridge.closed && bridge.sessions.contains(&id)).unwrap_or(false);
+                        if !known { let _ = reply.send(Err("Unknown session".into())); continue; }
+                        let set_cx = cx.clone(); let set_emit = emit.clone();
+                        cx.spawn(async move {
+                            let request = SetSessionConfigOptionRequest::new(id.clone(), config_id, value.as_str());
+                            let result = tokio::time::timeout(std::time::Duration::from_secs(20), set_cx.send_request(request).block_task()).await;
+                            match result {
+                                Ok(Ok(response)) => {
+                                    set_emit(AgentEvent::Config { session_id: id, options: config_options(&response.config_options) });
+                                    let _ = reply.send(Ok(()));
+                                }
+                                Ok(Err(error)) => { let _ = reply.send(Err(error.to_string())); }
+                                Err(_) => { let _ = reply.send(Err("The agent did not apply the change within 20 seconds".into())); }
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    Command::ListSessions(reply) => {
+                        if !can_list { let _ = reply.send(Err("This agent cannot list earlier sessions".into())); continue; }
+                        let list_cx = cx.clone(); let list_cwd = cwd.clone();
+                        cx.spawn(async move {
+                            let mut found: Vec<SessionSummary> = Vec::new();
+                            let mut cursor: Option<String> = None;
+                            for _ in 0..5 {
+                                let request = ListSessionsRequest::new().cwd(list_cwd.clone()).cursor(cursor.clone());
+                                let page = tokio::time::timeout(std::time::Duration::from_secs(20), list_cx.send_request(request).block_task()).await;
+                                match page {
+                                    Ok(Ok(page)) => {
+                                        found.extend(page.sessions.into_iter().map(|info| SessionSummary { session_id: info.session_id.to_string(), title: info.title, updated_at: info.updated_at }));
+                                        cursor = page.next_cursor;
+                                        if cursor.is_none() { break; }
+                                    }
+                                    Ok(Err(error)) => { let _ = reply.send(Err(error.to_string())); return Ok(()); }
+                                    Err(_) => { let _ = reply.send(Err("The agent did not list sessions within 20 seconds".into())); return Ok(()); }
+                                }
+                            }
+                            found.truncate(100);
+                            let _ = reply.send(Ok(found));
+                            Ok(())
+                        })?;
+                    }
+                    Command::LoadSession(id, reply) => {
+                        if !can_load { let _ = reply.send(Err("This agent cannot restore earlier sessions".into())); continue; }
+                        if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
+                        let load_cx = cx.clone(); let load_emit = emit.clone(); let load_cwd = cwd.clone(); let load_state = state.clone();
+                        cx.spawn(async move {
+                            let request = LoadSessionRequest::new(id.clone(), load_cwd);
+                            let result = tokio::time::timeout(std::time::Duration::from_secs(60), load_cx.send_request(request).block_task()).await;
+                            match result {
+                                Ok(Ok(response)) => {
+                                    if let Some(options) = response.config_options.as_ref().map(|options| config_options(options)).filter(|options| !options.is_empty()) {
+                                        load_emit(AgentEvent::Config { session_id: id, options });
+                                    }
+                                    let _ = reply.send(Ok(()));
+                                }
+                                other => {
+                                    if let Ok(mut bridge) = load_state.lock() { bridge.sessions.remove(&id); }
+                                    let _ = reply.send(Err(match other {
+                                        Ok(Err(error)) => error.to_string(),
+                                        _ => "The agent did not restore the session within 60 seconds".into(),
+                                    }));
+                                }
                             }
                             Ok(())
                         })?;
@@ -512,6 +618,49 @@ fn enum_string<T: serde::Serialize>(value: &T) -> String {
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_default()
 }
+/// Reduce the agent's select options to the shape the panel renders.
+/// Other option kinds are dropped: the panel has no control for them.
+fn config_options(options: &[SessionConfigOption]) -> Vec<ConfigOption> {
+    let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    let choice = |value: &Value| {
+        Some(ConfigChoice {
+            value: text(value, "value")?,
+            name: text(value, "name").or_else(|| text(value, "value"))?,
+            description: text(value, "description"),
+        })
+    };
+    options
+        .iter()
+        .filter_map(|option| {
+            let value = serde_json::to_value(option).ok()?;
+            let current_value = text(&value, "currentValue")?;
+            let entries = value.get("options")?.as_array()?;
+            let mut groups: Vec<ConfigGroup> = Vec::new();
+            let mut loose: Vec<ConfigChoice> = Vec::new();
+            for entry in entries {
+                if let Some(members) = entry.get("options").and_then(Value::as_array) {
+                    groups.push(ConfigGroup {
+                        name: text(entry, "name").unwrap_or_default(),
+                        choices: members.iter().filter_map(choice).collect(),
+                    });
+                } else if let Some(found) = choice(entry) {
+                    loose.push(found);
+                }
+            }
+            if !loose.is_empty() {
+                groups.insert(0, ConfigGroup { name: String::new(), choices: loose });
+            }
+            Some(ConfigOption {
+                id: text(&value, "id")?,
+                name: text(&value, "name")?,
+                description: text(&value, "description"),
+                category: text(&value, "category"),
+                current_value,
+                groups,
+            })
+        })
+        .collect()
+}
 fn session_update(emit: &EventSink, session_id: String, update: Value) {
     let string = |key: &str| {
         update
@@ -531,6 +680,26 @@ fn session_update(emit: &EventSink, session_id: String, update: Value) {
                 emit(AgentEvent::Text { session_id, text });
             } else {
                 emit(AgentEvent::Thought { session_id, text });
+            }
+        }
+        "user_message_chunk" => {
+            let text = update
+                .pointer("/content/text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if !text.is_empty() {
+                emit(AgentEvent::User { session_id, text });
+            }
+        }
+        "config_option_update" => {
+            let options = update
+                .get("configOptions")
+                .and_then(|value| serde_json::from_value::<Vec<SessionConfigOption>>(value.clone()).ok())
+                .map(|options| config_options(&options))
+                .unwrap_or_default();
+            if !options.is_empty() {
+                emit(AgentEvent::Config { session_id, options });
             }
         }
         "plan" => {
@@ -564,8 +733,42 @@ fn session_update(emit: &EventSink, session_id: String, update: Value) {
                 .get("status")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            tool_kind: update
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            parent_tool_call_id: update
+                .pointer("/_meta/claudeCode/parentToolUseId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             content_json: update.to_string(),
         }),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(json: Value) -> Vec<ConfigOption> {
+        config_options(&serde_json::from_value::<Vec<SessionConfigOption>>(json).unwrap())
+    }
+
+    #[test]
+    fn flat_and_grouped_select_options_are_reduced() {
+        let parsed = options(serde_json::json!([
+            {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "fast",
+             "options": [{"value": "fast", "name": "Fast"}, {"value": "deep", "name": "Deep", "description": "Slower"}]},
+            {"id": "mode", "name": "Mode", "type": "select", "currentValue": "b",
+             "options": [{"group": "g", "name": "Group", "options": [{"value": "b", "name": "B"}]}]}
+        ]));
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].category.as_deref(), Some("model"));
+        assert_eq!(parsed[0].current_value, "fast");
+        assert_eq!(parsed[0].groups[0].choices.len(), 2);
+        assert_eq!(parsed[0].groups[0].choices[1].description.as_deref(), Some("Slower"));
+        assert_eq!(parsed[1].groups[0].name, "Group");
+        assert_eq!(parsed[1].groups[0].choices[0].value, "b");
     }
 }

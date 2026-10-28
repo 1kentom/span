@@ -9,6 +9,17 @@ pub struct ActiveAgent {
     session: String,
 }
 
+fn switch_session(state: &DesktopState, session: &str) -> Result<(), String> {
+    state
+        .agent
+        .lock()
+        .map_err(|_| "Agent state is unavailable".to_owned())?
+        .as_mut()
+        .ok_or_else(|| "Connect an agent first".to_owned())?
+        .session = session.to_owned();
+    Ok(())
+}
+
 fn active(state: &DesktopState) -> Result<ActiveAgent, String> {
     state
         .agent
@@ -112,11 +123,55 @@ pub async fn agent_connect(
     Ok(session)
 }
 
+/// Start a fresh conversation on the connected agent process.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_new_session(state: State<'_, DesktopState>) -> Result<String, String> {
+    let agent = active(state.inner())?;
+    let session = agent.service.new_session().await?;
+    switch_session(state.inner(), &session)?;
+    Ok(session)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_list_sessions(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<span_acp::SessionSummary>, String> {
+    active(state.inner())?.service.list_sessions().await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_resume_session(
+    state: State<'_, DesktopState>,
+    session_id: String,
+) -> Result<String, String> {
+    let agent = active(state.inner())?;
+    agent.service.load_session(session_id.clone()).await?;
+    switch_session(state.inner(), &session_id)?;
+    Ok(session_id)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_prompt(state: State<'_, DesktopState>, text: String) -> Result<(), String> {
     let agent = active(state.inner())?;
     agent.service.prompt(agent.session, text).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_set_config(
+    state: State<'_, DesktopState>,
+    config_id: String,
+    value: String,
+) -> Result<(), String> {
+    let agent = active(state.inner())?;
+    agent
+        .service
+        .set_config(agent.session, config_id, value)
+        .await
 }
 
 #[tauri::command]
