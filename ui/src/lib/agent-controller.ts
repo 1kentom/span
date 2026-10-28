@@ -30,6 +30,7 @@ import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
 import { moveItem } from "./agent-queue";
 import { readLastSession, writeLastSession } from "./last-session";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
+import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
 const DELEGATION_POLL_MS = 3000;
 const NO_STATES: SessionStates = { connectionId: null, sessions: [] };
@@ -66,7 +67,12 @@ type Connecting = { name: string; command: string; logBase: number; failed: bool
  * An agent switch in the open chat. `text` is the carried context, sent once ahead of the first prompt of the session
  * named by `sessionId`; `sessionId` is set when the new session is ready.
  */
-type Handoff = { from: string; to: string; text?: string; sessionId?: string };
+type Handoff = { from: string; to: string; text?: string; sessionId?: string; /** Shown on the context card instead of the switch note. */ note?: string };
+/**
+ * A user message picked with Edit or Restore. Edit puts its text in the composer (the previous draft is kept in
+ * `draft`) and the next send starts a new session from there; both show the files changed since that message.
+ */
+export type Rewind = { itemId: number; sessionId?: string; mode: "edit" | "restore"; draft: string };
 
 export const ATTACH_UNAVAILABLE = "Attachments need the span desktop app, which sends them to a connected agent.";
 export const NATIVE_UNAVAILABLE = "Browser preview cannot write to or open workspace files.";
@@ -161,6 +167,7 @@ export function createAgentController(props: AgentPanelProps) {
   let steering: Steering | undefined;
   /** The agent switch waiting for its new session or for its first prompt. Cleared once the context is sent. */
   let handoff: Handoff | undefined;
+  const [rewindPick, setRewind] = createSignal<Rewind>();
   /** Counts dispatched turns, so a steer can tell its own turn from a later one. */
   let turnCounter = 0;
   const followed = new Set<string>();
@@ -192,10 +199,29 @@ export function createAgentController(props: AgentPanelProps) {
       return plan.mode === "audio" ? [{ item, reason: "Span cannot send audio to agents yet." }] : [];
     });
   });
-  const canSend = createMemo(() => connected() && !working() && !pendingAction() && Boolean(prompt().trim() || attachments().length) && blocked().length === 0);
   const proposals = createMemo<EditProposal[]>(() => unresolvedProposals(feed()), [], {
     equals: (previous, next) => previous.length === next.length && previous.every((proposal, index) => proposal === next[index]),
   });
+  /** The picked message, only while it is still a user message of the open chat. */
+  const rewind = createMemo(() => {
+    const chosen = rewindPick();
+    return chosen && chosen.sessionId === sessionId() && feed().some((item) => item.id === chosen.itemId && item.kind === "user") ? chosen : undefined;
+  });
+  const rewindFiles = createMemo(() => {
+    const chosen = rewind();
+    return chosen ? changesAfter(feed(), chosen.itemId, props.workspacePath) : [];
+  });
+  /** Why edit, resend or fork cannot start a new session right now. Pending proposals belong to this session. */
+  const branchBlock = createMemo(() => {
+    if (!connected()) return "Connect an agent first.";
+    if (running()) return "Wait for the agent to finish this turn.";
+    const pending = proposals().length;
+    if (pending) return `${pending === 1 ? "1 edit waits" : `${pending} edits wait`} for review. Accept or reject ${pending === 1 ? "it" : "them"} before starting a new session.`;
+    return undefined;
+  });
+  const canSend = createMemo(
+    () => connected() && !working() && !pendingAction() && Boolean(prompt().trim() || attachments().length) && blocked().length === 0 && !(rewind()?.mode === "edit" && branchBlock()),
+  );
   const permission = createMemo(() => openPermission(feed()));
   /** Open permission requests from delegated children, oldest first. */
   const childPermissionList = createMemo(() => childPermissions(state().strayPermissions, state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])), state().childRequests));
@@ -824,7 +850,7 @@ export function createAgentController(props: AgentPanelProps) {
           attachments: entry.items.length ? entry.items : undefined,
           ...(options.steered ? { steered: true } : {}),
           ...(options.sentNow ? { sentNow: true } : {}),
-          ...(carried ? { context: carried.text } : {}),
+          ...(carried ? { context: carried.text, ...(carried.note ? { contextNote: carried.note } : {}) } : {}),
         },
       ),
     );
@@ -907,6 +933,11 @@ export function createAgentController(props: AgentPanelProps) {
       setPrompt("");
       setAttachments([]);
       const entry: Queued = { id: `q-${++queueCounter}`, text, message: built.text, attachments: built.attachments, items };
+      const editing = rewind();
+      if (editing?.mode === "edit") {
+        void branchFrom(editing.itemId, "edit", entry);
+        return;
+      }
       if (running()) setBusyNotice(false);
       if (mode === "steer" && running() && online()) void startSteer(entry);
       // A steer waiting for its cancel to resolve goes first, so anything sent meanwhile queues behind it.
@@ -1246,6 +1277,86 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setPendingAction("");
     }
   }
+  /** Edit: the message's text goes into the composer; the next send starts a new session from before it. */
+  function editFrom(itemId: number) {
+    const item = feed().find((entry) => entry.id === itemId);
+    if (item?.kind !== "user") return;
+    const draft = rewind()?.mode === "edit" ? rewind()!.draft : prompt();
+    setRewind({ itemId, sessionId: sessionId(), mode: "edit", draft });
+    setPrompt(item.text);
+    focusPrompt();
+  }
+  /** Restore: shows the files changed since the message, with Revert and Keep. Nothing else changes. */
+  function restoreTo(itemId: number) {
+    if (feed().find((entry) => entry.id === itemId)?.kind !== "user") return;
+    const draft = rewind()?.mode === "edit" ? rewind()!.draft : prompt();
+    if (rewind()?.mode === "edit") setPrompt(draft);
+    setRewind({ itemId, sessionId: sessionId(), mode: "restore", draft });
+  }
+  /** Leaves edit or restore. Edit gives the earlier draft back. */
+  function cancelRewind() {
+    const chosen = rewind();
+    if (chosen?.mode === "edit") setPrompt(chosen.draft);
+    setRewind(undefined);
+  }
+  /** Rejects edits after the message that still wait for review, so those files stay as they were. */
+  async function revertFiles(ids: readonly string[] = rewindFiles().flatMap((file) => file.pending)) {
+    if (pendingAction()) return;
+    await reviewMany(ids, false);
+    if (rewind()?.mode === "restore" && !rewindFiles().some((file) => file.pending.length)) setRewind(undefined);
+  }
+  /** Accepts the edits after the message that still wait for review. */
+  async function keepFiles() {
+    if (pendingAction()) return;
+    await reviewMany(rewindFiles().flatMap((file) => file.pending), true);
+    if (rewind()?.mode === "restore") setRewind(undefined);
+  }
+  const resendFrom = (itemId: number) => {
+    const item = feed().find((entry) => entry.id === itemId);
+    if (item?.kind === "user") void branchFrom(itemId, "resend", { id: `q-${++queueCounter}`, text: item.text, message: item.text, attachments: [], items: [] });
+  };
+  const forkFrom = (itemId: number) => void branchFrom(itemId, "fork");
+  /**
+   * ACP cannot rewind or fork a session, so edit, resend and fork start a new session with the agent. The feed up to the
+   * cut is shown again with a divider, and those turns go out as context with the first prompt (agent-handoff.ts). The
+   * original chat is stashed like any chat the user leaves. `entry` is sent right away (edit and resend).
+   */
+  async function branchFrom(itemId: number, mode: BranchMode, entry?: Queued) {
+    const restore = () => {
+      if (!entry || mode !== "edit") return;
+      setPrompt(entry.text);
+      if (entry.items.length) setAttachments(entry.items);
+    };
+    const snapshot = feed();
+    const cut = branchCut(snapshot, itemId, mode);
+    if (branchBlock() || cut === undefined) return restore();
+    const editing = rewind();
+    const earlier = snapshot.slice(0, cut);
+    const from = agentLabel();
+    const text = buildHandoff(earlier, { from, root: props.workspacePath, reason: branchReason(mode) });
+    const before = sessionId();
+    // The chat being left keeps the draft it had before Edit; a fork keeps the composer as it is.
+    const draft = mode === "fork" ? { text: prompt(), items: attachments() } : undefined;
+    if (editing?.mode === "edit") setPrompt(editing.draft);
+    setRewind(undefined);
+    await switchChat(() => api.agentNewSession(), "Could not start a new session from that message");
+    const id = sessionId();
+    if (!id || id === before) {
+      if (mode === "edit" && editing) setRewind(editing);
+      return restore();
+    }
+    update((previous) => ({
+      ...previous,
+      nextId: previous.nextId + 1,
+      feed: [...carryFeed(earlier), { id: previous.nextId + 1, kind: "branch", mode, carried: Boolean(text) }, ...previous.feed],
+    }));
+    handoff = text ? { from, to: from, text, sessionId: id, note: BRANCH_CONTEXT_NOTE } : undefined;
+    if (draft) {
+      setPrompt(draft.text);
+      setAttachments(draft.items);
+    }
+    if (entry) await dispatch(entry);
+  }
   async function review(proposal: EditProposal, accept: boolean) {
     const current = guard(agentEpoch);
     setPendingAction(proposal.id);
@@ -1581,6 +1692,16 @@ export function createAgentController(props: AgentPanelProps) {
     answerChildPermission,
     review,
     reviewMany,
+    rewind,
+    rewindFiles,
+    branchBlock,
+    editFrom,
+    restoreTo,
+    cancelRewind,
+    revertFiles,
+    keepFiles,
+    resendFrom,
+    forkFrom,
     answerForm,
     respondElicitation,
     openElicitationUrl,

@@ -243,6 +243,35 @@
   padding: 0 4px;
   text-align: center;
 }
+/* Message actions under a user message: quiet until the message is hovered or an action has focus. */
+.agent-message-actions {
+  display: flex;
+  align-self: flex-end;
+  gap: 2px;
+  margin-top: -6px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.agent-message.user:hover + .agent-message-actions,
+.agent-message.user.editing + .agent-message-actions,
+.agent-message-actions:hover,
+.agent-message-actions:focus-within {
+  opacity: 1;
+}
+.agent-message-actions .sb-btn.ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.agent-message.user.editing {
+  border-color: var(--sb-accent);
+  background: var(--sb-accent-surface);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-message-actions {
+    transition: none;
+  }
+}
 /* The carried context sent with the first prompt after a switch. Collapsed, never hidden. */
 .agent-context-sent {
   margin-bottom: 6px;
