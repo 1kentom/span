@@ -178,7 +178,10 @@ impl BackgroundAgents {
     }
 
     pub fn state(&self, agent_id: &str) -> BackgroundState {
-        match lock(&self.inner.slots).get(&key(agent_id)).map(|s| &s.phase) {
+        match lock(&self.inner.slots)
+            .get(&key(agent_id))
+            .map(|s| &s.phase)
+        {
             None => BackgroundState::Idle,
             Some(Phase::Starting(_)) => BackgroundState::Starting,
             Some(Phase::Failed(message)) => BackgroundState::Unavailable(message.clone()),
@@ -191,10 +194,12 @@ impl BackgroundAgents {
 
     /// The installed agent id a running connection was started for.
     pub fn agent_for(&self, connection_id: &str) -> Option<String> {
-        lock(&self.inner.slots).iter().find_map(|(id, slot)| match &slot.phase {
-            Phase::Ready(c) if c == connection_id => Some(id.clone()),
-            _ => None,
-        })
+        lock(&self.inner.slots)
+            .iter()
+            .find_map(|(id, slot)| match &slot.phase {
+                Phase::Ready(c) if c == connection_id => Some(id.clone()),
+                _ => None,
+            })
     }
 
     /// The connection of `agent`, starting the agent when it is not running.
@@ -326,7 +331,9 @@ impl BackgroundAgents {
     pub fn promote(&self, agent_id: &str, sink: EventSink) -> Result<String, String> {
         let (connection, route) = {
             let slots = lock(&self.inner.slots);
-            let slot = slots.get(&key(agent_id)).ok_or("The agent is not running")?;
+            let slot = slots
+                .get(&key(agent_id))
+                .ok_or("The agent is not running")?;
             match &slot.phase {
                 Phase::Ready(connection) => (connection.clone(), slot.route.clone()),
                 _ => return Err("The agent is not running".into()),

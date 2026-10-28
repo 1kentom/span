@@ -30,7 +30,10 @@ fn process_relative_ms(epoch_ms: f64) -> Option<f64> {
 /// Logs when the main window exists (it was visible from here when created visible).
 pub fn log_window_created() {
     if cfg!(debug_assertions) {
-        eprintln!("startup: main window created at {:.0}ms", since_process_start_ms());
+        eprintln!(
+            "startup: main window created at {:.0}ms",
+            since_process_start_ms()
+        );
     }
 }
 
@@ -87,7 +90,10 @@ pub fn canvas_color(theme: span_core::Theme) -> Color {
 /// to the theme (it shows during resizes and before the webview paints), then show the window.
 #[tauri::command]
 #[specta::specta]
-pub fn show_main_window(window: tauri::WebviewWindow, theme: span_core::Theme) -> Result<(), String> {
+pub fn show_main_window(
+    window: tauri::WebviewWindow,
+    theme: span_core::Theme,
+) -> Result<(), String> {
     if let Err(error) = window.set_background_color(Some(canvas_color(theme))) {
         eprintln!("Could not set the window background: {error}");
     }
@@ -99,7 +105,10 @@ fn reveal(window: &tauri::WebviewWindow, by: &str) -> tauri::Result<()> {
         window.show()?;
         window.set_focus()?;
         if cfg!(debug_assertions) {
-            eprintln!("startup: window shown by {by} at {:.0}ms", since_process_start_ms());
+            eprintln!(
+                "startup: window shown by {by} at {:.0}ms",
+                since_process_start_ms()
+            );
         }
     }
     Ok(())

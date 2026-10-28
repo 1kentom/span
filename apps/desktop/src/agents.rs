@@ -354,12 +354,7 @@ pub async fn agent_connect(
         None => {
             let sessions = state.sessions.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                tauri::async_runtime::block_on(sessions.connect(
-                    command,
-                    cwd,
-                    workspace,
-                    Some(ui),
-                ))
+                tauri::async_runtime::block_on(sessions.connect(command, cwd, workspace, Some(ui)))
             })
             .await
             .map_err(|error| format!("Agent connection task failed: {error}"))??
@@ -647,10 +642,11 @@ pub async fn agent_elicitation(
     content_json: Option<String>,
 ) -> Result<(), String> {
     let agent = active(state.inner())?;
-    match agent
-        .service
-        .respond_elicitation(request_id.clone(), action.clone(), content_json.clone())
-    {
+    match agent.service.respond_elicitation(
+        request_id.clone(),
+        action.clone(),
+        content_json.clone(),
+    ) {
         // A delegated child on a background agent asked it.
         Err(error) if error.contains("no longer pending") => {
             for service in other_services(state.inner(), &agent) {

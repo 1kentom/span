@@ -472,7 +472,11 @@ mod tests {
         assert_eq!(pi.status, UpdateStatus::UpdateAvailable);
         assert_eq!(pi.latest_version.as_deref(), Some("0.0.34"));
         assert!(pi.how_to_update.as_ref().unwrap().contains("pi-acp@0.0.34"));
-        assert!(pi.how_to_update.as_ref().unwrap().ends_with("pi-acp@0.0.34`"));
+        assert!(pi
+            .how_to_update
+            .as_ref()
+            .unwrap()
+            .ends_with("pi-acp@0.0.34`"));
         // Garbage and missing entries are unknown, never up to date.
         assert_eq!(row(&rows, "weird").status, UpdateStatus::Unknown);
         assert_eq!(row(&rows, "gone").status, UpdateStatus::Unknown);

@@ -1615,12 +1615,18 @@ fn launcher(h: &Harness, delay: Duration, starts: Arc<AtomicUsize>) -> LaunchFn 
     let workspace = h.workspace.clone();
     let cwd = h.directory.path().to_string_lossy().into_owned();
     Arc::new(move |agent: InstalledAgent, sink| {
-        let (manager, workspace, cwd, starts) =
-            (manager.clone(), workspace.clone(), cwd.clone(), starts.clone());
+        let (manager, workspace, cwd, starts) = (
+            manager.clone(),
+            workspace.clone(),
+            cwd.clone(),
+            starts.clone(),
+        );
         Box::pin(async move {
             tokio::time::sleep(delay).await;
             starts.fetch_add(1, Ordering::SeqCst);
-            manager.connect(agent.launch, cwd, workspace, Some(sink)).await
+            manager
+                .connect(agent.launch, cwd, workspace, Some(sink))
+                .await
         })
     })
 }
@@ -1634,14 +1640,15 @@ impl Harness {
     ) -> ToolServerConfig {
         // Ten real seconds for a fixture process to start, unless the test
         // set its own limit.
-        let policy = if policy.launch_timeout_seconds == ToolPolicy::default().launch_timeout_seconds {
-            ToolPolicy {
-                launch_timeout_seconds: 1000,
-                ..policy
-            }
-        } else {
-            policy
-        };
+        let policy =
+            if policy.launch_timeout_seconds == ToolPolicy::default().launch_timeout_seconds {
+                ToolPolicy {
+                    launch_timeout_seconds: 1000,
+                    ..policy
+                }
+            } else {
+                policy
+            };
         let mut config = self.config(policy);
         config.installed = agents;
         config.background = Some(background.clone());
@@ -1711,8 +1718,14 @@ async fn list_agents_reports_installed_agents_as_ready_to_start() {
     assert_eq!(codex["state"], "ready to start");
     assert_eq!(codex["delegable"], true);
     let text = listed["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("codex-acp (installed, ready to start)"), "{text}");
-    assert!(!text.to_lowercase().contains("ask the user to connect"), "{text}");
+    assert!(
+        text.contains("codex-acp (installed, ready to start)"),
+        "{text}"
+    );
+    assert!(
+        !text.to_lowercase().contains("ask the user to connect"),
+        "{text}"
+    );
     // Listing starts nothing.
     assert_eq!(background.state("codex-acp"), BackgroundState::Idle);
     assert_eq!(h.manager.connections().len(), 1);
@@ -1723,7 +1736,10 @@ async fn list_agents_reports_installed_agents_as_ready_to_start() {
         .rpc("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}))
         .await;
     let instructions = init.response["result"]["instructions"].as_str().unwrap();
-    assert!(instructions.contains("Do not ask the user to connect"), "{instructions}");
+    assert!(
+        instructions.contains("Do not ask the user to connect"),
+        "{instructions}"
+    );
     let tools = client.rpc("tools/list", json!({})).await;
     let delegate = tools.response["result"]["tools"]
         .as_array()
@@ -1743,8 +1759,10 @@ async fn delegating_to_an_installed_agent_starts_it_and_returns_the_childs_resul
     let mut h = harness();
     let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
     let starts = Arc::new(AtomicUsize::new(0));
-    let background =
-        BackgroundAgents::new(h.manager.clone(), launcher(&h, Duration::ZERO, starts.clone()));
+    let background = BackgroundAgents::new(
+        h.manager.clone(),
+        launcher(&h, Duration::ZERO, starts.clone()),
+    );
     let config = h.background_config(
         scaled(),
         vec![installed("codex-acp", worker(&["--name=codex"]))],
@@ -1765,7 +1783,10 @@ async fn delegating_to_an_installed_agent_starts_it_and_returns_the_childs_resul
         .to_owned();
     assert_ne!(connection, lead_connection);
     assert_eq!(structured(&delegated)["agent"], "codex");
-    let task = structured(&delegated)["taskId"].as_str().unwrap().to_owned();
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let result = client.until_finished(&task).await;
     assert_eq!(structured(&result)["status"], "completed");
     assert!(result["content"][0]["text"]
@@ -1781,10 +1802,12 @@ async fn delegating_to_an_installed_agent_starts_it_and_returns_the_childs_resul
     // The UI saw the start, then the delegation, in that order.
     let events = h.tool_events.lock().unwrap().clone();
     let position = |pred: &dyn Fn(&DelegationEvent) -> bool| events.iter().position(pred).unwrap();
-    let starting = position(&|e| matches!(e, DelegationEvent::Starting { agent_id, lead: l } if agent_id == "codex-acp" && *l == lead));
-    let finished = position(&|e| {
-        matches!(e, DelegationEvent::StartFinished { agent_id, launched: true, connection_id: Some(c), reason: None, .. } if agent_id == "codex-acp" && *c == connection)
-    });
+    let starting = position(
+        &|e| matches!(e, DelegationEvent::Starting { agent_id, lead: l } if agent_id == "codex-acp" && *l == lead),
+    );
+    let finished = position(
+        &|e| matches!(e, DelegationEvent::StartFinished { agent_id, launched: true, connection_id: Some(c), reason: None, .. } if agent_id == "codex-acp" && *c == connection),
+    );
     let delegated_at = position(&|e| matches!(e, DelegationEvent::Delegated { .. }));
     assert!(starting < finished && finished < delegated_at, "{events:?}");
 
@@ -1799,7 +1822,10 @@ async fn delegating_to_an_installed_agent_starts_it_and_returns_the_childs_resul
     // A second delegation reuses the running process and announces no start.
     let before = h.tool_events.lock().unwrap().len();
     let again = client
-        .tool("delegate", json!({"agent": "codex-acp", "task": "reply:again"}))
+        .tool(
+            "delegate",
+            json!({"agent": "codex-acp", "task": "reply:again"}),
+        )
         .await;
     assert_eq!(structured(&again)["connectionId"], connection);
     assert_eq!(starts.load(Ordering::SeqCst), 1);
@@ -1827,8 +1853,14 @@ async fn two_simultaneous_delegates_share_one_start() {
     let (_lead, server) = h.background_lead(&lead_connection, config).await;
     let (mut a, mut b) = (Client::new(&server), Client::new(&server));
     let (first, second) = tokio::join!(
-        a.tool("delegate", json!({"agent": "codex-acp", "task": "reply:one"})),
-        b.tool("delegate", json!({"agent": "codex-acp", "task": "reply:two"})),
+        a.tool(
+            "delegate",
+            json!({"agent": "codex-acp", "task": "reply:one"})
+        ),
+        b.tool(
+            "delegate",
+            json!({"agent": "codex-acp", "task": "reply:two"})
+        ),
     );
     assert_eq!(first["isError"], false, "{first}");
     assert_eq!(second["isError"], false, "{second}");
@@ -1870,14 +1902,21 @@ async fn a_delegate_during_a_warm_start_waits_for_it() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(background.state("codex-acp"), BackgroundState::Starting);
     let delegated = Client::new(&server)
-        .tool("delegate", json!({"agent": "codex-acp", "task": "reply:warm"}))
+        .tool(
+            "delegate",
+            json!({"agent": "codex-acp", "task": "reply:warm"}),
+        )
         .await;
     assert_eq!(delegated["isError"], false, "{delegated}");
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     let events = h.tool_events.lock().unwrap().clone();
     assert!(events.iter().any(|e| matches!(
         e,
-        DelegationEvent::StartFinished { launched: false, reason: None, .. }
+        DelegationEvent::StartFinished {
+            launched: false,
+            reason: None,
+            ..
+        }
     )));
 }
 
@@ -1892,7 +1931,12 @@ async fn warm_starts_initialize_only_one_at_a_time_and_at_most_the_cap() {
     let agents: Vec<InstalledAgent> = (1..=5)
         .map(|n| installed(&format!("agent-{n}"), worker(&[&format!("--name=a{n}")])))
         .collect();
-    background.warm(agents, Duration::from_millis(300), 4, Duration::from_secs(20));
+    background.warm(
+        agents,
+        Duration::from_millis(300),
+        4,
+        Duration::from_secs(20),
+    );
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert!(starts.load(Ordering::SeqCst) <= 1, "staggered");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -1923,7 +1967,9 @@ async fn a_failed_start_maps_to_a_closed_reason_and_the_lead_keeps_working() {
             if agent.id == "hang" {
                 std::future::pending::<()>().await;
             }
-            manager.connect(agent.launch, cwd, workspace, Some(sink)).await
+            manager
+                .connect(agent.launch, cwd, workspace, Some(sink))
+                .await
         })
     });
     let background = BackgroundAgents::new(h.manager.clone(), launch);
@@ -1978,8 +2024,10 @@ async fn a_child_cannot_start_agents_unless_depth_allows() {
     let h = harness();
     let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
     let starts = Arc::new(AtomicUsize::new(0));
-    let background =
-        BackgroundAgents::new(h.manager.clone(), launcher(&h, Duration::ZERO, starts.clone()));
+    let background = BackgroundAgents::new(
+        h.manager.clone(),
+        launcher(&h, Duration::ZERO, starts.clone()),
+    );
     // A server bound to a delegated child (depth 1) with the default max depth 1.
     let (lead, lead_server) = h
         .background_lead(
@@ -2033,7 +2081,9 @@ async fn background_connections_forward_only_child_requests_until_promoted() {
     );
     let forwarded: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
     let sink = forwarded.clone();
-    background.set_child_sink(Some(Arc::new(move |event| sink.lock().unwrap().push(event))));
+    background.set_child_sink(Some(Arc::new(move |event| {
+        sink.lock().unwrap().push(event)
+    })));
     let config = h.background_config(
         scaled(),
         vec![installed("codex-acp", worker(&["--name=codex"]))],
@@ -2042,10 +2092,19 @@ async fn background_connections_forward_only_child_requests_until_promoted() {
     let (_lead, server) = h.background_lead(&lead_connection, config).await;
     let mut client = Client::new(&server);
     let delegated = client
-        .tool("delegate", json!({"agent": "codex-acp", "task": "permission"}))
+        .tool(
+            "delegate",
+            json!({"agent": "codex-acp", "task": "permission"}),
+        )
         .await;
-    let session = structured(&delegated)["sessionId"].as_str().unwrap().to_owned();
-    let connection = structured(&delegated)["connectionId"].as_str().unwrap().to_owned();
+    let session = structured(&delegated)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let connection = structured(&delegated)["connectionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let asked = h
         .next(|e| e.connection_id == connection && matches!(e.event, AgentEvent::Permission { .. }))
         .await;
@@ -2053,20 +2112,37 @@ async fn background_connections_forward_only_child_requests_until_promoted() {
         unreachable!()
     };
     let seen = forwarded.lock().unwrap().clone();
-    assert!(seen.iter().all(|e| matches!(e, AgentEvent::Permission { session_id, .. } if *session_id == session)), "{seen:?}");
+    assert!(
+        seen.iter().all(
+            |e| matches!(e, AgentEvent::Permission { session_id, .. } if *session_id == session)
+        ),
+        "{seen:?}"
+    );
     assert_eq!(seen.len(), 1);
     // The user answers it through the manager, as agent_child_permission does.
     h.manager
-        .respond_permission(&SessionKey::new(connection.clone(), session), request_id, None)
+        .respond_permission(
+            &SessionKey::new(connection.clone(), session),
+            request_id,
+            None,
+        )
         .unwrap();
 
     // Promoted, the UI first gets the identity it missed, then everything.
     let primary: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
     let sink = primary.clone();
     let promoted = background
-        .promote("codex-acp", Arc::new(move |event| sink.lock().unwrap().push(event)))
+        .promote(
+            "codex-acp",
+            Arc::new(move |event| sink.lock().unwrap().push(event)),
+        )
         .unwrap();
     assert_eq!(promoted, connection);
     let replayed = primary.lock().unwrap().clone();
-    assert!(replayed.iter().any(|e| matches!(e, AgentEvent::Ready { agent_name: Some(name), .. } if name == "codex")), "{replayed:?}");
+    assert!(
+        replayed.iter().any(
+            |e| matches!(e, AgentEvent::Ready { agent_name: Some(name), .. } if name == "codex")
+        ),
+        "{replayed:?}"
+    );
 }
