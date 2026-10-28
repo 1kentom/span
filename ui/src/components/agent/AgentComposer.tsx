@@ -15,6 +15,7 @@ import { ContextBanner } from "./Banners";
 import { ComposerHints } from "./ComposerHints";
 import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
 import { ModelPopover } from "./ModelPopover";
+import { effortColor } from "./EffortSlider";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
 import { SlashPopover } from "./SlashPopover";
@@ -433,7 +434,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             <span class="agent-model-name">{a.connected() ? modelLabel() : "No agent"}</span>
             <Show when={a.connected() && level()}>
               {(current) => (
-                <span class="agent-level" aria-hidden="true">
+                <span class="agent-level" aria-hidden="true" style={{ "--fx-c": effortColor(current().index - 1, current().count) }}>
                   <For each={Array.from({ length: current().count }, (_, index) => index)}>
                     {(index) => <span classList={{ on: index < current().index }} style={{ height: `${Math.round(30 + (70 * (index + 1)) / current().count)}%` }} />}
                   </For>

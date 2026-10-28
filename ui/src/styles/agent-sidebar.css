@@ -103,7 +103,7 @@
   background: var(--sb-control); color: var(--sb-fg); font: inherit; font-size: 12px;
 }
 .sb-hotkey { min-width: 0; height: auto; padding: 0; background: none; font: 10px "JetBrains Mono", ui-monospace, monospace; opacity: 0.7; }
-:is(.sb-btn, .sb-icon-btn, .sb-option, .sb-q-option, .sb-method, .sb-recent, .sb-step-row, .sb-work-head, .sb-drawer-head, .sb-pill, .sb-session-main, .sb-menu-item, .sb-custom-toggle, .sb-level-bar, .sb-link, .sb-plain):focus-visible,
+:is(.sb-btn, .sb-icon-btn, .sb-option, .sb-q-option, .sb-method, .sb-recent, .sb-step-row, .sb-work-head, .sb-drawer-head, .sb-pill, .sb-session-main, .sb-menu-item, .sb-custom-toggle, .sb-link, .sb-plain):focus-visible,
 .sb-input:focus-visible,
 :is(.sb-logbox, .sb-term-body, .sb-diff-body):focus-visible {
   outline: 2px solid var(--sb-accent);
@@ -218,14 +218,6 @@
 .sb-option:disabled { cursor: default; }
 .sb-option-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
 .sb-option-name { font-size: 12.5px; color: var(--sb-fg); }
-.sb-level { display: flex; flex-direction: column; gap: 8px; margin: 6px 2px 2px; padding: 9px 9px 10px; }
-.sb-level-head { display: flex; align-items: baseline; gap: 8px; }
-.sb-level-name { font-size: 12.5px; color: var(--sb-strong); }
-.sb-level-bars { display: flex; gap: 3px; align-items: flex-end; height: 22px; }
-.sb-level-bar { flex: 1; height: 22px; display: flex; align-items: flex-end; padding: 0; border: 0; background: none; cursor: pointer; }
-.sb-level-fill { display: block; width: 100%; border-radius: 3px; background: var(--sb-control-border); transition: height 0.2s; }
-.sb-level-fill.on { background: var(--sb-accent); }
-.sb-level-ends { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--sb-faint); }
 .sb-slash-item { display: flex; align-items: baseline; gap: 8px; padding: 6px 7px; border-radius: 5px; cursor: pointer; }
 .sb-slash-item[aria-selected="true"] { background: var(--sb-accent-surface); }
 .sb-slash-item .name { font-size: 12px; color: var(--sb-fg); }
@@ -341,7 +333,7 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 @media (prefers-reduced-motion: reduce) {
   .sb-spinner, .sb-pulse, .sb-popover, .sb-dock, .sb-bar.indeterminate .sb-bar-fill { animation: none; }
   .sb-shimmer { animation: none; color: var(--sb-dim); background: none; -webkit-background-clip: border-box; background-clip: border-box; }
-  .sb-bar-fill.drain, .sb-level-fill { transition: none; }
+  .sb-bar-fill.drain { transition: none; }
   .sb-bar.indeterminate .sb-bar-fill { width: 100%; opacity: 0.5; }
 }
 
@@ -433,3 +425,126 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-delegation-files { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
 .sb-delegation-actions { display: flex; gap: 6px; }
 .sb-delegation-hint { padding: 2px 4px 0; overflow-wrap: anywhere; }
+
+/* Effort slider (EffortSlider.tsx). The ramp derives from theme tokens only:
+   calm (lowest) is success mixed with dim, amber (middle) is warning, high is accent,
+   the final level fills with a peach to accent gradient. The component interpolates between
+   neighbouring stops with color-mix in oklab and passes the result as --fx-c. */
+.ide {
+  --fx-calm: color-mix(in oklab, var(--success) 62%, var(--dim));
+  --fx-amber: var(--warning);
+  --fx-high: var(--accent);
+  --fx-peach: color-mix(in oklab, var(--warning) 58%, var(--error));
+  --fx-peak: color-mix(in oklab, var(--fx-peach) 45%, var(--fx-high));
+  --fx-neutral: var(--sb-dim);
+  --fx-spring: cubic-bezier(0.3, 1.32, 0.52, 1);
+}
+.fx {
+  --fx-inset: 3px;
+  --fx-knob: 18px;
+  --fx-edge: calc(var(--fx-inset) + var(--fx-knob) / 2);
+  display: flex; flex-direction: column; gap: 6px; margin: 4px 2px 2px; padding: 6px 4px 6px; min-width: 0;
+}
+.fx-top { display: flex; align-items: center; gap: 4px; min-height: 28px; }
+.fx-eyebrow { padding: 0 3px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-icon, .fx-step {
+  display: grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px;
+  background: none; color: var(--sb-dim); cursor: pointer; transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+.fx-icon:hover:not(:disabled):not([aria-disabled="true"]), .fx-step:hover:not([aria-disabled="true"]) { background: var(--sb-hover); color: var(--sb-fg); }
+.fx-step:active:not([aria-disabled="true"]) { transform: scale(0.92); }
+.fx-icon[aria-disabled="true"], .fx-step[aria-disabled="true"] { opacity: 0.38; cursor: default; }
+.fx-fast.on { color: var(--fx-amber); background: color-mix(in srgb, var(--fx-amber) 14%, transparent); }
+:is(.fx-icon, .fx-step, .fx-model):focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 1px; }
+
+.fx-label-wrap { position: relative; display: grid; justify-items: center; min-height: 28px; padding: 0 8px; overflow: hidden; }
+.fx-label {
+  grid-area: 1 / 1; max-width: 100%; font-size: 19px; line-height: 28px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--fx-c); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 280ms ease;
+}
+.fx-peak .fx-label:not(.fx-label-out) {
+  background: linear-gradient(90deg, var(--fx-peach), var(--fx-high)); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.fx-unknown .fx-label { color: var(--sb-dim); font-weight: 500; }
+.fx-label-in { animation: fx-label-in 240ms ease-out both; }
+.fx-label-out { animation: fx-label-out 200ms ease-in both; pointer-events: none; color: var(--sb-dim); }
+
+.fx-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fx-track {
+  position: relative; flex: 1; min-width: 0; height: 24px; border-radius: 12px; cursor: pointer; touch-action: none; user-select: none;
+  outline: none; transition: box-shadow 160ms ease;
+}
+.fx-track:focus-visible { box-shadow: 0 0 0 2px var(--sb-menu), 0 0 0 4px color-mix(in srgb, var(--sb-accent) 70%, transparent); }
+.fx-disabled .fx-track { cursor: default; opacity: 0.55; }
+.fx-rail { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; background: var(--sb-control); box-shadow: inset 0 0 0 1px var(--sb-control-border); }
+.fx-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; border-radius: inherit; overflow: hidden;
+  width: calc(2 * var(--fx-edge) + var(--fx-p) * (100% - 2 * var(--fx-edge)));
+  background-color: var(--fx-c);
+  transition: width 280ms var(--fx-spring), background-color 280ms ease, opacity 200ms ease;
+}
+.fx-fill-peak { position: absolute; inset: 0; background: linear-gradient(90deg, var(--fx-peach), var(--fx-high)); opacity: 0; transition: opacity 280ms ease; }
+.fx-peak .fx-fill-peak { opacity: 1; }
+.fx-unknown .fx-fill { opacity: 0; }
+.fx-tick {
+  position: absolute; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%;
+  background: color-mix(in srgb, var(--sb-faint) 55%, transparent); transition: background-color 200ms ease;
+}
+.fx-tick.passed { background: color-mix(in srgb, var(--effortKnob) 72%, transparent); }
+.fx-pulse-a { animation: fx-pulse-a 360ms ease-out both; }
+.fx-pulse-b { animation: fx-pulse-b 360ms ease-out both; }
+.fx-knob {
+  position: absolute; top: var(--fx-inset); width: var(--fx-knob); height: var(--fx-knob); border-radius: 50%;
+  left: calc(var(--fx-inset) + var(--fx-p) * (100% - 2 * var(--fx-edge)));
+  background: var(--effortKnob); box-shadow: var(--effortKnobShadow); pointer-events: none;
+  transition: left 280ms var(--fx-spring), transform 160ms ease, opacity 200ms ease;
+}
+.fx-dragging .fx-knob { transform: scale(1.14); }
+.fx-unknown .fx-knob { opacity: 0.45; }
+.fx-sparkles { position: absolute; inset: 0; pointer-events: none; }
+.fx-sparkle {
+  position: absolute; width: 3px; height: 3px; border-radius: 50%; background: var(--effortKnob); opacity: 0;
+  animation: fx-twinkle 1.8s ease-in-out infinite;
+}
+.fx-sparkle-0 { left: 14%; top: 30%; animation-delay: 0ms; }
+.fx-sparkle-1 { left: 31%; top: 62%; animation-delay: 360ms; width: 2px; height: 2px; }
+.fx-sparkle-2 { left: 48%; top: 26%; animation-delay: 720ms; }
+.fx-sparkle-3 { left: 63%; top: 64%; animation-delay: 1080ms; width: 2px; height: 2px; }
+.fx-sparkle-4 { left: 78%; top: 34%; animation-delay: 1440ms; }
+
+.fx-desc { padding: 0 6px; font-size: 11.5px; line-height: 16px; color: var(--sb-faint); text-align: center; overflow-wrap: anywhere; }
+.fx-model {
+  align-self: center; display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-height: 24px; padding: 2px 8px;
+  border: 0; border-radius: 6px; background: none; color: var(--sb-faint); font-size: 11.5px; cursor: pointer;
+}
+.fx-model:hover:not(:disabled) { background: var(--sb-hover); color: var(--sb-fg); }
+.fx-model:disabled { cursor: default; opacity: 1; }
+.fx-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-chip {
+  align-self: center; max-width: 100%; padding: 4px 12px; border-radius: 999px; background: var(--sb-control); border: 1px solid var(--sb-control-border);
+  color: var(--sb-fg); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fx-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Composer chip glyph: same count and ramp colour, static. */
+.agent-model-button .agent-level > span.on { background: var(--fx-c, var(--sb-accent-fg)); }
+
+@keyframes fx-label-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes fx-label-out { from { opacity: 0.8; transform: none; } to { opacity: 0; transform: translateY(-5px); } }
+@keyframes fx-pulse-a { 40% { transform: scale(2.1); } to { transform: none; } }
+@keyframes fx-pulse-b { 40% { transform: scale(2.1); } to { transform: none; } }
+@keyframes fx-twinkle { 0%, 100% { opacity: 0; transform: scale(0.4); } 45% { opacity: 0.95; transform: scale(1); } 70% { opacity: 0.4; transform: scale(0.7); } }
+
+/* Reduced motion: instant changes, no label slide, sparkles hold still. The class mirrors the media query for tests. */
+.fx-reduced :is(.fx-knob, .fx-fill, .fx-fill-peak, .fx-label, .fx-tick, .fx-track, .fx-step, .fx-icon) { transition: none; }
+.fx-reduced :is(.fx-label-in, .fx-pulse-a, .fx-pulse-b) { animation: none; }
+.fx-reduced .fx-label-out { display: none; }
+.fx-reduced .fx-sparkle { animation: none; opacity: 0.7; transform: none; }
+.fx-reduced.fx-dragging .fx-knob { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .fx :is(.fx-knob, .fx-fill, .fx-fill-peak, .fx-label, .fx-tick, .fx-track, .fx-step, .fx-icon) { transition: none; }
+  .fx :is(.fx-label-in, .fx-pulse-a, .fx-pulse-b) { animation: none; }
+  .fx .fx-label-out { display: none; }
+  .fx .fx-sparkle { animation: none; opacity: 0.7; transform: none; }
+  .fx-dragging .fx-knob { transform: none; }
+}
