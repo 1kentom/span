@@ -20,6 +20,7 @@ import { EditorToast } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
 import { HistoryList } from "./agent/HistoryList";
+import { ENTER_KEY } from "./agent/KeyGlyph";
 import { HintLine, SignIn } from "./agent/SignIn";
 import type { ActionView, KeyHint } from "./agent/types";
 import { modalOpen } from "./agent/util";
@@ -28,7 +29,7 @@ import "../styles/agent.css";
 
 const KEYS: KeyHint[] = [
   { keys: ["⌘", "."], label: "Ask agent", where: "Editor & Terminal" },
-  { keys: ["⌥", "↩"], label: "Add context", where: "Chat" },
+  { keys: ["⌥", ENTER_KEY], label: "Add context", where: "Chat" },
   { keys: ["/"], label: "Commands", where: "Chat" },
 ];
 

@@ -19,7 +19,10 @@ describe("UrlDock browser sign-in", () => {
     expect(code.textContent).toBe("WDJB-MJHT");
     expect(code.getAttribute("aria-label")).toBe("One-time code");
     expect(host.querySelector(`#${code.getAttribute("aria-describedby")}`)?.textContent).toBe("Code from the agent's message");
-    expect(buttons(host).map((button) => text(button))).toEqual(expect.arrayContaining(["Open browser↵", "Cancel"]));
+    // The Enter key cap is the library icon (its screen reader label reads "Enter"), never a text glyph.
+    expect(buttons(host).map((button) => text(button))).toEqual(expect.arrayContaining(["Open browserEnter", "Cancel"]));
+    expect(host.querySelector(".sb-btn.primary .sb-hotkey .key-enter")).not.toBeNull();
+    expect(host.textContent).not.toMatch(/[\u21b5\u21a9\u23ce]|\\u21b5/);
   });
 
   it("shows no code block without a code", () => {
@@ -61,7 +64,7 @@ describe("UrlDock browser sign-in", () => {
     setWaiting(true);
     expect(host.querySelector(".sb-spinner")).not.toBeNull();
     expect(text(host)).toContain("Waiting for browser");
-    expect(buttons(host).map((button) => text(button))).toEqual(expect.arrayContaining(["Open again↵", "Dismiss"]));
+    expect(buttons(host).map((button) => text(button))).toEqual(expect.arrayContaining(["Open againEnter", "Dismiss"]));
     expect(host.querySelector(".sb-waiting [role=status]")?.getAttribute("aria-live")).toBe("polite");
     buttons(host).find((button) => text(button)?.startsWith("Open again"))!.click();
     expect(open).toHaveBeenCalledOnce();
