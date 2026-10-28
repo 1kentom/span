@@ -12,6 +12,7 @@
 mod client;
 mod document;
 mod error;
+mod navigation;
 mod protocol;
 pub mod servers;
 mod transport;

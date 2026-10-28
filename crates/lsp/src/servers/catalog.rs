@@ -335,8 +335,11 @@ pub fn initialization_options(id: ServerId, run_project_code: bool) -> serde_jso
         // https://github.com/eclipse-jdtls/eclipse.jdt.ls/wiki/Running-the-JAVA-LS-server-from-the-command-line#initialize-request
         // (`bundles`, `workspaceFolders`, `settings`). Workspace folders are
         // supplied by the client per project.
+        // `classFileContentsSupport` makes JDT LS answer definitions inside libraries with
+        // `jdt://` URIs that `java/classFileContents` can read, instead of opening files.
         ServerId::Jdtls if !run_project_code => json!({
             "bundles": [],
+            "extendedClientCapabilities": { "classFileContentsSupport": true },
             "settings": { "java": {
                 "import": {
                     "gradle": { "enabled": false, "wrapper": { "enabled": false } },
@@ -346,7 +349,11 @@ pub fn initialization_options(id: ServerId, run_project_code: bool) -> serde_jso
                 "configuration": { "updateBuildConfiguration": "disabled" },
             } },
         }),
-        ServerId::Jdtls => json!({ "bundles": [], "settings": { "java": {} } }),
+        ServerId::Jdtls => json!({
+            "bundles": [],
+            "extendedClientCapabilities": { "classFileContentsSupport": true },
+            "settings": { "java": {} },
+        }),
         // Servers whose spec options do not depend on the flag.
         _ => spec(id).initialization_options,
     }

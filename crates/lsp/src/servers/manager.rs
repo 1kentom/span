@@ -18,11 +18,18 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use lsp_types::{
+    CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
+    CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CompletionParams, CompletionResponse, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentRangeFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-    HoverParams, PublishDiagnosticsParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentSyncKind, TextEdit, VersionedTextDocumentIdentifier,
+    DocumentHighlight, DocumentHighlightParams, DocumentRangeFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverParams, Location, PrepareRenameResponse, PublishDiagnosticsParams, ReferenceParams,
+    RenameParams, SignatureHelp, SignatureHelpParams, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, TextDocumentSyncKind,
+    TextEdit, TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
+    TypeHierarchySupertypesParams, VersionedTextDocumentIdentifier, WorkspaceEdit,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use tokio::sync::{broadcast, watch, Mutex, OwnedMutexGuard};
 use tokio::task::JoinHandle;
@@ -211,6 +218,26 @@ struct ManagerShared {
 #[derive(Clone)]
 pub struct Manager {
     shared: Arc<ManagerShared>,
+}
+
+/// Defines a manager wrapper for one navigation request on a ready server. Capability
+/// gating, cancellation and `ContentModified` retries live in the client's shared path.
+macro_rules! manager_nav {
+    ($name:ident, $client_fn:ident, $params:ty, $out:ty) => {
+        pub async fn $name(
+            &self,
+            id: ServerId,
+            root: &Path,
+            params: $params,
+            cancel: Option<CancellationToken>,
+        ) -> Result<Option<$out>, ManagerError> {
+            let client = self.ready_client(id, root).await?;
+            client
+                .$client_fn(params, cancel.unwrap_or_default())
+                .await
+                .map_err(|e| map_err(&client, e))
+        }
+    };
 }
 
 impl Manager {
@@ -566,6 +593,121 @@ impl Manager {
             .await
             .map_err(|e| map_err(&client, e))
     }
+
+    /// Whether the ready server advertised `typeHierarchyProvider`.
+    pub async fn supports_type_hierarchy(&self, id: ServerId, root: &Path) -> bool {
+        match self.ready_client(id, root).await {
+            Ok(client) => client.supports_type_hierarchy(),
+            Err(_) => false,
+        }
+    }
+
+    /// JDT LS `java/classFileContents` for a `jdt://` URI.
+    pub async fn class_file_contents(
+        &self,
+        id: ServerId,
+        root: &Path,
+        uri: &str,
+        cancel: Option<CancellationToken>,
+    ) -> Result<Option<String>, ManagerError> {
+        let client = self.ready_client(id, root).await?;
+        client
+            .class_file_contents(uri, cancel.unwrap_or_default())
+            .await
+            .map_err(|e| map_err(&client, e))
+    }
+
+    manager_nav!(
+        references,
+        references_with_cancel,
+        ReferenceParams,
+        Vec<Location>
+    );
+    manager_nav!(
+        implementation,
+        implementation_with_cancel,
+        GotoDefinitionParams,
+        GotoDefinitionResponse
+    );
+    manager_nav!(
+        type_definition,
+        type_definition_with_cancel,
+        GotoDefinitionParams,
+        GotoDefinitionResponse
+    );
+    manager_nav!(
+        declaration,
+        declaration_with_cancel,
+        GotoDefinitionParams,
+        GotoDefinitionResponse
+    );
+    manager_nav!(
+        document_symbols,
+        document_symbols_with_cancel,
+        DocumentSymbolParams,
+        DocumentSymbolResponse
+    );
+    manager_nav!(
+        workspace_symbols,
+        workspace_symbols_with_cancel,
+        WorkspaceSymbolParams,
+        WorkspaceSymbolResponse
+    );
+    manager_nav!(
+        prepare_call_hierarchy,
+        prepare_call_hierarchy_with_cancel,
+        CallHierarchyPrepareParams,
+        Vec<CallHierarchyItem>
+    );
+    manager_nav!(
+        incoming_calls,
+        incoming_calls_with_cancel,
+        CallHierarchyIncomingCallsParams,
+        Vec<CallHierarchyIncomingCall>
+    );
+    manager_nav!(
+        outgoing_calls,
+        outgoing_calls_with_cancel,
+        CallHierarchyOutgoingCallsParams,
+        Vec<CallHierarchyOutgoingCall>
+    );
+    manager_nav!(
+        prepare_type_hierarchy,
+        prepare_type_hierarchy_with_cancel,
+        TypeHierarchyPrepareParams,
+        Vec<TypeHierarchyItem>
+    );
+    manager_nav!(
+        type_supertypes,
+        type_supertypes_with_cancel,
+        TypeHierarchySupertypesParams,
+        Vec<TypeHierarchyItem>
+    );
+    manager_nav!(
+        type_subtypes,
+        type_subtypes_with_cancel,
+        TypeHierarchySubtypesParams,
+        Vec<TypeHierarchyItem>
+    );
+    manager_nav!(
+        document_highlights,
+        document_highlights_with_cancel,
+        DocumentHighlightParams,
+        Vec<DocumentHighlight>
+    );
+    manager_nav!(
+        signature_help,
+        signature_help_with_cancel,
+        SignatureHelpParams,
+        SignatureHelp
+    );
+    manager_nav!(
+        prepare_rename,
+        prepare_rename_with_cancel,
+        TextDocumentPositionParams,
+        PrepareRenameResponse
+    );
+    manager_nav!(rename, rename_with_cancel, RenameParams, WorkspaceEdit);
 
     /// Stop one server (graceful, then kill) and forget it, including its buffers.
     pub async fn shutdown(&self, id: ServerId, root: &Path) {
