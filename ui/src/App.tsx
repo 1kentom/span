@@ -24,7 +24,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { createSyntaxColorsEffect } from "./editor/syntax-colors-effect";
 import { SyntaxColorsSettings } from "./components/SyntaxColorsSettings";
 import { createWorkbench, settleIntent, SETTINGS_TAB, isSettingsBuffer, tabName, type EditorGroup } from "./stores/workbench";
-import { canDispatchAction, currentPlatform, normalizeShortcut, dispatchKeyboard, nativeMenuBindings, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
+import { canDispatchAction, currentPlatform, dispatchKeyboard, nativeMenuBindings, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
 import { navigationActions, runNavigationAction, setNavigationNotifier, type NavigationActionId } from "./lib/navigation-actions";
 import { createZoomController } from "./lib/zoom";
 import { createInternalDrag, type InternalDragState } from "./lib/internal-drag";
@@ -312,6 +312,7 @@ export default function App() {
     zoomIn: () => applyZoom(zoom.zoomIn), zoomOut: () => applyZoom(zoom.zoomOut), resetZoom: () => applyZoom(zoom.reset),
     toggleWordWrap: () => { void w.updateEffectiveSetting("wordWrap", !w.settings().wordWrap).catch(error => w.setError(String(error))); },
     ...navigationActions,
+    focusBreadcrumbs: () => setBreadcrumbFocus(value => value + 1),
   };
   // Preview only: every capability on for sample TypeScript files, so the navigation UI can be exercised without a backend.
   const previewCapabilities: CapabilitiesDto = { completion: false, hover: false, definition: true, formatting: false, rangeFormatting: false, rename: true, prepareRename: true, references: true, implementation: true, typeDefinition: true, declaration: true, documentSymbol: true, workspaceSymbol: true, callHierarchy: true, typeHierarchy: true, documentHighlight: true, signatureHelp: false };
@@ -344,9 +345,7 @@ export default function App() {
   setNavigationNotifier(message => w.setError(message));
   onCleanup(() => setNavigationNotifier(undefined));
   const isZoomKey = (event: KeyboardEvent) => { const key = shortcutFromEvent(event); return !!key && (["zoomIn", "zoomOut", "resetZoom"] as const).some(action => bindings()[action].includes(key)); };
-  // Focus Breadcrumbs is UI only for now: it is not in the Rust COMMAND_IDS, so it cannot live in actionDefinitions or be rebound.
-  const focusBreadcrumbsKey = normalizeShortcut("Mod+Shift+.", platform);
-  const keyboard = (event: KeyboardEvent) => { if (!event.defaultPrevented && !w.busy() && focusBreadcrumbsKey && shortcutFromEvent(event) === focusBreadcrumbsKey) { event.preventDefault(); event.stopPropagation(); setBreadcrumbFocus(value => value + 1); return; } if (w.busy() && !isZoomKey(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; } if (!modalAllowsGlobalShortcut(event) && !isZoomKey(event)) return; dispatchKeyboard(event, { bindings: bindings(), handlers, platform, nativeActions: nativeActions() }); };
+  const keyboard = (event: KeyboardEvent) => { if (w.busy() && !isZoomKey(event)) { event.preventDefault(); event.stopImmediatePropagation(); return; } if (!modalAllowsGlobalShortcut(event) && !isZoomKey(event)) return; dispatchKeyboard(event, { bindings: bindings(), handlers, platform, nativeActions: nativeActions() }); };
   function saveSettingsClose() {
     const next = pendingSettingsClose(); if (!next) return Promise.resolve(false);
     return settleIntent(next, current => pendingSettingsClose() === current, async () => await saveSettingsDraft?.() || false, () => { setPendingSettingsClose(undefined); next(); });

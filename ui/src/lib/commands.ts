@@ -41,6 +41,7 @@ export const actionDefinitions = [
   { id: "renameSymbol", label: "Rename Symbol", category: "Navigation", keys: ["F2"], inputs: false },
   { id: "goBack", label: "Go Back", category: "Navigation", keys: ["Mod+Alt+ArrowLeft"], inputs: true },
   { id: "goForward", label: "Go Forward", category: "Navigation", keys: ["Mod+Alt+ArrowRight"], inputs: true },
+  { id: "focusBreadcrumbs", label: "Focus Breadcrumbs", category: "Navigation", keys: ["Mod+Shift+."], inputs: true },
 ] as const;
 /** Colourable syntax tokens. Identical to `SYNTAX_TOKEN_IDS` in crates/core/src/settings.rs (a test compares them). */
 export const syntaxTokenIds = ["keyword", "controlKeyword", "operator", "punctuation", "comment", "docComment", "string", "number", "constant", "boolean", "function", "method", "type", "class", "interface", "enum", "typeParameter", "variable", "parameter", "property", "namespace", "importPath", "annotation", "macro", "label", "tag", "attribute", "regexp", "escape", "invalid"] as const;
@@ -49,7 +50,7 @@ export type SyntaxTokenId = typeof syntaxTokenIds[number];
 export const syntaxThemeIds = ["dark", "light", "purple"] as const;
 export type SyntaxThemeId = typeof syntaxThemeIds[number];
 /** Defaults added after shortcuts could be saved. An existing explicit binding that claims one of these keys wins and only the default is dropped. */
-const inheritedDefaultIds: ReadonlySet<string> = new Set(["toggleFiles", "focusFiles", "goToDefinition", "goToTypeDefinition", "goToImplementation", "peekDefinition", "peekTypeDefinition", "peekImplementation", "findReferences", "peekReferences", "goToSymbolInFile", "goToSymbolInWorkspace", "quickInfo", "showCallHierarchy", "showTypeHierarchy", "renameSymbol", "goBack", "goForward"]);
+const inheritedDefaultIds: ReadonlySet<string> = new Set(["toggleFiles", "focusFiles", "goToDefinition", "goToTypeDefinition", "goToImplementation", "peekDefinition", "peekTypeDefinition", "peekImplementation", "findReferences", "peekReferences", "goToSymbolInFile", "goToSymbolInWorkspace", "quickInfo", "showCallHierarchy", "showTypeHierarchy", "renameSymbol", "goBack", "goForward", "focusBreadcrumbs"]);
 export type ActionId = typeof actionDefinitions[number]["id"];
 export type Platform = "mac" | "windows" | "linux";
 export type KeybindingOverrides = Record<string, string[]>;

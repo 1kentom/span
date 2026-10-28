@@ -28,6 +28,12 @@ describe("Rust and TypeScript id lists", () => {
     expect(schema.properties.syntaxColors.propertyNames.enum).toEqual([...syntaxThemeIds]);
     expect(syntaxTokenIds).toHaveLength(30);
   });
+  it("registers focusBreadcrumbs as a rebindable action with the Rust default key", () => {
+    const action = actionDefinitions.find(item => item.id === "focusBreadcrumbs");
+    expect(action).toMatchObject({ label: "Focus Breadcrumbs", category: "Navigation" });
+    expect(action?.keys).toEqual(["Mod+Shift+."]);
+    expect(/\("focusBreadcrumbs", vec!\["Mod\+Shift\+\."\]\)/.test(rust)).toBe(true);
+  });
   it("lists every navigation id as an action", () => {
     for (const id of navigationActionIds) expect(actionDefinitions.some(action => action.id === id), id).toBe(true);
     expect(Object.keys(navigationActions).sort()).toEqual([...navigationActionIds].sort());
