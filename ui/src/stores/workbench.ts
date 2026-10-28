@@ -59,6 +59,7 @@ export function createWorkbench() {
   const activeFormatTickets = new Map<string, number>();
   let nextFormatTicket = 1;
   let workspaceVersion = 0;
+  let formatWorkspaceEpoch = 0;
   let settingsRequest = 0;
   let searchVersion = 0;
   let activeSearch: { cancel: () => Promise<void> } | undefined;
@@ -165,6 +166,7 @@ export function createWorkbench() {
     if (busy()) return;
     setBusy(true);
     try {
+      formatWorkspaceEpoch++;
       cancelAllFormats();
       if (activeSearch) await activeSearch.cancel().catch(() => undefined);
       searchVersion++;
@@ -524,6 +526,7 @@ export function createWorkbench() {
   async function format(path = activePath()) {
     if (!path || isSettingsBuffer(path)) return;
     const generation = workspaceVersion;
+    const formatEpoch = formatWorkspaceEpoch;
     let ticket: number | undefined;
     let documentAtStart: Text | undefined;
     let editCounterAtStart = 0;
@@ -537,19 +540,30 @@ export function createWorkbench() {
       ticket = nextFormatTicket++;
       activeFormatTickets.set(path, ticket);
       const result = await api.formatBuffer(path, base.revision, ticket);
-      if (generation !== workspaceVersion || !hasOpenEditor(path)) return;
-      if (activeFormatTickets.get(path) !== ticket) {
-        const localChanged = documentAtStart !== documents()[path]?.document
-          || editCounterAtStart !== (editCounters()[path] || 0)
-          || !!pendingEdits.get(path)?.length;
-        if (!activeFormatTickets.has(path) && localChanged) {
-          try { await reconcileLocalDraft(path, generation); } catch (error) { report(error); }
-        }
-        return;
-      }
+      if (generation !== workspaceVersion || formatEpoch !== formatWorkspaceEpoch) return;
+      const currentTicket = activeFormatTickets.get(path);
       const localChanged = documentAtStart !== documents()[path]?.document
         || editCounterAtStart !== (editCounters()[path] || 0)
         || !!pendingEdits.get(path)?.length;
+      if (currentTicket !== ticket) {
+        if (currentTicket === undefined && localChanged && hasOpenEditor(path)) {
+          try { await reconcileLocalDraft(path, generation); } catch (error) { report(error); }
+        } else if (currentTicket === undefined && !localChanged) {
+          const current = accepted.get(path);
+          if (result.revision > base.revision && (!current || current.revision <= result.revision)) {
+            // The last editor may close after Rust applies a successful format
+            // but before its IPC response arrives. Refresh the hidden buffer
+            // without reopening the tab so a later open starts at this revision.
+            applyFormatterSnapshot(path, result);
+          }
+        }
+        return;
+      }
+      if (!hasOpenEditor(path)) {
+        activeFormatTickets.delete(path);
+        if (!localChanged && result.revision > base.revision) applyFormatterSnapshot(path, result);
+        return;
+      }
       if (localChanged) {
         if (activeFormatTickets.get(path) === ticket) activeFormatTickets.delete(path);
         try { await reconcileLocalDraft(path, generation); } catch (error) { report(error); }

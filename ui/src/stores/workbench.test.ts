@@ -245,7 +245,7 @@ describe("workspace views and session state", () => {
     await vi.waitFor(() => expect(server.get(formatted.path)?.text).toBe(initial().text));
   });
 
-  it("does not reopen a file when its last editor closes during formatting", async () => {
+  it("refreshes a hidden buffer without reopening its tab when format finishes after close", async () => {
     const workbench = await setup();
     const response = deferred<BufferSnapshot>();
     client.formatBuffer.mockReturnValue(response.promise);
@@ -253,10 +253,19 @@ describe("workspace views and session state", () => {
     await vi.waitFor(() => expect(client.formatBuffer).toHaveBeenCalled());
     workbench.closeTab("src/file.ts", 1);
     expect(client.cancelFormatBuffer).toHaveBeenCalledWith("src/file.ts", expect.any(Number));
-    response.resolve({ ...initial(), text: "OLD_FORMAT_RESULT\n", revision: 1 });
+    const formatted = { ...initial(), text: "FORMATTED_RESULT\n", revision: 1 };
+    server.set(formatted.path, formatted);
+    response.resolve(formatted);
     await formatting;
     expect(workbench.groups().flatMap(group => group.tabs)).not.toContain("src/file.ts");
-    expect(workbench.documents()["src/file.ts"].document.toString()).toBe(initial().text);
+    expect(workbench.documents()["src/file.ts"].document.toString()).toBe(formatted.text);
+    expect(workbench.buffers[formatted.path].revision).toBe(1);
+    const reads = client.openBuffer.mock.calls.length;
+    await workbench.openFile(formatted.path);
+    expect(client.openBuffer.mock.calls.length).toBe(reads);
+    append(workbench, "// fresh edit after reopen\n");
+    await vi.waitFor(() => expect(workbench.buffers[formatted.path].revision).toBe(2));
+    expect(await workbench.save(formatted.path)).toBe(true);
   });
 
   it("does not cancel formatting while another split still displays the buffer", async () => {
