@@ -4,7 +4,7 @@ import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import type { AgentUpdate_Serialize as AgentUpdate } from "../../bindings";
 import type { FoundAgent, PresetRow, RegistryAgent } from "./types";
-import { UpdateBadge } from "./UpdateBadge";
+import { UpdateBadge, UpdatePanel } from "./UpdateBadge";
 
 type ConnectScreenProps = {
   found: FoundAgent[];
@@ -27,6 +27,8 @@ type ConnectScreenProps = {
   catalog?: JSX.Element;
   /** A command to place in the custom ACP row and open it for review. The user still presses Connect. */
   customDraft?: { command: string };
+  /** Opens a release notes link through the host's external opener. */
+  onOpenExternal?: (url: string) => void;
 };
 
 /** First-run screen: agents found on this computer, the ACP registry, and a custom command. */
@@ -49,6 +51,12 @@ export function ConnectScreen(props: ConnectScreenProps) {
     if (value) props.onCustom(value);
   };
   const updateFor = (id: string) => props.updates?.find((update) => update.id === id);
+  const [openUpdate, setOpenUpdate] = createSignal<string>();
+  const toggleUpdate = (id: string) => setOpenUpdate((value) => (value === id ? undefined : id));
+  const Badge = (badge: { id: string }) => <UpdateBadge update={updateFor(badge.id)} expanded={openUpdate() === badge.id} onToggle={() => toggleUpdate(badge.id)} />;
+  const Panel = (panel: { id: string }) => (
+    <Show when={openUpdate() === panel.id ? updateFor(panel.id) : undefined}>{(update) => <UpdatePanel update={update()} onOpenExternal={props.onOpenExternal} />}</Show>
+  );
   return (
     <section class="sb-connect" aria-labelledby="sb-connect-title">
       <header class="sb-hero">
@@ -62,14 +70,17 @@ export function ConnectScreen(props: ConnectScreenProps) {
           <div class="sb-eyebrow">Found on this computer</div>
           <For each={props.found}>
             {(agent) => (
-              <div class="sb-agent-row">
-                <BrandIcon id={agent.id} name={agent.name} size={18} />
-                <span class="sb-agent-text">
-                  <span class="sb-agent-name">{agent.name}</span>
-                  <Show when={agent.subtitle}><span class="sb-sub">{agent.subtitle}</span></Show>
-                  <UpdateBadge update={updateFor(agent.id)} />
-                </span>
-                <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${agent.name}`} onClick={() => props.onConnect(agent.id)}>Connect</button>
+              <div class="sb-agent-row stacked">
+                <div class="sb-agent-line">
+                  <BrandIcon id={agent.id} name={agent.name} size={18} />
+                  <span class="sb-agent-text">
+                    <span class="sb-agent-name">{agent.name}</span>
+                    <Show when={agent.subtitle}><span class="sb-sub">{agent.subtitle}</span></Show>
+                    <Badge id={agent.id} />
+                  </span>
+                  <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${agent.name}`} onClick={() => props.onConnect(agent.id)}>Connect</button>
+                </div>
+                <Panel id={agent.id} />
               </div>
             )}
           </For>
@@ -86,11 +97,12 @@ export function ConnectScreen(props: ConnectScreenProps) {
                   <span class="sb-agent-text">
                     <span class="sb-agent-name">{preset.name}</span>
                     <Show when={preset.description}><span class="sb-sub">{preset.description}</span></Show>
-                    <UpdateBadge update={updateFor(preset.id)} />
+                    <Badge id={preset.id} />
                   </span>
                   <button class="sb-btn primary" disabled={props.busy} aria-label={`Connect ${preset.name}`} onClick={() => props.onPreset?.(preset.id)}>Connect</button>
                 </div>
                 <code class="sb-preset-command sb-mono" aria-label={`Command for ${preset.name}`}>{preset.command}</code>
+                <Panel id={preset.id} />
               </div>
             )}
           </For>

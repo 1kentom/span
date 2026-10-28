@@ -434,7 +434,24 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-delegation-hint { padding: 2px 4px 0; overflow-wrap: anywhere; }
 
 /* Update badges and the check row (ADR 0004). Tokens only. */
-.sb-update-badge { display: inline-block; align-self: flex-start; margin-top: 2px; padding: 0 6px; border: 1px solid var(--sb-accent-fg); border-radius: 4px; font-size: 10.5px; line-height: 16px; color: var(--sb-accent-fg); }
+.sb-update-pill { display: inline-flex; align-items: center; align-self: flex-start; max-width: 100%; margin-top: 3px; height: 18px; border: 1px solid var(--sb-accent-border); border-radius: 9px; background: var(--sb-accent-surface); color: var(--sb-accent-fg); overflow: hidden; }
+.sb-update-badge { display: inline-flex; align-items: center; gap: 4px; min-width: 0; padding: 0 7px 0 5px; font-size: 10.5px; font-weight: 500; line-height: 16px; white-space: nowrap; }
+.sb-update-badge > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.sb-update-badge .icon { flex: none; }
+.sb-update-toggle { display: inline-grid; place-items: center; flex: none; align-self: stretch; width: 20px; padding: 0; border: 0; border-left: 1px solid var(--sb-accent-border); background: none; color: inherit; cursor: pointer; }
+.sb-update-toggle:hover { background: color-mix(in srgb, var(--sb-accent) 12%, transparent); }
+.sb-update-toggle:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: -2px; }
+.sb-update-panel { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 2px 28px; padding: 8px 10px; border: 1px solid var(--sb-border); border-radius: 8px; background: var(--sb-raised); min-width: 0; }
+.sb-update-heading { margin: 0; font-size: 10px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
+.sb-update-never { color: var(--sb-dim); }
+.sb-update-link { align-self: flex-start; font-size: 11.5px; }
+.sb-update-link:hover { text-decoration: underline; }
+.sb-command { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 3px 3px 8px; border: 1px solid var(--sb-border); border-radius: 6px; background: var(--sb-field); }
+.sb-command code { flex: 1; min-width: 0; font-size: 11px; line-height: 16px; color: var(--sb-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-copy-btn { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 20px; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: var(--sb-dim); font: 500 10.5px/1 Inter, system-ui, sans-serif; cursor: pointer; }
+.sb-copy-btn:hover { background: var(--sb-hover); color: var(--sb-fg); }
+.sb-copy-btn.copied { color: var(--sb-success); }
+.sb-copy-btn:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 1px; }
 .sb-update-check { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0 2px; }
 .sb-update-error { color: var(--sb-error); }
 

@@ -399,6 +399,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 onConnect={a.connectInstalled}
                 onInstall={(id) => void a.install(id)}
                 onCustom={a.connectCustom}
+                onOpenExternal={props.onOpenExternal}
               />
               <Show when={a.registryBusy()}>
                 <p class="sb-fine" role="status">
