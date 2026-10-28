@@ -9,3 +9,18 @@ Browser QA covers desktop and mobile layout, navigation, FAQ disclosure, local a
 See `ASSETS.md` for image, logo, and icon provenance.
 
 Refresh the release manifest after publication with `node apps/web/scripts/sync-releases.mjs`. The script accepts `GH_TOKEN` or `GITHUB_TOKEN` for server-side API authentication when available. Credentials are never written into the public manifest.
+
+
+## Download page
+
+`/download/` uses the same verified release manifest as the homepage. It presents a platform recommendation, explicit architecture and package selectors, exact artifact filenames and sizes, SHA-256 values, release notes, and platform-specific manual installation steps. Nightly, Preview, and Stable use one custom listbox control; unpublished channels and architectures do not produce download links. A Mac browser's Intel user-agent token is not used to infer the processor.
+
+The metadata module rejects external, mismatched-tag, and script URLs before creating download links. The local manifest renders first, while a failed, empty, older, or rate-limited public API response keeps that verified baseline available. No browser credentials or database are required.
+
+Run the focused browser checks from the repository root:
+
+```sh
+pnpm exec playwright test --config apps/web/playwright.config.cjs
+```
+
+The suite starts its own local server on port 1431 and checks exact release links and SHA-256 values, explicit Mac architecture choice, platform/package selection, unavailable channels, selector keyboard behavior, copy success/failure, malicious URLs, API failure, mobile layouts, homepage navigation, and the JavaScript-free fallback. Its screenshots and logs remain local under the ignored artifact directory.
