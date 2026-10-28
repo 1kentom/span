@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { modifier, openFile, ready } from "./helpers";
 
-test("Control P and Command E aliases open Goto with previews and separate text search", async ({ page }) => {
+test("Control P and the primary P shortcut open Goto with previews and separate text search", async ({ page }) => {
   await ready(page);
-  for (const shortcut of ["Control+p", `${modifier}+e`]) {
+  for (const shortcut of ["Control+p", `${modifier}+p`]) {
     await page.keyboard.press(shortcut);
     const dialog = page.getByRole("dialog", { name: "Goto", exact: true });
     await expect(dialog).toBeVisible();
