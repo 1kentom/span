@@ -4,7 +4,8 @@ import {
   SYNTAX_TOKENS, contrastMinimum, defaultPalette, expandColor, isTokenId, isValidColor, pickerColor, tokenContrast,
   type SyntaxPalette, type SyntaxTheme, type TokenId,
 } from "../editor/syntax-palette";
-import type { SampleLanguage } from "../editor/syntax-sample";
+import { sampleLanguageIds, type SampleLanguage } from "../editor/syntax-sample";
+import { languageDisplayName } from "../editor/language-names";
 import Icon from "./Icon";
 import { SyntaxPreview } from "./SyntaxPreview";
 import "../styles/syntax-colors.css";
@@ -29,6 +30,11 @@ const THEMES: { id: SyntaxTheme; label: string }[] = [{ id: "dark", label: "Dark
 const LANGUAGES: { id: SampleLanguage; label: string }[] = [
   { id: "java", label: "Java" }, { id: "typescript", label: "TypeScript" }, { id: "rust", label: "Rust" }, { id: "python", label: "Python" },
   { id: "json", label: "JSON" }, { id: "css", label: "CSS" }, { id: "html", label: "HTML" },
+];
+/** The labelled core samples, then every language in `LANGUAGE_SAMPLES` (Go, C, Kotlin and the rest). */
+const SAMPLE_OPTIONS: { id: SampleLanguage; label: string }[] = [
+  ...LANGUAGES,
+  ...sampleLanguageIds().filter(id => !LANGUAGES.some(item => item.id === id)).map(id => ({ id, label: languageDisplayName(id) })),
 ];
 const FORMAT_HINT = "Use #rgb, #rrggbb or #rrggbbaa";
 
@@ -250,7 +256,7 @@ export function SyntaxColorsSettings(props: SyntaxColorsSettingsProps) {
       <div class="syn-preview-head"><h2 id="syn-preview-heading">Live preview</h2>
         <label class="syn-language">Sample language
           <select aria-label="Sample language" value={language()} onChange={event => setLanguage(event.currentTarget.value as SampleLanguage)}>
-            <For each={LANGUAGES}>{item => <option value={item.id} selected={language() === item.id}>{item.label}</option>}</For>
+            <For each={SAMPLE_OPTIONS}>{item => <option value={item.id} selected={language() === item.id}>{item.label}</option>}</For>
           </select>
         </label>
       </div>

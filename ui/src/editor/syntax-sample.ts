@@ -1,9 +1,12 @@
 import type { LanguageId } from "./languages";
+import { LANGUAGE_SAMPLES } from "./language-samples";
 
 /** Short snippets that show most colour tokens, for the live palette preview in Settings. */
-export type SampleLanguage = Extract<LanguageId, "java" | "typescript" | "javascript" | "rust" | "python" | "json" | "css" | "html">;
+export type CoreSampleLanguage = Extract<LanguageId, "java" | "typescript" | "javascript" | "rust" | "python" | "json" | "css" | "html">;
+/** The core samples above plus every language that has a snippet in `LANGUAGE_SAMPLES`. */
+export type SampleLanguage = LanguageId;
 
-export const SYNTAX_SAMPLES: Record<SampleLanguage, string> = {
+export const SYNTAX_SAMPLES: Record<CoreSampleLanguage, string> = {
   java: `package com.example.app;
 
 import javafx.fxml.FXML;
@@ -114,5 +117,11 @@ class Config(Base):
 };
 
 export function syntaxSample(language: SampleLanguage): string {
-  return SYNTAX_SAMPLES[language];
+  return (SYNTAX_SAMPLES as Partial<Record<LanguageId, string>>)[language] ?? LANGUAGE_SAMPLES[language]?.code ?? "";
+}
+
+/** Every language the preview can show: the core samples first, then the broad coverage samples. */
+export function sampleLanguageIds(): SampleLanguage[] {
+  const core = Object.keys(SYNTAX_SAMPLES) as SampleLanguage[];
+  return [...core, ...(Object.keys(LANGUAGE_SAMPLES) as SampleLanguage[]).filter(id => !core.includes(id))];
 }
