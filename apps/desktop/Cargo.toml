@@ -9,10 +9,17 @@ autobins = false
 
 [features]
 dev-tools = []
+# Real-server tests download and run the pinned language servers (network, Node, a JDK 25+).
+# CI runs them in a dedicated Linux job: `cargo test -p span-desktop --features real-servers`.
+real-servers = []
 
 [[bin]]
 name = "span-desktop"
 path = "src/main.rs"
+
+[[test]]
+name = "real_servers"
+required-features = ["real-servers"]
 
 [[bin]]
 name = "export-bindings"
