@@ -35,13 +35,13 @@ fn io_err(context: impl Into<String>) -> impl FnOnce(io::Error) -> CacheError {
     move |source| CacheError::Io { context, source }
 }
 
-/// Stable directory name of a server.
+/// Stable directory name of a server. Servers that ship from one npm package
+/// share a slug, so the package closure is downloaded and stored once and the
+/// install lock serialises them.
 pub fn server_slug(id: ServerId) -> &'static str {
     match id {
         ServerId::Vtsls => "vtsls",
-        ServerId::Html => "html",
-        ServerId::Css => "css",
-        ServerId::Json => "json",
+        ServerId::Html | ServerId::Css | ServerId::Json => "vscode-langservers-extracted",
         ServerId::RustAnalyzer => "rust-analyzer",
         ServerId::Basedpyright => "basedpyright",
         ServerId::Jdtls => "jdtls",
@@ -335,6 +335,45 @@ mod tests {
         tokio::fs::write(dir.join(MARKER_FILE), serde_json::to_vec(&m).unwrap())
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn vscode_langservers_share_one_slug() {
+        assert_eq!(server_slug(ServerId::Html), "vscode-langservers-extracted");
+        assert_eq!(server_slug(ServerId::Html), server_slug(ServerId::Css));
+        assert_eq!(server_slug(ServerId::Css), server_slug(ServerId::Json));
+        let cache = ServerCache::new("/c");
+        assert_eq!(
+            cache.version_dir(ServerId::Html, "4.10.0"),
+            cache.version_dir(ServerId::Json, "4.10.0")
+        );
+        for other in [
+            ServerId::Vtsls,
+            ServerId::RustAnalyzer,
+            ServerId::Basedpyright,
+            ServerId::Jdtls,
+        ] {
+            assert_ne!(server_slug(other), server_slug(ServerId::Html));
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_slug_shares_completeness_and_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = ServerCache::new(tmp.path());
+        let p = plan("1.0.0", &"a".repeat(64));
+        fake_install(&cache, &p, 1).await;
+        assert!(cache.is_complete(ServerId::Html, &p).await);
+        assert!(cache.is_complete(ServerId::Css, &p).await);
+        let (_g, _) = cache
+            .acquire_lock(ServerId::Html, "1.0.0", Duration::from_secs(1))
+            .await
+            .unwrap();
+        let err = cache
+            .acquire_lock(ServerId::Json, "1.0.0", Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CacheError::LockTimeout(_)));
     }
 
     #[test]

@@ -791,26 +791,45 @@ impl<'a> SafeTree<'a> {
     ) -> Result<(), InstallError> {
         self.check()?;
         let dest = self.dest_for(comps, label)?;
-        let parent = dest.parent().unwrap_or(&self.root).to_path_buf();
-        // Lexical resolution against the canonical parent must stay inside.
-        let mut norm = parent;
+        // A name that is already taken could later be swapped for another
+        // link and redirect an earlier one, so duplicates are refused.
+        if fs::symlink_metadata(&dest).is_ok() {
+            return Err(unsafe_entry(
+                label,
+                "symlink would replace an existing entry",
+            ));
+        }
+        let mut cur = dest.parent().unwrap_or(&self.root).to_path_buf();
+        // Resolve the target against the real tree, following links created
+        // earlier the way `walk` does. Every step must stay inside the root.
         for c in target.components() {
             match c {
-                Component::Normal(p) => norm.push(p),
+                Component::Normal(p) => {
+                    let next = cur.join(p);
+                    match fs::symlink_metadata(&next) {
+                        Ok(md) if md.file_type().is_symlink() => {
+                            cur = fs::canonicalize(&next)
+                                .map_err(|_| unsafe_entry(label, "symlink target is dangling"))?;
+                        }
+                        Ok(_) => cur = next,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => cur = next,
+                        Err(e) => return Err(io_ctx(format!("stat {}", next.display()))(e)),
+                    }
+                }
                 Component::CurDir => {}
                 Component::ParentDir => {
-                    norm.pop();
+                    cur.pop();
                 }
                 Component::RootDir | Component::Prefix(_) => {
                     return Err(unsafe_entry(label, "absolute symlink target"))
                 }
             }
-        }
-        if !norm.starts_with(&self.root) {
-            return Err(unsafe_entry(
-                label,
-                "symlink target escapes the target directory",
-            ));
+            if !cur.starts_with(&self.root) {
+                return Err(unsafe_entry(
+                    label,
+                    "symlink target escapes the target directory",
+                ));
+            }
         }
         make_symlink(target, &dest, label)
     }
@@ -840,8 +859,9 @@ impl<'a> SafeTree<'a> {
 fn set_mode(path: &Path, mode: Option<u32>) -> Result<(), InstallError> {
     use std::os::unix::fs::PermissionsExt;
     if let Some(mode) = mode {
-        // Drop setuid/setgid/sticky; keep the owner able to read and write.
-        let mode = (mode & 0o777) | 0o600;
+        // Drop setuid/setgid/sticky and group/other write; keep the owner able
+        // to read and write.
+        let mode = (mode & 0o755) | 0o600;
         fs::set_permissions(path, fs::Permissions::from_mode(mode))
             .map_err(io_ctx("set permissions"))?;
     }
@@ -1320,7 +1340,12 @@ mod tests {
             .install(ServerId::Json, &p, &[], Some(&tx))
             .await
             .unwrap();
-        assert_eq!(out.dir, tmp.path().join("json").join("1.0.0"));
+        assert_eq!(
+            out.dir,
+            tmp.path()
+                .join("vscode-langservers-extracted")
+                .join("1.0.0")
+        );
         assert_eq!(fs::read(&out.entries[0]).unwrap(), b"#!/bin/sh\necho hi\n");
         assert_eq!(fs::read(&out.entries[2]).unwrap(), b"native-binary");
         assert_eq!(fs::read(out.dir.join("lib/a.txt")).unwrap(), b"a");
@@ -1338,7 +1363,7 @@ mod tests {
         }
         // Staging is gone, the cache holds only the version dir and the lock.
         assert_eq!(
-            listing(&tmp.path().join("json")),
+            listing(&tmp.path().join("vscode-langservers-extracted")),
             vec![".1.0.0.lock", "1.0.0"]
         );
 
@@ -1407,7 +1432,10 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
-        assert!(!tmp.path().join("html/1.0.0").exists());
+        assert!(!tmp
+            .path()
+            .join("vscode-langservers-extracted/1.0.0")
+            .exists());
         assert!(leftover_downloads(inst.cache(), ServerId::Html, "1.0.0").is_empty());
         assert!(!inst
             .cache()
@@ -1450,7 +1478,10 @@ mod tests {
             ),
             "{err:?}"
         );
-        assert!(!tmp.path().join("css/1.0.0").exists());
+        assert!(!tmp
+            .path()
+            .join("vscode-langservers-extracted/1.0.0")
+            .exists());
         assert!(leftover_downloads(inst.cache(), ServerId::Css, "1.0.0").is_empty());
     }
 
@@ -1568,24 +1599,117 @@ mod tests {
         assert_rejected(b, ArtifactKind::TarGz, "link").await;
     }
 
+    /// `d/` , `d/s -> ..` (the root), `x -> d/s/..` (one above the root). No
+    /// entry writes through a link, so only the target check can stop it.
+    fn tar_chain_gz(prefix: &str) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        let pkg: &[u8] = br#"{"name":"p"}"#;
+        let mut h = tar_header(tar::EntryType::Regular, pkg.len() as u64, 0o644);
+        raw_name(&mut h, &format!("{prefix}package.json"));
+        h.set_cksum();
+        b.append(&h, pkg).unwrap();
+        let mut h = tar_header(tar::EntryType::Directory, 0, 0o755);
+        raw_name(&mut h, &format!("{prefix}d/"));
+        h.set_cksum();
+        b.append(&h, std::io::empty()).unwrap();
+        for (name, target) in [("d/s", ".."), ("x", "d/s/..")] {
+            let mut h = tar_header(tar::EntryType::Symlink, 0, 0o777);
+            raw_name(&mut h, &format!("{prefix}{name}"));
+            h.set_link_name(target).unwrap();
+            h.set_cksum();
+            b.append(&h, std::io::empty()).unwrap();
+        }
+        gz(b.into_inner().unwrap())
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn tar_symlink_chain_escape_is_rejected() {
-        // b -> .. is inside the root only because it points at the root; then
-        // c -> b/.. looks lexically inside but resolves above the root, and a
-        // write through it must not leave the target.
+        assert_rejected(tar_chain_gz(""), ArtifactKind::TarGz, "x").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn npm_symlink_chain_escape_is_rejected() {
+        assert_rejected(
+            tar_chain_gz("package/"),
+            ArtifactKind::NpmTarball,
+            "node_modules/p/package.json",
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn zip_symlink_chain_escape_is_rejected() {
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        w.add_directory("d/", opts).unwrap();
+        w.add_symlink("d/s", "..", opts).unwrap();
+        w.add_symlink("x", "d/s/..", opts).unwrap();
+        let a = w.finish().unwrap().into_inner();
+        assert_rejected(a, ArtifactKind::Zip, "x").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_staying_inside_is_accepted() {
         let mut b = tar::Builder::new(Vec::new());
-        for (name, target) in [("a", "."), ("a/b", ".."), ("c", "a/b/..")] {
+        let mut h = tar_header(tar::EntryType::Regular, 1, 0o755);
+        raw_name(&mut h, "bin/tool");
+        h.set_cksum();
+        b.append(&h, &b"x"[..]).unwrap();
+        for (name, target) in [("bin/self", "."), ("alias", "bin/self/tool")] {
             let mut h = tar_header(tar::EntryType::Symlink, 0, 0o777);
             raw_name(&mut h, name);
             h.set_link_name(target).unwrap();
             h.set_cksum();
             b.append(&h, std::io::empty()).unwrap();
         }
-        let mut h = tar_header(tar::EntryType::Regular, 1, 0o644);
-        raw_name(&mut h, "c/evil");
-        h.set_cksum();
-        b.append(&h, &b"x"[..]).unwrap();
-        assert_rejected(gz(b.into_inner().unwrap()), ArtifactKind::TarGz, "x").await;
+        let a = gz(b.into_inner().unwrap());
+        let srv = TestServer::start().await;
+        srv.serve("/a", Route::Ok(a.clone()));
+        let p = plan(
+            "1.0.0",
+            vec![art(&srv, "/a", &a, ArtifactKind::TarGz, "bin/tool")],
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        installer(tmp.path())
+            .install(ServerId::Json, &p, &[], None)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn group_and_other_write_bits_are_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = tar_gz(&[
+            ("bin/tool", b"x", 0o777),
+            ("lib/data", b"y", 0o666),
+            ("lib/suid", b"z", 0o4777),
+        ]);
+        let srv = TestServer::start().await;
+        srv.serve("/a", Route::Ok(a.clone()));
+        let p = plan(
+            "1.0.0",
+            vec![art(&srv, "/a", &a, ArtifactKind::TarGz, "bin/tool")],
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let out = installer(tmp.path())
+            .install(ServerId::Json, &p, &[], None)
+            .await
+            .unwrap();
+        let mode = |rel: &str| {
+            fs::metadata(out.dir.join(rel))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        assert_eq!(mode("bin/tool"), 0o755);
+        assert_eq!(mode("lib/data"), 0o644);
+        assert_eq!(mode("lib/suid"), 0o755);
     }
 
     #[tokio::test]
@@ -1618,7 +1742,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, InstallError::EntryMissing(_)), "{err:?}");
-        assert!(!tmp.path().join("json/1.0.0").exists());
+        assert!(!tmp
+            .path()
+            .join("vscode-langservers-extracted/1.0.0")
+            .exists());
     }
 
     #[tokio::test]
@@ -1648,6 +1775,32 @@ mod tests {
             n += 1;
         }
         assert!(n > 0);
+    }
+
+    #[tokio::test]
+    async fn shared_slug_servers_install_once() {
+        let srv = TestServer::start().await;
+        let a = tar_gz(&[("bin/html", b"h", 0o755), ("bin/css", b"c", 0o755)]);
+        srv.serve("/a", Route::Slow(a.clone(), 300));
+        let mk = |entry: &str| {
+            plan(
+                "1.0.0",
+                vec![art(&srv, "/a", &a, ArtifactKind::TarGz, entry)],
+            )
+        };
+        let (ph, pc) = (mk("bin/html"), mk("bin/css"));
+        let tmp = tempfile::tempdir().unwrap();
+        let (i1, i2) = (installer(tmp.path()), installer(tmp.path()));
+        let (r1, r2) = tokio::join!(
+            i1.install(ServerId::Html, &ph, &[], None),
+            i2.install(ServerId::Css, &pc, &[], None)
+        );
+        let (r1, r2) = (r1.unwrap(), r2.unwrap());
+        assert_eq!(srv.hits("/a"), 1, "html and css must share one download");
+        assert_eq!(r1.dir, r2.dir);
+        assert_eq!(fs::read(&r1.entries[0]).unwrap(), b"h");
+        assert_eq!(fs::read(&r2.entries[0]).unwrap(), b"c");
+        assert_eq!(listing(tmp.path()).len(), 1);
     }
 
     #[tokio::test]
@@ -1839,7 +1992,10 @@ mod tests {
         )
         .await;
         assert!(res.is_err(), "install should still be running");
-        assert!(!tmp.path().join("json/1.0.0").exists());
+        assert!(!tmp
+            .path()
+            .join("vscode-langservers-extracted/1.0.0")
+            .exists());
         // Lock is free again.
         inst.cache()
             .acquire_lock(ServerId::Json, "1.0.0", Duration::from_millis(500))
