@@ -677,6 +677,10 @@ impl CoreWorkspace {
     ) -> Result<Settings> {
         // Validate the edited scope independently so a narrower override cannot hide invalid data.
         crate::settings::load_with_texts(text, "{}")?;
+        if scope == crate::SettingsScope::Workspace {
+            // Workspace files may not choose executables or trigger downloads.
+            crate::settings::reject_user_only(text)?;
+        }
         let user = if scope == crate::SettingsScope::User {
             text.to_owned()
         } else {
@@ -708,7 +712,7 @@ impl CoreWorkspace {
         value_json: Option<&str>,
     ) -> Result<Settings> {
         let text = self.get_settings_jsonc_for_scope(scope)?;
-        let patched = crate::settings::patch(&text, key, value_json)?;
+        let patched = crate::settings::patch_in_scope(scope, &text, key, value_json)?;
         self.update_settings_jsonc_for_scope(scope, &patched)
     }
 
@@ -721,6 +725,15 @@ impl CoreWorkspace {
         let mut text = self.get_settings_jsonc()?;
         for (key, value) in after.as_object().expect("settings object") {
             if before.get(key) != Some(value) {
+                let mut value = value.clone();
+                if key == "languageServers" {
+                    // User-only keys never belong in a workspace file.
+                    if let Some(servers) = value.as_object_mut() {
+                        for user_only in crate::settings::USER_ONLY_LANGUAGE_SERVER_KEYS {
+                            servers.remove(*user_only);
+                        }
+                    }
+                }
                 text = crate::settings::patch(&text, key, Some(&value.to_string()))?;
             }
         }
