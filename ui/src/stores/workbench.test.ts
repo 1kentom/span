@@ -230,6 +230,18 @@ describe("workspace views and session state", () => {
     expect(workbench.groups()[0].tabs).toContain("src/first.ts");
   });
 
+  it("does not let an earlier file read replace a later Settings selection", async () => {
+    const workbench = await setup();
+    const loading = deferred<BufferSnapshot>();
+    client.openBuffer.mockImplementation((path: string) => path === "src/late.ts" ? loading.promise : Promise.resolve(server.get(path)!));
+    const opening = workbench.openFile("src/late.ts", 1);
+    workbench.openSettings();
+    expect(workbench.activeTab()).toBe(SETTINGS_TAB);
+    loading.resolve({ path: "src/late.ts", text: "late\n", revision: 0, savedRevision: 0, language: "typescript" });
+    await opening;
+    expect(workbench.activeTab()).toBe(SETTINGS_TAB);
+  });
+
   it("shares one first-load snapshot when a new file opens into both groups", async () => {
     const workbench = await setup();
     const snapshot: BufferSnapshot = { path: "src/shared.ts", text: "shared\n", revision: 0, savedRevision: 0, language: "typescript" };

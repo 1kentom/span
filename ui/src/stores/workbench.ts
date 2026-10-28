@@ -64,6 +64,7 @@ export function createWorkbench() {
   let searchVersion = 0;
   let activeSearch: { cancel: () => Promise<void> } | undefined;
   const report = (e: unknown) => setError(typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
+  function invalidateOpenIntent(group: number) { latestOpenByGroup.set(group, ++openIntent); }
   const activeTab = () => groups().find(g => g.id === activeGroup())?.active;
   const activePath = () => activeTab() === SETTINGS_TAB ? undefined : activeTab();
   const isMarkdown = (path: string) => /\.(md|markdown|mdown)$/i.test(path);
@@ -268,6 +269,7 @@ export function createWorkbench() {
   function openSettings() {
     const existing = groups().find(group => group.tabs.includes(SETTINGS_TAB));
     const group = existing?.id || activeGroup();
+    invalidateOpenIntent(group);
     setGroups(current => current.map(item => item.id === group ? { ...item, tabs: item.tabs.includes(SETTINGS_TAB) ? item.tabs : [...item.tabs, SETTINGS_TAB], active: SETTINGS_TAB } : item));
     setActiveGroup(group);
   }
@@ -280,6 +282,7 @@ export function createWorkbench() {
   }
   function removeTab(path: string, group: number, recordClosed = true) {
     if (recordClosed && path !== SETTINGS_TAB && !isSettingsBuffer(path)) { closedTabs.push({ path, group }); if (closedTabs.length > 20) closedTabs.shift(); }
+    if (groups().find(item => item.id === group)?.active === path) invalidateOpenIntent(group);
     setGroups(current => current.map(item => {
       if (item.id !== group) return item;
       const tabs = item.tabs.filter(tab => tab !== path);
@@ -289,11 +292,13 @@ export function createWorkbench() {
   }
   function closeGroup(group: number) {
     const current = groups().find(item => item.id === group); if (!current || groups().length <= 1) return;
+    invalidateOpenIntent(group);
     const uniqueDirty = current.tabs.find(path => dirty(path) && !groups().some(item => item.id !== group && item.tabs.includes(path)));
     if (uniqueDirty) setPendingClose({ path: uniqueDirty, group, closingGroup: true });
     else removeGroup(group);
   }
   function closeTab(path: string, group: number) {
+    if (groups().find(item => item.id === group)?.active === path) invalidateOpenIntent(group);
     const elsewhere = groups().some(item => item.id !== group && item.tabs.includes(path));
     if (dirty(path) && !elsewhere) setPendingClose({ path, group });
     else removeTab(path, group);
@@ -367,6 +372,7 @@ export function createWorkbench() {
   function moveTab(path: string, fromGroup: number, toGroup: number, copy = false) {
     if (path === SETTINGS_TAB) copy = false;
     if (fromGroup === toGroup || !groups().some(group => group.id === toGroup)) return;
+    invalidateOpenIntent(toGroup);
     setGroups(current => current.map(group => group.id === toGroup ? { ...group, tabs: group.tabs.includes(path) ? group.tabs : [...group.tabs, path], active: path } : group));
     if (!copy) removeTab(path, fromGroup, false);
     setActiveGroup(toGroup);
