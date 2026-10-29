@@ -96,7 +96,13 @@ function mount() {
     root.querySelector<HTMLButtonElement>('[aria-label="Back to session"]')!.click();
     await flush();
   };
-  return { root, button, open, close, setWorkspace };
+  /** The single row of an installed agent, under Found on this computer. Installed agents are not repeated in the curated list. */
+  const found = (name: string) =>
+    [...root.querySelectorAll<HTMLElement>('[aria-label="Found on this computer"] .sb-found-entry')].find((entry) =>
+      entry.querySelector(".sb-agent-name")?.textContent === name,
+    );
+  const connectButton = (name: string) => root.querySelector<HTMLButtonElement>(`[aria-label="Connect ${name}"]`)!;
+  return { root, button, open, close, setWorkspace, found, connectButton };
 }
 const listener = () => mocks.onEvent.mock.calls[0][0] as (event: AgentEvent) => void;
 beforeEach(() => {
@@ -122,7 +128,7 @@ afterEach(() => {
 });
 describe("agent menu", () => {
   it("preserves model selection, streamed Markdown, queued follow-ups and chat resume after connecting a curated agent", async () => {
-    const { root, open, button } = mount(); await open(); button("Codex").click(); await flush();
+    const { root, open, button, connectButton } = mount(); await open(); connectButton("codex-acp").click(); await flush();
     const receive = listener();
     receive({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] });
     receive({ kind: "capabilities", canLoadSession: true, canListSessions: true });
@@ -176,10 +182,13 @@ describe("agent menu", () => {
     expect(mocks.remove).not.toHaveBeenCalled();
   });
   it("requires explicit removal confirmation and cancellation never deletes", async () => {
-    const { root, open, button } = mount();
+    const { root, open, button, found } = mount();
     await open();
+    // The installed agent has one row, under Found on this computer, and its manage menu lives there.
+    expect(root.querySelectorAll('[data-agent-id="codex-acp"]')).toHaveLength(1);
+    expect(found("codex-acp")?.querySelector('[aria-label="Manage codex-acp"]')).not.toBeNull();
     root
-      .querySelector<HTMLButtonElement>('[aria-label="Manage Codex"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Manage codex-acp"]')!
       .click();
     button("Uninstall managed adapter").click();
     expect(root.textContent).toContain("Uninstall managed adapter?");
@@ -187,7 +196,7 @@ describe("agent menu", () => {
     button("Cancel").click();
     expect(mocks.remove).not.toHaveBeenCalled();
     root
-      .querySelector<HTMLButtonElement>('[aria-label="Manage Codex"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Manage codex-acp"]')!
       .click();
     button("Remove from Span").click();
     button("Remove from Span").click();
@@ -195,9 +204,9 @@ describe("agent menu", () => {
     expect(mocks.remove).toHaveBeenCalledWith("codex-acp", false);
   });
   it("blocks removing a connected agent while edits await review", async () => {
-    const { root, open, button } = mount();
+    const { root, open, button, connectButton } = mount();
     await open();
-    button("Codex").click();
+    connectButton("codex-acp").click();
     await flush();
     listener()({
       kind: "proposal",
@@ -211,7 +220,7 @@ describe("agent menu", () => {
     } as AgentEvent);
     await open();
     root
-      .querySelector<HTMLButtonElement>('[aria-label="Manage Codex"]')!
+      .querySelector<HTMLButtonElement>('[aria-label="Manage codex-acp"]')!
       .click();
     button("Remove from Span").click();
     expect(root.textContent).toContain("Review or reject");
@@ -226,9 +235,9 @@ describe("agent menu", () => {
         resolve = done;
       }),
     );
-    const { root, open, button, setWorkspace } = mount();
+    const { root, open, setWorkspace, connectButton } = mount();
     await open();
-    button("Codex").click();
+    connectButton("codex-acp").click();
     await flush();
     setWorkspace("/workspace/two");
     await flush();
@@ -253,7 +262,7 @@ describe("agent menu", () => {
       version: "1.0.0",
       launch: { command: "/managed/claude", args: [], env: {} },
     };
-    const { root, open, close, button } = mount();
+    const { root, open, close, found, connectButton } = mount();
     await open();
 
     const claudeRow = () =>
@@ -274,8 +283,8 @@ describe("agent menu", () => {
     )!;
     search.value = "Codex";
     search.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(button("Codex").disabled).toBe(false);
-    button("Codex").click();
+    expect(connectButton("codex-acp").disabled).toBe(false);
+    connectButton("codex-acp").click();
     await flush();
     expect(mocks.connect).toHaveBeenCalled();
 
@@ -293,9 +302,10 @@ describe("agent menu", () => {
     mocks.installed.mockResolvedValue([managed, claude]);
     finishInstall(claude);
     await flush();
-    expect(claudeRow().disabled).toBe(false);
-    expect(claudeRow().textContent).toContain("Installed · 1.0.0");
-    claudeRow().click();
+    // Installed, the agent leaves the curated list and has one row under Found on this computer.
+    expect(claudeRow()).toBeUndefined();
+    expect(found("claude-acp")?.textContent).toContain("Installed · 1.0.0");
+    connectButton("claude-acp").click();
     await flush();
     expect(mocks.connect).toHaveBeenLastCalledWith(
       claude.launch,
@@ -312,7 +322,7 @@ describe("agent menu", () => {
     mocks.install
       .mockRejectedValueOnce(new Error("registry unavailable"))
       .mockResolvedValueOnce(claude);
-    const { root, open } = mount();
+    const { root, open, found } = mount();
     await open();
     const claudeRow = () =>
       [...root.querySelectorAll<HTMLButtonElement>(".agent-catalog-row")].find(
@@ -328,7 +338,8 @@ describe("agent menu", () => {
     claudeRow().click();
     await flush();
     expect(mocks.install).toHaveBeenCalledTimes(2);
-    expect(claudeRow().textContent).toContain("Installed · 1.0.0");
+    expect(claudeRow()).toBeUndefined();
+    expect(found("claude-acp")?.textContent).toContain("Installed · 1.0.0");
   });
 
   it("keeps completed parallel installs when an older installed-agent read returns last", async () => {
@@ -354,7 +365,7 @@ describe("agent menu", () => {
       return new Promise<InstalledAgent>((resolve) => (finishClaudeInstall = resolve));
     });
 
-    const { root, open } = mount();
+    const { root, open, found } = mount();
     await open();
     root.querySelector<HTMLButtonElement>('[aria-label="Refresh agent registry"]')!.click();
     const row = (name: string) =>
@@ -368,13 +379,17 @@ describe("agent menu", () => {
     await flush();
     finishClaudeInstall(claude);
     await flush();
-    expect(row("Codex").textContent).toContain("Installed · 2.3.0");
-    expect(row("Claude Code").textContent).toContain("Installed · 1.0.0");
+    expect(found("codex-acp")?.textContent).toContain("Installed · 2.3.0");
+    expect(found("claude-acp")?.textContent).toContain("Installed · 1.0.0");
+    expect(row("Codex")).toBeUndefined();
+    expect(row("Claude Code")).toBeUndefined();
 
     finishOldRead([codex]);
     await flush();
-    expect(row("Codex").textContent).toContain("Installed · 2.3.0");
-    expect(row("Claude Code").textContent).toContain("Installed · 1.0.0");
+    expect(found("codex-acp")?.textContent).toContain("Installed · 2.3.0");
+    expect(found("claude-acp")?.textContent).toContain("Installed · 1.0.0");
+    expect(row("Codex")).toBeUndefined();
+    expect(row("Claude Code")).toBeUndefined();
     expect(mocks.install).toHaveBeenCalledTimes(2);
   });
 
@@ -393,13 +408,13 @@ describe("agent menu", () => {
     mocks.remove.mockImplementation(async () => {
       order.push("removed");
     });
-    const { root, open, button } = mount();
+    const { root, open, button, connectButton } = mount();
     await open();
-    button("Codex").click();
+    connectButton("codex-acp").click();
     await flush();
 
     await open();
-    root.querySelector<HTMLButtonElement>('[aria-label="Manage Codex"]')!.click();
+    root.querySelector<HTMLButtonElement>('[aria-label="Manage codex-acp"]')!.click();
     expect(root.textContent).not.toContain("The connected session will disconnect first.");
     button("Remove from Span").click();
     expect(root.textContent).toContain("The connected session will disconnect first.");
@@ -425,9 +440,9 @@ describe("agent menu", () => {
 
   it("explains a command that cannot start an ACP session", async () => {
     mocks.connect.mockRejectedValue(new Error("JSON-RPC error -32601: Method not found"));
-    const { root, open, button } = mount();
+    const { root, open, connectButton } = mount();
     await open();
-    button("Codex").click();
+    connectButton("codex-acp").click();
     await flush();
     expect(root.textContent).toContain("This command could not start an ACP session.");
   });

@@ -1,0 +1,40 @@
+name: Dev app bundle
+
+# Manual only. Builds an unsigned macOS .app from the chosen ref so it can be
+# downloaded and tried locally. This is not a release: nothing is signed,
+# notarized or published, and the artifact expires after 3 days.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm desktop:build --bundles app
+      - name: Zip the app with ditto to keep permissions and symlinks
+        run: |
+          app="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
+          test -n "$app"
+          echo "$GITHUB_SHA" > "$app/Contents/Resources/BUILD_SOURCE.txt"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/span-dev-app.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: span-dev-app-macos-${{ github.sha }}
+          path: ${{ runner.temp }}/span-dev-app.zip
+          retention-days: 3
+          if-no-files-found: error

@@ -1,6 +1,6 @@
 import { MAX_IMAGE_BYTES, formatAssetBytes } from './asset-preview';
 
-export type AttachmentKind = 'image' | 'audio' | 'text-paste' | 'file' | 'selection';
+export type AttachmentKind = 'image' | 'audio' | 'text-paste' | 'file' | 'selection' | 'folder';
 export type AttachmentSource = 'picked' | 'pasted' | 'dropped' | 'workspace-file' | 'editor-selection';
 export type AttachmentStatus = 'ready' | 'loading' | 'error';
 
@@ -22,10 +22,20 @@ export interface Attachment {
   status: AttachmentStatus;
   /** Why the item is in the error status. */
   error?: string;
+  /** Page count of a PDF, set only when it could be read reliably. */
+  pages?: number;
+  /** Folder outline facts. A folder attachment is a Span-side outline (text plus a link), not an ACP content type. */
+  folder?: { files: number; truncated: boolean };
+  /** Id in the uploads store (ADR 0006) once the item was recorded there. Recording happens at most once per item. */
+  uploadId?: string;
 }
 
-/** ACP `promptCapabilities`. Text and resource links are always accepted by an agent. */
-export interface PromptCapabilities { image: boolean; audio: boolean; embeddedContext: boolean }
+/**
+ * ACP `promptCapabilities`. Text and resource links are always accepted by an agent.
+ * `storeLinks` is Span-side, not ACP: the uploads store is available, so content the agent cannot take inline is
+ * saved there first and sent as a resource link to the stored copy instead of being refused.
+ */
+export interface PromptCapabilities { image: boolean; audio: boolean; embeddedContext: boolean; storeLinks?: boolean }
 
 /** How an attachment can be put into the prompt. `link` is an ACP resource_link and is baseline. */
 export type SendPlan =
@@ -156,19 +166,21 @@ export function planAttachment(item: Attachment, caps: PromptCapabilities): Send
   if (item.status === 'error') return { mode: 'refuse', reason: item.error || 'This attachment failed to load.' };
   if (item.status === 'loading') return { mode: 'refuse', reason: 'Still loading.' };
   const hasText = item.text !== undefined;
+  // Bytes the agent cannot take inline still go out as a link once the uploads store holds a copy (Span-side).
+  const stored = !!caps.storeLinks && !!item.bytes;
   if (item.kind === 'image' && isRasterMime(item.mime)) {
     if (!item.bytes) return item.path ? { mode: 'link' } : { mode: 'refuse', reason: 'The image data is no longer available.' };
-    return caps.image ? { mode: 'image' } : { mode: 'refuse', reason: 'This agent does not accept images.' };
+    return caps.image ? { mode: 'image' } : stored ? { mode: 'link' } : { mode: 'refuse', reason: 'This agent does not accept images.' };
   }
   if (item.kind === 'audio' || item.mime.startsWith('audio/')) {
     if (!item.bytes) return item.path ? { mode: 'link' } : { mode: 'refuse', reason: 'The audio data is no longer available.' };
     if (caps.audio) return { mode: 'audio' };
-    // Without audio support the agent still gets a resource link when the file has a path.
-    return item.path ? { mode: 'link' } : { mode: 'refuse', reason: 'This agent does not accept audio.' };
+    // Without audio support the agent still gets a resource link when the file has a path or can be stored.
+    return item.path || stored ? { mode: 'link' } : { mode: 'refuse', reason: 'This agent does not accept audio.' };
   }
   if (hasText) return caps.embeddedContext ? { mode: 'resource' } : { mode: 'text' };
   if (item.path && !item.bytes) return { mode: 'link' };
-  if (item.bytes) return caps.embeddedContext ? { mode: 'resource' } : { mode: 'refuse', reason: 'This agent cannot receive binary files (no embedded context support).' };
+  if (item.bytes) return caps.embeddedContext ? { mode: 'resource' } : stored ? { mode: 'link' } : { mode: 'refuse', reason: 'This agent cannot receive binary files (no embedded context support).' };
   if (item.kind === 'image') return { mode: 'refuse', reason: 'This image format cannot be previewed or sent. Use PNG, JPEG, GIF, WebP or SVG.' };
   return { mode: 'refuse', reason: 'The file content is no longer available.' };
 }
@@ -195,6 +207,70 @@ export function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(binary);
+}
+
+/** True when the item goes out as a link to a copy Span keeps in the uploads store, not to a workspace file. */
+export function needsStoredLink(item: Attachment, caps: PromptCapabilities): boolean {
+  return !!caps.storeLinks && !!item.bytes && !isInWorkspace(item) && planAttachment(item, caps).mode === 'link';
+}
+
+/** Most entries a folder outline lists. The outline says when it stops early. */
+export const FOLDER_OUTLINE_LIMIT = 200;
+/** Folders never walked into: version control, Span's own data and dependency trees. */
+export const SKIPPED_FOLDERS = /^(?:\.git|\.span|node_modules|\.hg|\.svn|target|dist|build|\.next|\.turbo|\.cache|__pycache__|\.venv|venv)$/;
+
+export interface OutlineEntry { path: string; isDir: boolean }
+
+/**
+ * Walks a folder breadth first through `list` and returns a bounded outline: at most `limit` entries, skipped
+ * folders left out, paths relative to the folder (absolute paths never appear). `list` gets folder-relative paths.
+ */
+export async function folderOutline(name: string, list: (relative: string) => Promise<readonly { name: string; isDir: boolean }[]>, limit = FOLDER_OUTLINE_LIMIT): Promise<{ text: string; files: number; truncated: boolean }> {
+  const lines: string[] = [];
+  let files = 0;
+  let truncated = false;
+  const queue = [''];
+  while (queue.length) {
+    const dir = queue.shift()!;
+    let entries: readonly { name: string; isDir: boolean }[];
+    try { entries = await list(dir); } catch { continue; }
+    for (const entry of [...entries].sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name))) {
+      if (entry.isDir && SKIPPED_FOLDERS.test(entry.name)) continue;
+      if (lines.length >= limit) { truncated = true; break; }
+      const path = dir ? `${dir}/${entry.name}` : entry.name;
+      lines.push(entry.isDir ? `${path}/` : path);
+      if (entry.isDir) queue.push(path); else files += 1;
+    }
+    if (truncated) break;
+  }
+  const head = `Folder outline of ${name}/ (${files}${truncated ? '+' : ''} ${files === 1 && !truncated ? 'file' : 'files'}${truncated ? `, first ${limit} entries` : ''}). Added by Span, not an ACP content type.`;
+  return { text: [head, '', ...lines].join('\n'), files, truncated };
+}
+
+/** A folder attachment: the outline as text, and the folder path (workspace-relative) for the link when known. */
+export function createFolderAttachment(input: { name: string; text: string; files: number; truncated: boolean; path?: string; source: 'workspace-file' | 'dropped'; id?: string }): Attachment {
+  return { id: input.id ?? newAttachmentId(), kind: 'folder', name: input.name, mime: 'text/plain', size: utf8.encode(input.text).length, source: input.source, text: input.text, path: input.path, folder: { files: input.files, truncated: input.truncated }, status: 'ready' };
+}
+
+/** Folder meta for chips and tiles: "14 files", or "200+ files" when the outline stopped early. */
+export function folderMeta(item: Attachment): string | undefined {
+  if (!item.folder) return undefined;
+  const { files, truncated } = item.folder;
+  return `${files}${truncated ? '+' : ''} ${files === 1 && !truncated ? 'file' : 'files'}`;
+}
+
+/** Replace absolute paths in exported text: the workspace root becomes `.`, the home folder `~`, any other absolute path its last part. */
+export function redactPaths(text: string, root?: string, home?: string): string {
+  let out = text;
+  const swap = (prefix: string | undefined, to: string) => {
+    if (!prefix || prefix === '/') return;
+    const clean = prefix.replace(/[\\/]+$/, '');
+    out = out.split(clean).join(to);
+  };
+  swap(root, '.');
+  swap(home, '~');
+  return out.replace(/(^|[\s("'`])(\/(?:Users|home|private|var|tmp|opt|etc|Volumes)\/[^\s)"'`]*|[A-Za-z]:\\[^\s)"'`]*)/g,
+    (_match, lead: string, path: string) => `${lead}\u2026/${path.split(/[\\/]/).filter(Boolean).at(-1) ?? ''}`);
 }
 
 export const sourceLabels: Record<AttachmentSource, string> = { picked: 'Picked file', pasted: 'Pasted', dropped: 'Dropped file', 'workspace-file': 'Workspace file', 'editor-selection': 'Editor selection' };

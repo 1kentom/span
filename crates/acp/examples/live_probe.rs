@@ -8,6 +8,9 @@
 //!
 //! Safety: every permission request is rejected, except the read-only
 //! span-agents `list_agents` tool during the MCP step (allow_once only).
+//! The MCP step lists the agents installed in Span's cache
+//! (SPAN_PROBE_AGENTS or ~/Library/Caches/dev.span.editor/agents) as ready
+//! to start, with a starter that refuses: the probe never starts them.
 //! Elicitations are declined. Every prompt has a 90 second limit. No
 //! credentials are read; the span-agents bearer token is scrubbed from every
 //! file this probe writes. Child processes are terminated at the end.
@@ -31,7 +34,7 @@ const PONG: &str = "Reply with exactly the single word PONG. Do not use any tool
 const READ: &str =
     "Use your file read tool to read hello.txt in the current directory and tell me its content.";
 const COUNT: &str = "Count from 1 to 300, one number per line, slowly.";
-const LIST: &str = "Call the list_agents tool from the span-agents MCP server and report the agent names. Do not call any other tool.";
+const LIST: &str = "Call the list_agents tool from the span-agents MCP server. Report the agent names, say which of them you could delegate a task to right now, and whether the user must connect any of them in Span first. Do not call any other tool.";
 
 type Res<T> = Result<T, String>;
 
@@ -847,9 +850,17 @@ async fn probe(agent: &str, out: &Path) -> Res<()> {
         let config = ToolServerConfig {
             workspace: workspace.clone(),
             policy: ToolPolicy::default(),
-            delegation_enabled: false,
+            // The probe exercises the delegation tools; run tools stay off.
+            delegation_enabled: true,
             run_tools: None,
-            installed: Vec::new(),
+            installed: probe_installed(),
+            // Lists installed agents as ready to start; refuses any start.
+            background: Some(span_acp::BackgroundAgents::new(
+                manager.clone(),
+                Arc::new(|_, _| {
+                    Box::pin(async { Err("the live probe does not start agents".to_owned()) })
+                }),
+            )),
             events: Some(Arc::new(move |event| {
                 events_rec.write(
                     "events",
@@ -915,6 +926,19 @@ async fn probe(agent: &str, out: &Path) -> Res<()> {
     kill_descendants(&rec);
     rec.mark("summary", Value::Object(summary));
     Ok(())
+}
+
+/// Agents installed in the Span app's cache, for list_agents only.
+fn probe_installed() -> Vec<span_acp::InstalledAgent> {
+    let directory = std::env::var_os("SPAN_PROBE_AGENTS")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join("Library/Caches/dev.span.editor/agents"))
+        });
+    directory
+        .and_then(|d| span_acp::list_installed_agents(&d).ok())
+        .unwrap_or_default()
 }
 
 #[tokio::main]

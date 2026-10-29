@@ -66,7 +66,7 @@ export function DelegationCard(props: DelegationCardProps) {
   };
   const openArtifact = (path: string) => setOpenError(props.onOpenArtifact?.(path) ? undefined : `Could not open ${path}`);
   return (
-    <section class="sb-delegation" classList={{ failed: props.status === "failed" }} aria-label={`Delegated to ${props.agent}: ${STATUS_TEXT[props.status]}`}>
+    <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}: ${STATUS_TEXT[props.status]}`}>
       <div class="sb-delegation-head">
         <BrandIcon name={props.agent} size={14} />
         <span class="sb-delegation-name sb-ellipsis">{props.agent}</span>
@@ -79,6 +79,7 @@ export function DelegationCard(props: DelegationCardProps) {
           <span class="sb-sub nowrap">{STATUS_TEXT[props.status]}</span>
         </span>
       </div>
+      <Show when={props.status === "starting"}><div class="sb-sub sb-delegation-starting">Starting {props.agent}</div></Show>
       <Show when={props.note}><div class="sb-body sb-delegation-note">{props.note}</div></Show>
       <Show when={elapsed()}><div class="sb-sub sb-delegation-elapsed">Elapsed {elapsed()}</div></Show>
       <Show when={props.progressText && !finished()}><div class="sb-sub sb-delegation-progress">{props.progressText}</div></Show>
@@ -101,7 +102,7 @@ export function DelegationCard(props: DelegationCardProps) {
       <Show when={props.waiting}>
         <div class="sb-delegation-wait"><span class="sb-dot warn" aria-hidden="true" />Needs your approval below</div>
       </Show>
-      <Show when={!finished() && props.onCancel && props.taskId}>
+      <Show when={!finished() && props.status !== "starting" && props.onCancel && props.taskId}>
         <div class="sb-delegation-actions">
           <button type="button" class="sb-btn danger" disabled={pending()} onClick={() => void cancel()}>{pending() ? "Cancelling" : "Cancel"}</button>
         </div>

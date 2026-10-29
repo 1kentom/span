@@ -27,3 +27,26 @@
 @container (max-width: 700px) { .agent-statusbar .sb-hint:nth-child(n + 4) { display: none; } }
 @container (max-width: 520px) { .agent-statusbar .sb-hint:nth-child(n + 3) { display: none; } }
 @container (max-width: 340px) { .agent-statusbar .sb-hints { display: none; } }
+
+/* Shuffle badge: delegation is attached to this chat. It sits at the bottom right of the Span mark, ringed in the surface colour; accent while a child agent runs. */
+.agent-mark-wrap { position: relative; display: inline-flex; flex: none; }
+.agent-delegating {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  display: inline-grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--sb-surface);
+  box-shadow: 0 0 0 1.5px var(--sb-surface);
+  color: var(--sb-dim);
+}
+.agent-delegating.active { color: var(--sb-accent-fg); }
+@media (prefers-reduced-motion: no-preference) {
+  .agent-delegating { animation: agent-delegating-in 0.35s cubic-bezier(0.3, 1.4, 0.5, 1) both; }
+  .agent-delegating.active .icon { animation: agent-delegating-swap 1.6s ease-in-out infinite; }
+}
+@keyframes agent-delegating-in { from { opacity: 0; transform: scale(0.5); } to { opacity: 1; transform: none; } }
+@keyframes agent-delegating-swap { 0%, 60%, 100% { transform: none; } 80% { transform: scaleX(-1); } }

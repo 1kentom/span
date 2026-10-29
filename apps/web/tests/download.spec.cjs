@@ -1,6 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const manifest = require('../releases.json');
-const release = manifest[0];
+const release = manifest.find(entry => /nightly/i.test(entry.tag_name));
 const installers = release.assets.filter(asset => /\.(dmg|exe|deb|AppImage)$/i.test(asset.name));
 const assetFor = suffix => installers.find(asset => asset.name.includes(suffix));
 const macAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36';
@@ -40,7 +40,7 @@ test('Mac Intel UA never selects a Mac chip and both explicit choices map exactl
   await expect(page.locator('#selected-sha')).toHaveText(assetFor('aarch64-apple-darwin').digest.slice(7));
   await choose(page, 'Architecture', 'Intel (x64)');
   await expect(page.locator('#primary-download')).toHaveAttribute('href', assetFor('x86_64-apple-darwin').browser_download_url);
-  await expect(page.locator('#selected-meta')).toContainText('19.1 MB');
+  await expect(page.locator('#selected-meta')).toContainText(`${(assetFor('x86_64-apple-darwin').size / 1000000).toFixed(1)} MB`);
   await context.close();
 });
 
@@ -52,8 +52,14 @@ test('shared selectors support keyboard, unpublished channels, Escape, Tab and o
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('Enter');
-  await expect(page.locator('#channel-empty-title')).toHaveText('Preview is not published yet');
-  await expect(page.locator('#download-content')).toBeHidden();
+  const preview = manifest.find(entry => !/nightly/i.test(entry.tag_name) && entry.prerelease);
+  if (preview) {
+    await expect(page.locator('#release-version')).toContainText(preview.tag_name);
+    await expect(page.locator('#download-content')).toBeVisible();
+  } else {
+    await expect(page.locator('#channel-empty-title')).toHaveText('Preview is not published yet');
+    await expect(page.locator('#download-content')).toBeHidden();
+  }
   await expect(channel).toBeFocused();
   await page.keyboard.press('End');
   await page.keyboard.press('Enter');

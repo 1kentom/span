@@ -689,6 +689,7 @@ mod tests {
                 delegation_enabled: false,
                 run_tools: Some(backend),
                 installed: Vec::new(),
+                background: None,
                 events: None,
             },
         )

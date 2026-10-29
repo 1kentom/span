@@ -1,0 +1,100 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear, plus the Iconsax MCP free linear set where the local library has no match",
+  "scope": "Icons used by the file and upload viewer. Pause, volume, muted volume and the 10 second skip pair have no counterpart in the local library (it has a 10 second back icon only, so both skip icons come from the MCP set to stay a matched pair).",
+  "processing": "SVG inspected for active content and external references. Strokes normalised to currentColor, clip rectangles and root fill made transparent, clip ids made unique. Path geometry is preserved. The application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied at the user’s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "reused": {
+    "Checker": "Element3.svg",
+    "Plus": "Add.svg",
+    "ViewPreview": "markdown-preview.svg",
+    "ViewSplit": "markdown-both.svg",
+    "ViewSource": "markdown-source.svg",
+    "Fullscreen": "Maximize4.svg"
+  },
+  "assets": [
+    {
+      "asset": "Download.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "arrow/iconsax-import-arrow-ce19097dc5c9-.svg",
+      "sourceSha256": "b7e1050981bd92e7187b30da32a227d1eea405861bbdfd5bb92175a45f2d6c97",
+      "assetSha256": "9d2d58be071fe60bd95fb789d9f04aac3027d66c8da169f5167bbc2200346261"
+    },
+    {
+      "asset": "Repeat.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "arrow/iconsax-repeat-arrow-4765d30cc2dd-.svg",
+      "sourceSha256": "58bcee8035ebfcada25f51ed9e00e0847a03282d0cea429e1135bda03bf5edc3",
+      "assetSha256": "090f89227716d8b0fed0a260d9a4e836714311b1dcde063b7af0d17b732f4133"
+    },
+    {
+      "asset": "Sun.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "space2new/iconsax-sun-6aa5405cc771-.svg",
+      "sourceSha256": "75e9764aa56a9feca8dd23642dfe6748fed049ce21b9c99ab05e76f61cab5d67",
+      "assetSha256": "d5d8eecb604691476d1cf76125410c630d5c23eac2232024724d209fba35e590"
+    },
+    {
+      "asset": "Moon.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "astrology2/iconsax-moon-a48f7a04bdb0-.svg",
+      "sourceSha256": "290180f7065419374b3ee58daa08ef8419bd6078e2d4afcd7810b91f11200cf3",
+      "assetSha256": "00f9bec3f4a8dfc4f442b936cb476a8de697260ed79f3d9a6db71eadbb4905fd"
+    },
+    {
+      "asset": "Minus.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "essential/iconsax-minus-f8f89a213666-.svg",
+      "sourceSha256": "444f39558428a98357c3eb171afd54cb8283ce9ac2e97076ade86ed750235d87",
+      "assetSha256": "76074d3697fe4534b9951d082aa027818d5b058e4eb84db098835e7893f59dd3"
+    },
+    {
+      "asset": "Close.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "arrow2/iconsax-close-a15ca319f9db-.svg",
+      "sourceSha256": "6fca1c85b367e186e66227144a5132c98f8b353827070a8788bc44f8a7b8830e",
+      "assetSha256": "e1ae57d638970506a15189558d9d5403f7d6c595df178b68846c6933207b7be9"
+    },
+    {
+      "asset": "Check.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "arrow2/iconsax-check-mark---tick-e20b41c7f79e-.svg",
+      "sourceSha256": "5477a44a9d96f626852d009400e519e5e52ac6449f6a79e917dbfbd653935018",
+      "assetSha256": "91083b4465c9f1c91722459b752477535f11b06902ffb70d4a77200d7415dc3e"
+    },
+    {
+      "asset": "Pause.svg",
+      "origin": "Iconsax MCP free set, linear style",
+      "source": "pause (linear)",
+      "sourceSha256": "8a274cc9af5d41f47361555b953ffd89ac02e3f2c5b3bc35b24846bbcdbf2952",
+      "assetSha256": "23a0db5106097a265c747fa529f18e8145d2775ff5972552c9aa62be1f780200"
+    },
+    {
+      "asset": "Volume.svg",
+      "origin": "Iconsax MCP free set, linear style",
+      "source": "volume-high (linear)",
+      "sourceSha256": "026fb292cdee17c536398e9f63425ad6de25cc9ebf55547d4a062042772979fa",
+      "assetSha256": "01dd737134b24d70f385f0e866ea1bc3bc048a4173b5c3bd41025933d1b0bce2"
+    },
+    {
+      "asset": "VolumeMute.svg",
+      "origin": "Iconsax MCP free set, linear style",
+      "source": "volume-slash (linear)",
+      "sourceSha256": "0616f2f30c22699714e1d14e425bb8a7a441d4b104cf281a59576ed0c270af16",
+      "assetSha256": "02162cb6aa070f4e6a17497af31178466d9bfb6a94ffe635f28536d52e9fcfba"
+    },
+    {
+      "asset": "Back10.svg",
+      "origin": "Iconsax MCP free set, linear style",
+      "source": "backward-10-seconds (linear)",
+      "sourceSha256": "dcf9b8a4b54c126ede3c8480fdbe07910e663f19edecfd4acb2c050ddb96f7d6",
+      "assetSha256": "1b4b2ed2073d8d4b2cd2d3716af3419f0b9da4c3e1f8d730a9b2be0c1add2e55"
+    },
+    {
+      "asset": "Fwd10.svg",
+      "origin": "Iconsax MCP free set, linear style",
+      "source": "forward-10-seconds (linear)",
+      "sourceSha256": "2de6c8ff53814d48f1f738f722e9609c7b250a3af65a51678b38b27b2127a0ab",
+      "assetSha256": "49a5a84924b528164813051c90945cf944113378c8232b67a00ac03542e03522"
+    }
+  ]
+}

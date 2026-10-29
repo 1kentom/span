@@ -530,7 +530,7 @@ describe("composer pickers", () => {
     await tick();
     expect(dialogs(host)).toEqual(["Codex mode"]);
     expect([modelChip.getAttribute("aria-expanded"), modeChip.getAttribute("aria-expanded")]).toEqual(["false", "true"]);
-    expect([...host.querySelectorAll("[role=dialog] [role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Mode", "Collaboration mode", "Fast mode"]);
+    expect([...host.querySelectorAll("[role=dialog] [role=radiogroup]")].map((group) => group.getAttribute("aria-label"))).toEqual(["Mode", "Collaboration mode"]);
     click(agentChip);
     await tick();
     expect(dialogs(host)).toEqual(["Agents"]);
@@ -543,7 +543,7 @@ describe("composer pickers", () => {
     const { host, modeChip } = await codexComposer();
     click(modeChip);
     await tick();
-    click([...host.querySelectorAll("[role=dialog] [role=radio]")].find((row) => row.textContent?.includes("1.5x speed")));
+    click(host.querySelector("[role=dialog] [role=switch]"));
     await tick();
     expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("fast_mode", "on");
   });
@@ -595,6 +595,32 @@ describe("composer pickers", () => {
     mocks.emit({ kind: "config", sessionId: "s1", options: [select("fast_mode", "Fast mode", null, "on", [["off", "Off"], ["on", "On"]])] } as AgentEvent);
     await tick();
     expect(text(host.querySelector(".agent-mode-button .agent-model-name"))).toBe("Fast mode: On");
+  });
+
+  it("puts the model vendor mark on the model chip, with the agent badge, only for provider-prefixed ids", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "opencode", name: "OpenCode" }} label="OpenCode" />);
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("model", "Model", "model", "opencode/claude-opus-5-5", [["opencode/claude-opus-5-5", "Claude Opus 5.5"], ["opencode/big-pickle", "Big Pickle"]])] } as AgentEvent);
+    await tick();
+    const chip = host.querySelector(".agent-model-button")!;
+    expect(chip.querySelector(".sb-model-icon")?.getAttribute("aria-label")).toBe("Claude model on OpenCode");
+    expect(chip.querySelector(".sb-model-icon .sb-agent-badge")).not.toBeNull();
+    expect(chip.querySelector(".sb-model-icon .sb-trait-badge")?.getAttribute("data-trait")).toBe("frontier");
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("model", "Model", "model", "opencode/big-pickle", [["opencode/claude-opus-5-5", "Claude Opus 5.5"], ["opencode/big-pickle", "Big Pickle"]])] } as AgentEvent);
+    await tick();
+    expect(chip.querySelector(".sb-model-icon")).toBeNull();
+  });
+
+  it("keeps the chip free of vendor mark and agent badge for unprefixed ids", async () => {
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "claude", name: "Claude" }} label="Claude" />);
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("model", "Model", "model", "opus", [["opus", "Opus"], ["gpt-5.6-luna", "GPT 5.6 Luna"]])] } as AgentEvent);
+    await tick();
+    const chip = host.querySelector(".agent-model-button")!;
+    expect(chip.querySelector(".sb-model-icon")).toBeNull();
+    expect(chip.querySelector(".sb-agent-badge")).toBeNull();
+    mocks.emit({ kind: "config", sessionId: "s1", options: [select("model", "Model", "model", "gpt-5.6-luna", [["opus", "Opus"], ["gpt-5.6-luna", "GPT 5.6 Luna"]])] } as AgentEvent);
+    await tick();
+    expect(chip.querySelector(".sb-model-icon")).toBeNull();
+    expect(chip.querySelector(".sb-agent-badge")).toBeNull();
   });
 });
 

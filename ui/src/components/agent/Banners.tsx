@@ -2,7 +2,7 @@ import { For, Show, createSignal } from "solid-js";
 import { Icon } from "../Icon";
 import type { ActionView, Level } from "./types";
 import { percent } from "./util";
-import { warningParts } from "../../lib/agent-view";
+import { configFilesIn, warningParts } from "../../lib/agent-view";
 
 function Actions(props: { actions: ActionView[] }) {
   return (
@@ -112,14 +112,18 @@ function withCode(text: string) {
 }
 
 /** A warning from the agent in the feed: one quiet line, with the rest behind a chevron instead of a wall of text. */
-export function WarningNote(props: { title: string; description?: string }) {
+export function WarningNote(props: { title: string; description?: string; /** Copies a config path. Config files live outside the workspace, which Span cannot open, so this is the honest fallback. */ onCopyPath?: (path: string) => void }) {
   const [open, setOpen] = createSignal(false);
+  const [copied, setCopied] = createSignal<string>();
+  const files = () => (props.onCopyPath ? configFilesIn(props.title, props.description) : []);
+  const copy = (path: string) => { props.onCopyPath?.(path); setCopied(path); };
   const parts = () => warningParts(props.title, props.description);
   return (
     <div class="sb-warning-note" role="status">
       <Icon name="Warning2" size={12} class="sb-glyph warn" />
       <div class="sb-warning-body">
         <p class="sb-warning-line">{withCode(parts().summary)}</p>
+        <div style={{ display: "flex", "flex-wrap": "wrap", "align-items": "center", gap: "3px 12px" }}>
         <Show when={parts().detail}>
           {(detail) => (
             <>
@@ -133,6 +137,15 @@ export function WarningNote(props: { title: string; description?: string }) {
             </>
           )}
         </Show>
+        <For each={files()}>
+          {(path) => (
+            <button type="button" class="sb-warning-more sb-config-file" title={`Copy ${warningParts(path).summary}`} aria-label={`Copy path of ${path.split(/[\\/]/).pop()}`} onClick={() => copy(path)}>
+              <Icon name="DocumentText" size={10} />
+              {copied() === path ? "Copied" : "Copy path"}
+            </button>
+          )}
+        </For>
+        </div>
       </div>
     </div>
   );

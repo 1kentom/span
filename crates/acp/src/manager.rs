@@ -289,6 +289,8 @@ struct State {
     state_watchers: HashMap<u64, SessionStateSink>,
     /// The states last published per connection, to publish only changes.
     published: HashMap<String, SessionStates>,
+    /// When each connection's session states last changed.
+    activity: HashMap<String, std::time::Instant>,
 }
 
 impl State {
@@ -449,7 +451,7 @@ fn refuse(turns: Vec<Turn>, message: &str) {
     }
 }
 
-fn event_session(event: &AgentEvent) -> Option<String> {
+pub(crate) fn event_session(event: &AgentEvent) -> Option<String> {
     use AgentEvent::*;
     match event {
         Session { session_id }
@@ -518,10 +520,14 @@ impl SessionManager {
             }
             if gone {
                 state.published.remove(connection_id);
+                state.activity.remove(connection_id);
             } else {
                 state
                     .published
                     .insert(connection_id.to_owned(), current.clone());
+                state
+                    .activity
+                    .insert(connection_id.to_owned(), std::time::Instant::now());
             }
             let watchers: Vec<SessionStateSink> = state.state_watchers.values().cloned().collect();
             (current, watchers)
@@ -540,6 +546,13 @@ impl SessionManager {
     /// The runtime state of every session on one connection.
     pub fn session_states(&self, connection_id: &str) -> SessionStates {
         self.state().states(connection_id)
+    }
+
+    /// When the session states of `connection_id` last changed: a turn
+    /// started or ended, a request was raised or answered, a session was
+    /// added or removed. `None` when they never changed.
+    pub fn last_activity(&self, connection_id: &str) -> Option<std::time::Instant> {
+        self.state().activity.get(connection_id).copied()
     }
 
     /// The runtime state of one session.

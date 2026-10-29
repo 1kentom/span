@@ -4,6 +4,8 @@ import { Icon } from "../Icon";
 import type { AgentUpdate_Serialize as AgentUpdate } from "../../bindings";
 import type { AgentChoice } from "./types";
 import { UpdateBadge } from "./UpdateBadge";
+import { HealthDot } from "./HealthDot";
+import { findHealth, type AgentHealth } from "../../lib/agent-health";
 import { arrowFocus, useEscape } from "./util";
 
 export type PresetChoice = { id: string; name: string; description?: string };
@@ -21,6 +23,10 @@ type AgentPopoverProps = {
   busy?: boolean;
   /** False in the browser preview, which cannot start agents. */
   desktop?: boolean;
+  /** Health check results (ADR 0010). Unset while `agents.healthCheck` is off: no dots at all. */
+  health?: readonly AgentHealth[];
+  /** The clock for "4 min ago" in the dot tooltips. */
+  healthNow?: number;
   onSelect: (agentId: string) => void;
   onPreset?: (presetId: string) => void;
   onCheckUpdates: () => void;
@@ -63,6 +69,9 @@ export function AgentPopover(props: AgentPopoverProps) {
                 <Show when={agent.subtitle}><span class="sb-sub">{agent.subtitle}</span></Show>
                 <UpdateBadge update={props.updates?.find((update) => update.id === agent.id)} />
               </span>
+              <Show when={props.health}>
+                {(list) => <HealthDot health={findHealth(list(), agent.id, agent.name)} now={props.healthNow ?? Date.now()} />}
+              </Show>
               <Show when={agent.current}><span class="sb-ok-text">Connected</span></Show>
             </button>
           )}

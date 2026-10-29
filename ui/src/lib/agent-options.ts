@@ -42,3 +42,12 @@ export function isBooleanOption(option: ConfigOptionView): boolean {
   const values = option.choices.map((choice) => choice.value.toLowerCase());
   return values.some((value) => ON.includes(value)) && values.some((value) => OFF.includes(value));
 }
+
+/** Models to offer when the current one's provider refused the prompt: every other model, free ones first. */
+export function fallbackModels(options: readonly ConfigOptionView[]): { value: string; name: string }[] {
+  const model = options.find((option) => option.category === "model");
+  if (!model) return [];
+  const free = (choice: { value: string; name: string }) => /\bfree\b|[-/ ]free\b|pickle/i.test(`${choice.value} ${choice.name}`);
+  const others = model.choices.filter((choice) => choice.value !== model.currentValue).map((choice) => ({ value: choice.value, name: choice.name }));
+  return [...others.filter(free), ...others.filter((choice) => !free(choice))];
+}

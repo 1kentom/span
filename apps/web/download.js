@@ -1,6 +1,6 @@
 import { CustomSelect } from './custom-select.js';
 import { initializeNavigation } from './navigation.js';
-import { loadReleaseData, installersFor, platformLabels, channelLabels, formatDate, formatSize, detectDesktopPlatform } from './release-data.js';
+import { loadReleaseData, installersFor, downloadRelease, platformLabels, channelLabels, formatDate, formatSize, detectDesktopPlatform } from './release-data.js';
 
 initializeNavigation();
 const $ = id => document.getElementById(id);
@@ -66,10 +66,10 @@ const formatSelect = new CustomSelect($('format'), { label: 'Package format', va
   announce(`Package selected: ${formatSelect.valueNode.textContent}.`);
 } });
 function render() {
-  channelSelect.setOptions(['nightly', 'preview', 'stable'].map(value => ({ value, label: channelLabels[value], detail: state.releases.some(release => release.channel === value) ? 'Published builds' : 'Not published' })), state.channel);
+  channelSelect.setOptions(['nightly', 'preview', 'stable'].map(value => ({ value, label: channelLabels[value], detail: downloadRelease(state.releases, value) ? 'Published builds' : 'Not published' })), state.channel);
   $('release-loading').hidden = true;
   $('release-unavailable').hidden = state.releases.length > 0;
-  currentRelease = state.releases.find(release => release.channel === state.channel) || null;
+  currentRelease = downloadRelease(state.releases, state.channel);
   const contentVisible = !!currentRelease;
   $('download-content').hidden = !contentVisible;
   $('all-builds').hidden = !contentVisible;

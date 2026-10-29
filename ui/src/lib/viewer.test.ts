@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  HEX_PREVIEW_BYTES, TEXT_PREVIEW_BYTES, ZOOM_MAX, ZOOM_MIN, bytesToDataUrl, classifyFile, clampVolume, closeTab, decodeTextPreview, formatDuration, hexRows, isLikelyBinary, isPreviewTab,
-  jsonRows, lineEnding, mediaKeyAction, openTab, parseJson, pinTab, seekTarget, splitLines, stepZoom, supportedModes, type ViewerTabs,
+  FONT_READ_BYTES, HEX_PREVIEW_BYTES, MAX_IMAGE_BYTES, MAX_SVG_BYTES, MEDIA_MAX_BYTES, PLAYBACK_SPEEDS, TEXT_PREVIEW_BYTES, ZOOM_MAX, ZOOM_MIN, bytesToDataUrl, classifyFile, clampVolume, clampZoom, closeAllTabs, closeOtherTabs,
+  closeTab, closeTabsToRight, decodeTextPreview, fitPercent, formatDuration, hexRows, isLikelyBinary, isPreviewTab, jsonRows, lineEnding, mediaKeyAction, modeLabelFor, modeUsesIcons, openTab, parseJson, pinTab,
+  readLimit, removeFromTabs, seekTarget, splitLines, stepZoom, supportedModes, wheelZoom, type ViewerTabs,
 } from './viewer';
 
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -18,16 +19,46 @@ describe('classifyFile', () => {
     expect(classifyFile('main.rs').kind).toBe('text');
     expect(classifyFile('noext').kind).toBe('text');
   });
+  it('maps the new viewers: CSV and TSV, HTML, MDX and fonts', () => {
+    expect(classifyFile('a.csv').kind).toBe('csv');
+    expect(classifyFile('a.tsv').kind).toBe('csv');
+    expect(classifyFile('x', 'text/csv').kind).toBe('csv');
+    expect(classifyFile('a.html').kind).toBe('html');
+    expect(classifyFile('a.htm').kind).toBe('html');
+    expect(classifyFile('a.mdx').kind).toBe('mdx');
+    for (const name of ['a.ttf', 'a.otf', 'a.woff', 'a.woff2']) expect(classifyFile(name).kind).toBe('font');
+  });
   it('sends out-of-scope formats to the unsupported state, never to a fake preview', () => {
-    for (const name of ['a.pdf', 'a.docx', 'a.pptx', 'a.xlsx', 'a.csv', 'a.zip', 'a.tgz', 'a.woff2', 'a.html', 'a.mdx']) expect(classifyFile(name)).toMatchObject({ kind: 'unsupported', reason: 'not-yet' });
-    expect(classifyFile('a.psd')).toMatchObject({ kind: 'unsupported', reason: 'format' });
+    for (const name of ['a.pdf', 'a.docx', 'a.pptx', 'a.xlsx', 'a.zip', 'a.tgz']) expect(classifyFile(name)).toMatchObject({ kind: 'unsupported', reason: 'not-yet' });
+    expect(classifyFile('a.psd')).toMatchObject({ kind: 'unsupported', reason: 'format', label: 'Photoshop' });
     expect(classifyFile('a.heic', 'image/heic')).toMatchObject({ kind: 'unsupported', reason: 'format' });
+    expect(classifyFile('Agent panel.fig')).toMatchObject({ kind: 'unsupported', reason: 'format', label: 'Figma' });
   });
   it('offers modes only where a second representation exists', () => {
-    expect(supportedModes('svg')).toEqual(['preview', 'split', 'source']);
-    expect(supportedModes('markdown')).toEqual(['preview', 'split', 'source']);
+    for (const kind of ['svg', 'markdown', 'mdx', 'html'] as const) expect(supportedModes(kind)).toEqual(['preview', 'split', 'source']);
     expect(supportedModes('json')).toEqual(['preview', 'source']);
-    for (const kind of ['image', 'text', 'audio', 'video', 'unsupported'] as const) expect(supportedModes(kind)).toEqual([]);
+    expect(supportedModes('csv')).toEqual(['preview', 'source']);
+    for (const kind of ['image', 'text', 'audio', 'video', 'font', 'unsupported'] as const) expect(supportedModes(kind)).toEqual([]);
+  });
+  it('labels modes per kind', () => {
+    expect(modeLabelFor('json', 'preview')).toBe('Tree');
+    expect(modeLabelFor('json', 'source')).toBe('Raw');
+    expect(modeLabelFor('csv', 'preview')).toBe('Table');
+    expect(modeLabelFor('csv', 'source')).toBe('Raw');
+    expect(modeLabelFor('markdown', 'split')).toBe('Split');
+    expect(modeUsesIcons('markdown')).toBe(true);
+    expect(modeUsesIcons('json')).toBe(false);
+  });
+  it('reads only as many bytes as each viewer can use', () => {
+    expect(readLimit('a.png', '', 100)).toBe(100);
+    expect(readLimit('a.png', '', MAX_IMAGE_BYTES + 5)).toBe(0);
+    expect(readLimit('a.svg', '', 10 * 1024 * 1024)).toBe(MAX_SVG_BYTES + 1);
+    expect(readLimit('a.csv', '', 50 * 1024 * 1024)).toBe(TEXT_PREVIEW_BYTES + 4);
+    expect(readLimit('a.txt', '', 50)).toBe(50);
+    expect(readLimit('a.ttf', '', FONT_READ_BYTES + 10)).toBe(0);
+    expect(readLimit('a.mp4', '', MEDIA_MAX_BYTES + 1)).toBe(0);
+    expect(readLimit('a.pdf', '', 10 * 1024 * 1024)).toBe(HEX_PREVIEW_BYTES);
+    expect(readLimit('a.png', '', 10 * 1024 * 1024, true)).toBe(HEX_PREVIEW_BYTES);
   });
 });
 
@@ -39,6 +70,17 @@ describe('zoom', () => {
     expect(stepZoom(20, -1)).toBe(10);
     expect(stepZoom(790, 1)).toBe(800);
     expect(stepZoom(800, 1)).toBe(800);
+  });
+  it('clamps, fits and wheel-zooms within the range', () => {
+    expect(clampZoom(5)).toBe(10); expect(clampZoom(9000)).toBe(800); expect(clampZoom(123.4)).toBe(123);
+    expect(fitPercent(2000, 1000, 500, 500)).toBe(25);
+    expect(fitPercent(100, 50, 800, 600)).toBe(100);
+    expect(fitPercent(40000, 10, 400, 400)).toBe(10);
+    expect(fitPercent(0, 0, 400, 400)).toBe(100);
+    expect(wheelZoom(100, -100)).toBeGreaterThan(100);
+    expect(wheelZoom(100, 100)).toBeLessThan(100);
+    expect(wheelZoom(800, -1000)).toBe(800);
+    expect(wheelZoom(10, 1000)).toBe(10);
   });
 });
 
@@ -107,8 +149,12 @@ describe('media helpers', () => {
     expect(mediaKeyAction('ArrowLeft')).toEqual({ type: 'seek', delta: -10 });
     expect(mediaKeyAction('ArrowUp')).toEqual({ type: 'volume', delta: 0.1 });
     expect(mediaKeyAction('m')).toEqual({ type: 'mute' });
+    expect(mediaKeyAction('j')).toEqual({ type: 'seek', delta: -10 });
+    expect(mediaKeyAction('L')).toEqual({ type: 'seek', delta: 10 });
+    expect(mediaKeyAction('k')).toEqual({ type: 'toggle' });
     expect(mediaKeyAction('x')).toBeUndefined();
   });
+  it('offers the design speeds', () => { expect([...PLAYBACK_SPEEDS]).toEqual([0.75, 1, 1.5, 2]); });
   it('clamps seeking, volume and formats time', () => {
     expect(seekTarget(5, -10, 60)).toBe(0);
     expect(seekTarget(55, 10, 60)).toBe(60);
@@ -161,5 +207,18 @@ describe('tab model', () => {
     state = closeTab(state, 'a');
     expect(state).toEqual({ tabs: [], active: null });
     expect(closeTab({ tabs: [{ id: 'a', pinned: true }], active: 'a' }, 'zzz').active).toBe('a');
+  });
+  const three: ViewerTabs = { tabs: [{ id: 'a', pinned: true }, { id: 'b', pinned: false }, { id: 'c', pinned: true }], active: 'c' };
+  it('closes others, to the right and all', () => {
+    expect(closeOtherTabs(three, 'b')).toEqual({ tabs: [{ id: 'b', pinned: false }], active: 'b' });
+    expect(closeTabsToRight(three, 'a')).toEqual({ tabs: [{ id: 'a', pinned: true }], active: 'a' });
+    expect(closeTabsToRight({ ...three, active: 'a' }, 'b')).toEqual({ tabs: three.tabs.slice(0, 2), active: 'a' });
+    expect(closeTabsToRight(three, 'c')).toBe(three);
+    expect(closeAllTabs()).toEqual({ tabs: [], active: null });
+    expect(closeOtherTabs(three, 'missing')).toBe(three);
+  });
+  it('drops tabs of uploads that no longer exist', () => {
+    expect(removeFromTabs(three, new Set(['a', 'b']))).toEqual({ tabs: three.tabs.slice(0, 2), active: 'b' });
+    expect(removeFromTabs(three, new Set(['a', 'b', 'c']))).toBe(three);
   });
 });

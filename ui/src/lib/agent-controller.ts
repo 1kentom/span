@@ -1,11 +1,14 @@
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
-import { createAttachmentIntake } from "../components/attachments";
+import type { AgentCommand, AgentEvent, ConfigOption, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
+import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop } from "./client";
-import { childPermissions, isFinished, type ChildPermission } from "./agent-delegation";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
+import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
+import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
+import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
+import { liveAgentsOf, type LiveState } from "./live-agents";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
-import { attentionSessions, busyState, chatKey, createChatStore, isBusyPromptError, newAttention, reduceBackground, rowStatus, toBackground, withConversation, type ChatSnapshot } from "./agent-chats";
+import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { RUN_TEXT } from "./agent-hint-text";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
 
@@ -26,10 +29,14 @@ import {
 } from "./agent-session";
 
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
-import { bytesToBase64, planAttachment, type Attachment } from "./attachments";
+import { bytesToBase64, createFileAttachment, createFolderAttachment, folderOutline, isInWorkspace, needsStoredLink, planAttachment, redactPaths, type Attachment, type PromptCapabilities } from "./attachments";
+import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
+import { feedTurns } from "./agent-handoff";
 import { moveItem } from "./agent-queue";
-import { readLastSession, writeLastSession } from "./last-session";
+import { noteAgentUsed, readLastSession, readRecentAgents, writeLastSession } from "./last-session";
+import { chooseRestores, readLastConfig, writeLastConfig, type SavedConfig } from "./last-config";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
+import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
 const DELEGATION_POLL_MS = 3000;
 const NO_STATES: SessionStates = { connectionId: null, sessions: [] };
@@ -46,13 +53,30 @@ export type AgentPanelProps = {
   /** Opens a workspace file in the editor, at `line` (1-based) when given. */
   onOpenFile?: (path: string, line?: number) => void;
   onOpenExternal?: (url: string) => void;
+  /** The merged `agents.delegation.enabled`. Unset means the default, which is on. */
+  delegationEnabled?: boolean;
+  /** Writes `agents.delegation.enabled` to the user settings file. Without it the switch is read-only. */
+  onDelegationChange?: (enabled: boolean) => void;
+  /** The merged `agents.healthCheck` (ADR 0010). Unset means the default, which is on; off hides every health dot. */
+  healthCheck?: boolean;
   /** Called after the panel writes a file into the workspace, so the explorer can refresh. */
   onFilesChanged?: () => void;
   onProposalsChange?: (proposals: EditProposal[]) => void;
   onReviewBusyChange?: (busy: boolean) => void;
   onReviewInEditor?: (path: string, line?: number) => void;
   onReviewReady?: (review: (proposalId: string, acceptedHunkIds: string[]) => Promise<void>) => void;
+  /** Opens an attachment as a workbench viewer tab. Without it attachments open in the panel's modal viewer. */
+  onOpenAttachment?: (view: AttachmentTabView) => void;
+  /** The uploads store (ADR 0006). With it, sent attachments are recorded and link fallbacks point at stored copies. */
+  uploads?: UploadRecorder;
+  /** Reads a PDF's page count for its tile. Without it the count is left out. */
+  countPdfPages?: (bytes: Uint8Array) => Promise<number | undefined>;
+  /** Asks the user for a folder, starting in `defaultPath`. Resolves the absolute path, or null when cancelled. */
+  pickFolder?: (defaultPath?: string) => Promise<string | null>;
 };
+
+/** Shown when a path from an agent or a message points outside the open workspace. */
+export const OUTSIDE_WORKSPACE = "Outside this workspace, so it cannot be opened here";
 
 export type View = "session" | "history" | "connect" | "logs";
 /** The one open composer or header popover. A single value, so opening one closes any other. */
@@ -66,7 +90,12 @@ type Connecting = { name: string; command: string; logBase: number; failed: bool
  * An agent switch in the open chat. `text` is the carried context, sent once ahead of the first prompt of the session
  * named by `sessionId`; `sessionId` is set when the new session is ready.
  */
-type Handoff = { from: string; to: string; text?: string; sessionId?: string };
+type Handoff = { from: string; to: string; text?: string; sessionId?: string; /** Shown on the context card instead of the switch note. */ note?: string; /** The session the chat leaves, linked from the new one so History shows one thread. */ link?: { agentId: string; sessionId: string; name: string; title?: string } };
+/**
+ * A user message picked with Edit or Restore. Edit puts its text in the composer (the previous draft is kept in
+ * `draft`) and the next send starts a new session from there; both show the files changed since that message.
+ */
+export type Rewind = { itemId: number; sessionId?: string; mode: "edit" | "restore"; draft: string };
 
 export const ATTACH_UNAVAILABLE = "Attachments need the span desktop app, which sends them to a connected agent.";
 export const NATIVE_UNAVAILABLE = "Browser preview cannot write to or open workspace files.";
@@ -109,6 +138,12 @@ export function createAgentController(props: AgentPanelProps) {
   const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
   const [sessionsBusy, setSessionsBusy] = createSignal(false);
   const [sessionsError, setSessionsError] = createSignal("");
+  /** Span's stored metadata for the workspace's sessions (ADR 0005). Empty when none is stored or it cannot be read. */
+  const [sessionMeta, setSessionMeta] = createSignal<SessionMeta[]>([]);
+  /** Delegated child session id to its lead session id, so a child's model is recorded on the lead as a subagent. */
+  const delegatedChildren = new Map<string, string>();
+  /** Accepted edit totals per session in this run, added to what the store had when counting began. */
+  const changeTotals = new Map<string, { paths: Set<string>; add: number; del: number; base: { files: number; add: number; del: number } }>();
   const [queue, setQueue] = createSignal<Queued[]>([]);
   /**
    * True when the queue must not drain on its own: the last turn ended with an error, the connection dropped, or a
@@ -124,6 +159,8 @@ export function createAgentController(props: AgentPanelProps) {
   const [following, setFollowing] = createSignal(false);
   /** Name of the file the UI just opened for the user. `equals: false` restarts the toast for the same name. */
   const [toast, setToast] = createSignal<string | undefined>(undefined, { equals: false });
+  /** A click that could not open its path (outside the workspace), with the reason. Cleared by the note. */
+  const [openRefusal, setOpenRefusal] = createSignal<{ path: string; reason: string } | undefined>(undefined, { equals: false });
   const [turnStart, setTurnStart] = createSignal(0);
   const [clock, setClock] = createSignal(Date.now());
   const [form, setForm] = createSignal<{ requestId: string; index: number; values: Record<string, string | number | boolean>; error?: string }>();
@@ -159,6 +196,18 @@ export function createAgentController(props: AgentPanelProps) {
   let steering: Steering | undefined;
   /** The agent switch waiting for its new session or for its first prompt. Cleared once the context is sent. */
   let handoff: Handoff | undefined;
+  /**
+   * The turn the provider refused for a missing sign-in, in the session it was sent to. Only this turn can be sent
+   * again with another model; it is forgotten on any new prompt, chat switch, resume or connection.
+   */
+  const [refused, setRefused] = createSignal<{ sessionId: string; entry: Queued; itemId: number }>();
+  /** Session ids a prompt has gone out to, so a late options restore never races the user's own turn. */
+  const prompted = new Set<string>();
+  /** Bumped by every option change the user makes, so a restore running meanwhile stops instead of overwriting it. */
+  let configEdits = 0;
+  /** The options restore in flight. A send waits for it, and a user change goes out after it. */
+  const [restoring, setRestoring] = createSignal<Promise<void>>();
+  const [rewindPick, setRewind] = createSignal<Rewind>();
   /** Counts dispatched turns, so a steer can tell its own turn from a later one. */
   let turnCounter = 0;
   const followed = new Set<string>();
@@ -172,6 +221,7 @@ export function createAgentController(props: AgentPanelProps) {
   let installedMutationGeneration = 0;
   let unsubscribe: (() => void) | undefined;
   let unsubscribeStates: (() => void) | undefined;
+  let unsubscribeHealth: (() => void) | undefined;
   let input: HTMLTextAreaElement | undefined;
 
   const selectionKey = createMemo(() => `${props.selectionContext?.path}:${props.selectionContext?.text}`);
@@ -179,7 +229,11 @@ export function createAgentController(props: AgentPanelProps) {
   /** Name shown for the connected agent in sentences. */
   const agentLabel = () => state().agent?.title || state().agent?.name || agentName();
   const connected = createMemo(() => Boolean(sessionId()) && !["disconnected", "error", "unavailable", "connecting"].includes(state().status));
-  const caps = createMemo(() => promptCapabilities(state().agent?.features));
+  /** The agent's prompt capabilities, plus Span's own `storeLinks` when the uploads store can hold link fallbacks. */
+  const caps = createMemo<PromptCapabilities | undefined>(() => {
+    const base = promptCapabilities(state().agent?.features);
+    return base && props.uploads ? { ...base, storeLinks: true } : base;
+  });
   /** Attachments the connected agent cannot take, with the reason. Unknown capabilities block nothing. */
   const blocked = createMemo(() => {
     const capabilities = caps();
@@ -190,9 +244,33 @@ export function createAgentController(props: AgentPanelProps) {
       return plan.mode === "audio" ? [{ item, reason: "Span cannot send audio to agents yet." }] : [];
     });
   });
-  const canSend = createMemo(() => connected() && !working() && !pendingAction() && Boolean(prompt().trim() || attachments().length) && blocked().length === 0);
   const proposals = createMemo<EditProposal[]>(() => unresolvedProposals(feed()), [], {
     equals: (previous, next) => previous.length === next.length && previous.every((proposal, index) => proposal === next[index]),
+  });
+  /** The picked message, only while it is still a user message of the open chat. */
+  const rewind = createMemo(() => {
+    const chosen = rewindPick();
+    return chosen && chosen.sessionId === sessionId() && feed().some((item) => item.id === chosen.itemId && item.kind === "user") ? chosen : undefined;
+  });
+  const rewindFiles = createMemo(() => {
+    const chosen = rewind();
+    return chosen ? changesAfter(feed(), chosen.itemId, props.workspacePath) : [];
+  });
+  /** Why edit, resend or fork cannot start a new session right now. Pending proposals belong to this session. */
+  const branchBlock = createMemo(() => {
+    if (!connected()) return "Connect an agent first.";
+    if (running()) return "Wait for the agent to finish this turn.";
+    const pending = proposals().length;
+    if (pending) return `${pending === 1 ? "1 edit waits" : `${pending} edits wait`} for review. Accept or reject ${pending === 1 ? "it" : "them"} before starting a new session.`;
+    return undefined;
+  });
+  const canSend = createMemo(
+    () => connected() && !working() && !pendingAction() && !restoring() && Boolean(prompt().trim() || attachments().length) && blocked().length === 0 && !(rewind()?.mode === "edit" && branchBlock()),
+  );
+  /** The sign-in card may offer another model: the open session's own prompt was refused. */
+  const canRetryModel = createMemo(() => {
+    const turn = refused();
+    return Boolean(turn && state().auth && turn.sessionId === state().sessionId);
   });
   const permission = createMemo(() => openPermission(feed()));
   /** Open permission requests from delegated children, oldest first. */
@@ -221,6 +299,7 @@ export function createAgentController(props: AgentPanelProps) {
     onPending: (placeholders) => setAttachments((previous) => [...previous, ...placeholders]),
     onSettled: (ids) => setAttachments((previous) => previous.filter((item) => !ids.includes(item.id))),
     unavailable: () => (isDesktop ? undefined : ATTACH_UNAVAILABLE),
+    countPages: (bytes) => props.countPdfPages?.(bytes) ?? Promise.resolve(undefined),
   });
 
   createEffect(on(proposals, (list) => props.onProposalsChange?.(list)));
@@ -233,6 +312,18 @@ export function createAgentController(props: AgentPanelProps) {
     const agent = agentId();
     const id = sessionId();
     if (workspace && agent && id && !restoringLast) writeLastSession(workspace, { agentId: agent, sessionId: id });
+  });
+  /** The brand new session whose agent should get the user's remembered options once they arrive. Never a resumed chat. */
+  const [freshSession, setFreshSession] = createSignal<{ id: string; saved?: SavedConfig }>();
+  /** `saved` replaces the agent's remembered options, for a session that continues another one (edit, resend, fork). */
+  const markFresh = (id: string | undefined, saved?: SavedConfig) => setFreshSession(id ? { id, saved } : undefined);
+  createEffect(() => {
+    const id = sessionId();
+    const options = state().config;
+    const fresh = freshSession();
+    if (!id || id !== fresh?.id || !options.length) return;
+    setFreshSession(undefined);
+    void restoreConfig(id, options, fresh.saved);
   });
   createEffect(on(sessionId, (id) => {
     setBannerDismissed(false);
@@ -313,6 +404,7 @@ export function createAgentController(props: AgentPanelProps) {
           // A different workspace: messages composed for the old one are dropped, not carried over.
           steering = undefined;
           handoff = undefined;
+          setRefused(undefined);
           setQueue([]);
           setQueueHeld(false);
           forgetChats();
@@ -372,6 +464,21 @@ export function createAgentController(props: AgentPanelProps) {
     // Follow mode reveals the lead session's own work only. Delegated children run in other sessions.
     if (event.kind === "tool" && following() && session && event.sessionId === session) followTool(event);
     if (event.kind === "delegation" && (event.event.kind === "taskFinished" || event.event.kind === "delegated")) void refreshDelegation();
+    if (event.kind === "delegation" && event.event.kind === "delegated") {
+      const lead = delegationMetaPatch(agentId(), event.event.lead.sessionId, event.event.agentName);
+      if (lead) void recordSessionMeta(lead);
+      delegatedChildren.set(event.event.child.sessionId, event.event.lead.sessionId);
+      if (delegatedChildren.size > 200) delegatedChildren.delete(delegatedChildren.keys().next().value!);
+    }
+    if (event.kind === "config" && delegatedChildren.has(event.sessionId)) {
+      const child = subagentModelPatch(agentId(), delegatedChildren.get(event.sessionId)!, event.options);
+      if (child) void recordSessionMeta(child);
+    }
+    if (event.kind === "complete" && session && event.sessionId === session) {
+      const agent = agentId();
+      // Zero counters mean "no changes" only while every change in the feed went through review (ADR 0005).
+      if (agent) void recordSessionMeta({ agentId: agent, sessionId: session, stopReasonLast: event.stopReason, changesTracked: !hasUntrackedEdits(state().feed, props.workspacePath) });
+    }
     if (event.kind === "complete" && (!session || event.sessionId === session)) queueMicrotask(() => (flushSteer(), drainQueue()));
     if (event.kind === "error" || (event.kind === "status" && ["error", "disconnected"].includes(event.state))) {
       // The turn ended abnormally: nothing queued or steered may go out on its own.
@@ -475,7 +582,11 @@ export function createAgentController(props: AgentPanelProps) {
           else unsubscribeStates = cleanup;
         })
         .catch(() => undefined);
-      void loadAgents().then(restoreLastSession);
+      void loadAgents().then(() => {
+        warmStart();
+        startHealth();
+        return restoreLastSession();
+      });
     }
     const goOnline = () => {
       setOnline(true);
@@ -493,6 +604,7 @@ export function createAgentController(props: AgentPanelProps) {
     disposed = true;
     unsubscribe?.();
     unsubscribeStates?.();
+    unsubscribeHealth?.();
   });
 
   const guard = (epoch: number) => () => !disposed && epoch === agentEpoch;
@@ -529,6 +641,49 @@ export function createAgentController(props: AgentPanelProps) {
     else fail({ phase: "connect", message: `Could not load the ACP registry: ${errorText(remote.reason)}` });
     setRegistryBusy(false);
   }
+  /**
+   * Warm start (ADR 0009): once the panel has painted, ask the backend to start installed agents in the background, most
+   * recently used first, so a delegation or a switch does not wait. Quiet: a failed start never shows an error here.
+   */
+  function warmStart() {
+    if (!isDesktop || disposed || !props.workspacePath || !api.agentWarmStart) return;
+    const recent = readRecentAgents();
+    const run = () => {
+      if (!disposed) void api.agentWarmStart?.(recent).catch(() => undefined);
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 0);
+  }
+  /**
+   * Agent health check (ADR 0010): once the panel has painted, read the latest results, which also starts the backend's
+   * periodic checks, and follow every change. Quiet: a failure leaves the dots grey.
+   */
+  function startHealth() {
+    if (!isDesktop || disposed || !api.agentHealth) return;
+    const run = () => {
+      if (!disposed && props.healthCheck !== false) void api.agentHealth?.().then(setAgentHealth).catch(() => undefined);
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 0);
+    void api
+      .onAgentHealth?.(setAgentHealth)
+      .then((cleanup) => {
+        if (disposed) cleanup();
+        else unsubscribeHealth = cleanup;
+      })
+      .catch(() => undefined);
+  }
+  // Turned back on in Settings: show the current results again (the backend checks only while it is on).
+  createEffect(
+    on(
+      () => props.healthCheck !== false,
+      (enabled, before) => {
+        if (enabled && before === false && isDesktop) void api.agentHealth?.().then(setAgentHealth).catch(() => undefined);
+      },
+    ),
+  );
+  /** Health results to show: none while `agents.healthCheck` is off. */
+  const health = createMemo(() => (props.healthCheck === false ? [] : agentHealthResults()));
   /** On app open: reconnect the agent that had the last chat in this workspace and resume that chat when the agent can. */
   async function restoreLastSession() {
     const workspace = props.workspacePath;
@@ -537,8 +692,10 @@ export function createAgentController(props: AgentPanelProps) {
     const entry = last && installed().find((agent) => agent.id === last.agentId);
     if (!last || !entry) return;
     restoringLast = true;
+    let freshAtRestore: string | undefined;
     try {
       await connect(entry.launch, registryName(entry.id) || entry.id, entry.id);
+      freshAtRestore = sessionId();
       if (disposed || !sessionId() || sessionId() === last.sessionId || !state().canLoad) return;
       // Only a chat the agent still lists is resumed, and a failed resume is dropped quietly: the saved id is just stale.
       if (state().canList) {
@@ -549,6 +706,8 @@ export function createAgentController(props: AgentPanelProps) {
       if (sessionId() !== last.sessionId) patch({ failure: undefined });
     } finally {
       restoringLast = false;
+      // The chat that was open could not be reopened, so the session left is a new one and gets its options back.
+      if (freshAtRestore && sessionId() === freshAtRestore) markFresh(freshAtRestore);
       const id = sessionId();
       const agent = agentId();
       if (id && agent) writeLastSession(workspace, { agentId: agent, sessionId: id });
@@ -569,7 +728,11 @@ export function createAgentController(props: AgentPanelProps) {
     const cwd = props.workspacePath;
     const hadSession = Boolean(sessionId());
     const carry = Boolean(options.switching && state().feed.length && (id !== agentId() || name !== agentName()));
-    handoff = carry ? { from: agentLabel(), to: name, text: buildHandoff(state().feed, { from: agentLabel(), root: cwd }) } : undefined;
+    const leaving = sessionId();
+    const leavingAgent = agentId();
+    const link = carry && leaving && leavingAgent ? { agentId: leavingAgent, sessionId: leaving, name: agentLabel(), title: currentTitle() } : undefined;
+    handoff = carry ? { from: agentLabel(), to: name, text: buildHandoff(state().feed, { from: agentLabel(), root: cwd }), link } : undefined;
+    setRefused(undefined);
     batch(() => {
       setWorking(true);
       setMenu(null);
@@ -577,6 +740,7 @@ export function createAgentController(props: AgentPanelProps) {
       setAgentName(name);
       setAgentId(id);
       setLaunch({ command, name, id });
+      if (id) noteAgentUsed(id);
       setConnecting({ name, command: [command.command, ...(command.args ?? [])].join(" "), logBase: state().logCount, failed: false });
       update((previous) => ({
         ...resetConversation(previous),
@@ -604,6 +768,7 @@ export function createAgentController(props: AgentPanelProps) {
       const id = await api.agentConnect(command, cwd);
       if (!current()) return;
       if (id) {
+        if (!restoringLast) markFresh(id);
         patch({ sessionId: id, status: "ready", statusMessage: "Connected and ready" });
         finishHandoff(id);
         setConnecting(undefined);
@@ -631,6 +796,7 @@ export function createAgentController(props: AgentPanelProps) {
     const pending = handoff;
     if (!pending || pending.sessionId) return;
     update((previous) => addFeedItem(previous, { kind: "handoff", from: pending.from, to: pending.to, carried: Boolean(pending.text) }));
+    if (pending.link) linkThread(id, pending.link);
     handoff = pending.text ? { ...pending, sessionId: id } : undefined;
   }
   const connectInstalled = (id: string) => {
@@ -750,6 +916,7 @@ export function createAgentController(props: AgentPanelProps) {
       await api.agentDisconnect();
       if (!current()) return;
       handoff = undefined;
+      setRefused(undefined);
       update((previous) => addFeedItem({ ...previous, sessionId: undefined, auth: undefined, running: false, status: "disconnected", statusMessage: "No agent connected" }, { kind: "note", text: "Agent disconnected" }));
       setConnecting(undefined);
       forgetChats();
@@ -766,11 +933,44 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       const id = await api.agentAuthenticate(methodId);
       if (!current()) return;
+      markFresh(id);
       patch({ sessionId: id, auth: undefined, status: "ready", statusMessage: "Connected and ready" });
       finishHandoff(id);
       focusPrompt();
     } catch (cause) {
       if (current()) fail({ phase: "auth", message: errorText(cause) });
+    } finally {
+      if (current()) setPendingAction("");
+    }
+  }
+
+  /**
+   * The provider behind the current model refused the prompt. Switch the same session to another model and send the
+   * refused turn again (its text, attachments and carried context), so one click recovers without a reconnect. Only the
+   * turn this session refused is sent: a sign-in card from anything else (a failed resume) offers no resend.
+   */
+  async function retryWithModel(value: string) {
+    const current = guard(agentEpoch);
+    const option = state().config.find((candidate) => candidate.category === "model");
+    const turn = refused();
+    const id = state().sessionId;
+    if (!option || !id || !turn || turn.sessionId !== id || running()) return;
+    setPendingAction("auth");
+    configEdits += 1;
+    try {
+      await api.agentSetConfig(option.id, value);
+      const agent = agentId();
+      if (agent) writeLastConfig(agent, option.id, value);
+      if (!current() || refused() !== turn || state().sessionId !== id) return;
+      setRefused(undefined);
+      const { entry } = turn;
+      // The refused bubble is replaced by the resent one, and the composer no longer holds the same text to send twice.
+      update((previous) => ({ ...previous, auth: undefined, failure: undefined, status: "ready", statusMessage: "Connected and ready", feed: previous.feed.filter((item) => item.id !== turn.itemId) }));
+      if (prompt() === entry.text) setPrompt("");
+      if (entry.items.length && attachments().length === entry.items.length && attachments().every((item, index) => item.id === entry.items[index].id)) setAttachments([]);
+      void dispatch(entry);
+    } catch (cause) {
+      if (current()) fail({ phase: "session", message: `Could not change the model: ${errorText(cause)}` });
     } finally {
       if (current()) setPendingAction("");
     }
@@ -787,6 +987,7 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       const id = await agentAuthenticateWith(methodId, secret);
       if (!current()) return;
+      markFresh(id);
       patch({ sessionId: id, auth: undefined, status: "ready", statusMessage: "Connected and ready" });
       finishHandoff(id);
       focusPrompt();
@@ -809,6 +1010,9 @@ export function createAgentController(props: AgentPanelProps) {
     if (steering && !options.steered) releaseSteer();
     const turn = ++turnCounter;
     setBusyNotice(false);
+    setRefused(undefined);
+    const promptSession = state().sessionId;
+    if (promptSession) prompted.add(promptSession);
     // The first prompt after an agent switch carries the context, exactly once. Slash commands go out unchanged.
     const carried = handoff?.text && handoff.sessionId && handoff.sessionId === state().sessionId && !entry.message.trimStart().startsWith("/") ? handoff : undefined;
     if (carried) handoff = undefined;
@@ -822,17 +1026,21 @@ export function createAgentController(props: AgentPanelProps) {
           attachments: entry.items.length ? entry.items : undefined,
           ...(options.steered ? { steered: true } : {}),
           ...(options.sentNow ? { sentNow: true } : {}),
-          ...(carried ? { context: carried.text } : {}),
+          ...(carried ? { context: carried.text, ...(carried.note ? { contextNote: carried.note } : {}) } : {}),
         },
       ),
     );
     const itemId = state().nextId;
+    // Captured now: the turn runs with this model, and the user may switch chats before it ends.
+    const turnMeta = turnMetaPatch({ agentId: agentId(), sessionId: state().sessionId, connectionName: agentLabel(), config: state().config });
     setTurnStart(Date.now());
     setView("session");
     followLatest();
     promptsInFlight += 1;
     try {
       await api.agentPrompt(message, entry.attachments);
+      if (turnMeta) void recordSessionMeta(turnMeta);
+      void recordSent(entry.items, { sessionId: promptSession ?? null, agentId: agentId() ?? null, messageId: String(itemId) });
     } catch (cause) {
       if (!current()) return;
       if (isBusyPromptError(cause)) {
@@ -860,6 +1068,12 @@ export function createAgentController(props: AgentPanelProps) {
         ...(previous.sessionId ? { status: "ready", statusMessage: "Prompt failed" } : {}),
       }));
       holdQueue();
+      if (state().auth && promptSession && promptSession === state().sessionId) {
+        // Refused for a missing sign-in: nothing reached the agent, so the carried context waits for the resend and the
+        // card may send this exact turn again with another model.
+        if (carried && !handoff) handoff = carried;
+        if (turn === turnCounter) setRefused({ sessionId: promptSession, entry, itemId });
+      }
       if (steering?.turn === turn) {
         // This turn was being steered: the user wants the steer, not this turn's text, back.
         releaseSteer();
@@ -891,9 +1105,15 @@ export function createAgentController(props: AgentPanelProps) {
     const capabilities = caps();
     if (!canSend() || !capabilities) return;
     const text = prompt().trim();
-    const items = attachments();
     setWorking(true);
     try {
+      const stored = await storeLinkTargets(attachments(), capabilities);
+      if (!current()) return;
+      if (stored.failed.length) {
+        intake.reject(stored.failed);
+        return;
+      }
+      const items = stored.items;
       const built = buildPrompt(await compose(text, selection()), items, capabilities, props.workspacePath);
       if (!current()) return;
       if (built.blocked.length) {
@@ -905,6 +1125,11 @@ export function createAgentController(props: AgentPanelProps) {
       setPrompt("");
       setAttachments([]);
       const entry: Queued = { id: `q-${++queueCounter}`, text, message: built.text, attachments: built.attachments, items };
+      const editing = rewind();
+      if (editing?.mode === "edit") {
+        void branchFrom(editing.itemId, "edit", entry);
+        return;
+      }
       if (running()) setBusyNotice(false);
       if (mode === "steer" && running() && online()) void startSteer(entry);
       // A steer waiting for its cancel to resolve goes first, so anything sent meanwhile queues behind it.
@@ -1024,32 +1249,250 @@ export function createAgentController(props: AgentPanelProps) {
     }
   }
 
+  /**
+   * Applies the options this agent had last time (or `saved`, the options of the session this one continues) to its
+   * new session. Silent: the UI shows what the agent reports. Sending waits until it settles.
+   */
+  function restoreConfig(id: string, options: ConfigOption[], saved?: SavedConfig): Promise<void> {
+    const agent = agentId();
+    const values = saved ?? (agent ? readLastConfig(agent) : undefined);
+    const restores = values ? chooseRestores(options, values) : [];
+    if (!restores.length) return Promise.resolve();
+    const current = guard(agentEpoch);
+    const edits = configEdits;
+    const run = (async () => {
+      for (const [configId, value] of restores) {
+        // A prompt to this session, or a change the user made meanwhile, wins over the remembered value.
+        if (!current() || sessionId() !== id || running() || prompted.has(id) || configEdits !== edits) return;
+        try {
+          await api.agentSetConfig(configId, value);
+        } catch {
+          /* the agent may refuse, and the picker shows what it reports */
+        }
+      }
+    })();
+    const settled = run.finally(() => {
+      if (restoring() === settled) setRestoring(undefined);
+    });
+    setRestoring(settled);
+    return settled;
+  }
   async function setConfig(configId: string, value: string) {
     const current = guard(agentEpoch);
     const option = state().config.find((candidate) => candidate.id === configId);
     if (!option || value === option.currentValue) return;
+    configEdits += 1;
     setPendingAction(`config:${configId}`);
     try {
+      // A restore value still in flight lands first, so this choice is the one that stays.
+      await restoring();
       await api.agentSetConfig(configId, value);
+      const agent = agentId();
+      if (agent) writeLastConfig(agent, configId, value);
     } catch (cause) {
       if (current()) fail({ phase: "session", message: `Could not change ${option.name}: ${errorText(cause)}` });
     } finally {
       if (current()) setPendingAction("");
     }
   }
+  /** History scope: this workspace (the agent lists sessions of the folder) or every folder the agent knows. */
+  const [sessionScope, setSessionScopeSignal] = createSignal<"workspace" | "all">("workspace");
+  const setSessionScope = (scope: "workspace" | "all") => {
+    if (scope === sessionScope()) return;
+    setSessionScopeSignal(scope);
+    void loadSessions();
+  };
   async function loadSessions() {
     if (!state().canList || sessionsBusy()) return;
     const current = guard(agentEpoch);
     setSessionsBusy(true);
     setSessionsError("");
+    void loadSessionMeta();
     try {
-      const found = await api.agentListSessions();
+      const found = sessionScope() === "all" ? await api.agentListAllSessions() : await api.agentListSessions();
       if (current()) setSessions(found);
     } catch (cause) {
       if (current()) setSessionsError(errorText(cause));
     } finally {
       if (current()) setSessionsBusy(false);
     }
+  }
+  /** Metadata only adds chips and titles to History rows, so a failed read leaves the rows as the agent lists them. */
+  async function loadSessionMeta() {
+    const current = guard(agentEpoch);
+    try {
+      const found = await sessionMetaList();
+      if (current()) setSessionMeta(found);
+    } catch {
+      if (current()) setSessionMeta([]);
+    }
+  }
+  /**
+   * Writes what Span observed about a session to the metadata store (ADR 0005) and keeps the History rows in step.
+   * The store is a convenience: a failed write (no folder open, browser preview) never disturbs the chat.
+   */
+  async function recordSessionMeta(patch: SessionMetaPatch) {
+    if (!isDesktop) return;
+    const current = guard(agentEpoch);
+    try {
+      const saved = await sessionMetaUpdate(patch);
+      if (current()) setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
+    } catch {
+      // Nothing to show: History falls back to what the agent lists.
+    }
+  }
+  /** Stored metadata for one of the connected agent's sessions. Sessions are keyed by agent and id (ADR 0005). */
+  const sessionMetaOf = (sessionId: string) => {
+    const agent = agentId();
+    return agent ? sessionMeta().find((entry) => entry.agentId === agent && entry.sessionId === sessionId) : undefined;
+  };
+  /** Every stored segment of the chat thread that holds one of the connected agent's sessions (ADR 0005, thread links). */
+  const threadFor = (sessionId: string) => threadOf(sessionMeta(), agentId(), sessionId);
+  /** The lead's state in the Live agents strip, from its turn and the requests that wait for the user. */
+  const leadState = (): LiveState => (permission() || elicitation() ? "Waiting for you" : running() ? "Working" : connecting() ? "Starting" : "Idle");
+  /**
+   * Every agent involved in the open chat: the lead, the agents it delegated to and the agents of earlier segments of
+   * this thread. The strip shows only when there is more than one.
+   */
+  const liveAgents = createMemo(() => {
+    const current = state().sessionId;
+    if (!connected() || !current) return [];
+    const id = agentId();
+    const earlier = threadFor(current)
+      .segments.filter((segment) => !(segment.sessionId === current && (!id || segment.agentId === id)))
+      .map((segment) => ({ id: segment.agentId, name: segment.connectionName || registryName(segment.agentId) || segment.agentId }));
+    return liveAgentsOf({
+      lead: { id, name: (id && registryName(id)) || agentLabel(), state: leadState() },
+      tasks: state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])),
+      waiting: (task) => childPermissionList().some((entry) => permissionWaitsOn(entry, task)),
+      earlier,
+      health: health(),
+      resolve: (name) => {
+        const entry = installed().find((agent) => agent.id.toLowerCase() === name.toLowerCase());
+        return entry ? { id: entry.id, name: registryName(entry.id) || entry.id } : undefined;
+      },
+    });
+  });
+  /** The open chat's title: the thread's user title, else the title it had when it switched agent, else the agent's. */
+  const currentTitle = () => {
+    const id = sessionId();
+    return (id ? threadRowMeta(threadFor(id)).title : undefined) ?? listedTitle(state().sessionTitle) ?? (id ? listedTitle(sessions().find((entry) => entry.sessionId === id)?.title) : undefined);
+  };
+  const keepSaved = (saved: SessionMeta) => setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
+  /** The store keys a thread action writes: every stored segment, and the row's own session first (it may have no metadata yet). */
+  function threadKeys(id: string): { agentId: string; sessionId: string }[] {
+    const agent = agentId();
+    const keys = agent ? [{ agentId: agent, sessionId: id }] : [];
+    for (const segment of threadFor(id).segments) if (!keys.some((entry) => entry.agentId === segment.agentId && entry.sessionId === segment.sessionId) && segment.sessionId !== id) keys.push({ agentId: segment.agentId, sessionId: segment.sessionId });
+    return keys;
+  }
+  /**
+   * Links the session a switch started to the one it left, so History shows one row for the chat with every provider.
+   * The earlier segment is recorded too, so its provider shows even when it never finished a turn.
+   */
+  function linkThread(id: string, link: NonNullable<Handoff["link"]>) {
+    const agent = agentId();
+    if (!agent || (agent === link.agentId && id === link.sessionId)) return;
+    void recordSessionMeta({ agentId: link.agentId, sessionId: link.sessionId, connectionName: link.name });
+    void recordSessionMeta({ agentId: agent, sessionId: id, connectionName: agentLabel(), continues: { agentId: link.agentId, sessionId: link.sessionId, title: link.title ?? null } });
+  }
+  /** Renaming stores a title in Span's metadata, which needs the desktop app and a known agent catalog id. */
+  const canRename = () => isDesktop && Boolean(agentId());
+  /** Renames the whole thread: every segment gets the title, so whichever segment is listed shows it. */
+  async function renameChat(id: string, title: string) {
+    if (!canRename()) return;
+    const current = guard(agentEpoch);
+    setSessionsError("");
+    try {
+      for (const entry of threadKeys(id)) {
+        const saved = await sessionMetaSetTitle(entry.agentId, entry.sessionId, title);
+        if (current()) keepSaved(saved);
+      }
+    } catch (cause) {
+      if (current()) setSessionsError(`Could not rename that chat: ${errorText(cause)}`);
+    }
+  }
+  /** Archive hides a thread from History until it is restored from the Archived filter. Only Span's metadata changes. */
+  const canArchive = canRename;
+  async function archiveChat(id: string, archived: boolean) {
+    if (!canArchive()) return;
+    const current = guard(agentEpoch);
+    setSessionsError("");
+    try {
+      for (const entry of threadKeys(id)) {
+        const saved = await sessionMetaSetArchived(entry.agentId, entry.sessionId, archived);
+        if (current()) keepSaved(saved);
+      }
+    } catch (cause) {
+      if (current()) setSessionsError(`Could not ${archived ? "archive" : "restore"} that chat: ${errorText(cause)}`);
+    }
+  }
+  /**
+   * Export as Markdown writes the chat into the workspace as a new file (never overwriting) and opens it. Only a chat
+   * Span shows can be exported, so another row is resumed first.
+   */
+  const canExport = () => isDesktop && Boolean(props.workspacePath);
+  async function exportChat(id: string) {
+    if (!canExport()) return;
+    if (id !== sessionId()) await resumeChat(id);
+    if (id !== sessionId() || disposed) return;
+    setSessionsError("");
+    try {
+      const title = currentTitle() ?? "Chat";
+      const markdown = await sessionExportMarkdown(exportTranscript(title, state().feed));
+      const saved = await api.saveAttachment("", exportFileName(title), bytesToBase64(new TextEncoder().encode(markdown)));
+      props.onFilesChanged?.();
+      props.onOpenFile?.(saved.path);
+    } catch (cause) {
+      if (!disposed) setSessionsError(`Could not export that chat: ${errorText(cause)}`);
+    }
+  }
+  /** Fork session: a new session that starts with the whole chat as carried context, like Fork on the last message. */
+  const canFork = () => isDesktop && connected();
+  async function forkChat(id: string) {
+    if (!canFork()) return;
+    if (id !== sessionId()) await resumeChat(id);
+    if (id !== sessionId() || disposed) return;
+    const last = [...feed()].reverse().find((item) => item.kind === "user");
+    if (!last) return setSessionsError("Nothing to fork yet: this chat has no messages.");
+    const reason = branchBlock();
+    if (reason) return setSessionsError(`Could not fork that chat: ${reason}`);
+    const title = currentTitle();
+    await branchFrom(last.id, "fork");
+    const agent = agentId();
+    const forked = sessionId();
+    if (agent && forked && forked !== id && title) {
+      try {
+        keepSaved(await sessionMetaSetTitle(agent, forked, `Fork of ${title}`));
+      } catch {
+        // The fork works without a stored title; History then shows the agent's.
+      }
+    }
+  }
+  /**
+   * Accepted edits add to the session's file counters (ADR 0005, step 4): distinct paths and changed lines of the
+   * accepted hunks, on top of what the store already had for the session.
+   */
+  function countAccepted(proposal: EditProposal, hunkIds?: readonly string[]) {
+    const agent = agentId();
+    const session = sessionId();
+    if (!agent || !session) return;
+    let totals = changeTotals.get(session);
+    if (!totals) {
+      const stored = sessionMetaOf(session);
+      totals = { paths: new Set(), add: 0, del: 0, base: { files: stored?.filesChanged ?? 0, add: stored?.linesAdded ?? 0, del: stored?.linesRemoved ?? 0 } };
+      changeTotals.set(session, totals);
+    }
+    let changed = false;
+    for (const hunk of proposal.hunks) {
+      if (hunkIds && !hunkIds.includes(hunk.id)) continue;
+      const delta = hunkLineDelta(hunk.before, hunk.after);
+      totals.add += delta.add;
+      totals.del += delta.del;
+      changed ||= delta.add > 0 || delta.del > 0;
+    }
+    if (changed) totals.paths.add(proposal.path);
+    void recordSessionMeta({ agentId: agent, sessionId: session, filesChanged: totals.base.files + totals.paths.size, linesAdded: totals.base.add + totals.add, linesRemoved: totals.base.del + totals.del });
   }
   /** The open chat as a snapshot: its conversation, draft, attachments, queue and where it was scrolled. */
   function snapshotOpen(): ChatSnapshot {
@@ -1099,11 +1542,12 @@ export function createAgentController(props: AgentPanelProps) {
    * holds that is still working comes back exactly as it was; an idle one is replayed by the agent (session/load), so
    * only its draft and queue come from the store; a chat Span never held shows only what loads.
    */
-  async function switchChat(start: () => Promise<string>, failure: string, options: { keepView?: boolean; target?: string; discardOpen?: boolean } = {}) {
+  async function switchChat(start: () => Promise<string>, failure: string, options: { keepView?: boolean; target?: string; discardOpen?: boolean; fresh?: boolean } = {}) {
     const current = guard(++agentEpoch);
     setMenu(null);
     setWorking(true);
     const previousId = state().sessionId;
+    setRefused(undefined);
     if (options.discardOpen) releaseSteer();
     else stashOpenChat();
     followed.clear();
@@ -1118,6 +1562,7 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       const id = await start();
       if (!current()) return;
+      if (options.fresh) markFresh(id);
       const mine = runtimeOf(id);
       const busy = Boolean(mine && mine.state !== "idle");
       patch({ sessionId: id, status: busy ? "busy" : "ready", statusMessage: busy ? "Agent is working" : "Connected and ready", ...(busy ? { running: true } : {}) });
@@ -1141,7 +1586,7 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setWorking(false);
     }
   }
-  const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat");
+  const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat", { fresh: true });
   const resumeChat = (id: string) => (id === state().sessionId ? (setView("session"), Promise.resolve()) : switchChat(() => api.agentResumeSession(id), "Could not resume that chat", { target: id }));
   const canClose = createMemo(() => Boolean(state().agent?.features.canCloseSessions));
   const canDelete = createMemo(() => Boolean(state().agent?.features.canDeleteSessions));
@@ -1167,7 +1612,7 @@ export function createAgentController(props: AgentPanelProps) {
     const connection = connectionKey();
     if (connection && chats.delete(chatKey(connection, id))) bumpChats();
     if (active) {
-      await switchChat(() => api.agentNewSession(), "Could not start a new chat", { keepView: true, discardOpen: true });
+      await switchChat(() => api.agentNewSession(), "Could not start a new chat", { keepView: true, discardOpen: true, fresh: true });
       // The desktop already cleared the active session, so a failed restart must not keep pointing at it.
       if (state().sessionId === id) patch({ sessionId: undefined });
     }
@@ -1214,6 +1659,99 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setPendingAction("");
     }
   }
+  /** Edit: the message's text goes into the composer; the next send starts a new session from before it. */
+  function editFrom(itemId: number) {
+    const item = feed().find((entry) => entry.id === itemId);
+    if (item?.kind !== "user") return;
+    const draft = rewind()?.mode === "edit" ? rewind()!.draft : prompt();
+    setRewind({ itemId, sessionId: sessionId(), mode: "edit", draft });
+    setPrompt(item.text);
+    focusPrompt();
+  }
+  /** Restore: shows the files changed since the message, with Revert and Keep. Nothing else changes. */
+  function restoreTo(itemId: number) {
+    if (feed().find((entry) => entry.id === itemId)?.kind !== "user") return;
+    const draft = rewind()?.mode === "edit" ? rewind()!.draft : prompt();
+    if (rewind()?.mode === "edit") setPrompt(draft);
+    setRewind({ itemId, sessionId: sessionId(), mode: "restore", draft });
+  }
+  /** Leaves edit or restore. Edit gives the earlier draft back. */
+  function cancelRewind() {
+    const chosen = rewind();
+    if (chosen?.mode === "edit") setPrompt(chosen.draft);
+    setRewind(undefined);
+  }
+  /** Rejects edits after the message that still wait for review, so those files stay as they were. */
+  async function revertFiles(ids: readonly string[] = rewindFiles().flatMap((file) => file.pending)) {
+    if (pendingAction()) return;
+    await reviewMany(ids, false);
+    if (rewind()?.mode === "restore" && !rewindFiles().some((file) => file.pending.length)) setRewind(undefined);
+  }
+  /** Accepts the edits after the message that still wait for review. */
+  async function keepFiles() {
+    if (pendingAction()) return;
+    await reviewMany(rewindFiles().flatMap((file) => file.pending), true);
+    if (rewind()?.mode === "restore") setRewind(undefined);
+  }
+  /** Resend: the message goes out again as it was sent, attachments included, rebuilt like a composed prompt. */
+  const resendFrom = (itemId: number) => {
+    const item = feed().find((entry) => entry.id === itemId);
+    const capabilities = caps();
+    if (item?.kind !== "user" || !capabilities) return;
+    const items = item.attachments ?? [];
+    const built = buildPrompt(item.text, items, capabilities, props.workspacePath);
+    if (built.blocked.length) {
+      intake.reject(built.blocked.map(({ item: blockedItem, reason }) => ({ name: blockedItem.name, reason })));
+      return;
+    }
+    void branchFrom(itemId, "resend", { id: `q-${++queueCounter}`, text: item.text, message: built.text, attachments: built.attachments, items: [...items] });
+  };
+  const forkFrom = (itemId: number) => void branchFrom(itemId, "fork");
+  /**
+   * ACP cannot rewind or fork a session, so edit, resend and fork start a new session with the agent. The feed up to the
+   * cut is shown again with a divider, and those turns go out as context with the first prompt (agent-handoff.ts). The
+   * original chat is stashed like any chat the user leaves. `entry` is sent right away (edit and resend).
+   */
+  async function branchFrom(itemId: number, mode: BranchMode, entry?: Queued) {
+    const restore = () => {
+      if (!entry || mode !== "edit") return;
+      setPrompt(entry.text);
+      if (entry.items.length) setAttachments(entry.items);
+    };
+    const snapshot = feed();
+    const cut = branchCut(snapshot, itemId, mode);
+    if (branchBlock() || cut === undefined) return restore();
+    const editing = rewind();
+    const earlier = snapshot.slice(0, cut);
+    const from = agentLabel();
+    const text = buildHandoff(earlier, { from, root: props.workspacePath, reason: branchReason(mode) });
+    const before = sessionId();
+    // The new session continues this one, so it starts on the same model and options, not the agent's defaults.
+    const source: SavedConfig = Object.fromEntries(state().config.map((option) => [option.id, option.currentValue]));
+    const draft = mode === "fork" ? { text: prompt(), items: attachments() } : undefined;
+    if (editing?.mode === "edit") setPrompt(editing.draft);
+    setRewind(undefined);
+    await switchChat(() => api.agentNewSession(), "Could not start a new session from that message");
+    const id = sessionId();
+    if (!id || id === before) {
+      if (mode === "edit" && editing) setRewind(editing);
+      return restore();
+    }
+    update((previous) => ({
+      ...previous,
+      nextId: previous.nextId + 1,
+      feed: [...carryFeed(earlier), { id: previous.nextId + 1, kind: "branch", mode, carried: Boolean(text) }, ...previous.feed],
+    }));
+    handoff = text ? { from, to: from, text, sessionId: id, note: BRANCH_CONTEXT_NOTE } : undefined;
+    if (draft) {
+      setPrompt(draft.text);
+      setAttachments(draft.items);
+    }
+    // Options the agent already reported are set before the first prompt; ones that arrive later are set on arrival.
+    if (state().config.length) await restoreConfig(id, state().config, source);
+    else markFresh(id, source);
+    if (entry && sessionId() === id) await dispatch(entry);
+  }
   async function review(proposal: EditProposal, accept: boolean) {
     const current = guard(agentEpoch);
     setPendingAction(proposal.id);
@@ -1222,6 +1760,7 @@ export function createAgentController(props: AgentPanelProps) {
       if (!current()) return;
       update((previous) => resolveProposal(previous, proposal.id, accept));
       if (accept) props.onBufferChanged?.(buffer.path, buffer);
+      if (accept) countAccepted(proposal);
     } catch (cause) {
       if (current()) fail({ phase: "prompt", message: `Edit review failed, the editor buffer may have changed: ${errorText(cause)}` });
     } finally {
@@ -1245,6 +1784,7 @@ export function createAgentController(props: AgentPanelProps) {
       const accepted = acceptedHunkIds.length > 0;
       update((previous) => resolveProposal(previous, proposal.id, accepted));
       if (accepted) props.onBufferChanged?.(buffer.path, buffer);
+      if (accepted) countAccepted(proposal, acceptedHunkIds);
     } catch (cause) {
       if (current()) fail({ phase: "prompt", message: `Hunk review failed, the editor buffer may have changed: ${errorText(cause)}` });
     } finally {
@@ -1338,6 +1878,14 @@ export function createAgentController(props: AgentPanelProps) {
         feed().flatMap((item) => (item.kind === "user" ? item.attachments ?? [] : [])).find((item) => item.id === id) ??
         toolImageAttachment(id);
   const viewingItem = createMemo(() => findAttachment(viewing()));
+  /** Set by the panel when a workbench can show attachments as tabs. */
+  let attachmentOpener: ((item: Attachment) => void) | undefined;
+  const setAttachmentOpener = (open: ((item: Attachment) => void) | undefined) => { attachmentOpener = open; };
+  /** Chips and tiles call this: a workbench tab when one is wired, else the modal viewer. */
+  function openAttachment(item: Attachment) {
+    if (attachmentOpener) attachmentOpener(item);
+    else setViewing(item.id);
+  }
   const viewingInComposer = createMemo(() => attachments().some((item) => item.id === viewing()));
   /** Writes the bytes into the workspace (default folder assets) and turns the item into a workspace file. */
   async function saveAttachment(item: Attachment) {
@@ -1349,6 +1897,129 @@ export function createAgentController(props: AgentPanelProps) {
   }
   const removeAttachment = (item: Attachment) => setAttachments((items) => items.filter((other) => other.id !== item.id));
 
+  /** Attachment ids already written to the uploads store, so each sent attachment is recorded once. */
+  const recordedIds = new Set<string>();
+  /** The bytes the store keeps for an item: raw bytes, else its text. Workspace files and folder outlines are not stored. */
+  const storableBytes = (item: Attachment) => (isInWorkspace(item) || item.kind === "folder" ? undefined : item.bytes ?? (item.text !== undefined ? utf8.encode(item.text) : undefined));
+  /**
+   * Link fallback (#91): content the agent cannot take inline is saved to the uploads store first and the item then
+   * points at the stored copy, so the resource link names a file that exists. A failed save blocks the send with the reason.
+   */
+  async function storeLinkTargets(items: readonly Attachment[], capabilities: PromptCapabilities): Promise<{ items: Attachment[]; failed: { name: string; reason: string }[] }> {
+    const recorder = props.uploads;
+    const failed: { name: string; reason: string }[] = [];
+    if (!recorder) return { items: [...items], failed };
+    const out = await Promise.all(items.map(async (item) => {
+      if (!needsStoredLink(item, capabilities) || (item.uploadId && item.path)) return item;
+      try {
+        const id = item.uploadId ?? (await recorder.add(saveName(item), bytesToBase64(item.bytes!), { origin: uploadOrigin(item.source), sessionId: state().sessionId ?? null, agentId: agentId() ?? null })).id;
+        recordedIds.add(item.id);
+        const next = { ...item, uploadId: id, path: await recorder.copyPath(id) };
+        replaceAttachment(next);
+        return next;
+      } catch (cause) {
+        failed.push({ name: item.name, reason: `Could not save it to Uploads for the link: ${errorText(cause)}` });
+        return item;
+      }
+    }));
+    return { items: out, failed };
+  }
+  /** Recording (#91): every sent attachment with content goes into the uploads store once, with its session, agent and message. */
+  async function recordSent(items: readonly Attachment[], source: { sessionId: string | null; agentId: string | null; messageId: string }) {
+    const recorder = props.uploads;
+    if (!recorder) return;
+    for (const item of items) {
+      const data = storableBytes(item);
+      if (!data?.length || item.uploadId || recordedIds.has(item.id)) continue;
+      recordedIds.add(item.id);
+      try {
+        const { id } = await recorder.add(saveName(item), bytesToBase64(data), { ...source, origin: uploadOrigin(item.source) });
+        replaceAttachment({ ...item, uploadId: id });
+      } catch (cause) {
+        intake.reject([{ name: item.name, reason: `Sent, but not saved to Uploads: ${errorText(cause)}` }]);
+      }
+    }
+  }
+
+  /** Paste screenshot: reads a clipboard image from this click. Where the webview refuses, it says how to paste instead. */
+  async function pasteScreenshot() {
+    const keys = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd+V" : "Ctrl+V";
+    const fallback = () => {
+      intake.reject([{ name: "Paste screenshot", reason: `The clipboard image cannot be read from here. Click the prompt box and press ${keys}.` }]);
+      focusPrompt();
+    };
+    const clipboard = typeof navigator !== "undefined" ? (navigator.clipboard as (Clipboard & { read?: () => Promise<ClipboardItem[]> }) | undefined) : undefined;
+    if (!clipboard?.read) return fallback();
+    try {
+      for (const entry of await clipboard.read()) {
+        const type = entry.types.find((value) => value.startsWith("image/"));
+        if (!type) continue;
+        const blob = await entry.getType(type);
+        await intake.addFiles([new File([blob], `Screenshot.${type.slice(6).replace("jpeg", "jpg")}`, { type })], "pasted");
+        return;
+      }
+      intake.reject([{ name: "Paste screenshot", reason: "The clipboard holds no image. Copy a screenshot first." }]);
+    } catch {
+      fallback();
+    }
+  }
+
+  /** Folder: a workspace folder becomes a bounded outline (text) plus a link to the folder. Folders outside the workspace are refused. */
+  async function addFolder() {
+    const root = props.workspacePath;
+    if (!root || !props.pickFolder) {
+      intake.reject([{ name: "Folder", reason: root ? "Folder picking needs the desktop app." : "Open a folder first." }]);
+      return;
+    }
+    let chosen: string | null;
+    try {
+      chosen = await props.pickFolder(root);
+    } catch (cause) {
+      intake.reject([{ name: "Folder", reason: errorText(cause) }]);
+      return;
+    }
+    if (!chosen) return;
+    const trimmed = chosen.replace(/[\\/]+$/, "");
+    const relative = trimmed === root.replace(/[\\/]+$/, "") ? "" : workspaceRelative(root, trimmed);
+    if (relative === undefined) {
+      intake.reject([{ name: leaf(trimmed) || trimmed, reason: "Outside this workspace, so it cannot be attached. Pick a folder inside it." }]);
+      return;
+    }
+    const name = relative ? leaf(relative) : leaf(root.replace(/[\\/]+$/, "")) || "workspace";
+    const outline = await folderOutline(name, async (inner) => {
+      const path = [relative, inner].filter(Boolean).join("/");
+      return (await api.listDirectory(path)).map((entry) => ({ name: entry.name, isDir: entry.isDir }));
+    });
+    intake.addItems([createFolderAttachment({ name, ...outline, path: relative || ".", source: "workspace-file" })]);
+  }
+
+  /** Earlier chats this window holds (other than the open one) that have something to export. */
+  const earlierChats = createMemo(() => {
+    chatVersion();
+    const open = state().sessionId;
+    return chats.keys().flatMap((key) => {
+      const sessionId = key.slice(key.indexOf("\u0000") + 1);
+      const chat = chats.get(key);
+      if (!chat || sessionId === open) return [];
+      const turns = feedTurns(chat.conversation.feed).length;
+      return turns ? [{ key, sessionId, title: chatTitle(sessionId), turns }] : [];
+    });
+  });
+  /** Earlier session: attaches that chat as a Markdown transcript built here, with absolute paths redacted. */
+  function attachSession(key: string) {
+    const chat = chats.get(key);
+    const entry = earlierChats().find((item) => item.key === key);
+    if (!chat || !entry) {
+      intake.reject([{ name: "Earlier session", reason: "That chat is no longer held in this window." }]);
+      return;
+    }
+    const agent = chat.conversation.agent?.title || chat.conversation.agent?.name || "Agent";
+    const body = feedTurns(chat.conversation.feed).map((turn) => `## ${turn.role === "user" ? "You" : agent}\n\n${turn.text}`).join("\n\n");
+    const markdown = redactPaths(`# ${entry.title}\n\nTranscript exported by Span from an earlier chat. Absolute paths are redacted.\n\n${body}\n`, props.workspacePath);
+    const slug = entry.title.replace(/[^A-Za-z0-9 _-]+/g, "").trim().replace(/\s+/g, "-").slice(0, 60) || "session";
+    intake.addItems([createFileAttachment({ name: `${slug}.md`, mime: "text/markdown", bytes: utf8.encode(markdown), source: "picked" })]);
+  }
+
   /**
    * Opens a workspace file for the user and confirms it with a toast. The path is checked against the workspace
    * root first, because most callers pass a path an agent supplied. `opener` lets the changes card use the
@@ -1356,7 +2027,12 @@ export function createAgentController(props: AgentPanelProps) {
    */
   function openInEditor(path: string, line?: number, opener: ((path: string, line?: number) => void) | undefined = props.onOpenFile): boolean {
     const relative = workspaceRelative(props.workspacePath, path);
-    if (!relative || !opener) return false;
+    if (!relative) {
+      // Never silent: the user clicked something, so say why nothing opened and offer the path.
+      if (path.trim()) setOpenRefusal({ path, reason: props.workspacePath ? OUTSIDE_WORKSPACE : "No folder is open, so it cannot be opened here" });
+      return false;
+    }
+    if (!opener) return false;
     opener(relative, line);
     setToast(leaf(relative));
     return true;
@@ -1485,6 +2161,9 @@ export function createAgentController(props: AgentPanelProps) {
     setViewing,
     viewingItem,
     viewingInComposer,
+    findAttachment,
+    openAttachment,
+    setAttachmentOpener,
     online,
     setOnline,
     bannerDismissed,
@@ -1495,11 +2174,35 @@ export function createAgentController(props: AgentPanelProps) {
     toggleFollow,
     toast,
     clearToast: () => setToast(undefined),
+    openRefusal,
+    clearOpenRefusal: () => setOpenRefusal(undefined),
+    pasteScreenshot,
+    addFolder,
+    earlierChats,
+    attachSession,
     openInEditor,
     canClose,
     canDelete,
     deleteChat,
     closeChat,
+    sessionMetaOf,
+    sessionMeta,
+    threadFor,
+    health,
+    healthNow,
+    healthOn: () => props.healthCheck !== false,
+    liveAgents,
+    currentTitle,
+    canRename,
+    renameChat,
+    canArchive,
+    archiveChat,
+    canExport,
+    exportChat,
+    canFork,
+    forkChat,
+    sessionScope,
+    setSessionScope,
     showSelection,
     turnStart,
     clock,
@@ -1514,6 +2217,8 @@ export function createAgentController(props: AgentPanelProps) {
     connectInstalled,
     connectCustom,
     reconnect,
+    retryWithModel,
+    canRetryModel,
     install,
     disconnect,
     authenticate,
@@ -1546,6 +2251,16 @@ export function createAgentController(props: AgentPanelProps) {
     answerChildPermission,
     review,
     reviewMany,
+    rewind,
+    rewindFiles,
+    branchBlock,
+    editFrom,
+    restoreTo,
+    cancelRewind,
+    revertFiles,
+    keepFiles,
+    resendFrom,
+    forkFrom,
     answerForm,
     respondElicitation,
     openElicitationUrl,

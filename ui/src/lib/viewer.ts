@@ -1,4 +1,14 @@
-/** Pure logic for the File/Upload viewer: classification, limits, decoding, hex and JSON rows, tab model. */
+/**
+ * Pure logic for the File/Upload viewer: classification, limits, decoding, hex and JSON rows, tab model.
+ *
+ * Design inconsistencies, settled here (File Viewer and Upload Viewer designs disagree):
+ * - Image zoom runs from 10 to 800 percent in steps of 25 (the Upload Viewer range; File Viewer showed 25 to 400).
+ * - Archive warning copy: "N entries point outside the archive and are always skipped" (File Viewer said
+ *   "always skipped", Upload Viewer said "will be skipped on extract").
+ * - Source bar copy: "Attached in <session> · <time>" for files the user sent, and
+ *   "Created by <agent> in <session> · <time>" for files an agent generated (Upload Viewer used
+ *   "Attachment from" for both).
+ */
 import { MAX_IMAGE_BYTES, MAX_SVG_BYTES } from './asset-preview';
 
 export { MAX_IMAGE_BYTES, MAX_SVG_BYTES };
@@ -21,9 +31,13 @@ export const ZOOM_MAX = 800;
 export const ZOOM_STEP = 25;
 export const SEEK_SECONDS = 10;
 export const VOLUME_STEP = 0.1;
-export const PLAYBACK_SPEEDS = [0.5, 1, 1.5, 2] as const;
+export const PLAYBACK_SPEEDS = [0.75, 1, 1.5, 2] as const;
+/** Fonts above this are refused with the damaged state rather than handed to FontFace. */
+export const FONT_READ_BYTES = 16 * 1024 * 1024;
+/** Audio and video are read whole into a Blob, so they are capped. Larger files offer the system app instead. */
+export const MEDIA_MAX_BYTES = 256 * 1024 * 1024;
 
-export type ViewerKind = 'image' | 'svg' | 'markdown' | 'json' | 'text' | 'audio' | 'video' | 'unsupported';
+export type ViewerKind = 'image' | 'svg' | 'markdown' | 'mdx' | 'html' | 'json' | 'csv' | 'font' | 'text' | 'audio' | 'video' | 'unsupported';
 export type ViewerMode = 'preview' | 'split' | 'source';
 export type UnsupportedReason = 'not-yet' | 'format';
 export interface Classification { kind: ViewerKind; reason?: UnsupportedReason; label?: string }
@@ -39,34 +53,67 @@ const videoExt = new Set(['mp4', 'm4v', 'mov', 'webm']);
 const audioExt = new Set(['mp3', 'm4a', 'wav', 'ogg', 'oga', 'opus', 'flac', 'aac']);
 /** Separate issues will build these. Until then they show the honest unsupported state, never fake content. */
 const notYet: Record<string, string> = {
-  pdf: 'PDF', docx: 'Word document', pptx: 'Presentation', xlsx: 'Spreadsheet', csv: 'CSV table', tsv: 'TSV table',
+  pdf: 'PDF', docx: 'Word document', doc: 'Word document', pptx: 'Presentation', ppt: 'Presentation', key: 'Keynote', xlsx: 'Spreadsheet', xls: 'Spreadsheet', numbers: 'Numbers',
   zip: 'Archive', tar: 'Archive', tgz: 'Archive', gz: 'Archive', '7z': 'Archive', rar: 'Archive',
-  ttf: 'Font', otf: 'Font', woff: 'Font', woff2: 'Font', html: 'HTML page', htm: 'HTML page', mdx: 'MDX document',
 };
-const otherImageExt = new Set(['bmp', 'ico', 'avif', 'tif', 'tiff', 'heic', 'psd']);
+/** Formats Span does not preview at all: they need their own application. */
+const otherFormats: Record<string, string> = { fig: 'Figma', sketch: 'Sketch', xd: 'Adobe XD', ai: 'Illustrator', indd: 'InDesign', psd: 'Photoshop' };
+const otherImageExt = new Set(['bmp', 'ico', 'avif', 'tif', 'tiff', 'heic']);
+const fontExt = new Set(['ttf', 'otf', 'woff', 'woff2']);
 
 export function classifyFile(name: string, mime = ''): Classification {
   const ext = extensionOf(name);
   const type = mime.toLowerCase().split(';')[0].trim();
   if (ext === 'svg' || type === 'image/svg+xml') return { kind: 'svg' };
   if (rasterExt.has(ext) || /^image\/(?:png|jpeg|gif|webp)$/.test(type)) return { kind: 'image' };
+  if (otherFormats[ext]) return { kind: 'unsupported', reason: 'format', label: otherFormats[ext] };
   if (otherImageExt.has(ext) || type.startsWith('image/')) return { kind: 'unsupported', reason: 'format', label: 'Image' };
+  if (fontExt.has(ext) || type.startsWith('font/')) return { kind: 'font' };
   if (videoExt.has(ext) || type.startsWith('video/')) return { kind: 'video' };
   if (audioExt.has(ext) || type.startsWith('audio/')) return { kind: 'audio' };
   if (notYet[ext]) return { kind: 'unsupported', reason: 'not-yet', label: notYet[ext] };
   if (type === 'application/pdf') return { kind: 'unsupported', reason: 'not-yet', label: 'PDF' };
+  if (ext === 'mdx') return { kind: 'mdx' };
   if (ext === 'md' || ext === 'markdown' || type === 'text/markdown') return { kind: 'markdown' };
+  if (ext === 'html' || ext === 'htm' || type === 'text/html') return { kind: 'html' };
+  if (ext === 'csv' || ext === 'tsv' || type === 'text/csv' || type === 'text/tab-separated-values') return { kind: 'csv' };
   if (ext === 'json' || type === 'application/json') return { kind: 'json' };
   return { kind: 'text' };
 }
 
 /** Preview/Split/Source exist only where a second representation is real. */
 export function supportedModes(kind: ViewerKind): ViewerMode[] {
-  if (kind === 'svg' || kind === 'markdown') return ['preview', 'split', 'source'];
-  if (kind === 'json') return ['preview', 'source'];
+  if (kind === 'svg' || kind === 'markdown' || kind === 'mdx' || kind === 'html') return ['preview', 'split', 'source'];
+  if (kind === 'json' || kind === 'csv') return ['preview', 'source'];
   return [];
 }
 export const modeLabels: Record<ViewerMode, string> = { preview: 'Preview', split: 'Split', source: 'Source' };
+/** JSON reads as Tree and Raw, CSV as Table and Raw; the rest use Preview, Split and Source. */
+export function modeLabelFor(kind: ViewerKind, mode: ViewerMode): string {
+  if (kind === 'json') return mode === 'preview' ? 'Tree' : 'Raw';
+  if (kind === 'csv') return mode === 'preview' ? 'Table' : 'Raw';
+  return modeLabels[mode];
+}
+/** The three-way Preview, Split, Source switch uses icons (design); two-way switches use words. */
+export function modeUsesIcons(kind: ViewerKind): boolean { return supportedModes(kind).length === 3; }
+
+/**
+ * How many bytes to read for a file. 0 means do not read: the viewer shows the too-large state without data.
+ * Text-like kinds read 4 bytes past the preview limit so truncation is detectable without splitting a character.
+ */
+export function readLimit(name: string, mime: string, size: number, asBinary = false): number {
+  const total = Math.max(0, size);
+  if (asBinary) return Math.min(total, HEX_PREVIEW_BYTES);
+  const { kind } = classifyFile(name, mime);
+  switch (kind) {
+    case 'image': return total > MAX_IMAGE_BYTES ? 0 : total;
+    case 'svg': return Math.min(total, MAX_SVG_BYTES + 1);
+    case 'font': return total > FONT_READ_BYTES ? 0 : total;
+    case 'audio': case 'video': return total > MEDIA_MAX_BYTES ? 0 : total;
+    case 'unsupported': return Math.min(total, HEX_PREVIEW_BYTES);
+    default: return Math.min(total, TEXT_PREVIEW_BYTES + 4);
+  }
+}
 
 export function mediaMime(name: string, mime = ''): string {
   const type = mime.toLowerCase().split(';')[0].trim();
@@ -90,6 +137,15 @@ export function bytesToDataUrl(bytes: Uint8Array, mime: string): string {
 }
 
 export function clampZoom(value: number): number { return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(value))); }
+/** Percent at which an image fits its box. Never enlarges past 100, clamped to the zoom range. */
+export function fitPercent(width: number, height: number, boxWidth: number, boxHeight: number): number {
+  if (!(width > 0 && height > 0 && boxWidth > 0 && boxHeight > 0)) return 100;
+  return clampZoom(Math.min(100, boxWidth / width * 100, boxHeight / height * 100));
+}
+/** Ctrl or pinch wheel zoom: continuous and proportional, clamped to the range. */
+export function wheelZoom(current: number, deltaY: number): number {
+  return clampZoom(current * Math.exp(-Math.max(-500, Math.min(500, deltaY)) * 0.002));
+}
 /** From Fit the step starts at 100 percent, as AssetPreview does. */
 export function stepZoom(current: number | 'fit', direction: 1 | -1): number {
   return clampZoom((current === 'fit' ? 100 : current) + direction * ZOOM_STEP);
@@ -103,13 +159,14 @@ export function isLikelyBinary(bytes: Uint8Array): boolean {
 
 export interface TextPreview { text: string; truncated: boolean; totalBytes: number; shownBytes: number }
 /** Decode at most `limit` bytes as UTF-8. Returns undefined when the bytes are not valid text. */
-export function decodeTextPreview(bytes: Uint8Array, limit = TEXT_PREVIEW_BYTES): TextPreview | undefined {
-  const truncated = bytes.length > limit;
-  const slice = truncated ? bytes.subarray(0, limit) : bytes;
+export function decodeTextPreview(bytes: Uint8Array, limit = TEXT_PREVIEW_BYTES, totalBytes = bytes.length): TextPreview | undefined {
+  const total = Math.max(totalBytes, bytes.length);
+  const truncated = bytes.length > limit || total > bytes.length;
+  const slice = bytes.length > limit ? bytes.subarray(0, limit) : bytes;
   try {
     // stream:true lets a multibyte character cut at the limit stay pending instead of failing the decode.
     const text = new TextDecoder('utf-8', { fatal: true }).decode(slice, truncated ? { stream: true } : undefined);
-    return { text, truncated, totalBytes: bytes.length, shownBytes: slice.length };
+    return { text, truncated, totalBytes: total, shownBytes: slice.length };
   } catch { return undefined; }
 }
 
@@ -151,9 +208,9 @@ export type MediaAction = { type: 'toggle' } | { type: 'seek'; delta: number } |
 /** Keyboard map for the audio and video players. */
 export function mediaKeyAction(key: string): MediaAction | undefined {
   switch (key) {
-    case ' ': case 'Spacebar': return { type: 'toggle' };
-    case 'ArrowLeft': return { type: 'seek', delta: -SEEK_SECONDS };
-    case 'ArrowRight': return { type: 'seek', delta: SEEK_SECONDS };
+    case ' ': case 'Spacebar': case 'k': case 'K': return { type: 'toggle' };
+    case 'ArrowLeft': case 'j': case 'J': return { type: 'seek', delta: -SEEK_SECONDS };
+    case 'ArrowRight': case 'l': case 'L': return { type: 'seek', delta: SEEK_SECONDS };
     case 'ArrowUp': return { type: 'volume', delta: VOLUME_STEP };
     case 'ArrowDown': return { type: 'volume', delta: -VOLUME_STEP };
     case 'm': case 'M': return { type: 'mute' };
@@ -173,10 +230,13 @@ export interface JsonRow {
 }
 const JSON_OPEN_DEPTH = 2;
 /** Containers deeper than this start collapsed. `toggled` flips the default for a path. */
-export function jsonIsOpen(path: string, depth: number, toggled: ReadonlySet<string>): boolean {
-  return (depth < JSON_OPEN_DEPTH) !== toggled.has(path);
+/** `base` is the starting state before toggles: the default two open levels, everything open, or everything closed. */
+export type JsonBase = 'default' | 'all' | 'none';
+export function jsonIsOpen(path: string, depth: number, toggled: ReadonlySet<string>, base: JsonBase = 'default'): boolean {
+  const start = base === 'all' ? true : base === 'none' ? false : depth < JSON_OPEN_DEPTH;
+  return start !== toggled.has(path);
 }
-export function jsonRows(value: unknown, toggled: ReadonlySet<string> = new Set(), maxRows = JSON_MAX_ROWS): { rows: JsonRow[]; truncated: boolean } {
+export function jsonRows(value: unknown, toggled: ReadonlySet<string> = new Set(), maxRows = JSON_MAX_ROWS, base: JsonBase = 'default'): { rows: JsonRow[]; truncated: boolean } {
   const rows: JsonRow[] = [];
   let truncated = false;
   const walk = (key: string | null, v: unknown, depth: number, path: string): void => {
@@ -189,7 +249,7 @@ export function jsonRows(value: unknown, toggled: ReadonlySet<string> = new Set(
     }
     const isArray = Array.isArray(v);
     const entries = isArray ? (v as unknown[]).map((item, i) => [String(i), item] as const) : Object.entries(v as Record<string, unknown>);
-    const open = jsonIsOpen(path, depth, toggled);
+    const open = jsonIsOpen(path, depth, toggled, base);
     const meta = `${entries.length} ${isArray ? (entries.length === 1 ? 'item' : 'items') : (entries.length === 1 ? 'key' : 'keys')}`;
     rows.push({ path, depth, key, text: open ? (isArray ? '[' : '{') : (isArray ? '[…]' : '{…}'), kind: open ? 'open' : 'collapsed', expandable: entries.length > 0, open, meta });
     if (!open) return;
@@ -236,4 +296,22 @@ export function closeTab(state: ViewerTabs, id: string): ViewerTabs {
   const tabs = state.tabs.filter(tab => tab.id !== id);
   const active = state.active === id ? (tabs[Math.min(index, tabs.length - 1)]?.id ?? null) : state.active;
   return { tabs, active };
+}
+
+export function closeOtherTabs(state: ViewerTabs, id: string): ViewerTabs {
+  const keep = state.tabs.find(tab => tab.id === id);
+  return keep ? { tabs: [keep], active: id } : state;
+}
+export function closeTabsToRight(state: ViewerTabs, id: string): ViewerTabs {
+  const index = state.tabs.findIndex(tab => tab.id === id);
+  if (index < 0 || index === state.tabs.length - 1) return state;
+  const tabs = state.tabs.slice(0, index + 1);
+  return { tabs, active: tabs.some(tab => tab.id === state.active) ? state.active : id };
+}
+export function closeAllTabs(): ViewerTabs { return { tabs: [], active: null }; }
+/** Close the tabs of uploads that are gone from the list (removed elsewhere). */
+export function removeFromTabs(state: ViewerTabs, existing: ReadonlySet<string>): ViewerTabs {
+  let next = state;
+  for (const tab of state.tabs) if (!existing.has(tab.id)) next = closeTab(next, tab.id);
+  return next;
 }

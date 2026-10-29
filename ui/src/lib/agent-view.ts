@@ -440,6 +440,14 @@ export function warningParts(title: string, description?: string): { summary: st
   return { summary: text.slice(0, cut.index + 1), detail: text.slice(cut.index + 1).trim() };
 }
 
+const CONFIG_PATH = /(?<![\w~/.:-])(?:~\/|\/|[A-Za-z]:[\\/])[^\s()`'"<>,;:*|?]*?\.(?:toml|jsonc|json|yaml|yml|ini|conf)(?![\w-]|\.\w)/g;
+
+/** Distinct config file paths a warning mentions, taken from the original text so the path is the real one (no ~ shortening). Paths with spaces are not matched. */
+export function configFilesIn(title: string, description?: string): string[] {
+  const text = [title, description].filter(Boolean).join(" ");
+  return [...new Set(text.match(CONFIG_PATH) ?? [])];
+}
+
 /** "Working" or "Worked" plus counts by kind, for example "2 reads, 1 edit". */
 export function workSummary(steps: readonly StepView[]): { headline: string; counts: string } {
   const running = steps.some((step) => step.status === "in_progress" || step.status === "pending");
@@ -629,7 +637,12 @@ export function buildPrompt(message: string, items: readonly Attachment[], caps:
     else if (plan.mode === "text" && item.text !== undefined) {
       const mark = fence(item.text);
       inline.push(`${item.path ?? item.name}:\n${mark}\n${item.text}\n${mark}`);
-    } else blocked.push({ item, reason: plan.mode === "audio" ? "Span cannot send audio to agents yet." : "The content is no longer available." });
+    } else {
+      blocked.push({ item, reason: plan.mode === "audio" ? "Span cannot send audio to agents yet." : "The content is no longer available." });
+      continue;
+    }
+    // A folder (Span-side, not an ACP type) goes out as its outline plus a link to the folder itself.
+    if (item.kind === "folder" && item.path) attachments.push({ kind: "resourceLink", uri: fileUri(root, item.path), name: item.name, mimeType: "inode/directory", description: "Folder; the outline lists its first entries." });
   }
   return { text: inline.length ? `${message}${message ? "\n\n" : ""}Attached:\n\n${inline.join("\n\n")}` : message, attachments, blocked };
 }

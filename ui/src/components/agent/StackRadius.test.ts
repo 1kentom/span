@@ -17,24 +17,18 @@ describe("composer stack shape", () => {
     expect(Number(radius)).toBeGreaterThan(8);
   });
 
-  it("gives the activity bar, docks and drawers the composer's top radius and full width", () => {
+  it("gives the activity bar, docks and drawers one compact tab shape: inset on both sides, smaller top radius than the composer", () => {
     const stacked = block(".agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity)");
-    expect(stacked).toContain(`border-radius: ${radius}px ${radius}px 0 0`);
-    expect(stacked).toMatch(/margin:\s*0;/);
-  });
-
-  it("keeps the activity bar text clear of the rounded corner", () => {
-    expect(block(".agent-footer > .sb-activity")).toMatch(/padding-inline:\s*(1[2-9]|[2-9]\d)px/);
-  });
-
-  it("makes the activity bar a compact tab: a little narrower and less round than the composer", () => {
-    const tab = block(".agent-footer > .sb-activity");
-    const inset = Number(/margin-inline:\s*(\d+)px/.exec(tab)?.[1]);
-    const tabRadius = Number(/border-radius:\s*(\d+)px\s+\1px\s+0\s+0/.exec(tab)?.[1]);
+    const inset = Number(/margin:\s*0\s+(\d+)px;/.exec(stacked)?.[1]);
+    const tabRadius = Number(/border-radius:\s*(\d+)px\s+\1px\s+0\s+0/.exec(stacked)?.[1]);
     expect(inset).toBeGreaterThanOrEqual(8);
     expect(inset).toBeLessThanOrEqual(20);
     expect(tabRadius).toBeGreaterThanOrEqual(8);
     expect(tabRadius).toBeLessThan(Number(radius));
+  });
+
+  it("keeps the activity bar text clear of the rounded corner", () => {
+    expect(block(".agent-footer > .sb-activity")).toMatch(/padding-inline:\s*(1[2-9]|[2-9]\d)px/);
   });
 
   it("squares the corners of every bar that sits under another bar, so only the top of the stack is rounded", () => {
@@ -51,18 +45,29 @@ describe("composer stack shape", () => {
         const sel = selector.replace(/\/\*[\s\S]*?\*\//g, "").trim();
         if (!sel.startsWith(".agent-footer") || !/\.sb-(drawer|dock|activity)\b/.test(sel)) continue;
         if (sel === shared || sel.startsWith(`${shared} ~`)) continue;
-        // The one deliberate exception: the activity bar is a compact tab when it tops the stack (pinned by its own test).
-        if (sel === ".agent-footer > .sb-activity") continue;
         expect(body, `${sel} must not set its own margin or radius`).not.toMatch(/(^|;|\s)(margin|border-radius)\s*:/);
       }
     }
   });
 });
 
-describe("activity tab inside a stack", () => {
-  it("is only a tab when it tops the stack: below another bar it is full width and square", () => {
+describe("stacked bars line up", () => {
+  it("lets a bar below another keep the inset, so every bar in the stack is the same width", () => {
     const below = block(".agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity) ~ :is(.sb-drawer, .sb-dock, .sb-activity)");
-    expect(below).toMatch(/margin-inline:\s*0;/);
+    expect(below).not.toMatch(/margin/);
     expect(below).toMatch(/border-radius:\s*0;/);
+  });
+});
+
+describe("popovers over the prompt box", () => {
+  it("float inset like the stacked tabs, with their radius and a gap above the input", () => {
+    const anchor = block(".agent-popover-anchor");
+    const stacked = block(".agent-footer > :is(.sb-drawer, .sb-dock, .sb-activity)");
+    const inset = Number(/left:\s*(\d+)px/.exec(anchor)?.[1]);
+    expect(inset).toBe(Number(/margin:\s*0\s+(\d+)px;/.exec(stacked)?.[1]));
+    expect(/right:\s*(\d+)px/.exec(anchor)?.[1]).toBe(String(inset));
+    expect(/bottom:\s*calc\(100% \+ (\d+)px\)/.exec(anchor)?.[1]).toBeDefined();
+    const radius = Number(/border-radius:\s*(\d+)px/.exec(block(".agent-popover-anchor > .sb-popover"))?.[1]);
+    expect(radius).toBe(Number(/border-radius:\s*(\d+)px/.exec(stacked)?.[1]));
   });
 });

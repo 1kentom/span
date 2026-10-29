@@ -1,24 +1,25 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { FileIcon, Icon } from "../Icon";
-import { AttachMenu, AttachmentNotices, AttachmentTray, type AttachMenuItemId } from "../attachments";
+import { AttachMenu, AttachmentNotices, AttachmentTray, SessionPicker, type AttachMenuItemId } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
 import { shouldFocusDock } from "../../lib/agent-dock-focus";
-import { delegationLine } from "../../lib/agent-delegation";
+import { delegationLine, isFinished } from "../../lib/agent-delegation";
 import { canCompact, type FeedItem, type PermissionEvent } from "../../lib/agent-session";
 import { isSlashQuery, leaf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { api, isDesktop } from "../../lib/client";
 import { URL_COPY, parseUrlRequest, withBrowserWait, type UrlRequestView } from "../../lib/agent-url-request";
 import { ContextBanner } from "./Banners";
 import { AgentStatusBar } from "./AgentStatusBar";
-import { ActivityBar, PermissionDock, QuestionDock, UrlDock, focusDock } from "./Docks";
+import { ActivityBar, PermissionDock, QuestionDock, RewindDock, UrlDock, focusDock } from "./Docks";
 import { RunningStep } from "./RunningStep";
 import { RUN_TEXT } from "../../lib/agent-hint-text";
 import { createPickers } from "./ComposerPickers";
 import { brandFromModelNames, brandIconFor } from "../../lib/brand-icons";
 import { configViews } from "../../lib/agent-view";
 import { PlanDrawer } from "./PlanDrawer";
+import { LiveAgents } from "./LiveAgents";
 import { QueuePanel } from "./QueuePanel";
 import { SlashPopover } from "./SlashPopover";
 import { UsageRing } from "./UsageRing";
@@ -146,18 +147,28 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   const runStatus = () => (a.running() ? "Agent is working" : ran() ? "Agent finished" : "");
   const field = () => a.fields()[a.form()?.index ?? 0];
   const unavailable = isDesktop ? undefined : ATTACH_UNAVAILABLE;
-  /** Only items with a real handler are offered. Folder, Earlier session and Paste screenshot have none (no folder picker, no session attach, no image clipboard command), so they are omitted rather than stubbed. */
+  /** The Earlier session picker, opened from the attach menu. */
+  const [sessionPick, setSessionPick] = createSignal(false);
+  /**
+   * Only items with a real handler are offered. Paste screenshot reads the clipboard from the click and falls back to
+   * the paste shortcut; Folder needs the desktop folder picker; Earlier session lists the chats this window holds.
+   */
   const attachHandlers = (): Partial<Record<AttachMenuItemId, () => void>> => ({
     upload: () => uploadInput.click(),
     image: () => imageInput.click(),
+    screenshot: () => void a.pasteScreenshot(),
     file: a.addCurrentFile,
     selection: a.showSelection,
+    ...(a.props.pickFolder ? { folder: () => void a.addFolder() } : {}),
+    session: () => setSessionPick(true),
   });
   const attachReasons = (): Partial<Record<AttachMenuItemId, string>> => {
     const path = a.props.activePath;
     return {
       file: !path ? "No file is open" : a.contextPaths().includes(path) ? "Already added" : undefined,
       selection: !a.props.selectionContext?.text ? "Nothing is selected" : a.selection() ? "Already included" : undefined,
+      folder: !a.props.workspacePath ? "No folder is open" : undefined,
+      session: a.earlierChats().length ? undefined : "No earlier chat open",
     };
   };
   const pickFiles = (event: Event & { currentTarget: HTMLInputElement }) => {
@@ -173,6 +184,15 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
   const toggle = (menu: "attach") => a.setMenu(a.menu() === menu ? null : menu);
   const pickers = createPickers(a, { get brand() { return brand(); }, get label() { return props.label; } }, () => input);
 
+
+  /** Bring a delegation card into view and focus it, from the Live agents strip. */
+  const openTaskCard = (taskId: string) => {
+    const card = footer?.closest(".agent-panel")?.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(taskId)}"]`);
+    if (!card) return;
+    const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    card.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
+    card.focus({ preventScroll: true });
+  };
 
   /** Taller field, about 40 percent of the panel. Local view state only; Escape never touches it. */
   const [expanded, setExpanded] = createSignal(false);
@@ -201,6 +221,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           </div>
         )}
       </Show>
+      <LiveAgents agents={a.liveAgents()} now={a.healthNow()} showHealth={a.healthOn()} onOpen={(agent) => agent.taskId && openTaskCard(agent.taskId)} />
       <Show when={showBanner()}>
         <ContextBanner
           used={usage()!.used}
@@ -239,6 +260,20 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           elapsed={a.turnElapsed()}
           hint={a.state().stopRequested || a.elicitation() || waitingStep() ? undefined : "Esc to stop"}
         />
+      </Show>
+      <Show when={a.rewind()}>
+        {(pick) => (
+          <RewindDock
+            mode={pick().mode}
+            files={a.rewindFiles()}
+            blockReason={a.branchBlock()}
+            busy={Boolean(a.pendingAction())}
+            onReview={(path) => void a.openInEditor(path, undefined, a.props.onReviewInEditor ?? a.props.onOpenFile)}
+            onRevert={(ids) => void a.revertFiles(ids)}
+            onKeep={() => void a.keepFiles()}
+            onCancel={a.cancelRewind}
+          />
+        )}
       </Show>
       <Show when={leadRequest()} keyed>
         {(request) => (
@@ -348,6 +383,9 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         <Show when={a.menu() === "attach"}>
           <AttachMenu agentName={props.label} capabilities={a.caps()} handlers={attachHandlers()} disabledReasons={attachReasons()} onClose={() => a.setMenu(null)} returnFocus={() => plus} />
         </Show>
+        <Show when={sessionPick()}>
+          <SessionPicker sessions={a.earlierChats()} onPick={a.attachSession} onClose={() => setSessionPick(false)} returnFocus={() => plus} />
+        </Show>
         <Show when={a.selection() || a.contextPaths().length}>
           <ul class="att-chips agent-contexts" aria-label="Editor context">
             <Show when={a.selection()}>
@@ -378,7 +416,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             </For>
           </ul>
         </Show>
-        <AttachmentTray items={a.attachments()} capabilities={a.caps()} onOpen={(item) => item.status !== "loading" && a.setViewing(item.id)} onRemove={a.removeAttachment} onEmpty={() => input?.focus()} />
+        <AttachmentTray items={a.attachments()} capabilities={a.caps()} onOpen={(item) => { if (item.status !== "loading") a.openAttachment(item); }} onRemove={a.removeAttachment} onEmpty={() => input?.focus()} />
         <Show when={reportable().length}>
           <p class="agent-blocked" role="status">
             {reportable().length === 1 ? `${reportable()[0].item.name} cannot be sent: ${reportable()[0].reason}` : `${reportable().length} attachments cannot be sent to ${props.label}.`} Remove{" "}
@@ -519,6 +557,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           failed: a.state().status === "error",
         }}
         hints={{ mode: hintMode(), hints: a.connected() ? hints() : {} }}
+        delegating={Boolean(a.state().sessionId && a.state().delegation.attached?.sessionId === a.state().sessionId)}
+        delegationActive={a.feed().some((item) => item.kind === "delegation" && !isFinished(item.task.status))}
       />
     </footer>
   );
