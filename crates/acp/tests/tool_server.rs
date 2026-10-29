@@ -2611,9 +2611,15 @@ async fn messages_to_one_delegation_reuse_its_single_child_session() {
     let task = structured(&counted)["taskId"].as_str().unwrap().to_owned();
     let result = client.until_finished(&task).await;
     let summary = result["content"][0]["text"].as_str().unwrap();
+    // The child's words come back framed as untrusted output (ADR 0003).
+    let lines: Vec<&str> = summary.trim().lines().collect();
     assert_eq!(
-        summary.trim().lines().last(),
-        Some("1"),
+        lines[lines.len() - 3..],
+        [
+            "<untrusted-agent-output agent=\"clutter-once\">",
+            "1",
+            "</untrusted-agent-output>"
+        ],
         "one session/new for 5 prompts: {summary}"
     );
     assert!(span_acp::is_delegated_session(&child));
