@@ -65,7 +65,6 @@ describe("language intelligence copy", () => {
     expect(rule).toMatch(/width:\d+px/);
     expect(rule).not.toMatch(/min-width/);
     expect(rule).toContain("font-variant-numeric:tabular-nums");
-    expect(/\.lsp-status-button\{[^}]*font-variant-numeric:tabular-nums/.test(css)).toBe(true);
     expect(/\.lsp-status-button\{[^}]*[^-]width:\d+px/.test(css)).toBe(true);
   });
   it("describes each install phase in a few words", () => {

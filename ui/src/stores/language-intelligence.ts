@@ -9,13 +9,12 @@ import type { CapabilitiesDto, LanguageServerId } from "../bindings";
 import { serverForBuffer } from "../lib/lsp-client";
 import * as copy from "../lib/language-intelligence-copy";
 import type { HubActivity, HubPort } from "../lib/hub-port";
+import { capabilityChips, capabilityOn, languageState, pillLabel, statusTooltip, withPercent, worstState, type CapabilityChip, type LanguageKind, type LanguageState } from "../lib/language-status";
 import { deriveBufferState, type BufferLspState, type LanguageServers, type ServerEntry } from "./language-servers";
 
-export type HubStateKind =
-  | "unknown" | "unavailable" | "disabled" | "idle" | "needs-install" | "installing" | "starting" | "working"
-  | "ready" | "runtime-missing" | "install-failed" | "failed" | "crashed";
+export type HubStateKind = LanguageKind;
 export type HubTone = "ok" | "busy" | "warn" | "bad" | "off";
-export type HubActionId = "install" | "cancel" | "restart" | "start" | "retry" | "settings" | "chooseRuntime" | "checkAgain" | "turnOn" | "trust" | "stopTrusting" | "refresh" | "copyDetails";
+export type HubActionId = "install" | "cancel" | "restart" | "start" | "retry" | "settings" | "chooseRuntime" | "checkAgain" | "turnOn" | "trust" | "stopTrusting" | "refresh" | "copyDetails" | "stop";
 /** At most two per state: the primary one first, then an optional quieter one. */
 export interface HubAction { id: HubActionId; label: string; primary?: boolean }
 export interface ProgressView { percent?: number; indeterminate: boolean; ariaLabel: string }
@@ -27,6 +26,12 @@ export interface CardView {
   technical: string;
   kind: HubStateKind;
   tone: HubTone;
+  /** One of the five visible states, for the pill and the dots. */
+  state: LanguageState;
+  /** The pill word, for example "Ready", "Installing 42%" or "Needs trust". */
+  pill: string;
+  /** All seven capabilities, the unsupported ones off. */
+  chips: CapabilityChip[];
   /** The full state name, for the dot's label and tooltip. */
   stateLabel: string;
   /** One short word next to the dot, empty when the state adds nothing (for example Ready). */
@@ -44,8 +49,11 @@ export interface CardView {
 export interface RowView {
   server: LanguageServerId;
   name: string;
+  /** The server's technical name, for example "rust-analyzer". */
+  technical: string;
   kind: HubStateKind;
   tone: HubTone;
+  state: LanguageState;
   /** A word only when the row is not ready, for example "Not installed" or "Installing 40%". */
   stateText: string;
   version?: string;
@@ -70,11 +78,13 @@ export interface HubView {
   button: {
     tone: HubTone;
     ring: { kind: "none" | "determinate" | "indeterminate"; percent?: number };
+    /** The worst state anywhere: "attention" for an error or a missing install, "restricted" for an untrusted folder. */
     badge?: "attention" | "restricted";
+    badgeState?: "error" | "needs-trust" | "warn";
     label: string;
     tooltip: string;
   };
-  statusBar: { visible: boolean; text: string; tone: HubTone; label: string };
+  statusBar: { visible: boolean; text: string; tone: HubTone; label: string; state: LanguageState; pill: string; tooltip: string };
 }
 
 export interface HubServerSnapshot { id: LanguageServerId; state: BufferLspState; entry?: ServerEntry; activity: readonly HubActivity[]; error?: string }
@@ -122,20 +132,6 @@ export function percentFor(snapshot: HubServerSnapshot, kind: HubStateKind): num
   return undefined;
 }
 
-function capabilityOn(id: string, caps: CapabilitiesDto | undefined | null): boolean {
-  if (!caps) return false;
-  switch (id) {
-    case "completion": return caps.completion;
-    case "diagnostics": return true;
-    case "hover": return caps.hover;
-    case "definition": return caps.definition;
-    case "references": return caps.references;
-    case "rename": return caps.rename;
-    case "format": return caps.formatting || caps.rangeFormatting;
-    default: return false;
-  }
-}
-
 function featuresOn(kind: HubStateKind, caps: CapabilitiesDto | undefined | null): string[] {
   if (kind !== "ready" && kind !== "working") return [];
   return copy.featureSpecs.filter(spec => capabilityOn(spec.id, caps)).map(spec => spec.id);
@@ -176,8 +172,10 @@ function buildCard(snapshot: HubServerSnapshot, input: HubSnapshot, kind: HubSta
   const failureRaw = state.kind === "install-failed" || state.kind === "start-failed" ? state.reason : undefined;
   const failureReason = entry?.hub.failureReason ?? snapshot.error ?? (kind === "install-failed" ? copy.installFailedLine(true) : copy.startFailedLine);
   const failureDetails = entry?.hub.failureDetails ?? (failureRaw && failureRaw !== failureReason ? failureRaw : undefined);
+  const needsTrust = Boolean(entry?.hub.trust.needsTrust) && copy.projectCodeServers.has(id) && !input.trustRestarting;
   const card: CardView = {
     server: id, language: copy.languageNames[id], technical: copy.technicalLabel(id, entry?.version), kind, tone: tones[kind],
+    state: languageState(kind, needsTrust), pill: pillLabel(kind, needsTrust), chips: capabilityChips(kind, entry?.capabilities),
     stateLabel: copy.stateName(kind), stateWord: copy.headerWord(kind), status: "", actions: actionsFor(id, kind, state, Boolean(failureDetails)),
   };
   switch (kind) {
@@ -251,8 +249,9 @@ function buildRow(snapshot: HubServerSnapshot, input: HubSnapshot): RowView {
       default: return undefined;
     }
   })();
+  const needsTrust = Boolean(entry?.hub.trust.needsTrust) && copy.projectCodeServers.has(snapshot.id) && !input.trustRestarting && input.fileServer === snapshot.id;
   return {
-    server: snapshot.id, name: copy.shortLanguageNames[snapshot.id], kind, tone: tones[kind], stateText: copy.rowWord(kind, percent),
+    server: snapshot.id, name: copy.shortLanguageNames[snapshot.id], technical: copy.technicalNames[snapshot.id], kind, tone: tones[kind], state: languageState(kind, needsTrust), stateText: copy.rowWord(kind, percent),
     version: entry?.version ? copy.shortVersion(entry.version) : undefined,
     size: entry?.installed && entry.hub.installedSizeBytes ? copy.formatBytes(entry.hub.installedSizeBytes) : undefined,
     enabled: entry ? entry.enabled : true, current: input.fileServer === snapshot.id, action,
@@ -275,10 +274,15 @@ export function buildHubView(input: HubSnapshot): HubView {
   const restricted = Boolean(card?.trust?.needsTrust) && (focusKind === "ready" || focusKind === "working");
   const summary = copy.buttonSummary(focus?.id, focusKind ?? "unknown", percent, restricted);
   const busy = focusKind === "installing" || focusKind === "working" || focusKind === "starting";
+  // The badge shows the worst state of every enabled server, not only the one behind the active file.
+  const worst = worstState(rows, Boolean(card?.trust?.needsTrust));
+  const focusAttention = Boolean(focusKind && attention.has(focusKind));
+  const badgeState: HubView["button"]["badgeState"] = worst === "error" || (focusAttention && focusKind && tones[focusKind] === "bad") ? "error" : focusAttention ? "warn" : worst;
   const button: HubView["button"] = {
     tone: focusKind ? tones[focusKind] : "off",
     ring: busy ? (focusKind === "starting" || percent === undefined ? { kind: "indeterminate" } : { kind: "determinate", percent }) : { kind: "none" },
-    badge: focusKind && attention.has(focusKind) ? "attention" : restricted ? "restricted" : undefined,
+    badge: badgeState === "error" || badgeState === "warn" ? "attention" : badgeState === "needs-trust" ? "restricted" : undefined,
+    badgeState,
     label: `${copy.hubText.title}. ${summary}.`,
     tooltip: summary,
   };
@@ -296,9 +300,10 @@ export function buildHubView(input: HubSnapshot): HubView {
     title: copy.hubText.title, preview: input.preview, hasFile: input.hasFile, card,
     noCardText: input.hasFile ? copy.hubText.noServer : copy.hubText.noFile,
     rows, banner, button,
-    statusBar: file && fileKind
-      ? { visible: true, text: copy.statusBarText(file.id, fileKind, percent, restricted), tone: tones[fileKind], label: button.label }
-      : { visible: false, text: "", tone: "off", label: "" },
+    statusBar: file && fileKind && card
+      ? { visible: true, text: copy.statusBarText(file.id, fileKind, percent, restricted), tone: tones[fileKind], label: button.label, state: card.state, pill: withPercent(card.pill, percent),
+        tooltip: statusTooltip(copy.shortLanguageNames[file.id], card.technical, withPercent(card.pill, percent)) }
+      : { visible: false, text: "", tone: "off", label: "", state: "off", pill: "", tooltip: "" },
   };
 }
 
@@ -333,6 +338,8 @@ export function createLanguageIntelligence(options: LanguageIntelligenceOptions)
   const { servers } = options;
   const [dismissed, setDismissed] = createSignal<ReadonlySet<string>>(new Set());
   const [restarting, setRestarting] = createSignal<Record<string, number>>({});
+  // A switch flips the row, the dot and the status bar at once. The override drops when the store agrees or the write fails.
+  const [pending, setPending] = createSignal<Partial<Record<LanguageServerId, boolean>>>({});
   const absolute = (path: string) => { const root = options.workspaceRoot(); return root && !/^([A-Za-z]:)?[\\/]/.test(path) ? `${normalize(root)}/${path}` : path; };
   const fileServer = () => { const path = options.activePath(); return path ? serverForBuffer(path) : undefined; };
   const entryOf = (id: LanguageServerId) => servers.entryFor(id, options.activePath() ? absolute(options.activePath()!) : options.workspaceRoot());
@@ -340,10 +347,16 @@ export function createLanguageIntelligence(options: LanguageIntelligenceOptions)
   const snapshot = createMemo<HubSnapshot>(() => {
     const path = options.activePath();
     const current = fileServer();
+    const overrides = pending();
     const list: HubServerSnapshot[] = copy.serverOrder.map(id => {
-      const entry = entryOf(id);
-      const state = id === current && path ? servers.bufferState(path, options.workspaceRoot()) : deriveBufferState(id, entry, servers.progress(id));
-      return { id, state, entry, activity: servers.work(id, entry?.root), error: servers.errorFor(id) || undefined };
+      let entry = entryOf(id);
+      let state = id === current && path ? servers.bufferState(path, options.workspaceRoot()) : deriveBufferState(id, entry, servers.progress(id));
+      const want = overrides[id];
+      if (want !== undefined && entry && entry.enabled !== want) {
+        entry = { ...entry, enabled: want };
+        state = want ? { kind: "starting", server: id } : { kind: "disabled", server: id };
+      }
+      return { id, state, entry, activity: want === false ? [] : servers.work(id, entry?.root), error: servers.errorFor(id) || undefined };
     });
     const entry = current ? list.find(item => item.id === current)?.entry : undefined;
     const mark = restarting()[trustKey(entry, options.workspaceRoot())];
@@ -355,15 +368,27 @@ export function createLanguageIntelligence(options: LanguageIntelligenceOptions)
   });
   const view = createMemo(() => buildHubView(snapshot()));
 
+  async function setEnabled(server: LanguageServerId, enabled: boolean) {
+    setPending({ ...pending(), [server]: enabled });
+    try {
+      await options.setUserSetting(`languageServers.enabled.${server}`, enabled);
+      await servers.refresh();
+    } finally {
+      const { [server]: _done, ...rest } = pending();
+      setPending(rest);
+    }
+  }
+
   async function perform(action: HubActionId, server: LanguageServerId) {
     switch (action) {
+      case "stop": return setEnabled(server, false);
       case "install": return servers.install(server);
       case "cancel": return servers.cancelInstall(server);
       case "restart": case "start": case "checkAgain": return servers.restart(server);
       case "retry": return servers.retry(server);
       case "refresh": return servers.refresh();
       case "settings": return options.openSettings();
-      case "turnOn": return options.setUserSetting(`languageServers.enabled.${server}`, true).then(() => servers.refresh());
+      case "turnOn": return setEnabled(server, true);
       case "chooseRuntime": {
         const picked = await options.pickPath(server === "jdtls" ? "folder" : "file", copy.chooseRuntimeTitle(server));
         if (!picked) return;
@@ -386,8 +411,7 @@ export function createLanguageIntelligence(options: LanguageIntelligenceOptions)
   }
 
   return {
-    view, perform,
-    setEnabled: (server, enabled) => options.setUserSetting(`languageServers.enabled.${server}`, enabled).then(() => servers.refresh()),
+    view, perform, setEnabled,
     dismissBanner: root => setDismissed(new Set([...dismissed(), root])),
     hoverHint: path => {
       const id = serverForBuffer(path);

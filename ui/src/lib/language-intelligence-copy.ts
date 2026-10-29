@@ -23,6 +23,22 @@ export const hubText = {
   why: "Why?",
   closeTrust: "Dismiss",
   hoverTrustHint: "Library types are not loaded until this folder is trusted.",
+  languages: "Languages",
+  filterAll: "All",
+  filterActive: "Active",
+  filterLabel: "Show languages",
+  search: "Filter languages",
+  noMatches: "No languages match.",
+  more: "More actions",
+  restart: "Restart",
+  stop: "Stop",
+  trust: "Trust",
+  capabilities: "Capabilities",
+  unsupported: "not supported",
+  noServerName: "No language support",
+  trustShort: "Build tools stay off, so library types are not loaded. Trust only folders you know.",
+  /** A file whose language has no server in the catalog. There is nothing to install, so say what still works. */
+  noServerFor: (language: string) => `No completions or error checking for ${language}. Editing works as usual.`,
 } as const;
 
 /** Human language names, as shown in the panel header. */
