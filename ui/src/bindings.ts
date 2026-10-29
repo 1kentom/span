@@ -2052,7 +2052,7 @@ export type LanguageServerSettings_Deserialize = {
 	autoInstall?: boolean,
 	/**
 	 *  Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
-	 *  `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+	 *  `rust-analyzer`, `basedpyright`, `jdtls`, `svelte`, `vue`, `astro`). A server that is not listed is enabled.
 	 */
 	enabled?: { [key in string]: boolean },
 	/**  JDK home used to run JDT LS, instead of searching the host. */
@@ -2089,7 +2089,7 @@ export type LanguageServerSettings_Serialize = {
 	autoInstall: boolean,
 	/**
 	 *  Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
-	 *  `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+	 *  `rust-analyzer`, `basedpyright`, `jdtls`, `svelte`, `vue`, `astro`). A server that is not listed is enabled.
 	 */
 	enabled: { [key in string]: boolean },
 	/**  JDK home used to run JDT LS, instead of searching the host. */
