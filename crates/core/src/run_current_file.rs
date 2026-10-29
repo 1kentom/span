@@ -116,7 +116,8 @@ pub fn current_file_run(path: &str) -> CurrentFileRun {
         "sh" => single("sh", &[]),
         "bash" => single("bash", &[]),
         "zsh" => single("zsh", &[]),
-        "java" => single("java", &[]),
+        // Java also expands @argument-files before interpreting source paths.
+        "java" => runnable(path, "java", vec![format!("./{path}")], "."),
         "rs" => rust_run(path),
         "" => unavailable(path, "No runner for files without an extension."),
         other => unavailable(path, format!("No runner for .{other} files.")),
@@ -141,7 +142,17 @@ impl CoreWorkspace {
                 "Save the file to disk before running it.",
             ));
         }
-        Ok(current_file_run(&relative))
+        let plan = current_file_run(&relative);
+        if plan
+            .configuration
+            .as_ref()
+            .is_some_and(|configuration| configuration.executable == "java")
+        {
+            if let Err(error) = self.java_source(&relative, false) {
+                return Ok(unavailable(&relative, error.to_string()));
+            }
+        }
+        Ok(plan)
     }
 }
 
@@ -174,7 +185,7 @@ mod tests {
         assert_eq!(command("bin/setup.bash").0, "bash");
         assert_eq!(
             command("Hello.java"),
-            ("java".into(), vec!["Hello.java".into()], ".".into())
+            ("java".into(), vec!["./Hello.java".into()], ".".into())
         );
         assert_eq!(
             current_file_run("a.py").configuration.unwrap().name,
@@ -254,6 +265,7 @@ mod tests {
         assert!(current_file_run("").reason.is_some());
         assert!(current_file_run("${env:HOME}.py").configuration.is_none());
         assert_eq!(command("-x.py").1, vec!["./-x.py"]);
+        assert_eq!(command("@Test.java").1, vec!["./@Test.java"]);
         assert_eq!(command("dir\\tool.py").1, vec!["dir/tool.py"]);
     }
 }

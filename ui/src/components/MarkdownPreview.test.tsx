@@ -228,4 +228,36 @@ describe("code fence actions", () => {
     expect(onRunCode.mock.calls[0][0]).toMatchObject({ code: "npm run dev", action: "send", detected: true });
     buttons[1].click(); expect(onRunCode).toHaveBeenCalledTimes(1);
   });
+
+  it("reports terminal handoff without claiming that an untracked shell command is running", async () => {
+    let release!: () => void;
+    const onRunCode = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+    const host = document.createElement("div"); document.body.append(host);
+    const code = "printf 'SPAN_INSTALLED_TERMINAL_OK %s\\n' '日本語🌱'";
+    cleanup.push(render(() => <MarkdownPreview text={`\`\`\`bash\n${code}\n\`\`\``} {...context} onRunCode={onRunCode} />, host));
+    const button = host.querySelector<HTMLButtonElement>("[data-markdown-run]")!;
+    const status = host.querySelector(".markdown-code-status")!;
+    button.click(); await Promise.resolve();
+    expect(button.disabled).toBe(true);
+    expect(status.textContent).toBe("Sending to terminal…");
+    expect(onRunCode).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code, language: "bash", action: "run" }));
+    release();
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(status.textContent).toBe("Sent to terminal");
+    expect(status.textContent).not.toContain("Running");
+  });
+
+  it("retains a failed snippet and enables an explicit retry without reporting success", async () => {
+    const onRunCode = vi.fn().mockRejectedValueOnce(new Error("Command session unavailable")).mockResolvedValueOnce(undefined);
+    const host = document.createElement("div"); document.body.append(host);
+    cleanup.push(render(() => <MarkdownPreview text={"```bash\nprintf 'retry me'\n```"} {...context} onRunCode={onRunCode} />, host));
+    const button = host.querySelector<HTMLButtonElement>("[data-markdown-run]")!;
+    button.click();
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(host.querySelector(".markdown-code-status")?.textContent).toBe("Could not send to terminal");
+    expect(host.querySelector("code")?.textContent).toBe("printf 'retry me'\n");
+    button.click();
+    await vi.waitFor(() => expect(host.querySelector(".markdown-code-status")?.textContent).toBe("Sent to terminal"));
+    expect(onRunCode).toHaveBeenCalledTimes(2);
+  });
 });

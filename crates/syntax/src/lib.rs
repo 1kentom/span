@@ -11,7 +11,9 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+mod java_main;
 mod tokens;
+pub use java_main::java_main;
 
 pub use tokens::TOKEN_IDS;
 

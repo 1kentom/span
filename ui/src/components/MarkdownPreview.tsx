@@ -297,11 +297,13 @@ export function MarkdownPreview(props: MarkdownPreviewProps): JSX.Element {
         if (!navigator.clipboard?.writeText) { report("Clipboard unavailable"); return; }
         try { void navigator.clipboard.writeText(text).then(() => report("Copied"), () => report("Could not copy")); } catch { report("Could not copy"); }
       } else if (props.onRunCode) {
+        const runCode = props.onRunCode;
         const fence = describeMarkdownFence(code.dataset.fenceInfo ?? "", text);
         if (!fence.command || !fence.action) return;
         const request: MarkdownRunRequest = { code: fence.command, language: fence.declared || fence.language, documentPath: props.documentPath, workspaceRoot: props.workspaceRoot, sourceLine: Number(code.dataset.sourceLine) || 1, action: fence.action, detected: fence.detected, omittedOutput: fence.omittedOutput };
         target.setAttribute("disabled", "");
-        void Promise.resolve().then(() => props.onRunCode?.(request)).then(() => report(fence.action === "send" ? "Staged in terminal" : "Running in terminal"), () => report("Could not send to terminal")).finally(() => { if (target.isConnected) target.removeAttribute("disabled"); });
+        report("Sending to terminal…");
+        void Promise.resolve().then(() => runCode(request)).then(() => report(fence.action === "send" ? "Staged in terminal" : "Sent to terminal"), () => report("Could not send to terminal")).finally(() => { if (target.isConnected) target.removeAttribute("disabled"); });
       }
       return;
     }

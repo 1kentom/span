@@ -32,3 +32,5 @@
 .np-none{padding:6px 8px 8px;color:var(--dim)}
 @keyframes np-in{from{opacity:0;transform:scale(.97)}}
 @media (prefers-reduced-motion:reduce){.np{animation:none}.tree-edit-input.shake{animation:none}}
+
+.tree-root-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-root>button:first-child{overflow:hidden;white-space:nowrap}.tree-root>.icon-button{flex:none}
