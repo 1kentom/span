@@ -36,6 +36,10 @@ export type SessionsRailProps = {
   /** Shown as an overlay over the thread (narrow windows): Escape closes it. */
   overlay?: boolean;
   onDismiss?: () => void;
+  /** Hides the rail (the header button); the thread stays as it is. */
+  onHide?: () => void;
+  /** Label of the rail toggle shortcut, for the hide button tooltip. */
+  hideShortcut?: string;
   /** Shortcut labels for the search and New session hints. */
   searchShortcut?: string;
   newShortcut?: string;
@@ -205,6 +209,12 @@ export function SessionsRail(props: SessionsRailProps) {
     >
       <header class="ap-pane-head">
         <h2 class="ap-pane-title">Sessions</h2>
+        <span class="ap-grow" />
+        <Show when={props.onHide}>
+          <button type="button" class="ap-icon-btn" aria-label="Hide session list" title={props.hideShortcut ? `Hide session list (${props.hideShortcut})` : "Hide session list"} onClick={() => props.onHide?.()}>
+            <Icon name="panel-left" size={15} />
+          </button>
+        </Show>
       </header>
       <div class="ap-rail-tools">
         <label class="ap-search">

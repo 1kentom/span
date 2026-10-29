@@ -67,6 +67,11 @@ export type AgentPanelProps = {
   /** Removes an installed agent from Span, and with `uninstall` also deletes its managed adapter files. */
   removeAgent?: (id: string, uninstall: boolean) => Promise<void>;
   /** Opens a workspace file in the editor, at `line` (1-based) when given. */
+  /**
+   * Opens a file the user did not click: follow mode and an export. Without it `onOpenFile` is used. The app keeps the
+   * Agents page in place for these instead of switching to the editor.
+   */
+  onRevealFile?: (path: string, line?: number) => void;
   onOpenFile?: (path: string, line?: number) => void;
   onOpenExternal?: (url: string) => void;
   /** The merged `agents.delegation.enabled`. Unset means the default, which is on. */
@@ -1452,7 +1457,7 @@ export function createAgentController(props: AgentPanelProps) {
       const markdown = await sessionExportMarkdown(exportTranscript(title, state().feed));
       const saved = await api.saveAttachment("", exportFileName(title), bytesToBase64(new TextEncoder().encode(markdown)));
       props.onFilesChanged?.();
-      props.onOpenFile?.(saved.path);
+      (props.onRevealFile ?? props.onOpenFile)?.(saved.path);
     } catch (cause) {
       if (!disposed) setSessionsError(`Could not export that chat: ${errorText(cause)}`);
     }
@@ -2162,7 +2167,7 @@ export function createAgentController(props: AgentPanelProps) {
       const key = `${event.toolCallId}:${relative}:${location.line ?? ""}`;
       if (followed.has(key)) return;
       followed.add(key);
-      if (openInEditor(relative, location.line)) return;
+      if (openInEditor(relative, location.line, props.onRevealFile ?? props.onOpenFile)) return;
     }
   }
   const toggleFollow = () => {

@@ -6,7 +6,8 @@ import { agentLimits } from "../../lib/agent-stores/limits";
 import { findHealth } from "../../lib/agent-health";
 import { readLastConfig } from "../../lib/last-config";
 import { friendlyAgentName } from "../../lib/live-agents";
-import { NARROW_WINDOW, RAIL_WIDTH, SIDE_OPEN_KEY, SIDE_WIDTH, SIDE_WIDTH_KEY, clampWidth, currentThreadState, planLimits, railRows, readSideWidth, readStored, readWidth, sidePanelDefault, sidePanelMax, sidePanelOpenByDefault, writeStored, type RailRow } from "../../lib/agents-page";
+import { NARROW_WINDOW, RAIL_WIDTH, SIDE_WIDTH, SIDE_WIDTH_KEY, clampWidth, currentThreadState, planLimits, railRows, readSideWidth, readStored, readWidth, sidePanelDefault, sidePanelMax, sidePanelOpenByDefault, writeStored, type RailRow } from "../../lib/agents-page";
+import { createAgentsPanels, type AgentsPanels } from "../../lib/agents-page-panels";
 import { threadRowMeta } from "../../lib/session-threads";
 import { Modal } from "../Modal";
 import { NewSessionPicker, type PickerAgent } from "./NewSessionPicker";
@@ -22,10 +23,14 @@ export type AgentsPageProps = {
   workspaceRoot?: string;
   workspaceName: string;
   windowWidth: number;
-  /** Switch to Editor mode, where the sidebar shows the same thread. */
+  /** Switch to Editor mode, where the sidebar shows the same thread. Only the thread header's Open in editor calls it. */
   onOpenEditor: () => void;
-  /** Open a workspace file in the editor (switches to Editor mode). */
+  /** Open a workspace file in the editor after an explicit click (the app switches to Editor mode, sidebar closed). */
   onOpenFile: (path: string) => void;
+  /** Rail and side panel open state, shared with the toolbar toggles and shortcuts. The page makes its own without it. */
+  panels?: AgentsPanels;
+  /** Label of the rail toggle shortcut, for the hide button tooltip. */
+  railShortcut?: string;
   /** Bumped by the app for Cmd+N while the page is shown. */
   newRequest?: number;
   searchShortcut?: string;
@@ -43,11 +48,9 @@ export function AgentsPage(props: AgentsPageProps) {
   const a = props.agent;
   const live = liveSessions.use();
   const [now, setNow] = createSignal(Date.now());
-  const [railOpen, setRailOpen] = createSignal(readStored("railOpen") !== "false");
+  const panels = props.panels ?? createAgentsPanels(() => props.workspaceRoot);
   const [railWidth, setRailWidth] = createSignal(readWidth("railWidth", RAIL_WIDTH));
-  // The side panel's open state and width are the user's choice once made; until then they follow the window.
-  const storedOpen = readStored(SIDE_OPEN_KEY);
-  const [sideChoice, setSideChoice] = createSignal<boolean | undefined>(storedOpen === "true" ? true : storedOpen === "false" ? false : undefined);
+  // The side panel's width is the user's choice once made; until then it follows the window.
   const [sideWidth, setSideWidth] = createSignal<number | undefined>(readSideWidth());
   const storedTab = readStored("sideTab");
   const [sideTab, setSideTab] = createSignal<SideTab>(isSideTab(storedTab) ? storedTab : "changes");
@@ -56,23 +59,18 @@ export function AgentsPage(props: AgentsPageProps) {
   const [renaming, setRenaming] = createSignal<{ row: RailRow; title: string }>();
   /** Below `NARROW_WINDOW` the rail leaves the layout and opens as an overlay over the thread. */
   const narrow = () => props.windowWidth < NARROW_WINDOW;
-  const [overlayOpen, setOverlayOpen] = createSignal(false);
-  createEffect(on(narrow, () => setOverlayOpen(false), { defer: true }));
-  const railShown = () => (narrow() ? overlayOpen() : railOpen());
+  createEffect(() => panels.setNarrow(narrow()));
+  const railShown = () => panels.railShown();
   const limits = agentLimits.use();
-  const sideMax = () => sidePanelMax(props.windowWidth, railOpen() && !narrow() ? railWidth() : 0);
+  const sideMax = () => sidePanelMax(props.windowWidth, panels.railOpen() && !narrow() ? railWidth() : 0);
   const shownSideWidth = () => clampWidth(sideWidth() ?? sidePanelDefault(props.windowWidth), SIDE_WIDTH.min, sideMax());
   /** Something for the side panel to show: proposed edits or delegated tasks (the delegates in the Agents tab). */
   const sideHasContent = () => a.feed().some((item) => item.kind === "proposal" || item.kind === "delegation");
-  const sideOpen = () => sideChoice() ?? sidePanelOpenByDefault(props.windowWidth, sideHasContent());
-  const setSideOpen = (open: boolean) => setSideChoice(open);
+  createEffect(() => panels.setSideDefault(sidePanelOpenByDefault(props.windowWidth, sideHasContent())));
+  const sideOpen = () => panels.sideOpen();
+  const setSideOpen = (open: boolean) => panels.setSideOpen(open);
 
-  createEffect(() => writeStored("railOpen", String(railOpen())));
   createEffect(() => writeStored("railWidth", String(railWidth())));
-  createEffect(() => {
-    const choice = sideChoice();
-    if (choice !== undefined) writeStored(SIDE_OPEN_KEY, String(choice));
-  });
   createEffect(() => {
     const width = sideWidth();
     if (width !== undefined) writeStored(SIDE_WIDTH_KEY, String(width));
@@ -87,8 +85,7 @@ export function AgentsPage(props: AgentsPageProps) {
       if (event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey || event.key.toLowerCase() !== "k") return;
       if (!(event.metaKey || event.ctrlKey) || (event.metaKey && event.ctrlKey)) return;
       event.preventDefault();
-      if (narrow()) setOverlayOpen(true);
-      else if (!railOpen()) setRailOpen(true);
+      panels.showRail(true);
       setSearchRequest((value) => value + 1);
     };
     window.addEventListener("keydown", keyboard);
@@ -139,7 +136,7 @@ export function AgentsPage(props: AgentsPageProps) {
   const openRow = (row: RailRow) => {
     if (row.unavailable) return;
     setPicking(false);
-    setOverlayOpen(false);
+    if (narrow()) panels.showRail(false);
     if (row.current) {
       a.focusPrompt();
       return;
@@ -149,7 +146,7 @@ export function AgentsPage(props: AgentsPageProps) {
   const newBlocked = () => (a.working() ? "Wait until the agent finishes connecting" : undefined);
   const newSession = () => {
     if (newBlocked()) return;
-    setOverlayOpen(false);
+    if (narrow()) panels.showRail(false);
     if (a.installed().length) setPicking(true);
     else if (a.connected()) void a.newChat();
     else setup();
@@ -174,15 +171,34 @@ export function AgentsPage(props: AgentsPageProps) {
     else a.connectInstalled(id);
   };
   const footerLimits = createMemo(() => planLimits(a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || friendlyAgentName(entry.id) })), limits.limitedModels(), a.agentId()));
+  /** Choosing, installing, connecting and signing in all happen on the page (ThreadView renders the connect flow). */
   const setup = () => {
+    setPicking(false);
     a.setView("connect");
-    props.onOpenEditor();
   };
+  // The sidebar's History view is the rail here: "/history" and similar entry points open the rail instead.
+  createEffect(
+    on(
+      () => a.view(),
+      (view) => {
+        if (view !== "history") return;
+        a.setView("session");
+        panels.showRail(true);
+        setSearchRequest((value) => value + 1);
+      },
+    ),
+  );
+  /** Something waits for the user in a thread other than the open one: the hidden rail's grip strip carries a dot. */
+  const attention = () => rows().some((row) => !row.current && (row.state === "needs" || row.state === "failed"));
+  createEffect(() => panels.setAttention(attention()));
   createEffect(on(() => props.newRequest, (value) => value && newSession(), { defer: true }));
   const showTask = (taskId: string) => {
     const card = document.querySelector<HTMLElement>(`.ap-thread [data-task-id="${CSS.escape(taskId)}"]`);
     if (!card) return;
     a.setPinned(false);
+    // "Open session" in the Agents tab opens the child session inside its delegation card, in this thread.
+    const toggle = card.querySelector<HTMLButtonElement>(".sb-delegation-open");
+    if (toggle?.getAttribute("aria-expanded") === "false") toggle.click();
     card.scrollIntoView({ block: "nearest", behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     card.focus({ preventScroll: true });
   };
@@ -190,25 +206,19 @@ export function AgentsPage(props: AgentsPageProps) {
 
   return (
     <div class="ap-page" classList={{ narrow: narrow() }} style={{ "--ap-rail-width": `${railWidth()}px`, "--ap-side-width": `${shownSideWidth()}px` }}>
-      <Show when={narrow() && overlayOpen()}>
-        <button type="button" class="ap-scrim" aria-label="Close sessions" tabIndex={-1} onClick={() => setOverlayOpen(false)} />
+      <Show when={narrow() && railShown()}>
+        <button type="button" class="ap-scrim" aria-label="Close sessions" tabIndex={-1} onClick={() => panels.showRail(false)} />
       </Show>
       <Show
         when={railShown()}
         fallback={
-          <button
-            type="button"
-            class="ap-rail-restore"
-            aria-label={rows().some((row) => row.state === "needs" || row.state === "failed") ? "Show sessions, some need you" : "Show sessions"}
-            title="Show sessions"
-            onClick={() => (narrow() ? setOverlayOpen(true) : setRailOpen(true))}
-          >
+          <button type="button" class="ap-rail-restore" aria-label={attention() ? "Show session list, a session needs you" : "Show session list"} title="Show session list" onClick={() => panels.showRail(true)}>
             <span class="ap-grip-dots" aria-hidden="true">
               <i />
               <i />
               <i />
             </span>
-            <Show when={rows().some((row) => row.state === "needs" || row.state === "failed")}>
+            <Show when={attention()}>
               <span class="ap-attention-dot" aria-hidden="true" />
             </Show>
           </button>
@@ -236,11 +246,13 @@ export function AgentsPage(props: AgentsPageProps) {
           onFork={a.canFork() && a.state().canLoad ? (row) => void a.forkChat(row.sessionId) : undefined}
           onExport={a.canExport() ? (row) => void a.exportChat(row.sessionId) : undefined}
           overlay={narrow()}
-          onDismiss={() => setOverlayOpen(false)}
+          onDismiss={() => panels.showRail(false)}
+          onHide={() => panels.showRail(false)}
+          hideShortcut={props.railShortcut}
           footer={<PlanLimits limits={footerLimits()} now={now()} />}
         />
         <Show when={!narrow()}>
-          <PageGrip label="Resize sessions" side="left" value={railWidth()} min={RAIL_WIDTH.min} max={RAIL_WIDTH.max} onResize={setRailWidth} onReset={() => setRailWidth(RAIL_WIDTH.initial)} onCollapse={() => setRailOpen(false)} collapseBelow={150} />
+          <PageGrip label="Resize sessions" side="left" value={railWidth()} min={RAIL_WIDTH.min} max={RAIL_WIDTH.max} onResize={setRailWidth} onReset={() => setRailWidth(RAIL_WIDTH.initial)} onCollapse={() => panels.showRail(false)} collapseBelow={150} />
         </Show>
       </Show>
       <ThreadView
@@ -252,8 +264,8 @@ export function AgentsPage(props: AgentsPageProps) {
           setSideOpen(true);
         }}
         sideOpen={sideOpen()}
-        onToggleSide={() => setSideOpen(!sideOpen())}
-        onSetup={setup}
+        onToggleSide={() => panels.toggleSide()}
+        onChooseAgent={setup}
         picker={
           picking() || (!a.connected() && a.installed().length > 0 && !a.feed().length) ? (
             <NewSessionPicker
