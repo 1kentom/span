@@ -126,6 +126,7 @@ describe("fixture: language server popover", () => {
     const alert = m.root.querySelector("[role=alert]")!;
     expect(text(alert as HTMLElement, ".hub-error-reason")).toBe("Could not download Java support.");
     expect(text(alert as HTMLElement, ".hub-error-details")).toBe("GET https://x: reset");
+    expect(m.root.querySelector(".hub-chips"), "no chips while nothing runs").toBeNull();
     button(m.root, "Retry").click();
     expect(m.onAction).toHaveBeenCalledWith("retry", "jdtls");
     button(m.root, "Copy details").click();

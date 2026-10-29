@@ -183,7 +183,7 @@ export function LanguageIntelligencePanel(props: LanguageIntelligencePanelProps)
       </div>
     </Show>
 
-    <Show when={card()}>{current => <ul class="hub-chips" aria-label={copy.hubText.capabilities}>
+    <Show when={card()?.chips.some(chip => chip.on) ? card() : undefined}>{current => <ul class="hub-chips" aria-label={copy.hubText.capabilities}>
       <For each={current().chips}>{chip => <li class="hub-chip" data-on={chip.on}>{chip.label}<Show when={!chip.on}><span class="sr-only">, {copy.hubText.unsupported}</span></Show></li>}</For>
     </ul>}</Show>
 
