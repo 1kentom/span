@@ -6,7 +6,7 @@ import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDele
 import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
 import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
 import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
-import { liveAgentsOf, type LiveState } from "./live-agents";
+import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { RUN_TEXT } from "./agent-hint-text";
@@ -28,7 +28,7 @@ import {
   markUrlOpened,
 } from "./agent-session";
 
-import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
+import { buildPrompt, coerceAnswer, configViews, currentChoice, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
 import { bytesToBase64, createFileAttachment, createFolderAttachment, folderOutline, isInWorkspace, needsStoredLink, planAttachment, redactPaths, type Attachment, type PromptCapabilities } from "./attachments";
 import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
 import { feedTurns } from "./agent-handoff";
@@ -1390,15 +1390,12 @@ export function createAgentController(props: AgentPanelProps) {
       .segments.filter((segment) => !(segment.sessionId === current && (!id || segment.agentId === id)))
       .map((segment) => ({ id: segment.agentId, name: segment.connectionName || registryName(segment.agentId) || segment.agentId }));
     return liveAgentsOf({
-      lead: { id, name: (id && registryName(id)) || agentLabel(), state: leadState() },
+      lead: { id, name: (id && registryName(id)) || agentLabel(), state: leadState(), detail: currentChoice(configViews(state().config).find((option) => option.category === "model"))?.name },
       tasks: state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])),
       waiting: (task) => childPermissionList().some((entry) => permissionWaitsOn(entry, task)),
       earlier,
       health: health(),
-      resolve: (name) => {
-        const entry = installed().find((agent) => agent.id.toLowerCase() === name.toLowerCase());
-        return entry ? { id: entry.id, name: registryName(entry.id) || entry.id } : undefined;
-      },
+      resolve: (name) => resolveInstalled(name, installed().map((agent) => ({ id: agent.id, name: registryName(agent.id) }))),
     });
   });
   /** The open chat's title: the thread's user title, else the title it had when it switched agent, else the agent's. */
