@@ -201,6 +201,102 @@ export const api = {
     return commands.gitCommit(context, message, expectedIndexRevision, expectedStagedSnapshot);
   },
 
+  async gitFileBaseline(...args: Parameters<typeof commands.gitFileBaseline>) {
+    if (!isDesktop) nativeRequired('Reading Git file baselines');
+    return commands.gitFileBaseline(...args);
+  },
+  async gitBlame(...args: Parameters<typeof commands.gitBlame>) {
+    if (!isDesktop) nativeRequired('Reading Git blame');
+    return commands.gitBlame(...args);
+  },
+  async gitBranches(...args: Parameters<typeof commands.gitBranches>) {
+    if (!isDesktop) nativeRequired('Reading Git branches');
+    return commands.gitBranches(...args);
+  },
+  async gitCheckout(...args: Parameters<typeof commands.gitCheckout>) {
+    if (!isDesktop) nativeRequired('Switching Git branches');
+    return commands.gitCheckout(...args);
+  },
+  async gitRemote(...args: Parameters<typeof commands.gitRemote>) {
+    if (!isDesktop) nativeRequired('Running Git remote operations');
+    return commands.gitRemote(...args);
+  },
+  async gitStashes(...args: Parameters<typeof commands.gitStashes>) {
+    if (!isDesktop) nativeRequired('Reading Git stashes');
+    return commands.gitStashes(...args);
+  },
+  async gitStash(...args: Parameters<typeof commands.gitStash>) {
+    if (!isDesktop) nativeRequired('Updating Git stashes');
+    return commands.gitStash(...args);
+  },
+  async gitWorktrees(...args: Parameters<typeof commands.gitWorktrees>) {
+    if (!isDesktop) nativeRequired('Reading Git worktrees');
+    return commands.gitWorktrees(...args);
+  },
+  async gitWorktreeAdd(...args: Parameters<typeof commands.gitWorktreeAdd>) {
+    if (!isDesktop) nativeRequired('Creating Git worktrees');
+    return commands.gitWorktreeAdd(...args);
+  },
+  async gitWorktreeRemove(...args: Parameters<typeof commands.gitWorktreeRemove>) {
+    if (!isDesktop) nativeRequired('Removing Git worktrees');
+    return commands.gitWorktreeRemove(...args);
+  },
+  async gitCommitDetails(...args: Parameters<typeof commands.gitCommitDetails>) {
+    if (!isDesktop) nativeRequired('Reading Git commit details');
+    return commands.gitCommitDetails(...args);
+  },
+
+  async gitHunkDiff(...args: Parameters<typeof commands.gitHunkDiff>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitHunkDiff(...args);
+  },
+  async gitApplyHunk(...args: Parameters<typeof commands.gitApplyHunk>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitApplyHunk(...args);
+  },
+  async gitTags(...args: Parameters<typeof commands.gitTags>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitTags(...args);
+  },
+  async gitCreateTag(...args: Parameters<typeof commands.gitCreateTag>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitCreateTag(...args);
+  },
+  async gitDeleteTag(...args: Parameters<typeof commands.gitDeleteTag>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitDeleteTag(...args);
+  },
+  async gitMergeFastForward(...args: Parameters<typeof commands.gitMergeFastForward>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitMergeFastForward(...args);
+  },
+
+  async gitIntegrationState(...args: Parameters<typeof commands.gitIntegrationState>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitIntegrationState(...args);
+  },
+  async gitRebase(...args: Parameters<typeof commands.gitRebase>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitRebase(...args);
+  },
+  async gitRebaseControl(...args: Parameters<typeof commands.gitRebaseControl>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitRebaseControl(...args);
+  },
+  async gitMarkResolved(...args: Parameters<typeof commands.gitMarkResolved>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitMarkResolved(...args);
+  },
+  async gitRemotes(...args: Parameters<typeof commands.gitRemotes>) {
+    if (!isDesktop) nativeRequired('Git repository operations');
+    return commands.gitRemotes(...args);
+  },
+
+  async gitDiscardFile(...args: Parameters<typeof commands.gitDiscardFile>) {
+    if (!isDesktop) nativeRequired('Discarding Git working changes');
+    return commands.gitDiscardFile(...args);
+  },
+
   // Interactive terminal commands always use the native PTY backend.
   async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>, profileId?: string): Promise<TerminalInfo> {
     if (!isDesktop) nativeRequired('Creating terminal sessions');

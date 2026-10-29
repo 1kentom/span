@@ -5,7 +5,7 @@ import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, foldSer
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from "@codemirror/commands";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from "@codemirror/search";
-import type { BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEdit } from "../bindings";
+import type { GitBlame, GitFileBaseline_Serialize, BufferSnapshot, EditProposal, ProposalHunk, SyntaxSnapshot, TextEdit } from "../bindings";
 import { loadLanguage, resolveLanguageId } from "../editor/languages";
 import { completionTabSupport } from "../editor/completion-tab";
 import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/search-panel";
@@ -18,6 +18,10 @@ import { indentationSupport } from "../editor/indentation";
 import { selectionPointer } from "../editor/selection-pointer";
 import { lineSelection } from "../editor/line-selection";
 import { markdownFiles, urlPasteSpec, type MarkdownFilePort } from "../editor/markdown-paste";
+import { gitInlineBlame, setGitBlame, type GitBlameConfig } from "../editor/git-blame";
+import { gitGutter, navigateGitChange, setGitBaseline } from "../editor/git-gutter";
+import Icon from "./Icon";
+import "../styles/git-decorations.css";
 import "../styles/editor.css";
 import "../styles/syntax.css";
 
@@ -44,6 +48,8 @@ export interface EditorCommands {
   paste: () => Promise<void>;
   selectAll: () => void;
   expandAbbreviation: () => void;
+  nextGitChange: () => void;
+  previousGitChange: () => void;
 }
 
 export interface ClipboardPort { readText: () => Promise<string>; writeText: (text: string) => Promise<void> }
@@ -58,6 +64,9 @@ export interface EditorCursor {
 
 export interface EditorProps {
   buffer: BufferSnapshot;
+  gitBaseline?: GitFileBaseline_Serialize;
+  gitBlame?: GitBlame;
+  gitBlameEnabled?: boolean;
   document?: Text;
   change?: EditorDocumentChange;
   onEdit: (edit: EditorEdit) => void;
@@ -304,6 +313,11 @@ export default function Editor(props: EditorProps) {
   let historyOrigin = {};
   let proposalId: string | undefined;
   let proposalGeneration = 0;
+  let appliedGitBaseline: string | undefined;
+  let appliedGitBlame: GitBlameConfig | undefined;
+  const gitBlameConfig = (): GitBlameConfig => ({ enabled: props.gitBlameEnabled ?? true, baseline: props.gitBaseline && !props.gitBaseline.binary && !props.gitBaseline.truncated ? props.gitBaseline.headText ?? undefined : undefined, blame: props.gitBlame });
+  const [gitChangeCount, setGitChangeCount] = createSignal(0);
+  const gitBaseline = () => props.gitBaseline && !props.gitBaseline.binary && !props.gitBaseline.truncated ? props.gitBaseline.indexText ?? "" : undefined;
   const [selectedHunks, setSelectedHunks] = createSignal(new Set<string>());
   const [proposalChanged, setProposalChanged] = createSignal(false);
   const language = new Compartment();
@@ -330,6 +344,8 @@ export default function Editor(props: EditorProps) {
     });
   }
   const commands: EditorCommands = {
+    nextGitChange: () => { if (view && props.active !== false) navigateGitChange(view, 1); },
+    previousGitChange: () => { if (view && props.active !== false) navigateGitChange(view, -1); },
     find: () => { if (view && props.active !== false) openSearchPanel(view); },
     replace: () => {
       if (!view || props.active === false) return;
@@ -391,7 +407,7 @@ export default function Editor(props: EditorProps) {
       // Tooltips may only use the editor itself. The default is the whole window, which puts a tall hover under the tab bar.
       tooltips({ tooltipSpace: view => { const box = view.scrollDOM.getBoundingClientRect(); return { top: box.top, left: box.left, bottom: box.bottom, right: box.right }; } }),
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), activeLineLayer(), drawSelection(), selectionPointer(), lineSelection(), indentationSupport(),
-      javaRun.of(javaRunExtensions()),
+      javaRun.of(javaRunExtensions()), gitGutter(appliedGitBaseline = gitBaseline(), setGitChangeCount), gitInlineBlame(appliedGitBlame = gitBlameConfig()),
       props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),
       closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
         const marker = document.createElement("span");
@@ -455,6 +471,8 @@ export default function Editor(props: EditorProps) {
   createEffect(() => {
     const snapshot = { path: props.buffer.path, language: props.buffer.language, text: props.buffer.text, revision: props.buffer.revision };
     const syntax = props.syntax;
+    const baseline = gitBaseline();
+    const blame = gitBlameConfig();
     const nextDocument = props.document;
     const transition = props.change;
     const theme = props.theme;
@@ -486,6 +504,8 @@ export default function Editor(props: EditorProps) {
         : transition && transition.before === sharedDocument ? transition.changes
         : persistentDocumentChange(view.state.doc, wanted);
       const effects: StateEffect<unknown>[] = [];
+      if (appliedGitBlame?.enabled !== blame.enabled || appliedGitBlame?.baseline !== blame.baseline || appliedGitBlame?.blame !== blame.blame) { appliedGitBlame = blame; effects.push(setGitBlame.of(blame)); }
+      if (appliedGitBaseline !== baseline) { appliedGitBaseline = baseline; effects.push(setGitBaseline.of(baseline)); }
       if (canRunJava !== javaRunEnabled) { javaRunEnabled = canRunJava; effects.push(javaRun.reconfigure(canRunJava ? javaRunGutter(() => props.onJavaRun?.()) : [])); }
       if (snapshot.language !== currentLanguage) {
         currentLanguage = snapshot.language;
@@ -555,6 +575,7 @@ export default function Editor(props: EditorProps) {
       <div class="editor-proposal-summary"><strong>{proposalIsStale() ? "Proposal needs a fresh revision" : `${proposal().hunks.length} suggested ${proposal().hunks.length === 1 ? "change" : "changes"}`}</strong><span>{proposalIsStale() ? "This file changed. Reject this proposal and request a new one." : "Keep or skip each change, then apply your selection."}</span></div>
       <div class="editor-proposal-actions"><button type="button" class="proposal-reject" disabled={props.proposalBusy || !props.onRejectProposal} onClick={() => props.onRejectProposal?.(proposal().id)}>Reject proposal</button><button type="button" class="proposal-apply" disabled={props.proposalBusy || proposalIsStale() || selectedHunks().size === 0 || !props.onApplyProposal} onClick={() => props.onApplyProposal?.(proposal().id, [...selectedHunks()])}>{props.proposalBusy ? "Reviewing…" : `Apply selected (${selectedHunks().size})`}</button></div>
     </div>}</Show>
+    <Show when={gitChangeCount() > 0}><div class="editor-git-changes" role="group" aria-label="Git change navigation"><span>{gitChangeCount()} {gitChangeCount() === 1 ? "change" : "changes"}</span><button type="button" aria-label="Previous Git change" title="Previous Git change" onClick={commands.previousGitChange}><Icon name="arrow-up3" size={13} /></button><button type="button" aria-label="Next Git change" title="Next Git change" onClick={commands.nextGitChange}><Icon name="arrow-down4" size={13} /></button></div></Show>
     <div class="span-editor-surface" ref={host} />
   </div>;
 }

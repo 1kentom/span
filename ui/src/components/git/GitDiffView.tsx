@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
-import type { GitDiff, GitCommit } from "../../bindings";
+import type { GitDiff, GitCommit, GitHunkDiff } from "../../bindings";
 import { gitCommitDate } from "../../lib/git-format";
 import Icon from "../Icon";
 import { gitDiffLinesCapped, gitNewFileRows, gitPatchRows, MAX_GIT_DIFF_LINES } from "../../lib/git-diff";
@@ -16,6 +16,10 @@ type GitDiffViewProps = {
   outsideWorkspace?: boolean;
   repositoryRoot?: string;
   commit?: GitCommit;
+  hunkData?: GitHunkDiff;
+  hunkActionDisabled?: boolean;
+  onHunkAction?: (id: string) => void;
+  actionError?: string;
 };
 
 export function GitDiffView(props: GitDiffViewProps) {
@@ -59,6 +63,7 @@ export function GitDiffView(props: GitDiffViewProps) {
       <Show when={props.diff?.side !== "commit"}>
         <p class="git-note">Saved disk and index snapshots. Unsaved editor content is not included.</p>
       </Show>
+      <Show when={props.actionError}><div class="git-error" role="alert">{props.actionError}</div></Show>
       <Show when={props.error}><div class="git-error" role="alert">{props.error}</div></Show>
       <Show when={props.loading && !props.diff}><div class="git-empty" role="status">Loading comparison…</div></Show>
       <Show when={props.diff}>{diff => (
@@ -81,7 +86,8 @@ export function GitDiffView(props: GitDiffViewProps) {
                   <span class={`git-patch-line git-line-${row.kind}`}>
                     <span class="git-line-number" aria-hidden="true">{row.oldLine}</span>
                     <span class="git-line-number" aria-hidden="true">{row.newLine}</span>
-                    <span>{row.text || " "}</span>{"\n"}
+                    <span>{row.text || " "}</span>
+                    <Show when={props.onHunkAction && row.kind === "header" && props.hunkData?.hunks.find(hunk => hunk.header === row.text)}>{hunk => <button class="git-hunk-action" disabled={props.loading || props.hunkActionDisabled} aria-label={`${props.diff?.side === "staged" ? "Unstage" : "Stage"} hunk ${hunk().header}`} onClick={() => props.onHunkAction?.(hunk().id)}>{props.diff?.side === "staged" ? "Unstage hunk" : "Stage hunk"}</button>}</Show>{"\n"}
                   </span>
                 )}</For>
               </pre>

@@ -1,5 +1,11 @@
 //! Local Git operates on repository files and the index, never editor buffers.
+mod advanced;
+mod advanced_types;
+mod extended;
 mod history;
+pub use advanced_types::*;
+#[cfg(test)]
+mod advanced_tests;
 mod mutation;
 mod process;
 mod read;
@@ -50,6 +56,14 @@ struct RepoIdentity {
 }
 
 impl CoreWorkspace {
+    /// Called while the desktop holds the workspace lock through a working-tree mutation.
+    pub fn git_has_dirty_buffers(&self) -> bool {
+        self.buffers
+            .values()
+            .any(|buffer| buffer.revision != buffer.saved_revision)
+            || self.has_dirty_settings_buffer()
+    }
+
     /// Capture under the editor mutex, then run Git after releasing it.
     pub fn git_service(&self) -> Result<GitService> {
         if self.root.as_os_str().is_empty() {
@@ -665,7 +679,7 @@ fn require_success(output: &GitOutput) -> Result<()> {
     Err(error(if message.trim().is_empty() {
         format!("Git exited with status {:?}", output.code)
     } else {
-        message.trim().to_owned()
+        redact_git_output(message.trim())
     }))
 }
 fn operation(repo: &RepoIdentity) -> Option<String> {
@@ -699,8 +713,34 @@ fn relative_path(path: &str) -> Result<PathBuf> {
             "Git paths must be literal paths inside the repository",
         ));
     }
-    if value.components().any(|p| p.as_os_str() == ".git") {
+    if value
+        .components()
+        .any(|p| p.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))
+    {
         return Err(error("Git metadata cannot be selected as working files"));
     }
     Ok(value.to_owned())
+}
+
+/// Avoid forwarding credentials embedded in remote URL diagnostics to the UI.
+fn redact_git_output(value: &str) -> String {
+    let mut result = value.to_owned();
+    let mut offset = 0;
+    while let Some(scheme) = result[offset..].find("://") {
+        let start = offset + scheme + 3;
+        let end = result[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '/' | '\'' | '\"' | '<' | '>'))
+            .map(|i| start + i)
+            .unwrap_or(result.len());
+        if let Some(at) = result[start..end].rfind('@') {
+            result.replace_range(start..start + at, "[redacted]");
+            offset = start + "[redacted]".len() + 1;
+        } else {
+            offset = end;
+        }
+        if offset >= result.len() {
+            break;
+        }
+    }
+    result
 }

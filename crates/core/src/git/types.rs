@@ -126,3 +126,122 @@ pub struct GitCommitResult {
     /// A commit can succeed before a post-commit hook times out or fails.
     pub warning: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileBaseline {
+    pub repository_id: String,
+    pub path: String,
+    pub index_revision: String,
+    pub head_text: Option<String>,
+    pub index_text: Option<String>,
+    pub binary: bool,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranch {
+    pub name: String,
+    pub commit_id: String,
+    pub remote: bool,
+    pub current: bool,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GitRemoteAction {
+    Fetch,
+    Pull,
+    Push,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GitStashAction {
+    Save,
+    Apply,
+    Pop,
+    Drop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitOperationResult {
+    pub status: GitStatus,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStash {
+    pub id: String,
+    pub selector: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktree {
+    pub path: String,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub bare: bool,
+    pub locked: bool,
+    pub prunable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitDetails {
+    pub commit: GitCommit,
+    pub files: Vec<GitCommitFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBlame {
+    pub repository_id: String,
+    pub path: String,
+    pub head: Option<String>,
+    pub lines: Vec<GitBlameLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBlameLine {
+    pub line: u32,
+    pub original_line: u32,
+    pub commit_id: String,
+    pub author: String,
+    pub author_email: String,
+    pub timestamp: i64,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRemote {
+    pub name: String,
+    pub fetch_url: String,
+    pub push_url: String,
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRemotes {
+    pub remotes: Vec<GitRemote>,
+    pub config_fingerprint: String,
+}

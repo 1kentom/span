@@ -38,10 +38,7 @@ pub use format::{
     native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
     FormatResult,
 };
-pub use git::{
-    GitChange, GitCommit, GitCommitResult, GitContext, GitDiff, GitDiffSide, GitHistoryPage,
-    GitHistoryQuery, GitRepository, GitService, GitStatus,
-};
+pub use git::*;
 pub use images::RasterImage;
 pub use pdf_pages::pdf_page_count;
 pub use recent::{RecentProject, RecentProjectStore};

@@ -15,6 +15,29 @@ export const commands = {
 	gitStage: (context: GitContext_Deserialize, paths: string[], expectedIndexRevision: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_stage", { context, paths, expectedIndexRevision }),
 	gitUnstage: (context: GitContext_Deserialize, paths: string[], expectedIndexRevision: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_unstage", { context, paths, expectedIndexRevision }),
 	gitCommit: (context: GitContext_Deserialize, message: string, expectedIndexRevision: string, expectedStagedSnapshot: string) => __TAURI_INVOKE<GitCommitResult_Serialize>("git_commit", { context, message, expectedIndexRevision, expectedStagedSnapshot }),
+	gitIntegrationState: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitIntegrationState_Serialize>("git_integration_state", { context }),
+	gitRebase: (context: GitContext_Deserialize, targetId: string, expectedIndexRevision: string) => __TAURI_INVOKE<GitIntegrationResult_Serialize>("git_rebase", { context, targetId, expectedIndexRevision }),
+	gitRebaseControl: (context: GitContext_Deserialize, action: GitRebaseAction, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitIntegrationResult_Serialize>("git_rebase_control", { context, action, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitMarkResolved: (context: GitContext_Deserialize, path: string, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitIntegrationState_Serialize>("git_mark_resolved", { context, path, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitHunkDiff: (context: GitContext_Deserialize, path: string, side: GitDiffSide, expectedIndexRevision: string) => __TAURI_INVOKE<GitHunkDiff_Serialize>("git_hunk_diff", { context, path, side, expectedIndexRevision }),
+	gitApplyHunk: (context: GitContext_Deserialize, path: string, side: GitDiffSide, hunkId: string, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_apply_hunk", { context, path, side, hunkId, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitTags: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitTag[]>("git_tags", { context }),
+	gitCreateTag: (context: GitContext_Deserialize, name: string, targetId: string) => __TAURI_INVOKE<GitTag[]>("git_create_tag", { context, name, targetId }),
+	gitDeleteTag: (context: GitContext_Deserialize, name: string, expectedObjectId: string) => __TAURI_INVOKE<GitTag[]>("git_delete_tag", { context, name, expectedObjectId }),
+	gitMergeFastForward: (context: GitContext_Deserialize, targetId: string, expectedIndexRevision: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_merge_fast_forward", { context, targetId, expectedIndexRevision }),
+	gitFileBaseline: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<GitFileBaseline_Serialize>("git_file_baseline", { context, path }),
+	gitBlame: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<GitBlame_Serialize>("git_blame", { context, path }),
+	gitBranches: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitBranch_Serialize[]>("git_branches", { context }),
+	gitCheckout: (context: GitContext_Deserialize, branch: string, create: boolean, expectedIndexRevision: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_checkout", { context, branch, create, expectedIndexRevision }),
+	gitRemote: (context: GitContext_Deserialize, action: GitRemoteAction, expectedConfigFingerprint: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_remote", { context, action, expectedConfigFingerprint }),
+	gitDiscardFile: (context: GitContext_Deserialize, path: string, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitDiscardResult_Serialize>("git_discard_file", { context, path, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitRemotes: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitRemotes>("git_remotes", { context }),
+	gitStashes: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStash[]>("git_stashes", { context }),
+	gitStash: (context: GitContext_Deserialize, action: GitStashAction, stashId: string | null, message: string | null, expectedIndexRevision: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_stash", { context, action, stashId, message, expectedIndexRevision }),
+	gitWorktrees: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitWorktree_Serialize[]>("git_worktrees", { context }),
+	gitWorktreeAdd: (context: GitContext_Deserialize, path: string, branch: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_worktree_add", { context, path, branch }),
+	gitWorktreeRemove: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_worktree_remove", { context, path }),
+	gitCommitDetails: (context: GitContext_Deserialize, commitId: string) => __TAURI_INVOKE<GitCommitDetails_Serialize>("git_commit_details", { context, commitId }),
 	runConfigurations: () => __TAURI_INVOKE<RunCatalog_Serialize>("run_configurations"),
 	runContext: () => __TAURI_INVOKE<RunContext_Serialize>("run_context"),
 	pendingRunApprovals: () => __TAURI_INVOKE<RunApprovalRequest[]>("pending_run_approvals"),
@@ -1873,6 +1896,54 @@ export type FormatWarning = {
 	message: string,
 };
 
+export type GitBlame = GitBlame_Serialize | GitBlame_Deserialize;
+
+export type GitBlameLine = {
+	line: number,
+	originalLine: number,
+	commitId: string,
+	author: string,
+	authorEmail: string,
+	timestamp: number,
+	summary: string,
+};
+
+export type GitBlame_Deserialize = {
+	repositoryId: string,
+	path: string,
+	head?: string | null,
+	lines: GitBlameLine[],
+};
+
+export type GitBlame_Serialize = {
+	repositoryId: string,
+	path: string,
+	head: string | null,
+	lines: GitBlameLine[],
+};
+
+export type GitBranch = GitBranch_Serialize | GitBranch_Deserialize;
+
+export type GitBranch_Deserialize = {
+	name: string,
+	commitId: string,
+	remote: boolean,
+	current: boolean,
+	upstream?: string | null,
+	ahead: number,
+	behind: number,
+};
+
+export type GitBranch_Serialize = {
+	name: string,
+	commitId: string,
+	remote: boolean,
+	current: boolean,
+	upstream: string | null,
+	ahead: number,
+	behind: number,
+};
+
 export type GitChange = GitChange_Serialize | GitChange_Deserialize;
 
 export type GitChange_Deserialize = {
@@ -1913,6 +1984,32 @@ export type GitCommit = {
 	timestamp: number,
 	subject: string,
 	body: string,
+};
+
+export type GitCommitDetails = GitCommitDetails_Serialize | GitCommitDetails_Deserialize;
+
+export type GitCommitDetails_Deserialize = {
+	commit: GitCommit,
+	files: GitCommitFile_Deserialize[],
+};
+
+export type GitCommitDetails_Serialize = {
+	commit: GitCommit,
+	files: GitCommitFile_Serialize[],
+};
+
+export type GitCommitFile = GitCommitFile_Serialize | GitCommitFile_Deserialize;
+
+export type GitCommitFile_Deserialize = {
+	path: string,
+	oldPath?: string | null,
+	status: string,
+};
+
+export type GitCommitFile_Serialize = {
+	path: string,
+	oldPath: string | null,
+	status: string,
 };
 
 export type GitCommitResult = GitCommitResult_Serialize | GitCommitResult_Deserialize;
@@ -1983,6 +2080,42 @@ export type GitDiff_Serialize = {
 	commitId: string | null,
 };
 
+export type GitDiscardResult = GitDiscardResult_Serialize | GitDiscardResult_Deserialize;
+
+export type GitDiscardResult_Deserialize = {
+	state: GitIntegrationState_Deserialize,
+	/**  Local recovery copy of the discarded working bytes. Never staged by this action. */
+	recoveryPath: string,
+};
+
+export type GitDiscardResult_Serialize = {
+	state: GitIntegrationState_Serialize,
+	/**  Local recovery copy of the discarded working bytes. Never staged by this action. */
+	recoveryPath: string,
+};
+
+export type GitFileBaseline = GitFileBaseline_Serialize | GitFileBaseline_Deserialize;
+
+export type GitFileBaseline_Deserialize = {
+	repositoryId: string,
+	path: string,
+	indexRevision: string,
+	headText?: string | null,
+	indexText?: string | null,
+	binary: boolean,
+	truncated: boolean,
+};
+
+export type GitFileBaseline_Serialize = {
+	repositoryId: string,
+	path: string,
+	indexRevision: string,
+	headText: string | null,
+	indexText: string | null,
+	binary: boolean,
+	truncated: boolean,
+};
+
 export type GitHistoryPage = GitHistoryPage_Serialize | GitHistoryPage_Deserialize;
 
 export type GitHistoryPage_Deserialize = {
@@ -2015,6 +2148,84 @@ export type GitHistoryQuery_Serialize = {
 	path: string | null,
 };
 
+export type GitHunk = {
+	id: string,
+	header: string,
+	patch: string,
+};
+
+export type GitHunkDiff = GitHunkDiff_Serialize | GitHunkDiff_Deserialize;
+
+export type GitHunkDiff_Deserialize = {
+	diff: GitDiff_Deserialize,
+	/**  The disk snapshot is checked for both staging and unstaging. */
+	worktreeSnapshot: string,
+	hunks: GitHunk[],
+};
+
+export type GitHunkDiff_Serialize = {
+	diff: GitDiff_Serialize,
+	/**  The disk snapshot is checked for both staging and unstaging. */
+	worktreeSnapshot: string,
+	hunks: GitHunk[],
+};
+
+export type GitIntegrationResult = GitIntegrationResult_Serialize | GitIntegrationResult_Deserialize;
+
+export type GitIntegrationResult_Deserialize = {
+	state: GitIntegrationState_Deserialize,
+	output: string,
+	/**  False retains the actual in-progress operation and conflicts for review. */
+	completed: boolean,
+};
+
+export type GitIntegrationResult_Serialize = {
+	state: GitIntegrationState_Serialize,
+	output: string,
+	/**  False retains the actual in-progress operation and conflicts for review. */
+	completed: boolean,
+};
+
+export type GitIntegrationState = GitIntegrationState_Serialize | GitIntegrationState_Deserialize;
+
+export type GitIntegrationState_Deserialize = {
+	status: GitStatus_Deserialize,
+	worktreeSnapshot: string,
+};
+
+export type GitIntegrationState_Serialize = {
+	status: GitStatus_Serialize,
+	worktreeSnapshot: string,
+};
+
+export type GitOperationResult = GitOperationResult_Serialize | GitOperationResult_Deserialize;
+
+export type GitOperationResult_Deserialize = {
+	status: GitStatus_Deserialize,
+	output: string,
+};
+
+export type GitOperationResult_Serialize = {
+	status: GitStatus_Serialize,
+	output: string,
+};
+
+export type GitRebaseAction = "continue" | "abort";
+
+export type GitRemote = {
+	name: string,
+	fetchUrl: string,
+	pushUrl: string,
+	current: boolean,
+};
+
+export type GitRemoteAction = "fetch" | "pull" | "push";
+
+export type GitRemotes = {
+	remotes: GitRemote[],
+	configFingerprint: string,
+};
+
 export type GitRepository = GitRepository_Serialize | GitRepository_Deserialize;
 
 export type GitRepository_Deserialize = {
@@ -2039,6 +2250,14 @@ export type GitRepository_Serialize = {
 	unborn: boolean,
 };
 
+export type GitStash = {
+	id: string,
+	selector: string,
+	subject: string,
+};
+
+export type GitStashAction = "save" | "apply" | "pop" | "drop";
+
 export type GitStatus = GitStatus_Serialize | GitStatus_Deserialize;
 
 export type GitStatus_Deserialize = {
@@ -2057,6 +2276,33 @@ export type GitStatus_Serialize = {
 	entries: GitChange_Serialize[],
 	operation: string | null,
 	truncated: boolean,
+};
+
+export type GitTag = {
+	name: string,
+	objectId: string,
+	targetId: string,
+	annotated: boolean,
+};
+
+export type GitWorktree = GitWorktree_Serialize | GitWorktree_Deserialize;
+
+export type GitWorktree_Deserialize = {
+	path: string,
+	head?: string | null,
+	branch?: string | null,
+	bare: boolean,
+	locked: boolean,
+	prunable: boolean,
+};
+
+export type GitWorktree_Serialize = {
+	path: string,
+	head: string | null,
+	branch: string | null,
+	bare: boolean,
+	locked: boolean,
+	prunable: boolean,
 };
 
 /**  The outcome of the latest check of one agent. */
@@ -2568,7 +2814,7 @@ export type ModelUse_Serialize = {
 	subagent?: boolean,
 };
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "nextGitChange" | "previousGitChange" | "toggleGitBlame" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,

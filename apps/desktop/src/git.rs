@@ -1,12 +1,16 @@
 //! Desktop IPC adapter for the shared Core Git service.
 //!
-//! Git commands run outside the CoreWorkspace mutex. The adapter caches one
+//! Read-only Git commands run outside the CoreWorkspace mutex. Working-tree
+//! mutations hold it to protect editor drafts. The adapter caches one
 //! Core service per opened workspace identity and retires it before replacing
 //! the workspace, so stale requests cannot publish results for a new folder.
 use crate::{with_workspace, DesktopState};
 use span_core::{
-    CancellationToken, CoreWorkspace, GitCommitResult, GitContext, GitDiff, GitDiffSide,
-    GitHistoryPage, GitHistoryQuery, GitService, GitStatus,
+    CancellationToken, CoreWorkspace, GitBlame, GitBranch, GitCommitDetails, GitCommitResult,
+    GitContext, GitDiff, GitDiffSide, GitDiscardResult, GitFileBaseline, GitHistoryPage,
+    GitHistoryQuery, GitHunkDiff, GitIntegrationResult, GitIntegrationState, GitOperationResult,
+    GitRebaseAction, GitRemoteAction, GitRemotes, GitService, GitStash, GitStashAction, GitStatus,
+    GitTag, GitWorktree,
 };
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -85,7 +89,7 @@ async fn ensure_current_workspace(
     if Arc::ptr_eq(&current, expected) {
         Ok(())
     } else {
-        Err("Workspace changed during the Git operation. Refresh and retry.".into())
+        Err("Workspace changed during the Git operation. A requested mutation may already have applied. Inspect the original repository or remote before retrying.".into())
     }
 }
 
@@ -377,6 +381,571 @@ async fn git_commit_for(
         .map_err(|error| error.to_string())?;
     ensure_current_workspace(&state, &workspace).await?;
     Ok(result)
+}
+
+// Keep the authoritative editor lock during a disk mutation. Edits and saves cannot
+// arrive after the dirty-buffer check and race a Git checkout or stash operation.
+async fn mutate_git<T, F, Fut>(
+    state: DesktopState,
+    context: GitContext,
+    changes_disk: bool,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(GitService, String) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = span_core::Result<T>> + Send + 'static,
+{
+    let (workspace, service) = current_service(&state).await?;
+    let id = repository_id(&context)?.to_owned();
+    let owned = workspace.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut editor = owned.lock().map_err(|_| "Workspace state is unavailable".to_owned())?;
+        if changes_disk && editor.git_has_dirty_buffers() {
+            return Err("Save or close unsaved editor buffers before this Git action.".into());
+        }
+        let result = runtime.block_on(operation(service, id)).map_err(|error| {
+            let message = error.to_string();
+            if message.contains("timed out") || message.contains("cancelled")
+                || message.contains("output exceeded") || message.contains("read failed")
+                || message.contains("wait failed") || message.contains("stdin failed")
+                || message.contains("reader failed") || message.contains("could not track")
+                || message.contains("stdout unavailable") || message.contains("stderr unavailable") {
+                format!("Git action was interrupted. Its outcome may be incomplete or unknown. Inspect repository and remote state before retrying. {message}")
+            } else { message }
+        });
+        // Git can change files before returning an error, including stash conflicts.
+        if changes_disk { editor.git_reload_clean_buffers().map_err(|error| format!("Git may have applied its mutation, but editor reload failed. Inspect the repository before retrying. {error}"))?; }
+        result
+    }).await.map_err(|error| format!("Git task failed: {error}"))?;
+    ensure_current_workspace(&state, &workspace).await?;
+    result
+}
+
+async fn read_git<T, F, Fut>(
+    state: DesktopState,
+    context: GitContext,
+    operation: F,
+) -> Result<T, String>
+where
+    F: FnOnce(GitService, String) -> Fut,
+    Fut: std::future::Future<Output = span_core::Result<T>>,
+{
+    let (workspace, service) = current_service(&state).await?;
+    let id = repository_id(&context)?.to_owned();
+    let result = operation(service, id)
+        .await
+        .map_err(|error| error.to_string())?;
+    ensure_current_workspace(&state, &workspace).await?;
+    Ok(result)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_file_baseline(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    path: String,
+) -> Result<GitFileBaseline, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move {
+            service
+                .file_baseline(&id, &path, CancellationToken::default())
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_blame(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    path: String,
+) -> Result<GitBlame, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move {
+            service
+                .blame(&id, &path, CancellationToken::default())
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_branches(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+) -> Result<Vec<GitBranch>, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move { service.branches(&id, CancellationToken::default()).await },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_checkout(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    branch: String,
+    create: bool,
+    expected_index_revision: String,
+) -> Result<GitStatus, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        true,
+        move |service, id| async move {
+            service
+                .checkout(
+                    &id,
+                    &branch,
+                    create,
+                    &expected_index_revision,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_remote(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    action: GitRemoteAction,
+    expected_config_fingerprint: String,
+) -> Result<GitOperationResult, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        action == GitRemoteAction::Pull,
+        move |service, id| async move {
+            service
+                .remote(
+                    &id,
+                    action,
+                    &expected_config_fingerprint,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_stashes(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+) -> Result<Vec<GitStash>, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move { service.stashes(&id, CancellationToken::default()).await },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_stash(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    action: GitStashAction,
+    stash_id: Option<String>,
+    message: Option<String>,
+    expected_index_revision: String,
+) -> Result<GitOperationResult, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        action != GitStashAction::Drop,
+        move |service, id| async move {
+            service
+                .stash(
+                    &id,
+                    action,
+                    stash_id,
+                    message,
+                    &expected_index_revision,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_worktrees(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+) -> Result<Vec<GitWorktree>, String> {
+    read_git(state.inner().clone(), context, move |service, id| async move { service.worktrees(&id, CancellationToken::default()).await }).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_worktree_add(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    path: String,
+    branch: String,
+) -> Result<GitOperationResult, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        false,
+        move |service, id| async move {
+            service
+                .worktree_add(&id, &path, &branch, CancellationToken::default())
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_worktree_remove(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    path: String,
+) -> Result<GitOperationResult, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        false,
+        move |service, id| async move {
+            service
+                .worktree_remove(&id, &path, CancellationToken::default())
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_commit_details(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    commit_id: String,
+) -> Result<GitCommitDetails, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move {
+            service
+                .commit_details(&id, &commit_id, CancellationToken::default())
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_hunk_diff(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    path: String,
+    side: GitDiffSide,
+    expected_index_revision: String,
+) -> Result<GitHunkDiff, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move {
+            service
+                .hunk_diff(
+                    &id,
+                    &path,
+                    side,
+                    &expected_index_revision,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_apply_hunk(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    path: String,
+    side: GitDiffSide,
+    hunk_id: String,
+    expected_index_revision: String,
+    expected_worktree_snapshot: String,
+) -> Result<GitStatus, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        false,
+        move |service, id| async move {
+            service
+                .apply_hunk(
+                    &id,
+                    &path,
+                    side,
+                    &hunk_id,
+                    &expected_index_revision,
+                    &expected_worktree_snapshot,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_tags(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+) -> Result<Vec<GitTag>, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move { service.tags(&id, CancellationToken::default()).await },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_create_tag(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    name: String,
+    target_id: String,
+) -> Result<Vec<GitTag>, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        false,
+        move |service, id| async move {
+            service
+                .create_tag(&id, &name, &target_id, CancellationToken::default())
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_delete_tag(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    name: String,
+    expected_object_id: String,
+) -> Result<Vec<GitTag>, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        false,
+        move |service, id| async move {
+            service
+                .delete_tag(
+                    &id,
+                    &name,
+                    &expected_object_id,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_merge_fast_forward(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    target_id: String,
+    expected_index_revision: String,
+) -> Result<GitOperationResult, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        true,
+        move |service, id| async move {
+            service
+                .merge_fast_forward(
+                    &id,
+                    &target_id,
+                    &expected_index_revision,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_integration_state(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+) -> Result<GitIntegrationState, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move {
+            service
+                .integration_state(&id, CancellationToken::default())
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_rebase(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    target_id: String,
+    expected_index_revision: String,
+) -> Result<GitIntegrationResult, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        true,
+        move |service, id| async move {
+            service
+                .rebase(
+                    &id,
+                    &target_id,
+                    &expected_index_revision,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_rebase_control(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    action: GitRebaseAction,
+    expected_index_revision: String,
+    expected_worktree_snapshot: String,
+) -> Result<GitIntegrationResult, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        true,
+        move |service, id| async move {
+            service
+                .rebase_control(
+                    &id,
+                    action,
+                    &expected_index_revision,
+                    &expected_worktree_snapshot,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_mark_resolved(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    path: String,
+    expected_index_revision: String,
+    expected_worktree_snapshot: String,
+) -> Result<GitIntegrationState, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        false,
+        move |service, id| async move {
+            service
+                .mark_resolved(
+                    &id,
+                    &path,
+                    &expected_index_revision,
+                    &expected_worktree_snapshot,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_remotes(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+) -> Result<GitRemotes, String> {
+    read_git(
+        state.inner().clone(),
+        context,
+        move |service, id| async move { service.remotes(&id, CancellationToken::default()).await },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn git_discard_file(
+    state: State<'_, DesktopState>,
+    context: GitContext,
+    path: String,
+    expected_index_revision: String,
+    expected_worktree_snapshot: String,
+) -> Result<GitDiscardResult, String> {
+    mutate_git(
+        state.inner().clone(),
+        context,
+        true,
+        move |service, id| async move {
+            service
+                .discard_file(
+                    &id,
+                    &path,
+                    &expected_index_revision,
+                    &expected_worktree_snapshot,
+                    CancellationToken::default(),
+                )
+                .await
+        },
+    )
+    .await
 }
 
 fn repository_id(context: &GitContext) -> Result<&str, String> {
@@ -704,5 +1273,119 @@ mod tests {
             !completed.exists(),
             "workspace replacement must kill the owned Git filter process"
         );
+    }
+
+    #[tokio::test]
+    async fn working_tree_mutations_reject_drafts_and_reload_clean_buffers() {
+        let directory = tempfile::tempdir().unwrap();
+        initialize_repository(directory.path());
+        git(directory.path(), &["branch", "-M", "main"]);
+        git(directory.path(), &["restore", "--", "tracked.txt"]);
+        git(directory.path(), &["switch", "-c", "topic"]);
+        fs::write(directory.path().join("tracked.txt"), "topic text\n").unwrap();
+        git(directory.path(), &["commit", "-am", "topic"]);
+        git(directory.path(), &["switch", "main"]);
+        let state = state_for(directory.path());
+        let context = git_context_for(state.clone()).await.unwrap();
+        git_enable_for(state.clone(), context.clone())
+            .await
+            .unwrap();
+        let workspace = state.workspace.lock().unwrap().clone().unwrap();
+        let snapshot = workspace
+            .lock()
+            .unwrap()
+            .open_buffer("tracked.txt")
+            .unwrap();
+        workspace
+            .lock()
+            .unwrap()
+            .edit_buffer(
+                "tracked.txt",
+                snapshot.revision,
+                vec![span_core::TextEdit {
+                    from: 0,
+                    to: 0,
+                    insert: "draft ".into(),
+                }],
+            )
+            .unwrap();
+        let status = git_status_for(state.clone(), context.clone())
+            .await
+            .unwrap();
+        let expected = status.index_revision;
+        let denied = mutate_git(
+            state.clone(),
+            context.clone(),
+            true,
+            move |service, id| async move {
+                service
+                    .checkout(&id, "topic", false, &expected, CancellationToken::default())
+                    .await
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(denied.contains("unsaved"));
+        assert_eq!(git(directory.path(), &["branch", "--show-current"]), "main");
+        workspace
+            .lock()
+            .unwrap()
+            .discard_buffer("tracked.txt")
+            .unwrap();
+        let status = git_status_for(state.clone(), context.clone())
+            .await
+            .unwrap();
+        let expected = status.index_revision;
+        mutate_git(
+            state.clone(),
+            context,
+            true,
+            move |service, id| async move {
+                service
+                    .checkout(&id, "topic", false, &expected, CancellationToken::default())
+                    .await
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            workspace
+                .lock()
+                .unwrap()
+                .buffer_snapshot("tracked.txt")
+                .unwrap()
+                .text,
+            "topic text\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutation_keeps_editor_mutex_until_git_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        initialize_repository(directory.path());
+        let state = state_for(directory.path());
+        let context = git_context_for(state.clone()).await.unwrap();
+        git_enable_for(state.clone(), context.clone())
+            .await
+            .unwrap();
+        let workspace = state.workspace.lock().unwrap().clone().unwrap();
+        let (entered, running) = tokio::sync::oneshot::channel();
+        let operation = tokio::spawn(mutate_git(
+            state,
+            context,
+            true,
+            move |service, id| async move {
+                let _ = entered.send(());
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                service.status(&id, CancellationToken::default()).await
+            },
+        ));
+        running.await.unwrap();
+        assert!(
+            workspace.try_lock().is_err(),
+            "editor edits cannot pass the mutation guard"
+        );
+        operation.await.unwrap().unwrap();
+        assert!(workspace.try_lock().is_ok());
     }
 }

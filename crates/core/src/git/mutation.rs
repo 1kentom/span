@@ -364,7 +364,7 @@ impl GitService {
         .await
     }
 
-    async fn finish_status(&self, repo: &RepoIdentity) -> Result<GitStatus> {
+    pub(super) async fn finish_status(&self, repo: &RepoIdentity) -> Result<GitStatus> {
         // A separate uncancelled read-only service is used only after the atomic
         // mutation point, while shutdown still waits for this transaction's lock.
         let service = Self::from_root(self.0.workspace_root.clone());
@@ -376,7 +376,7 @@ impl GitService {
     }
 }
 
-fn require_review(status: &GitStatus, index: &str, staged: Option<&str>) -> Result<()> {
+pub(super) fn require_review(status: &GitStatus, index: &str, staged: Option<&str>) -> Result<()> {
     if status.index_revision != index
         || staged.is_some_and(|expected| status.staged_snapshot != expected)
     {
@@ -441,7 +441,7 @@ fn nul_paths(paths: &[String]) -> Vec<u8> {
     bytes
 }
 
-struct IndexTransaction {
+pub(super) struct IndexTransaction {
     index: PathBuf,
     lock: PathBuf,
     marker: Vec<u8>,
@@ -451,7 +451,7 @@ struct IndexTransaction {
 }
 
 impl IndexTransaction {
-    fn new(repo: &RepoIdentity) -> Result<Self> {
+    pub(super) fn new(repo: &RepoIdentity) -> Result<Self> {
         let lock = repo.index.with_file_name("index.lock");
         let serial = NEXT_SERVICE.fetch_add(1, Ordering::Relaxed);
         let marker = format!("span-git-lock:{}:{serial}\n", std::process::id()).into_bytes();
@@ -503,11 +503,11 @@ impl IndexTransaction {
         Ok(transaction)
     }
 
-    fn environment(&self) -> Vec<(OsString, OsString)> {
+    pub(super) fn environment(&self) -> Vec<(OsString, OsString)> {
         vec![("GIT_INDEX_FILE".into(), git_path(&self.alternate))]
     }
 
-    fn apply(&mut self) -> Result<()> {
+    pub(super) fn apply(&mut self) -> Result<()> {
         if read_index(&self.index)? != self.original {
             return Err(error(
                 "Another writer changed the locked Git index. Refresh before continuing.",

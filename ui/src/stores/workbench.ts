@@ -941,7 +941,14 @@ export function createWorkbench() {
   }
   async function refreshBuffer(path: string) {
     if (dirty(path)) { setError("This file has unsaved changes. Save or close it before loading agent edits."); return; }
-    try { const result = await readBuffer(path); accepted.set(path, result); setBuffers(path, result); setDocuments(current => ({ ...current, [path]: { document: Text.of(result.text.split("\n")) } })); } catch (e) { report(e); }
+    const generation = workspaceVersion, document = documents()[path]?.document, revision = buffers[path]?.revision;
+    try {
+      const result = await readBuffer(path);
+      if (generation !== workspaceVersion || documents()[path]?.document !== document || buffers[path]?.revision !== revision || dirty(path)) return;
+      const nextDocument = Text.of(result.text.split("\n"));
+      if (!document?.eq(nextDocument)) histories.delete(path);
+      accepted.set(path, result); setBuffers(path, result); setDocuments(current => ({ ...current, [path]: { document: nextDocument } }));
+    } catch (e) { if (generation === workspaceVersion) report(e); }
   }
   const autosave = createAutoSaveController({
     read: () => ({ generation: workspaceGeneration(), mode: settings().autoSave, delay: settings().autoSaveDelay, paused: busy() || fileOperationBusy() || !!pendingClose() || pendingWorkspace(), buffers: [...new Set(groups().flatMap(group => group.tabs))].filter(path => !!buffers[path]).map(path => ({ path, revision: editCounters()[path] || 0, dirty: dirty(path), eligible: !isSettingsBuffer(path) && !externalChanges()[path] })) }),

@@ -713,3 +713,290 @@ async fn original_reference_hook_receives_stdin_and_post_commit_index_changes_su
     assert!(text.contains("phase:prepared") && text.contains("phase:committed"));
     assert!(text.contains(&format!("{} refs/heads/main", result.commit_id)));
 }
+
+#[tokio::test]
+async fn expanded_reads_pin_baselines_blame_branches_and_commit_files() {
+    let fixture = Fixture::new();
+    fixture.initial_commit(&[("tracked.txt", "one\ntwo\n")]);
+    let service = fixture.service(&fixture.root);
+    let id = Fixture::repo_id(&service).await;
+    fixture.write("tracked.txt", "one\nchanged\n");
+    let baseline = service
+        .file_baseline(&id, "tracked.txt", token())
+        .await
+        .unwrap();
+    assert_eq!(baseline.index_text.as_deref(), Some("one\ntwo\n"));
+    assert_eq!(baseline.head_text, baseline.index_text);
+    assert!(!baseline.binary && !baseline.truncated);
+    let blame = service.blame(&id, "tracked.txt", token()).await.unwrap();
+    assert_eq!(blame.lines.len(), 2);
+    assert_eq!(blame.lines[1].author, "Span Test");
+    assert_eq!(blame.lines[1].line, 2);
+    let branches = service.branches(&id, token()).await.unwrap();
+    assert!(branches
+        .iter()
+        .any(|branch| branch.name == "main" && branch.current));
+    let details = service
+        .commit_details(&id, blame.head.as_deref().unwrap(), token())
+        .await
+        .unwrap();
+    assert_eq!(details.files[0].path, "tracked.txt");
+    assert_eq!(details.files[0].status, "A");
+    assert!(service
+        .file_baseline(&id, "../outside", token())
+        .await
+        .is_err());
+    assert!(service.blame(&id, "../outside", token()).await.is_err());
+}
+
+#[tokio::test]
+async fn expanded_mutations_switch_stash_and_manage_real_worktrees_without_force() {
+    let fixture = Fixture::new();
+    fixture.initial_commit(&[("tracked.txt", "base\n")]);
+    let service = fixture.service(&fixture.root);
+    let id = Fixture::repo_id(&service).await;
+    let status = service.status(&id, token()).await.unwrap();
+    service
+        .checkout(&id, "topic", true, &status.index_revision, token())
+        .await
+        .unwrap();
+    fixture.write("tracked.txt", "draft\n");
+    let status = service.status(&id, token()).await.unwrap();
+    assert!(service
+        .checkout(&id, "main", false, &status.index_revision, token())
+        .await
+        .is_err());
+    assert!(service
+        .checkout(&id, "-f", true, &status.index_revision, token())
+        .await
+        .is_err());
+    service
+        .stash(
+            &id,
+            GitStashAction::Save,
+            None,
+            Some("test stash".into()),
+            &status.index_revision,
+            token(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("tracked.txt")).unwrap(),
+        "base\n"
+    );
+    let stashes = service.stashes(&id, token()).await.unwrap();
+    assert_eq!(stashes.len(), 1);
+    let status = service.status(&id, token()).await.unwrap();
+    assert!(service
+        .stash(
+            &id,
+            GitStashAction::Pop,
+            Some(stashes[0].id.clone()),
+            None,
+            &status.index_revision,
+            token()
+        )
+        .await
+        .is_err());
+    service
+        .stash(
+            &id,
+            GitStashAction::Apply,
+            Some(stashes[0].id.clone()),
+            None,
+            &status.index_revision,
+            token(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("tracked.txt")).unwrap(),
+        "draft\n"
+    );
+    assert_eq!(service.stashes(&id, token()).await.unwrap().len(), 1);
+    git(&fixture.root, &["restore", "--", "tracked.txt"]);
+    let status = service.status(&id, token()).await.unwrap();
+    service
+        .checkout(&id, "main", false, &status.index_revision, token())
+        .await
+        .unwrap();
+    let target = fixture._temp.path().join("linked");
+    service
+        .worktree_add(&id, target.to_str().unwrap(), "topic", token())
+        .await
+        .unwrap();
+    let trees = service.worktrees(&id, token()).await.unwrap();
+    assert_eq!(trees.len(), 2);
+    assert!(service
+        .worktree_remove(&id, fixture.root.to_str().unwrap(), token())
+        .await
+        .is_err());
+    fs::write(target.join("tracked.txt"), "keep me\n").unwrap();
+    assert!(service
+        .worktree_remove(&id, target.to_str().unwrap(), token())
+        .await
+        .is_err());
+    assert!(target.join("tracked.txt").exists());
+    git(&target, &["restore", "--", "tracked.txt"]);
+    service
+        .worktree_remove(&id, target.to_str().unwrap(), token())
+        .await
+        .unwrap();
+    assert!(!target.exists());
+}
+
+#[tokio::test]
+async fn remote_actions_use_explicit_upstream_and_fast_forward_only() {
+    let fixture = Fixture::new();
+    fixture.initial_commit(&[("tracked.txt", "base\n")]);
+    let bare = fixture._temp.path().join("remote.git");
+    let output = Command::new("git")
+        .args(["init", "--bare", "--quiet"])
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    git(
+        &fixture.root,
+        &["remote", "add", "origin", bare.to_str().unwrap()],
+    );
+    git(&fixture.root, &["push", "-u", "origin", "main"]);
+    let service = fixture.service(&fixture.root);
+    let id = Fixture::repo_id(&service).await;
+    let configuration = service
+        .remotes(&id, token())
+        .await
+        .unwrap()
+        .config_fingerprint;
+    fixture.write("tracked.txt", "next\n");
+    git(&fixture.root, &["commit", "-am", "next"]);
+    service
+        .remote(&id, GitRemoteAction::Push, &configuration, token())
+        .await
+        .unwrap();
+    service
+        .remote(&id, GitRemoteAction::Fetch, &configuration, token())
+        .await
+        .unwrap();
+    service
+        .remote(&id, GitRemoteAction::Pull, &configuration, token())
+        .await
+        .unwrap();
+    fixture.write("tracked.txt", "unsaved disk\n");
+    assert!(service
+        .remote(&id, GitRemoteAction::Pull, &configuration, token())
+        .await
+        .is_err());
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("tracked.txt")).unwrap(),
+        "unsaved disk\n"
+    );
+    git(
+        &fixture.root,
+        &[
+            "config",
+            "remote.origin.pushurl",
+            "https://name:secret@example.invalid/repo",
+        ],
+    );
+    let redacted = service.remotes(&id, token()).await.unwrap();
+    assert!(redacted.remotes[0]
+        .push_url
+        .contains("[redacted]@example.invalid"));
+    assert!(!redacted.remotes[0].push_url.contains("secret"));
+    let stale = service
+        .remote(&id, GitRemoteAction::Fetch, &configuration, token())
+        .await
+        .unwrap_err();
+    assert!(stale.to_string().contains("configuration changed"));
+}
+
+#[test]
+fn remote_diagnostics_redact_url_credentials() {
+    assert_eq!(
+        redact_git_output(
+            "fatal https://name:secret@example.test/repo and ssh://token@example.test/next"
+        ),
+        "fatal https://[redacted]@example.test/repo and ssh://[redacted]@example.test/next"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_transport_allowlist_rejects_ext_even_when_repository_allows_it() {
+    let fixture = Fixture::new();
+    fixture.initial_commit(&[("tracked.txt", "base\n")]);
+    let marker = fixture._temp.path().join("remote-helper-executed");
+    let remote = format!("ext::sh -c touch% {}", marker.display());
+    git(&fixture.root, &["remote", "add", "origin", &remote]);
+    git(&fixture.root, &["config", "protocol.ext.allow", "always"]);
+    let service = fixture.service(&fixture.root);
+    let id = Fixture::repo_id(&service).await;
+    let configuration = service
+        .remotes(&id, token())
+        .await
+        .unwrap()
+        .config_fingerprint;
+    let result = service
+        .remote(&id, GitRemoteAction::Fetch, &configuration, token())
+        .await;
+    assert!(result.is_err());
+    assert!(
+        !marker.exists(),
+        "repository cannot widen the allowed transport protocols"
+    );
+}
+
+#[tokio::test]
+async fn checkout_and_pull_preserve_ignored_working_files() {
+    let fixture = Fixture::new();
+    fixture.initial_commit(&[("tracked.txt", "base\n"), (".gitignore", "ignored.txt\n")]);
+    let bare = fixture._temp.path().join("remote.git");
+    let initialized = Command::new("git")
+        .args(["init", "--bare", "--quiet"])
+        .arg(&bare)
+        .output()
+        .unwrap();
+    assert!(initialized.status.success());
+    git(
+        &fixture.root,
+        &["remote", "add", "origin", bare.to_str().unwrap()],
+    );
+    git(&fixture.root, &["push", "-u", "origin", "main"]);
+    git(&fixture.root, &["switch", "-c", "topic"]);
+    fixture.write("ignored.txt", "remote tracked bytes\n");
+    git(&fixture.root, &["add", "--force", "--", "ignored.txt"]);
+    git(&fixture.root, &["commit", "-m", "track ignored name"]);
+    git(&fixture.root, &["push", "origin", "topic:main"]);
+    git(&fixture.root, &["switch", "main"]);
+    fixture.write("ignored.txt", "precious local ignored bytes\n");
+    let service = fixture.service(&fixture.root);
+    let id = Fixture::repo_id(&service).await;
+    let status = service.status(&id, token()).await.unwrap();
+    assert!(status.entries.is_empty());
+    assert!(service
+        .checkout(&id, "topic", false, &status.index_revision, token())
+        .await
+        .is_err());
+    let configuration = service
+        .remotes(&id, token())
+        .await
+        .unwrap()
+        .config_fingerprint;
+    assert!(service
+        .remote(&id, GitRemoteAction::Pull, &configuration, token())
+        .await
+        .is_err());
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("ignored.txt")).unwrap(),
+        "precious local ignored bytes\n"
+    );
+    assert_eq!(
+        service.status(&id, token()).await.unwrap().repository.head,
+        status.repository.head
+    );
+    assert!(git(&fixture.root, &["for-each-ref", "refs/span/pull/"])
+        .stdout
+        .is_empty());
+}
