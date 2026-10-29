@@ -22,6 +22,7 @@ pub const MAX_ARCHIVE_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_ARCHIVE_ENTRIES: usize = 10_000;
 pub const MAX_ARCHIVE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_ARCHIVE_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_ARCHIVE_PATH_BYTES: usize = 4096;
 pub const MAX_ARCHIVE_EXPANSION_RATIO: u64 = 200;
 const RATIO_CHECK_MIN_BYTES: u64 = 1024 * 1024;
 const IO_CHUNK_BYTES: usize = 64 * 1024;
@@ -166,7 +167,11 @@ impl ZipBundle {
             if count == 0 {
                 break;
             }
-            if output.len() as u64 + count as u64 > MAX_ARCHIVE_FILE_BYTES {
+            let next_len = output.len() as u64 + count as u64;
+            if next_len > item.view.size {
+                return Err(archive_error("entry output exceeds its declared size"));
+            }
+            if next_len > MAX_ARCHIVE_FILE_BYTES {
                 return Err(archive_error("entry exceeds the 64 MiB output limit"));
             }
             output.extend_from_slice(&chunk[..count]);
@@ -490,7 +495,8 @@ impl ZipBundle {
             let file = archive
                 .by_index(index)
                 .map_err(|error| archive_error(format!("invalid ZIP entry: {error}")))?;
-            let path = file.name().to_owned();
+            let raw_path = file.name();
+            let path = truncate_path(raw_path);
             let dir = file.is_dir();
             let encrypted = file.encrypted();
             let size = file.size();
@@ -499,7 +505,11 @@ impl ZipBundle {
                 let kind = mode & 0o170000;
                 kind != 0 && kind != 0o100000 && kind != 0o040000
             });
-            let (safe_path, mut reason) = validate_entry_name(&path);
+            let (safe_path, mut reason) = if raw_path.len() > MAX_ARCHIVE_PATH_BYTES {
+                (None, Some("path exceeds the 4,096 byte limit".into()))
+            } else {
+                validate_entry_name(raw_path)
+            };
             let collision_path = safe_path.clone();
             if reason.is_none() && special {
                 reason = Some("special or link entry".into());
@@ -636,6 +646,17 @@ fn validate_entry_name(name: &str) -> (Option<String>, Option<String>) {
         }
     }
     (Some(trimmed.to_owned()), None)
+}
+
+fn truncate_path(path: &str) -> String {
+    if path.len() <= MAX_ARCHIVE_PATH_BYTES {
+        return path.to_owned();
+    }
+    let mut end = MAX_ARCHIVE_PATH_BYTES;
+    while !path.is_char_boundary(end) {
+        end -= 1;
+    }
+    path[..end].to_owned()
 }
 
 fn is_windows_reserved(component: &str) -> bool {
@@ -787,7 +808,7 @@ fn archive_error(message: impl Into<String>) -> CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArchiveExtractOptions, ZipBundle};
+    use super::{ArchiveExtractOptions, ZipBundle, MAX_ARCHIVE_PATH_BYTES};
     use crate::{CancellationToken, CoreWorkspace};
     use std::fs;
     use std::sync::Arc;
@@ -869,6 +890,29 @@ mod tests {
         assert_eq!(fs::read_dir(&workspace_path).unwrap().count(), 0);
     }
 
+    #[test]
+    fn entry_read_rejects_output_larger_than_the_declared_size() {
+        let bundle = ZipBundle::new(Arc::new(stored_zip_with_declared_size(
+            "lying.txt",
+            b"actual output",
+            2,
+        )))
+        .unwrap();
+
+        assert!(bundle.read_entry("lying.txt").is_err());
+    }
+
+    #[test]
+    fn listing_bounds_archive_path_names() {
+        let long_name = "x".repeat(MAX_ARCHIVE_PATH_BYTES + 1024);
+        let bundle = ZipBundle::new(Arc::new(stored_zip(&long_name, b""))).unwrap();
+
+        let listing = bundle.listing().unwrap();
+
+        assert_eq!(listing.entries[0].path.len(), MAX_ARCHIVE_PATH_BYTES);
+        assert!(listing.entries[0].unsafe_reason.is_some());
+    }
+
     #[cfg(unix)]
     #[test]
     fn refuses_when_workspace_root_path_is_replaced_by_a_symlink() {
@@ -900,8 +944,16 @@ mod tests {
     }
 
     fn stored_zip(name: &str, contents: &[u8]) -> Vec<u8> {
+        stored_zip_with_declared_size(name, contents, contents.len() as u32)
+    }
+
+    fn stored_zip_with_declared_size(
+        name: &str,
+        contents: &[u8],
+        declared_uncompressed_size: u32,
+    ) -> Vec<u8> {
         let name = name.as_bytes();
-        let size = contents.len() as u32;
+        let compressed_size = contents.len() as u32;
         let crc = crc32(contents);
         let mut zip = Vec::new();
 
@@ -912,8 +964,8 @@ mod tests {
         push_u16(&mut zip, 0);
         push_u16(&mut zip, 0);
         push_u32(&mut zip, crc);
-        push_u32(&mut zip, size);
-        push_u32(&mut zip, size);
+        push_u32(&mut zip, compressed_size);
+        push_u32(&mut zip, declared_uncompressed_size);
         push_u16(&mut zip, name.len() as u16);
         push_u16(&mut zip, 0);
         zip.extend_from_slice(name);
@@ -928,8 +980,8 @@ mod tests {
         push_u16(&mut zip, 0);
         push_u16(&mut zip, 0);
         push_u32(&mut zip, crc);
-        push_u32(&mut zip, size);
-        push_u32(&mut zip, size);
+        push_u32(&mut zip, compressed_size);
+        push_u32(&mut zip, declared_uncompressed_size);
         push_u16(&mut zip, name.len() as u16);
         push_u16(&mut zip, 0);
         push_u16(&mut zip, 0);
