@@ -66,7 +66,7 @@ export function TerminalProfilePicker(props: {
   });
   return <><button ref={trigger} class="icon-button terminal-profile-trigger" aria-label="Choose terminal shell" title="Choose terminal shell" aria-haspopup="menu" aria-controls={id} aria-expanded={open()} disabled={!props.loadProfiles} onKeyDown={keyboard} onClick={() => open() ? close() : void show()}><Icon name="arrow-down4" size={12} /></button>
     <Show when={open()}><Portal mount={trigger.closest(".ide") || document.body}><div ref={popup} id={id} class="terminal-profile-menu" role="menu" aria-label="Installed terminal shells" style={position()} onKeyDown={keyboard}>
-      <div class="terminal-profile-title"><span>New terminal</span><small>Detected: {systemName}</small></div>
+      <div class="terminal-profile-title"><span>New terminal</span><Show when={systemName === "macOS"} fallback={<small>{systemName}</small>}><span class="terminal-platform-mark" role="img" aria-label="macOS" title="macOS" /></Show></div>
       <Show when={loading()} fallback={<><For each={profiles()}>{profile => <button role="menuitem" title={profile.path} onClick={() => { close(); props.onCreate(profile.id); }}><Icon name="u-terminal" size={14} /><span><strong>{profile.name}<Show when={profile.isDefault}><span class="terminal-profile-default">Default</span></Show></strong><small>{profile.path}</small></span></button>}</For><Show when={!profiles().length}><div class="terminal-profile-empty">No installed shells found</div></Show></>}><div class="terminal-profile-empty" role="status">Finding installed shells…</div></Show>
     </div></Portal></Show></>;
 }
