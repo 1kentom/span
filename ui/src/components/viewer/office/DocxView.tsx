@@ -4,7 +4,8 @@ import { ViewerState } from '../ViewerStates';
 import { OfficeFailure, createParse, plural, prefersReducedMotion, type DocumentViewProps } from './shared';
 import '../../../styles/office.css';
 
-export const DOCX_MAX_BYTES = 64 * 1024 * 1024;
+import { DOCX_MAX_BYTES } from '../../../lib/office/limits';
+export { DOCX_MAX_BYTES };
 /** Letter page height in CSS pixels, used for the "about N pages" estimate. */
 const PAGE_HEIGHT = 792;
 type DocMode = 'page' | 'outline';

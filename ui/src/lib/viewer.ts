@@ -10,6 +10,10 @@
  *   "Attachment from" for both).
  */
 import { MAX_IMAGE_BYTES, MAX_SVG_BYTES } from './asset-preview';
+import { extensionOf } from './file-extension';
+import { officeKindOf } from './office/kind';
+import { OFFICE_PREVIEW_BYTES } from './office/limits';
+export { extensionOf } from './file-extension';
 
 export { MAX_IMAGE_BYTES, MAX_SVG_BYTES };
 
@@ -42,16 +46,10 @@ export type ViewerMode = 'preview' | 'split' | 'source';
 export type UnsupportedReason = 'not-yet' | 'format';
 export interface Classification { kind: ViewerKind; reason?: UnsupportedReason; label?: string }
 
-export function extensionOf(name: string): string {
-  const base = name.split(/[\\/]/).at(-1) ?? name;
-  const dot = base.lastIndexOf('.');
-  return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
-}
-
 const rasterExt = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 const videoExt = new Set(['mp4', 'm4v', 'mov', 'webm']);
 const audioExt = new Set(['mp3', 'm4a', 'wav', 'ogg', 'oga', 'opus', 'flac', 'aac']);
-/** Separate issues will build these. Until then they show the honest unsupported state, never fake content. */
+/** Generic fallback labels. Document dispatch checks officeKindOf before using this fallback. */
 const notYet: Record<string, string> = {
   pdf: 'PDF', docx: 'Word document', doc: 'Word document', pptx: 'Presentation', ppt: 'Presentation', key: 'Keynote', xlsx: 'Spreadsheet', xls: 'Spreadsheet', numbers: 'Numbers',
   zip: 'Archive', tar: 'Archive', tgz: 'Archive', gz: 'Archive', '7z': 'Archive', rar: 'Archive',
@@ -104,6 +102,9 @@ export function modeUsesIcons(kind: ViewerKind): boolean { return supportedModes
 export function readLimit(name: string, mime: string, size: number, asBinary = false): number {
   const total = Math.max(0, size);
   if (asBinary) return Math.min(total, HEX_PREVIEW_BYTES);
+  // Binary document decoders need the complete container, including its trailing indexes.
+  const document = officeKindOf(name, mime);
+  if (document) return total > OFFICE_PREVIEW_BYTES[document] ? 0 : total;
   const { kind } = classifyFile(name, mime);
   switch (kind) {
     case 'image': return total > MAX_IMAGE_BYTES ? 0 : total;

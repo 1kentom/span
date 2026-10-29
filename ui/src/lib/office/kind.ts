@@ -1,5 +1,5 @@
 /** Which document viewer of this package handles a file, by extension first and MIME type second. */
-import { extensionOf } from '../viewer';
+import { extensionOf } from '../file-extension';
 
 export type OfficeKind = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'archive';
 

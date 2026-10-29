@@ -1,7 +1,9 @@
 // Deterministic ACP peer for span-agents delegation tests. Product code never
 // starts this fixture. The first line of a prompt selects the behaviour:
 //   work:<ticks>:<ms>   tick <ticks> times every <ms> ms with thoughts and usage, then end_turn
-//   usage:<n>           report <n> context tokens, then wait for Stop
+//   usage:<n>           report a 30000 token baseline, then <n> more context tokens, then wait for Stop
+//   spend:<n>           report the baseline, then <n> more, then answer and end_turn
+//   late:<n>            report the baseline, answer and end_turn, then report <n> more
 //   write:<path>:<text> write <text> to <path> through fs/write_text_file (editor review)
 //   permission          ask for permission; rejected ends the turn cancelled
 //   reply:<text>        answer <text>
@@ -46,6 +48,8 @@ const call = (method, params) => new Promise((resolve, reject) => {
   callbacks.set(id, { resolve, reject });
   send({ id, method, params });
 });
+// Context a fresh agent session holds before any task: system prompt and tools.
+const BASELINE = 30000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function lead(sessionId, id, text) {
@@ -90,7 +94,21 @@ async function prompt(message) {
   if (first === 'limit') return finish(sessionId, id, 'max_tokens');
   if (first.startsWith('reply:')) { say(sessionId, first.slice(6)); return finish(sessionId, id, 'end_turn'); }
   if (first.startsWith('usage:')) {
-    update(sessionId, { sessionUpdate: 'usage_update', used: Number(first.slice(6)), size: 200000 });
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE, size: 200000 });
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE + Number(first.slice(6)), size: 200000 });
+    return;
+  }
+  if (first.startsWith('spend:')) {
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE, size: 200000 });
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE + Number(first.slice(6)), size: 200000 });
+    say(sessionId, 'spent');
+    return finish(sessionId, id, 'end_turn');
+  }
+  if (first.startsWith('late:')) {
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE, size: 200000 });
+    say(sessionId, 'answered');
+    finish(sessionId, id, 'end_turn');
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE + Number(first.slice(5)), size: 200000 });
     return;
   }
   if (first.startsWith('work:')) {

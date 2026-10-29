@@ -4,6 +4,7 @@ import { localZipArchiveApi, type ArchiveApi, type ArchiveListing, type Conflict
 import { allDirIds, buildArchiveTree, checkState, extractGate, filesUnder, selectedPaths, toggleSelection, visibleRows, type ArchiveNode, type ArchiveTree } from '../../lib/office/archive-tree';
 import { rowWindow } from '../../lib/office/window';
 import { OfficeError } from '../../lib/office/zip';
+import { ARCHIVE_MAX_BYTES } from '../../lib/office/limits';
 import { extensionOf } from '../../lib/viewer';
 import Icon, { FileIcon } from '../Icon';
 import { ViewerState } from './ViewerStates';
@@ -275,7 +276,8 @@ function ArchiveBody(props: { name: string; api: ArchiveApi; listing: ArchiveLis
 }
 
 export default function ArchiveView(props: ArchiveViewProps) {
-  const api = createMemo<ArchiveApi | undefined>(() => props.api ?? (isZipBytes(props.bytes) ? localZipArchiveApi(props.bytes!) : undefined));
+  const oversized = () => (props.bytes?.byteLength ?? 0) > ARCHIVE_MAX_BYTES;
+  const api = createMemo<ArchiveApi | undefined>(() => oversized() ? undefined : props.api ?? (isZipBytes(props.bytes) ? localZipArchiveApi(props.bytes!) : undefined));
   const [listing, setListing] = createSignal<{ state: 'loading' } | { state: 'ready'; value: ArchiveListing } | { state: 'error'; message: string; tooLarge: boolean }>({ state: 'loading' });
   createEffect(on(api, current => {
     let live = true;
@@ -286,6 +288,7 @@ export default function ArchiveView(props: ArchiveViewProps) {
   }));
   const format = () => extensionOf(props.name).toUpperCase() || 'this';
   return <Switch>
+    <Match when={oversized()}><ViewerState kind="too-large" title="Large archive" text={`Archive preview is limited to ${formatAssetBytes(ARCHIVE_MAX_BYTES)}.`} /></Match>
     <Match when={!api()}><ViewerState kind="unsupported" title="Preview not available here" text={`Listing ${format()} archives needs the desktop app. The browser preview lists ZIP archives only.`}
       actions={props.onOpenWithSystem ? [{ label: 'Open with system app', onClick: props.onOpenWithSystem, primary: true }] : []} /></Match>
     <Match when={listing().state === 'loading'}><ViewerState kind="loading" text={`Reading ${props.name}…`} /></Match>

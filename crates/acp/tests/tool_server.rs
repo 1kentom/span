@@ -1228,6 +1228,59 @@ async fn a_child_cannot_delegate_unless_the_depth_limit_allows_it() {
 }
 
 #[tokio::test]
+async fn a_small_token_budget_measures_spend_not_the_childs_starting_context() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker_connection = h.connect(&["--name=worker"]).await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+
+    // A 30000 token baseline plus 400 spent fits a 1000 token budget.
+    let delegated = client
+        .tool(
+            "delegate",
+            json!({"agent": "worker", "task": "spend:400", "budget": {"maxTokens": 1000}}),
+        )
+        .await;
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let result = client.until_finished(&task).await;
+    assert_eq!(structured(&result)["status"], "completed", "{result}");
+    assert_eq!(structured(&result)["usage"]["tokens"], 30400);
+    assert_eq!(structured(&result)["usage"]["spentTokens"], 400);
+    assert_eq!(structured(&result)["usage"]["maxTokens"], 1000);
+    assert!(structured(&result).get("detail").is_none());
+
+    // A report that lands after the turn ended never fails the task.
+    let delegated = client
+        .tool(
+            "delegate",
+            json!({"agent": "worker", "task": "late:5000", "budget": {"maxTokens": 1000}}),
+        )
+        .await;
+    let task = structured(&delegated)["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let session = structured(&delegated)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    h.next(|e| e.connection_id == worker_connection && matches!(&e.event, AgentEvent::Usage { session_id, used, .. } if *session_id == session && *used == 35000))
+        .await;
+    let result = client.until_finished(&task).await;
+    assert_eq!(structured(&result)["status"], "completed", "{result}");
+    assert_eq!(structured(&result)["usage"]["spentTokens"], 5000);
+    assert_eq!(
+        structured(&result)["detail"],
+        "Used about 5000 tokens, over the 1000 token budget"
+    );
+    assert!(structured(&result).get("reason").is_none());
+}
+
+#[tokio::test]
 async fn exceeding_a_budget_cancels_the_child_and_reports_it() {
     let mut h = harness();
     let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
@@ -1255,11 +1308,12 @@ async fn exceeding_a_budget_cancels_the_child_and_reports_it() {
     let result = client.until_finished(&task).await;
     assert_eq!(result["isError"], true);
     assert_eq!(structured(&result)["reason"], "budget_exceeded");
-    assert_eq!(structured(&result)["usage"]["tokens"], 5000);
-    assert!(structured(&result)["detail"]
-        .as_str()
-        .unwrap()
-        .contains("1000 token budget"));
+    assert_eq!(structured(&result)["usage"]["tokens"], 35000);
+    assert_eq!(structured(&result)["usage"]["spentTokens"], 5000);
+    assert_eq!(
+        structured(&result)["detail"],
+        "used about 5000 tokens since it started, over the 1000 token budget"
+    );
 
     // Wall clock: 5 policy seconds.
     let delegated = client
