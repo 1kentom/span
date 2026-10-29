@@ -14,7 +14,7 @@
 use super::result::{self, inside_workspace, FailureReason, ResultInput};
 use super::tasks::{DecisionRecord, Registry, TaskStatus};
 use super::{
-    hints_for, transport_for, BudgetRequest, DelegationEvent, DelegationTask,
+    hints_for, transport_for, BudgetRequest, DelegationEvent, DelegationTask, DelegationTranscript,
     RunConfigurationEntry, RunToolBackend, ToolServerConfig,
 };
 use crate::{
@@ -225,29 +225,47 @@ impl ToolServer {
             .registry
             .task_ids()
             .into_iter()
-            .filter_map(|id| self.shared.registry.view(&id, second).map(|v| (v, id)))
-            .map(|(view, task_id)| DelegationTask {
-                artifacts: self
-                    .shared
-                    .artifacts(&view.task)
-                    .into_iter()
-                    .map(|(artifact, _)| artifact)
-                    .collect(),
-                result_summary: view.task.summary(),
-                progress_text: view.task.progress_text(),
-                started_at_ms: view.task.started_at_ms,
-                finished_at_ms: view.task.finished_at_ms,
-                budget_used: view.usage,
-                task_id,
-                lead: lead.clone(),
-                child: view.task.key,
-                agent_name: view.task.agent,
-                status: view.task.status.as_str().into(),
-                stop_reason: view.task.stop_reason,
-                reason: view.task.reason,
-                detail: view.task.detail,
-            })
+            .filter_map(|id| self.task(&lead, id, second))
             .collect()
+    }
+
+    /// One task with everything its child wrote so far (bounded by the
+    /// registry), for the user opening the child session from its card.
+    pub fn transcript(&self, task_id: &str) -> Option<DelegationTranscript> {
+        let lead = self.lead()?;
+        let text = self
+            .shared
+            .registry
+            .view(task_id, self.shared.second())?
+            .task
+            .text;
+        let task = self.task(&lead, task_id.to_owned(), self.shared.second())?;
+        Some(DelegationTranscript { task, text })
+    }
+
+    fn task(&self, lead: &SessionKey, task_id: String, second: Duration) -> Option<DelegationTask> {
+        let view = self.shared.registry.view(&task_id, second)?;
+        Some(DelegationTask {
+            artifacts: self
+                .shared
+                .artifacts(&view.task)
+                .into_iter()
+                .map(|(artifact, _)| artifact)
+                .collect(),
+            result_summary: view.task.summary(),
+            progress_text: view.task.progress_text(),
+            started_at_ms: view.task.started_at_ms,
+            finished_at_ms: view.task.finished_at_ms,
+            budget_used: view.usage,
+            task_id,
+            lead: lead.clone(),
+            child: view.task.key,
+            agent_name: view.task.agent,
+            status: view.task.status.as_str().into(),
+            stop_reason: view.task.stop_reason,
+            reason: view.task.reason,
+            detail: view.task.detail,
+        })
     }
 
     /// Whether this server started `task_id`.

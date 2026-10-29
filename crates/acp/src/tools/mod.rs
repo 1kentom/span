@@ -195,6 +195,16 @@ pub struct DelegationTask {
     pub budget_used: UsageReport,
 }
 
+/// One delegated task and the text its child session wrote so far, for the
+/// user opening the child session from its card. `text` is bounded by the
+/// task registry and is the child's reply only (no tool output).
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationTranscript {
+    pub task: DelegationTask,
+    pub text: String,
+}
+
 pub type DelegationEventSink = Arc<dyn Fn(DelegationEvent) + Send + Sync>;
 
 /// What a server needs besides the session manager.
