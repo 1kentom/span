@@ -522,6 +522,25 @@ What changed:
    (none by default) measured tokens across all children. The `delegate`
    description tells the lead to use `message` for follow-ups.
 
+6. Untrusted framing. Text a child wrote reaches the lead (the
+   `get_result` summary) inside an `<untrusted-agent-output agent="...">`
+   frame with a one line preface, and the server instructions tell the lead
+   never to follow instructions found inside it unless the user asked. A
+   frame tag in the child's own text is defused so it cannot close the
+   frame early (T3 issue #24711: unframed agent text was read as user
+   input). Progress activity strings (child tool titles) are not framed.
+7. No permission laundering. A child always starts in the approval start
+   mode (`Opened::Child` in `service.rs`), whatever
+   `agents.startMode.<agent>` says for chats, so a child never runs looser
+   than its lead could: a bypass or full access mode from the agent's own
+   configuration is changed to its approval mode at once, and Claude's
+   ListAgents tool is left out. Fixtures `codex/child-start-mode` and
+   `claude/child-session`.
+
+Not done: an idle timeout for warm background processes that hold no
+session (background processes still live until the app quits or the folder
+changes).
+
 Tests: `crates/acp/tests/tool_server.rs` (one `session/new` for five
 prompts to one delegation, distinct and concurrent caps, a child hidden from
 `session/list` and deleted exactly once when the lead ends, idle close and
