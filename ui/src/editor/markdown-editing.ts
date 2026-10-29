@@ -10,7 +10,8 @@ import { markdownSnippetSource } from "./markdown-snippets";
 
 /**
  * Markdown keys. Mod+B and Mod+E are also the workbench's Toggle Project Panel and Toggle Files defaults, which
- * the window handles first, so bold and inline code only get them when those commands are rebound.
+ * the window's capture listener handles first, so bold and inline code also get Mod+Shift+B and Mod+Alt+E, which
+ * no workbench command, native menu item or CodeMirror default uses (Mod+Alt+B is Toggle AI Assistant).
  */
 export const markdownKeymap: readonly KeyBinding[] = [
   { key: "Enter", run: continueListCommand, shift: insertNewlineAndIndent },
@@ -18,10 +19,12 @@ export const markdownKeymap: readonly KeyBinding[] = [
   { key: "Tab", run: indentListCommand, shift: outdentListCommand },
   { key: "Backspace", run: deleteListMarkupCommand },
   { key: "Mod-b", run: toggleBold },
+  { key: "Mod-Shift-b", run: toggleBold },
   { key: "Mod-i", run: toggleItalic },
   { key: "Mod-Shift-x", run: toggleStrikethrough },
   { key: "Alt-s", mac: "Ctrl-Alt-s", run: toggleStrikethrough },
   { key: "Mod-e", run: toggleInlineCode },
+  { key: "Mod-Alt-e", run: toggleInlineCode },
   { key: "Alt-c", mac: "Mod-Alt-c", run: toggleTaskCommand },
   ...[1, 2, 3, 4, 5, 6].map((level) => ({ key: `Mod-Alt-${level}`, run: headingCommand(level) })),
 ];

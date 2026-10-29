@@ -54,7 +54,7 @@ These keys work only in Markdown files and never inside fenced code, indented co
 | Mod+Shift+X, Alt+S (Ctrl+Alt+S on macOS) | Toggle strikethrough (`~~`). |
 | Mod+Alt+1 to Mod+Alt+6 | Make the selected lines headings of that level, or remove the heading when they already are. |
 | Alt+C (Mod+Alt+C on macOS) | Toggle task checkboxes on the selected lines. |
-| Mod+B / Mod+E | Bold / inline code. These are also Toggle Project Panel and Toggle Files, which win; the Markdown keys only work after those commands are rebound. |
+| Mod+Shift+B / Mod+Alt+E | Bold / inline code. Mod+B and Mod+E are also bound, but Toggle Project Panel and Toggle Files take them first unless those commands are rebound. Mod+Alt+B stays Toggle AI Assistant. |
 | `*` `_` `~` `` ` `` with a selection | Wraps the selection. `[`, `(`, `{` and `<` wrap through bracket closing. |
 
 Pasting a single http(s) URL over selected text makes `[text](url)`, from the keyboard and from the editor's context menu. Pasting or dropping an image saves it next to the Markdown file as `image.png`, `image_1.png`, ... through the workspace attachment command (which never overwrites) and inserts `![](image.png)` with the caret in the alt text. Typing a snippet name such as `bold`, `link`, `table` or `heading2` offers VS Code's Markdown snippets. Header sections, fenced code, tables and `<!-- #region -->` blocks fold.

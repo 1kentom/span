@@ -20,6 +20,9 @@ describe('classification', () => {
     expect(text.kind).toBe('file'); expect(text.text).toBe('let a = 1;');
     const binary = createFileAttachment({ name: 'a.ts', mime: '', bytes: new Uint8Array([0xff, 0xfe, 0xfd]), source: 'dropped' });
     expect(binary.text).toBeUndefined();
+    const nul = createFileAttachment({ name: 'a.txt', mime: 'text/plain', bytes: new Uint8Array([0x61, 0x00, 0x62]), source: 'picked' });
+    expect(nul.text).toBeUndefined();
+    expect(nul.bytes).toEqual(new Uint8Array([0x61, 0x00, 0x62]));
   });
 });
 
