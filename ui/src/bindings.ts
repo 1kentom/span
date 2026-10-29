@@ -3709,6 +3709,18 @@ export type SessionSummary_Deserialize = {
 	 *  History scope chips tell this workspace from other folders.
 	 */
 	cwd?: string | null,
+	/**
+	 *  The session that spawned this one with the agent's own subagent tool,
+	 *  when the agent named it. Set only together with `native_subagent`.
+	 */
+	parentSessionId?: string | null,
+	/**
+	 *  True for a session the agent created with its own subagent tool (not
+	 *  a Span delegation). History hides these by default and nests them
+	 *  under `parent_session_id`. Derived at list time; nothing is stored
+	 *  but the session ids (ADR 0005, amendment of 2026-10-29).
+	 */
+	nativeSubagent?: boolean,
 };
 
 /**  A past conversation the agent can restore. */
@@ -3721,6 +3733,18 @@ export type SessionSummary_Serialize = {
 	 *  History scope chips tell this workspace from other folders.
 	 */
 	cwd: string | null,
+	/**
+	 *  The session that spawned this one with the agent's own subagent tool,
+	 *  when the agent named it. Set only together with `native_subagent`.
+	 */
+	parentSessionId: string | null,
+	/**
+	 *  True for a session the agent created with its own subagent tool (not
+	 *  a Span delegation). History hides these by default and nests them
+	 *  under `parent_session_id`. Derived at list time; nothing is stored
+	 *  but the session ids (ADR 0005, amendment of 2026-10-29).
+	 */
+	nativeSubagent: boolean,
 };
 
 /**
