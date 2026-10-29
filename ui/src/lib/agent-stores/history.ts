@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import type { SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionSummary } from "../../bindings";
 import { api, isDesktop, sessionMetaList, sessionMetaUpdate } from "../client";
 import { isHealthCheckSession, threadOf } from "../session-threads";
+import { isNativeSubagent, showSubagentSessions, subagentsOf, visibleSessions } from "../subagent-sessions";
 import { sharedStore } from "./shared";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -15,7 +16,19 @@ export type StillCurrent = () => boolean;
  * or workspace the user has left is dropped.
  */
 export function createAgentHistory() {
-  const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
+  /** Every session the agent listed, native subagents included. Read through `sessions`, which hides them. */
+  const [listed, setSessions] = createSignal<SessionSummary[]>([]);
+  /**
+   * The sessions History, the Agents page rail, recents, resume-last and the counters use: native subagent sessions
+   * (the agent's own subagent tool) are left out unless the "Show subagent sessions" preference is on.
+   */
+  const sessions = () => visibleSessions(listed(), showSubagentSessions());
+  /** Native subagents the agent listed under `parentId`, for the parent row's Subagents disclosure. */
+  const subagentsFor = (parentId: string) => subagentsOf(listed(), parentId);
+  /** How many native subagent sessions the agent listed, nested or not. */
+  const subagentCount = () => listed().filter(isNativeSubagent).length;
+  /** True for a listed native subagent session. */
+  const isSubagent = (sessionId: string) => listed().some((entry) => entry.sessionId === sessionId && isNativeSubagent(entry));
   const [sessionsBusy, setSessionsBusy] = createSignal(false);
   const [sessionsError, setSessionsError] = createSignal("");
   /** History scope: this workspace (the agent lists sessions of the folder) or every folder the agent knows. */
@@ -67,7 +80,7 @@ export function createAgentHistory() {
   /** Every stored segment of the chat thread that holds `sessionId` of `agent` (ADR 0005, thread links). */
   const threadFor = (agent: string | undefined, sessionId: string) => threadOf(sessionMeta(), agent, sessionId);
 
-  return { sessions, setSessions, sessionsBusy, sessionsError, setSessionsError, sessionScope, setSessionScope, sessionMeta, loadSessions, recordSessionMeta, keepSaved, metaOf, threadFor };
+  return { sessions, setSessions, subagentsFor, subagentCount, isSubagent, sessionsBusy, sessionsError, setSessionsError, sessionScope, setSessionScope, sessionMeta, loadSessions, recordSessionMeta, keepSaved, metaOf, threadFor };
 }
 
 export type AgentHistory = ReturnType<typeof createAgentHistory>;

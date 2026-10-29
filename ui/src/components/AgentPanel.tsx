@@ -2,6 +2,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCle
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentController, type AgentPanelProps } from "../lib/agent-controller";
 import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
+import { isNativeSubagent, setShowSubagentSessions, showSubagentSessions } from "../lib/subagent-sessions";
 import { relativeTime, pillVisible } from "../lib/agent-feed";
 import { classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
@@ -189,6 +190,8 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
           // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
           locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
           status: a.rowStatus(session.sessionId),
+          subagent: isNativeSubagent(session) || undefined,
+          subagents: a.subagentsFor(session.sessionId).map((child) => ({ id: child.sessionId, title: listedTitle(child.title) || "Untitled subagent" })),
         };
       });
   });
@@ -404,7 +407,11 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
                   onQuery={setQuery}
                   scope={a.sessionScope()}
                   onScope={a.setSessionScope}
-                  onOpen={(id) => void a.resumeChat(id)}
+                  onOpen={(id) => void (a.isSubagent(id) ? a.openSubagent(id) : a.resumeChat(id))}
+                  onOpenSubagent={a.state().canLoad ? (id) => void a.openSubagent(id) : undefined}
+                  showSubagents={showSubagentSessions()}
+                  onShowSubagents={setShowSubagentSessions}
+                  subagentCount={a.subagentCount()}
                   onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined}
                   onFork={a.canFork() && a.state().canLoad ? (id) => void a.forkChat(id) : undefined}
                   onExport={a.canExport() ? (id) => void a.exportChat(id) : undefined}
@@ -514,7 +521,16 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
         {a.running() ? "New activity" : "Latest"}
       </button>
       </div>
-      <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
+      <Show
+        when={!a.viewingSubagent()}
+        fallback={
+          <p class="agent-subagent-note" role="note">
+            <span class="sb-tag">Subagent</span> Read-only. The agent created this session with its own subagent tool; it belongs to the agent's run.
+          </p>
+        }
+      >
+        <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
+      </Show>
       <Show when={a.viewingItem()}>
         {(item) => {
           const closeViewer = () => {
