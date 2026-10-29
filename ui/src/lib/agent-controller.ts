@@ -49,6 +49,7 @@ import { createThreadRegistry } from "./agent-threads/threads";
 import type { Thread, ThreadEvents } from "./agent-threads/thread";
 import { sessionKeyId } from "./agent-stores/live-sessions";
 import { editQueuedEntry, mergeQueued } from "./agent-threads/thread-queue";
+import { createUsageRecorder } from "./usage";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
 const DELEGATION_POLL_MS = 3000;
@@ -499,6 +500,7 @@ export function createAgentController(props: AgentPanelProps) {
     const value = (event as { sessionId?: unknown }).sessionId;
     return typeof value === "string" && value ? value : undefined;
   };
+  const usageRecorder = createUsageRecorder();
   function noteTool(event: AgentEvent) {
     if (event.kind !== "tool") return;
     const id = `${event.sessionId}:${event.toolCallId}`;
@@ -512,6 +514,9 @@ export function createAgentController(props: AgentPanelProps) {
     const target = sessionOf(event);
     const connection = connectionKey();
     noteTool(event);
+    // Usage counters for the Usage page (ADR 0012): one patch per finished turn of any chat on this connection.
+    const usagePatch = usageRecorder.observe(event, { agentId: agentId(), model: ((target && target !== session ? threadOf(connection, target)?.state().conversation.config : state().config) ?? []).find((option) => option.category === "model")?.currentValue });
+    if (usagePatch) void recordSessionMeta(usagePatch);
     const background = target && target !== session ? threadOf(connection, target) : undefined;
     if (background && background !== untrack(focused)) {
       // A chat in the background keeps working: its events update its own thread, never the open chat.

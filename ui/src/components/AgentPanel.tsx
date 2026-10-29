@@ -1,6 +1,6 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { api, isDesktop } from "../lib/client";
-import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
+import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentController, type AgentPanelProps } from "../lib/agent-controller";
 import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
 import { isNearBottom, relativeTime, pillVisible } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
@@ -42,8 +42,12 @@ const KEYS: KeyHint[] = [
   { keys: ["/"], label: "Commands", where: "Chat" },
 ];
 
-export function AgentPanel(props: AgentPanelProps) {
-  const a = createAgentController(props);
+/**
+ * `controller` is the app's shared agent controller, so the Agents page and this sidebar show the same threads
+ * (ADR 0011 b). Without it the panel creates its own, as tests and standalone uses do.
+ */
+export function AgentPanel(props: AgentPanelProps & { controller?: AgentController }) {
+  const a = props.controller ?? createAgentController(props);
   const [query, setQuery] = createSignal("");
   /** A curated agent's local command, placed in the custom ACP row for the user to confirm. */
   const [customDraft, setCustomDraft] = createSignal<{ command: string }>();

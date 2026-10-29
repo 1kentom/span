@@ -82,6 +82,40 @@ Mostly invisible; check that nothing regressed.
   text.
 - Keyboard only: reach the rail, the thread, the composer and each tab.
 
+### Agents mode details (phase 3, PR 2)
+
+- Switch: Editor | Agents in the toolbar; Cmd+Shift+A (Ctrl+Shift+A on
+  Windows and Linux) toggles it; the mode is remembered per folder after a
+  restart.
+- Editor mode keeps the agent sidebar; Agents mode hides the file panel and
+  the sidebar and shows the same thread on the page.
+- Rail: groups Needs you, Working and Recent with counts; older and archived
+  threads under Settled; Cmd+K focuses search; New session (button or
+  Cmd+N) opens the picker; the scope row switches This workspace and All
+  folders.
+- Rail keyboard: arrow keys, Home and End move; Enter opens; Shift+F10 or
+  the context menu key opens the row menu (Rename, Fork, Export, Archive,
+  Close for the open thread, Copy session id, each only when the agent
+  supports it).
+- Rail resize: drag between 200 and 420, double-click resets to 268, the
+  width survives a restart; dragging far left collapses it to a grip strip.
+- Narrow window (under 1100 px wide): the rail becomes a grip strip with a
+  dot when a thread needs you; clicking opens it over the thread; Escape or
+  a click outside closes it.
+- Plan limits footer: shows a limit only after an agent reported one, with
+  its reset time when given; otherwise "No limit". No percentages are shown.
+- New-session picker: one card per installed agent with model and health;
+  picking the connected agent starts a new session, another agent connects
+  it. The "Can delegate to" switch is the user setting
+  `agents.delegation.enabled`.
+- Side panel: Changes lists the thread's proposals with accept and reject;
+  Agents lists the lead and delegates with Show task, Stop and Stop all;
+  Files lists the thread's attachments; resize 320 to 720, double-click
+  resets to 420; the tab and width survive a restart.
+- Open in editor switches to Editor mode with the same thread in the
+  sidebar; opening a file from the page also switches to the editor.
+- Check Light, Dark and Purple, and reduced motion (no spinning orbs).
+
 ## Phase 4: review
 
 - Ask an agent to edit two files. The Changes tab lists both with line

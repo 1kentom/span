@@ -272,3 +272,9 @@ for health check sessions. An entry stored with a `parent` link
 but `visibleThreadRows` in `ui/src/lib/session-threads.ts` never shows it as
 a row of its own. The store format is unchanged.
 
+## Amendment (2026-10-29): usage counters
+
+ADR 0012 adds an optional `usage` field to each session: token and cost
+counters in day and model buckets, the last reported cumulative cost, and
+the context peak. Counters only; the store still holds no prompt text,
+replies, file contents, paths or credentials. No schema version bump.
