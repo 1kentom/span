@@ -2,27 +2,28 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, 
 import { api, isDesktop } from "../../lib/client";
 import { NATIVE_UNAVAILABLE, type AgentController } from "../../lib/agent-controller";
 import { isNearBottom, pillVisible } from "../../lib/agent-feed";
-import { classifyFailure } from "../../lib/agent-view";
 import { liveTone, orderByUrgency } from "../../lib/live-agents";
 import { AgentComposer } from "../agent/AgentComposer";
 import { AgentFeed } from "../agent/AgentFeed";
-import { ErrorCard } from "../agent/Banners";
+import { AgentSetup, type SetupView } from "../agent/AgentSetup";
+import { EditorToast, OpenRefusal } from "../agent/EditorToast";
 import { modalOpen } from "../agent/util";
 import { AttachmentViewer, DropOverlay, attachmentBlockReason } from "../attachments";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
+import { PageFailure } from "./PageFailure";
 
 export type ThreadViewProps = {
   agent: AgentController;
   workspaceName: string;
-  /** Show this thread in the editor's agent sidebar (Editor mode). */
+  /** Show this thread in the editor's agent sidebar (Editor mode). Only the header button calls it, on a click. */
   onOpenEditor: () => void;
   /** Open the side panel on its Agents tab. */
   onOpenAgents: () => void;
   sideOpen: boolean;
   onToggleSide: () => void;
-  /** Connecting, signing in and choosing an agent still live in the sidebar: switch there with its connect view. */
-  onSetup: () => void;
+  /** Opens the in-page connect view (choose, install or connect an agent). Never the editor sidebar. */
+  onChooseAgent: () => void;
   /** The new-session picker, shown in place of the thread while set. */
   picker?: JSX.Element;
 };
@@ -43,19 +44,23 @@ export function ThreadView(props: ThreadViewProps) {
   const hasAgent = () => Boolean(a.agentId() || agent());
   const title = () => a.currentTitle() || "New session";
   const crew = createMemo(() => orderByUrgency(a.liveAgents(), a.healthOn()));
-  const failure = createMemo(() => {
-    const current = a.state().failure;
-    return current ? classifyFailure(current, label()) : undefined;
-  });
-  /** What the thread area shows: the feed, or a pointer to the sidebar for what the page does not host yet. */
+  /**
+   * What the thread area shows. Connecting, signing in, choosing an agent and the ACP log all render here on the page,
+   * from the same controller as the sidebar, so the page never sends the user to the editor sidebar to finish.
+   */
   const body = createMemo(() => {
     if (!isDesktop) return "unavailable";
+    if (a.view() === "logs") return "logs";
+    if (a.view() === "connect") return "setup";
     if (a.connecting() || a.state().auth) return "setup";
     if (props.picker) return "picker";
-    if (a.view() === "connect") return "setup";
     if (a.feed().length) return "feed";
     return a.connected() ? "empty" : "setup";
   });
+  const setupView = (): SetupView => (a.view() === "connect" ? "connect" : a.connecting() ? "connecting" : a.state().auth ? "signin" : "connect");
+  const setupTitle = () => (setupView() === "connecting" ? `Connecting ${label()}` : setupView() === "signin" ? `Sign in to ${label()}` : "Connect an agent");
+  /** The connect view opened over a thread or the picker can go back to it. */
+  const canLeaveSetup = () => a.view() === "connect" && (a.connected() || a.feed().length > 0 || a.installed().length > 0);
   const jumpShown = () => away() && !a.pinned() && a.feed().length > 0;
 
   // Attachments open in the page's own viewer: the workbench tabs that the sidebar opens them in are hidden here.
@@ -163,13 +168,41 @@ export function ThreadView(props: ThreadViewProps) {
             </div>
           </Show>
           <Show when={body() === "setup"}>
-            <div class="ap-thread-empty">
-              <h3>{a.connecting() ? `Connecting ${label()}…` : a.state().auth ? `Sign in to ${label()}` : "Connect an agent"}</h3>
-              <p>Choosing an agent, connecting and signing in happen in the agent sidebar for now. The thread appears here once a session starts.</p>
-              <button type="button" class="ap-btn primary" onClick={() => props.onSetup()}>
-                {a.connecting() || a.state().auth ? "Continue in the sidebar" : "Choose an agent"}
-              </button>
-            </div>
+            <section class="ap-setup" aria-label={setupTitle()}>
+              <header class="ap-setup-head">
+                <Show when={canLeaveSetup()}>
+                  <button type="button" class="ap-icon-btn" aria-label="Back to the thread" title="Back to the thread" onClick={() => a.setView("session")}>
+                    <Icon name="arrow-left4" size={14} />
+                  </button>
+                </Show>
+                <h3 class="ap-setup-title">{setupTitle()}</h3>
+              </header>
+              <AgentSetup
+                agent={a}
+                view={setupView()}
+                workspacePath={a.props.workspacePath}
+                removeAgent={a.props.removeAgent}
+                onOpenExternal={a.props.onOpenExternal}
+                delegationEnabled={a.props.delegationEnabled}
+                onDelegationChange={a.props.onDelegationChange}
+              />
+            </section>
+          </Show>
+          <Show when={body() === "logs"}>
+            <section class="ap-setup" aria-label="ACP log">
+              <header class="ap-setup-head">
+                <button type="button" class="ap-icon-btn" aria-label="Back to the thread" title="Back to the thread" onClick={() => a.setView("session")}>
+                  <Icon name="arrow-left4" size={14} />
+                </button>
+                <h3 class="ap-setup-title">ACP traffic</h3>
+                <span class="ap-setup-sub">
+                  latest {a.state().logs.length} of {a.state().logCount} lines
+                </span>
+              </header>
+              <Show when={a.state().logs.length} fallback={<p class="ap-note">No ACP traffic recorded. Connect an agent to inspect its protocol messages.</p>}>
+                <pre class="agent-logs">{a.state().logs.join("\n")}</pre>
+              </Show>
+            </section>
           </Show>
           <Show when={body() === "unavailable"}>
             <div class="ap-thread-empty">
@@ -177,18 +210,20 @@ export function ThreadView(props: ThreadViewProps) {
               <p>This browser preview cannot start local agent processes, so nothing here talks to an agent.</p>
             </div>
           </Show>
-          <Show when={failure() && body() !== "setup" && body() !== "picker"}>
-            <div class="ap-thread-failure">
-              <ErrorCard
-                level={failure()!.level}
-                title={failure()!.title}
-                text={failure()!.text}
-                actions={[
-                  ...(isDesktop ? [{ label: "Show in sidebar", onAct: () => props.onSetup() }] : []),
-                  { label: "Dismiss", onAct: () => a.dismissFailure() },
-                ]}
-              />
+          <Show when={body() === "feed" && !a.connected() && !a.state().failure && !a.working()}>
+            <div class="ap-thread-actions">
+              <Show when={a.launch()}>
+                <button type="button" class="ap-btn primary" onClick={a.reconnect}>
+                  Reconnect {a.launch()!.name}
+                </button>
+              </Show>
+              <button type="button" class="ap-btn" onClick={() => props.onChooseAgent()}>
+                Choose an agent
+              </button>
             </div>
+          </Show>
+          <Show when={body() !== "setup" && body() !== "picker" && body() !== "logs"}>
+            <PageFailure agent={a} label={label()} onChooseAgent={props.onChooseAgent} onShowLog={() => a.setView("logs")} />
           </Show>
         </div>
         <button type="button" class="agent-jump" classList={{ shown: jumpShown() }} aria-label="Jump to latest message" aria-hidden={jumpShown() ? undefined : "true"} tabIndex={jumpShown() ? 0 : -1} onClick={a.followLatest}>
@@ -214,16 +249,16 @@ export function ThreadView(props: ThreadViewProps) {
             onCopyPath={(path) => api.writeClipboard(path)}
             onOpenInEditor={(attachment) => {
               a.setViewing(undefined);
-              if (attachment.path) {
-                a.openInEditor(attachment.path);
-                props.onOpenEditor();
-              }
+              // An explicit click: the app switches to Editor mode for the file, without opening the sidebar.
+              if (attachment.path) a.openInEditor(attachment.path);
             }}
             loadImage={(path) => api.readImage(path)}
           />
         )}
       </Show>
       <DropOverlay visible={a.intake.dragging()} capabilities={a.caps()} />
+      <EditorToast name={a.toast()} onDismiss={a.clearToast} />
+      <OpenRefusal refusal={a.openRefusal()} onCopy={(path) => api.writeClipboard(path)} onDismiss={a.clearOpenRefusal} />
     </section>
   );
 }
