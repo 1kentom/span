@@ -1948,18 +1948,16 @@ async fn watched_files_do_not_start_servers_and_pending_work_is_bounded_and_gene
         .watched_files_changed(watched_test_batch(&f.root, false));
     assert!(lock(&f.svc.state).watched_files.is_none());
     assert_eq!(f.resolver.resolves.load(Ordering::SeqCst), 0);
-    lock(&f.svc.state)
-        .states
-        .insert((ID, f.root.clone()), LanguageServerStateDto::Ready);
-    lock(&f.svc.state)
-        .states
-        .insert((ID, f.root.clone()), LanguageServerStateDto::Starting);
-    for _ in 0..(MAX_WATCH_DELIVERIES + 10) {
-        f.svc
-            .watched_files_changed(watched_test_batch(&f.root, false));
-    }
     {
-        let st = lock(&f.svc.state);
+        // Tauri owns an independent worker thread. Hold the production state
+        // lock across enqueueing and inspection so it cannot drain this batch.
+        let mut st = lock(&f.svc.state);
+        st.states
+            .insert((ID, f.root.clone()), LanguageServerStateDto::Starting);
+        for _ in 0..(MAX_WATCH_DELIVERIES + 10) {
+            f.svc
+                .queue_watched_files(&mut st, watched_test_batch(&f.root, false));
+        }
         let pending = st.watched_files.as_ref().unwrap();
         assert_eq!(pending.deliveries.len(), MAX_WATCH_DELIVERIES);
         assert!(pending.events <= MAX_PENDING_WATCH_EVENTS);
@@ -1970,14 +1968,13 @@ async fn watched_files_do_not_start_servers_and_pending_work_is_bounded_and_gene
     assert!(lock(&f.svc.state).watched_files.is_none());
     f.svc.flush().await;
     assert_eq!(f.resolver.resolves.load(Ordering::SeqCst), 0);
-    lock(&f.svc.state)
-        .states
-        .insert((ID, f.root.clone()), LanguageServerStateDto::Ready);
-    let mut large = watched_test_batch(&f.root, false);
-    large.changes = vec![large.changes[0].clone(); MAX_PENDING_WATCH_EVENTS + 1];
-    f.svc.watched_files_changed(large);
     {
         let mut st = lock(&f.svc.state);
+        st.states
+            .insert((ID, f.root.clone()), LanguageServerStateDto::Ready);
+        let mut large = watched_test_batch(&f.root, false);
+        large.changes = vec![large.changes[0].clone(); MAX_PENDING_WATCH_EVENTS + 1];
+        f.svc.queue_watched_files(&mut st, large);
         let pending = st.watched_files.as_ref().unwrap();
         assert_eq!(pending.events, MAX_PENDING_WATCH_EVENTS);
         assert!(pending.incomplete);

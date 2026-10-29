@@ -492,10 +492,14 @@ impl LanguageServers {
     /// Queue only for starting or ready instances that existed when the native event arrived.
     /// Registration matching belongs to each client, not the Explorer visibility policy.
     pub(crate) fn watched_files_changed(&self, batch: crate::watched_paths::WatchedBatch) {
+        let mut st = lock(&self.state);
+        self.queue_watched_files(&mut st, batch);
+    }
+
+    fn queue_watched_files(&self, st: &mut Shared, batch: crate::watched_paths::WatchedBatch) {
         if !batch.incomplete && batch.changes.is_empty() {
             return;
         }
-        let mut st = lock(&self.state);
         if st.root.as_ref() != Some(&paths::normalize_path(&batch.root)) {
             return;
         }
@@ -509,7 +513,7 @@ impl LanguageServers {
             ) {
                 continue;
             }
-            let epoch = Self::epoch(&st, *server);
+            let epoch = Self::epoch(st, *server);
             warning_targets.insert(*server, epoch);
             if targets.len() < MAX_WATCH_TARGETS {
                 targets.push((*server, root.clone(), epoch));
@@ -546,8 +550,13 @@ impl LanguageServers {
                 .push(WatchedDelivery { changes, targets });
         }
         if needs_queue {
-            self.push(&mut st, Op::WatchedFiles { generation });
+            self.push(st, Op::WatchedFiles { generation });
         }
+    }
+
+    fn watched_instance_current(&self, generation: u64, server: ServerId, epoch: u64) -> bool {
+        let st = lock(&self.state);
+        st.generation == generation && Self::epoch(&st, server) == epoch
     }
 
     fn epoch(st: &Shared, server: ServerId) -> u64 {
@@ -999,25 +1008,22 @@ impl LanguageServers {
                             continue;
                         }
                         if !delivery.changes.is_empty() {
-                            if let Err(error) =
-                                self.manager.wait_ready(server, &root, SYNC_WAIT).await
-                            {
-                                self.report(server, None, format!("Filesystem notifications could not be delivered to this starting language server: {error}. Restart the server to refresh its workspace state."));
+                            let readiness = self.manager.wait_ready(server, &root, SYNC_WAIT).await;
+                            if !self.watched_instance_current(generation, server, epoch) {
                                 continue;
                             }
-                            {
-                                let st = lock(&self.state);
-                                if st.generation != generation || Self::epoch(&st, server) != epoch
-                                {
-                                    continue;
-                                }
+                            if let Err(error) = readiness {
+                                self.report(server, None, format!("Filesystem notifications could not be delivered to this starting language server: {error}. Restart the server to refresh its workspace state."));
+                                continue;
                             }
                             if let Err(error) = self
                                 .manager
                                 .notify_watched_files(server, &root, delivery.changes.clone())
                                 .await
                             {
-                                self.report(server, None, error.to_string());
+                                if self.watched_instance_current(generation, server, epoch) {
+                                    self.report(server, None, error.to_string());
+                                }
                             }
                         }
                     }
