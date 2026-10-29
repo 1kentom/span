@@ -206,12 +206,40 @@ stays about the delegation.
 - Budget per delegation (`Budget`, defaults): 20 turns, 30 minute wall
   clock, no token or cost limit by default (the agent's context window
   already bounds context tokens, and cost is rarely reported). A lead may
-  only lower limits via `delegate.budget`. Tokens are the larger of the
-  peak `usage_update.used` and the sum of unstable
-  `PromptResponse.usage.totalTokens`; cost only when reported. Checked on
-  every usage event and every policy second; over budget, Span cancels the
-  child (cascade) and the task fails with `budget_exceeded` or `timeout`.
-  A message beyond the turn budget is refused with `budget_exceeded`.
+  only lower limits via `delegate.budget`. Tokens measure what the
+  delegation spent (see "Token budget measures spend" below); cost only
+  when reported. Checked on every usage event and every policy second
+  while a turn runs; over budget, Span cancels the child (cascade) and the
+  task fails with `budget_exceeded` or `timeout`. A message beyond the
+  turn or token budget is refused with `budget_exceeded`.
+- Token budget measures spend (amended). `usage_update.used` is context
+  window occupancy, and a fresh agent session already holds roughly 25k
+  to 31k tokens of system prompt and tool definitions before the task
+  starts. Comparing the peak `used` with `maxTokens` therefore failed every
+  small budget at the child's first usage report: a lead asking for
+  `maxTokens: 1000` saw "reported 31290 tokens, over the 1000 token
+  budget" on tasks that would have answered in seconds. The meter now
+  takes the first `used` reading of the delegation as a baseline and
+  counts the sum of unstable `PromptResponse.usage.totalTokens` over
+  finished turns plus the context growth since the last of them; without
+  per-turn totals that is just the growth over the baseline. A
+  baseline-only reading counts as nothing, and a compacted context never
+  makes the growth negative. A running turn that really exceeds the budget
+  is still cancelled with `budget_exceeded` and the detail "used about N
+  tokens since it started, over the M token budget". A usage report that
+  arrives after the turn's completion was seen never stops or fails that
+  task: it stays `completed`, and when the delegation is over its token
+  budget its `detail` carries the quiet note "Used about N tokens, over
+  the M token budget" (refreshed by later reports while nothing else is
+  queued). The UI shows that note on the card and in the Active agents
+  tooltip; such a task reads Done and is not counted as failed.
+  `usage.tokens` (`UsageReport`, IPC) stays the peak context occupancy for
+  the context meter, labelled "in context" on the card; the lead's
+  `get_result` `usage` also carries `spentTokens` and `maxTokens`. Budgets
+  remain lower only; turn, timeout and cost checks are unchanged. Tests:
+  `budget::tests`, `tasks::tests`,
+  `a_small_token_budget_measures_spend_not_the_childs_starting_context`,
+  `exceeding_a_budget_cancels_the_child_and_reports_it`.
 - Cancel cascade: `cancel` goes through the manager. Stopping the lead
   stops its children (0001). When the lead session leaves the manager
   (close, delete, disconnect, process exit), an end hook stops the server
