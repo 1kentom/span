@@ -46,6 +46,8 @@ pub fn server_slug(id: ServerId) -> &'static str {
         ServerId::Basedpyright => "basedpyright",
         ServerId::Jdtls => "jdtls",
         ServerId::Svelte => "svelte",
+        ServerId::Vue => "vue",
+        ServerId::Astro => "astro",
     }
 }
 

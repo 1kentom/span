@@ -14,6 +14,8 @@ pub enum ServerId {
     Basedpyright,
     Jdtls,
     Svelte,
+    Vue,
+    Astro,
 }
 
 /// A runtime a server needs on the host.

@@ -30,7 +30,7 @@ const extensionServers: Readonly<Record<string, LanguageServerId>> = {
   rs: "rust-analyzer",
   py: "basedpyright", pyi: "basedpyright",
   java: "jdtls",
-  svelte: "svelte",
+  svelte: "svelte", vue: "vue", astro: "astro",
 };
 
 /** The language server family of a buffer, or undefined when none handles it. Settings buffers are never served. */
@@ -44,7 +44,7 @@ export function serverForBuffer(path: string): LanguageServerId | undefined {
 
 export const serverLabels: Readonly<Record<LanguageServerId, string>> = {
   vtsls: "vtsls", html: "HTML language server", css: "CSS language server", json: "JSON language server",
-  "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright", jdtls: "Java (Eclipse JDT LS)", svelte: "Svelte language server",
+  "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright", jdtls: "Java (Eclipse JDT LS)", svelte: "Svelte language server", vue: "Vue language server", astro: "Astro language server",
 };
 
 /** CodeMirror offsets are UTF-16 code units, exactly like LSP characters, so this only clamps. */

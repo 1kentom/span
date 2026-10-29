@@ -53,8 +53,10 @@ const languageTable = {
   toml: { extensions: ["toml"], filenames: ["cargo.lock", "poetry.lock", "uv.lock"], load: legacy(async () => (await import("@codemirror/legacy-modes/mode/toml")).toml) },
   yaml: { extensions: ["yaml", "yml"], load: legacy(async () => (await import("@codemirror/legacy-modes/mode/yaml")).yaml) },
   html: { extensions: ["html", "htm", "svg"], load: loadHtml },
-  // Svelte markup is HTML with embedded script and style blocks, so it borrows the HTML grammar until it has its own.
+  // Svelte, Vue and Astro markup is HTML with embedded script and style blocks, so it borrows the HTML grammar until it has its own.
   svelte: { extensions: ["svelte"], load: loadHtml },
+  vue: { extensions: ["vue"], load: loadHtml },
+  astro: { extensions: ["astro"], load: loadHtml },
   css: {
     extensions: ["css", "scss"],
     aliases: ["scss"],
@@ -113,7 +115,7 @@ const entries = languageTable as Record<LanguageId, LanguageEntry>;
 export const languageIds = Object.keys(languageTable) as LanguageId[];
 
 /** Ids the Rust detector can produce that have no grammar yet. */
-export const noHighlightingYet: readonly string[] = ["vue"];
+export const noHighlightingYet: readonly string[] = [];
 
 /** Whether an id has a grammar loader. */
 export const hasGrammar = (id: string): boolean => Object.hasOwn(entries, id) && typeof entries[id as LanguageId].load === "function";

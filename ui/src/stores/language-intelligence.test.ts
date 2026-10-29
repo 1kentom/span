@@ -123,7 +123,7 @@ describe("hub view: every state", () => {
   });
   it("lists every language once, with the current one marked and a switch state", () => {
     const view = viewOf(ready(), {});
-    expect(view.rows.map(row => row.name)).toEqual(["Java", "TypeScript", "HTML", "CSS", "JSON", "Rust", "Python"]);
+    expect(view.rows.map(row => row.name)).toEqual(["Java", "TypeScript", "HTML", "CSS", "JSON", "Rust", "Python", "Svelte", "Vue", "Astro"]);
     expect(view.rows.filter(row => row.current).map(row => row.name)).toEqual(["Java"]);
     const off = buildHubView(makeSnapshot(ready(), { servers: [makeServer("html", { kind: "disabled", server: "html" }, { state: { kind: "disabled" }, enabled: false, installed: false }), ready()] }));
     expect(off.rows.find(row => row.server === "html")).toMatchObject({ enabled: false, stateText: "" });

@@ -1822,7 +1822,7 @@ export type LanguageServerError_Serialize = {
 	message: string,
 };
 
-export type LanguageServerId = "vtsls" | "html" | "css" | "json" | "rust-analyzer" | "basedpyright" | "jdtls" | "svelte";
+export type LanguageServerId = "vtsls" | "html" | "css" | "json" | "rust-analyzer" | "basedpyright" | "jdtls" | "svelte" | "vue" | "astro";
 
 export type LanguageServerInstallProgress = LanguageServerInstallProgress_Serialize | LanguageServerInstallProgress_Deserialize;
 

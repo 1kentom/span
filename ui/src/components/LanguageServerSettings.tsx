@@ -30,6 +30,8 @@ const servers: { id: LanguageServerId; files: string }[] = [
   { id: "basedpyright", files: "Python" },
   { id: "jdtls", files: "Java (needs JDK 25 or newer)" },
   { id: "svelte", files: "Svelte" },
+  { id: "vue", files: "Vue" },
+  { id: "astro", files: "Astro" },
 ];
 
 export function LanguageServerSettings(props: LanguageServerSettingsProps) {

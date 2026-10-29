@@ -698,7 +698,7 @@ async fn status_reports_capabilities_only_for_ready_servers() {
         .unwrap();
     assert_eq!(json.state, LanguageServerStateDto::NotStarted);
     assert!(json.capabilities.is_none());
-    assert_eq!(before.len(), 7);
+    assert_eq!(before.len(), 10);
 
     f.open_ready().await;
     eventually("ready state event", || {
@@ -1907,6 +1907,8 @@ async fn status_rows_describe_the_server_and_its_runtime() {
         (LanguageServerId::RustAnalyzer, "Rust (rust-analyzer)"),
         (LanguageServerId::Basedpyright, "Python (basedpyright)"),
         (LanguageServerId::Svelte, "Svelte"),
+        (LanguageServerId::Vue, "Vue"),
+        (LanguageServerId::Astro, "Astro"),
     ] {
         assert!(names.contains(&(id, name)), "{id:?}");
     }

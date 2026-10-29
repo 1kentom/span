@@ -24,7 +24,7 @@ pub struct LanguageServerSettings {
     /// downloaded until the user asks for an install.
     pub auto_install: bool,
     /// Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
-    /// `rust-analyzer`, `basedpyright`, `jdtls`, `svelte`). A server that is not listed is enabled.
+    /// `rust-analyzer`, `basedpyright`, `jdtls`, `svelte`, `vue`, `astro`). A server that is not listed is enabled.
     pub enabled: HashMap<String, bool>,
     /// JDK home used to run JDT LS, instead of searching the host.
     pub java_home: Option<String>,
@@ -71,6 +71,8 @@ pub const LANGUAGE_SERVER_IDS: &[&str] = &[
     "basedpyright",
     "jdtls",
     "svelte",
+    "vue",
+    "astro",
 ];
 
 impl LanguageServerSettings {
