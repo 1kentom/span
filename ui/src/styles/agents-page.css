@@ -912,15 +912,6 @@
 .ap-pill[data-tone="waiting"] { color: var(--warning); background: var(--sb-warn-surface); }
 .ap-pill[data-tone="error"] { color: var(--error); background: var(--sb-error-surface); }
 .ap-pill[data-tone="done"] { color: var(--success); }
-.ap-node-detail {
-  padding-left: 28px;
-  overflow: hidden;
-  font-size: 11.5px;
-  color: var(--dim);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ap-node.child .ap-node-detail,
 .ap-node.child .ap-node-actions {
   padding-left: 24px;
 }
@@ -1301,5 +1292,204 @@
   .ap-switch-track,
   .ap-switch-track::after {
     transition: none;
+  }
+}
+
+/* Toolbar: the session list toggle carries a dot while the rail is hidden and another thread needs the user */
+.icon-button.agents-toggle {
+  position: relative;
+}
+.agents-toggle-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 2px var(--canvas);
+}
+
+/* Connect, sign in and the ACP log, in the thread area of the page */
+.ap-setup {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: calc(var(--ap-column) + 2 * var(--ap-gutter));
+  margin: 0 auto;
+  padding: 12px var(--ap-gutter) 20px;
+}
+.ap-setup-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin-bottom: 6px;
+}
+.ap-setup-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--strong);
+}
+.ap-setup-sub {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.ap-setup .agent-body {
+  padding: 0;
+}
+.ap-setup .agent-logs {
+  margin: 0;
+  max-height: none;
+}
+.ap-thread-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: calc(var(--ap-column) + 2 * var(--ap-gutter));
+  margin: 0 auto;
+  padding: 0 var(--ap-gutter) 16px;
+}
+
+/* Agents tab tree: row anatomy (avatar with live dot, name, role, pill; model and meta; note; budget; actions) */
+.ap-node-face {
+  position: relative;
+}
+.ap-node-live {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sb-accent);
+  box-shadow: 0 0 0 2px var(--island);
+  animation: sb-pulse 1.6s ease-in-out infinite;
+}
+.ap-node-live[data-tone="waiting"] {
+  background: var(--warning);
+}
+.ap-node-cmd {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--hover);
+  color: var(--dim);
+}
+.ap-node.command .ap-node-name {
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
+  font: 11.5px "JetBrains Mono", ui-monospace, monospace;
+  text-overflow: ellipsis;
+}
+.ap-pill {
+  gap: 5px;
+}
+.ap-pill[data-tone="running"] {
+  color: var(--sb-accent-fg);
+  background: var(--sb-accent-surface);
+}
+.ap-pill-spin {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: sb-spin 0.9s linear infinite;
+}
+.ap-node-line,
+.ap-node-note,
+.ap-node-budget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 28px;
+}
+.ap-node.child :is(.ap-node-line, .ap-node-note, .ap-node-budget) {
+  padding-left: 24px;
+}
+.ap-node-model {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--pillBd);
+  border-radius: 4px;
+  background: var(--pill);
+  font: 10.5px "JetBrains Mono", ui-monospace, monospace;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.ap-node-meta {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-node-note {
+  font-size: 12px;
+  color: var(--text);
+}
+.ap-node-note[data-tone="error"] {
+  color: var(--error);
+}
+.ap-node-note[data-tone="waiting"] {
+  color: var(--warning);
+}
+.ap-node-bullet {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.ap-node-note-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-node-bar {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--hover);
+}
+.ap-node-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.ap-node.child .ap-node-actions {
+  margin-top: -2px;
+}
+.ap-files-head {
+  margin: 0;
+  padding: 12px 14px 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.ap-files .material-file-icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ap-node-live,
+  .ap-pill-spin {
+    animation: none;
   }
 }
