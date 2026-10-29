@@ -165,7 +165,7 @@ async fn open_workspace(
     })
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
-    let watcher_lsp = Arc::clone(lsp.inner());
+    let watcher_lsp = Arc::clone(&lsp);
     state
         .file_index
         .set_file_change_sink(Arc::new(move |batch| {
