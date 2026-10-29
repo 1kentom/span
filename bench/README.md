@@ -18,6 +18,10 @@ The latest local browser run on an Apple M3 Pro (11 logical CPUs, 18 GiB memory)
 
 The output is `bench/results/web.json`. No release budget is marked passed from this proxy alone. Use a packaged Tauri app and an instrumented native capture to establish cold start, warm start, and actual keystroke-to-pixel gates on reference hardware.
 
+## Packaged native startup
+
+The opt-in release diagnostic and bounded summary helper are described in [the native startup method](../docs/native-performance-method.md). Set `SPAN_STARTUP_TRACE=1` only on a fresh installed application process and capture stderr locally. These marks start at Rust app entry and do not measure OS launch or physical paint.
+
 ## Core 100 MiB rope
 
 ```sh

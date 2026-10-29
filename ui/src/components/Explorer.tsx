@@ -15,7 +15,7 @@ import "../styles/explorer.css";
 type DragItem = { paths: string[]; generation: number };
 type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: EditorDropTarget } | { kind: "agent" };
 
-export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void; onAgentTarget?: (x: number, y: number) => boolean; onAgentPreview?: (over: boolean) => void; onAgentDrop?: (entries: { path: string; isDir: boolean }[]) => void }) {
+export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void; onAgentTarget?: (x: number, y: number) => boolean; onAgentPreview?: (over: boolean) => void; onAgentDrop?: (entries: { path: string; isDir: boolean }[]) => void }) {
   const w = props.workbench; const state = props.state;
   const mac = currentPlatform() === "mac";
   let treeElement!: HTMLDivElement;
@@ -203,6 +203,5 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
       <div class="search-results"><For each={w.searchResults()}>{match => <button class="search-result" onClick={() => props.onNavigate(match.path, match.line)} title={`${match.path}:${match.line}`}><span class="search-result-file"><FileIcon path={match.path} /><span>{match.path.split("/").pop()}</span><span class="dim">:{match.line}</span></span><span class="search-result-text">{match.text}</span><span class="search-result-path">{match.path}</span></button>}</For></div>
     </Show>
     <Show when={props.view === "Git"}>{props.git}</Show>
-    <Show when={props.view === "History"}>{props.history}</Show>
   </>;
 }

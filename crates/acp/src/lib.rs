@@ -8,6 +8,7 @@ mod launch;
 mod managed;
 mod manager;
 mod npm_bin;
+mod process;
 mod registry;
 mod service;
 pub mod tools;
@@ -21,10 +22,10 @@ pub use health::{
 };
 pub use managed::remove_installed_agent;
 pub use manager::{
-    AgentControl, ConnectionInfo, PendingKind, PendingRequest, PromptError, SessionActivity,
-    SessionEndHook, SessionEvent, SessionEventSink, SessionInfo, SessionKey, SessionManager,
-    SessionOrigin, SessionRuntimeState, SessionStateSink, SessionStates, Subscription,
-    DEPTH_EXCEEDED, PROMPT_ALREADY_RUNNING,
+    AgentControl, ConnectionInfo, LiveSession, PendingKind, PendingRequest, PromptError,
+    SessionActivity, SessionEndHook, SessionEvent, SessionEventSink, SessionInfo, SessionKey,
+    SessionManager, SessionOrigin, SessionRuntimeState, SessionStateSink, SessionStates,
+    Subscription, DEPTH_EXCEEDED, PROMPT_ALREADY_RUNNING,
 };
 pub use registry::{fetch_registry, install_registry_agent, list_installed_agents};
 pub use service::{is_hidden_session, AgentService, EventSink};
