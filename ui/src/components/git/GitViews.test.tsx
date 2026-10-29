@@ -36,7 +36,7 @@ it("does not offer file history for Git or settings virtual view identifiers", a
   const f = fixture(); await f.git.refresh();
   const [path, setPath] = createSignal("span:git:working:diff");
   f.mount(() => <GitHistory git={f.git} available active={false} filePath={path()} />);
-  const fileButton = [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Current file")!;
+  const fileButton = [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "This file")!;
   for (const virtual of ["span:git:working:diff", "span:settings", "settings://user", "settings://workspace"]) { setPath(virtual); expect(fileButton.disabled).toBe(true); }
   expect(f.transport.gitHistory).not.toHaveBeenCalled(); setPath("src/main.ts"); expect(fileButton.disabled).toBe(false);
 });
