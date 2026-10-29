@@ -307,26 +307,65 @@ thread the sidebar shows; nothing is copied. A chat left in the
 background keeps its live thread in the registry (a bounded set like
 `CHAT_LIMIT`, never evicting a working thread), instead of a snapshot.
 
-Transitional adapter, and why: the snapshots of `agent-chats.ts` stay for
-now, with `thread.snapshot()` and `seedFromSnapshot` converting both ways.
-The sidebar still follows the unkeyed focused-connection channel and the
-unkeyed commands, and the keyed command set has no resume (session/load),
-authenticate or disconnect yet. Moving
-only prompt, cancel and answers to keyed commands while connect and resume
-stay unkeyed would split one chat over two transports, and every sidebar
-test mocks the unkeyed `api`. So the controller switches in one step once
-the keyed resume and authenticate commands exist, with the replay tests
-as the guard. This PR only shares the thread state types and the queue
-helpers with the controller.
+Transitional adapter in part 2a, and why: the snapshots of `agent-chats.ts`
+stayed, with `thread.snapshot()` and `seedFromSnapshot` converting both ways,
+because the keyed command set has no resume (session/load), authenticate or
+disconnect, and every sidebar test mocks the unkeyed `api`.
+
+Part 2b (2026-10-29) wires the sidebar to the thread store:
+
+- The open chat is the focused thread of a registry the controller owns
+  (`createThreadRegistry`), keyed by `SessionKey`. Its conversation, draft,
+  attachments, queue and hold, Send now pick, steer, handoff, refused turn,
+  rewind pick, elicitation form, busy notice, scroll, turn start, turn
+  counter and prompts in flight live in that thread; the controller's
+  accessors (`state`, `feed`, `prompt`, `queue` and the rest) are memos over
+  it, so the public shape for components is unchanged.
+- Background chats are live threads in the same registry instead of
+  snapshots. Switching chats focuses another thread and nothing is copied
+  (a test checks that coming back focuses the very thread that kept
+  streaming). `CHAT_LIMIT` eviction closes threads (`evictions`), never a
+  working one; closing, deleting or disconnecting disposes them.
+- Backend session states go through the thread rule (`applyRuntime`) for
+  the focused and for background threads.
+- The focused thread also carries the connection's own fields (status,
+  agent, logs, sign-in) in its `AgentState`; a switch copies them onto the
+  shown thread with `withConversation`, as before. Before the open chat has
+  a session, or before its connection id is known, it is a thread under a
+  transient key; when the key becomes known the thread moves to it (the
+  only copy left), and a prompt in flight settles on the moved thread.
+
+Still transitional after 2b, and why:
+
+- Events: the sidebar still follows the unkeyed focused-connection channel
+  and routes each event to the thread of its key itself; its threads get an
+  inert event source. Connect, resume and sign-in are unkeyed, so the keyed
+  stream (`live-sessions.ts`) would deliver the same events a second time,
+  and the thread's own `turnEnded` effect would drain the queue next to the
+  controller's drain.
+- Commands: prompt, cancel, permission, elicitation, options and review go
+  out on the unkeyed commands, which act on the backend's focused session.
+  That is always the open chat (every switch is a resume or new session on
+  the focused connection), and every result that arrives after a switch is
+  dropped by the controller's epoch guard. Moving to the keyed commands and
+  to the thread's own actions (`thread-actions.ts`) needs keyed resume,
+  authenticate and disconnect (Rust, out of scope for this step) and
+  rewriting the sidebar tests that mock the unkeyed `api`.
+- The send, steer, queue, permission, review, retry, rewind and branch
+  logic still runs in the controller, on the focused thread's state; the
+  pure reducers of `thread-queue.ts` and `thread-events.ts` are not yet
+  what the sidebar calls.
+- `ChatSnapshot` stays only as the shape `thread.snapshot()` and
+  `seedFromSnapshot` use.
 
 ## UNVERIFIED
 
 - The research findings come from public source, documentation and issue
   trackers of T3 Code and Zed, read on or before 2026-10-29. Neither
   product was run for this record.
-- Phase 1 and the phase 2 stores are implemented; the thread store is
-  covered by unit tests only and is not used by the sidebar yet. Nothing
-  here ran in the native app.
+- Phase 1 and the phase 2 stores are implemented, and since part 2b the
+  sidebar runs on the thread store. That is covered by unit and jsdom tests
+  only (targeted vitest and `tsc`); nothing here ran in the native app.
 - Whether every installed agent supports `session/load` well enough for
   replay to win in practice (0005 and 0010 already list per-agent gaps).
 - Cmd+Shift+A was checked as unbound in Span's command list only, not
