@@ -249,9 +249,18 @@
   flex: none;
   width: var(--ap-rail-width);
 }
+/*
+ * The side panel follows the window until the user drags it: 24 percent, from 420px to 760px, never more than half
+ * the window. The page sets `--ap-side-width` to the clamped value it computes from the same numbers.
+ */
+.ap-page {
+  --ap-side-default: clamp(420px, 24vw, 760px);
+  --ap-side-max: 50vw;
+}
 .ap-side {
   flex: none;
-  width: var(--ap-side-width);
+  width: var(--ap-side-width, var(--ap-side-default));
+  max-width: max(320px, var(--ap-side-max));
 }
 .ap-pane-head {
   display: flex;
@@ -628,38 +637,45 @@
 .ap-crew-face[data-tone="done"]::after { background: var(--success); }
 
 /*
- * Reading column: prose keeps about 860px, centred. Tables and code inside a reply may grow to the wider column
- * (1280px) so they do not leave dead margins on large windows. The feed is otherwise the sidebar's own.
+ * Reading column. Its cap grows with the window (860px up to 1800px) so a large screen is used, and every block in
+ * the thread (tool groups, tables, code, diffs, decision and delegation cards, the files-changed card, the composer
+ * and the dock stack) shares that one column. Prose inside it stays readable at about 110ch, aligned to the column's
+ * left edge. The feed is otherwise the sidebar's own.
  */
+.ap-thread {
+  --ap-gutter: 28px;
+  --ap-column-cap: clamp(860px, 62vw, 1800px);
+  --ap-column: min(100% - 2 * var(--ap-gutter), var(--ap-column-cap));
+  --ap-prose: 110ch;
+}
 .ap-thread .agent-feed {
-  --ap-prose: 860px;
-  --ap-wide: 1280px;
   width: 100%;
   gap: 16px;
-  padding: 28px max(28px, calc((100% - var(--ap-wide)) / 2)) 24px;
+  padding: 28px var(--ap-gutter) 24px;
 }
 .ap-thread .agent-feed > * {
   width: 100%;
-  max-width: var(--ap-prose);
+  max-width: min(100%, var(--ap-column-cap));
   margin-inline: auto;
 }
 .ap-thread .agent-feed > :is(.agent-message.user, .agent-message-actions) {
   width: auto;
-  max-width: min(82%, calc(var(--ap-prose) * 0.82));
-  margin-inline: auto max(0px, calc((100% - var(--ap-prose)) / 2));
-}
-.ap-thread .agent-feed > .agent-message:is(.text, .thought) {
-  max-width: 100%;
+  max-width: min(82%, var(--ap-prose));
+  margin-inline: auto max(0px, calc((100% - var(--ap-column-cap)) / 2));
 }
 .ap-thread .agent-feed > .agent-message:is(.text, .thought) > :not(.agent-markdown),
 .ap-thread .agent-markdown > .markdown-block > * {
   max-width: var(--ap-prose);
-  margin-inline: auto;
 }
 .ap-thread .agent-markdown > .markdown-block > :is(.markdown-table, .markdown-code-block, pre) {
+  max-width: 100%;
+}
+.ap-thread .agent-markdown > .markdown-block > :is(.markdown-code-block, pre) {
+  width: 100%;
+}
+.ap-thread .agent-markdown > .markdown-block > .markdown-table {
   width: fit-content;
   min-width: min(100%, var(--ap-prose));
-  max-width: 100%;
 }
 .ap-thread .agent-markdown {
   font-size: 13.5px;
@@ -668,7 +684,7 @@
 .ap-thread-composer {
   flex: none;
   width: 100%;
-  max-width: calc(860px + 32px);
+  max-width: calc(var(--ap-column-cap) + 16px);
   margin: 0 auto;
   padding: 0 8px 4px;
 }
@@ -680,9 +696,9 @@
   gap: 10px;
   flex: 1;
   width: 100%;
-  max-width: 860px;
+  max-width: calc(var(--ap-column) + 2 * var(--ap-gutter));
   margin: 0 auto;
-  padding: 32px 28px 28px;
+  padding: 32px var(--ap-gutter) 28px;
 }
 .ap-thread-empty h3 {
   margin: 0;
@@ -700,9 +716,9 @@
 }
 .ap-thread-failure {
   width: 100%;
-  max-width: calc(860px + 56px);
+  max-width: calc(var(--ap-column) + 2 * var(--ap-gutter));
   margin: 0 auto;
-  padding: 0 28px 16px;
+  padding: 0 var(--ap-gutter) 16px;
 }
 
 /* Side panel */
@@ -936,9 +952,26 @@
   color: var(--dim);
 }
 .ap-files {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  align-content: start;
+  gap: 2px 8px;
   margin: 0;
   padding: 8px 6px;
   list-style: none;
+}
+/* Changes tab: each proposal's diff below the file list, at the panel's full width */
+.ap-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+.ap-review-file[data-state="rejected"] {
+  opacity: 0.6;
+}
+.ap-review .sb-diff-body {
+  max-height: 360px;
 }
 .ap-file {
   display: flex;
@@ -1082,9 +1115,9 @@
   gap: 22px;
   flex: 1;
   width: 100%;
-  max-width: 860px;
+  max-width: calc(var(--ap-column) + 2 * var(--ap-gutter));
   margin: 0 auto;
-  padding: 32px 28px 24px;
+  padding: 32px var(--ap-gutter) 24px;
 }
 .ap-picker-head h3 {
   margin: 0 0 6px;
