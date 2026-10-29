@@ -257,18 +257,76 @@ into `ui/src/lib/agent-stores/`, without changing behaviour:
   the sidebar yet; phase 3 and the thread store use it.
 
 `createAgentController` composes these stores and keeps its public shape.
-Still to do in phase 2: the per-thread store (feed, composer, queue and
-steering, requests, review, handoff and rewind, scroll), one instance per
-`SessionKey` fed from the per-key dispatch, replacing the open chat's
-signals and the background chat snapshots of `agent-chats.ts`.
+
+The second phase 2 PR adds the per-thread store in `ui/src/lib/agent-threads/`,
+not yet used by the sidebar:
+
+- `thread-state.ts`: `ThreadState`, one plain value per `SessionKey`: the
+  conversation (`AgentState` from `agent-session.ts`: feed, plan, usage,
+  config, permission and elicitation requests, running and stop state),
+  the composer draft and attachments, queue, Send now pick and hold, the
+  pending steer, turn counter and prompts in flight, turn start, busy
+  notice, refused turn (sign-in and limit cards), handoff, rewind pick,
+  elicitation form progress, and scroll (pinned, scrollTop).
+- `thread-events.ts`: `reduceThreadEvent`, pure: a keyed event in, the
+  next state and the effects out. The conversation part is the same
+  `reduceAgentEvent` the sidebar uses; around it are the controller's
+  rules (a completed turn sends the steer then drains the queue, an error
+  or a dropped connection holds both). Events of another session are
+  ignored, except a delegated child's permission requests (the lead's
+  dock) and options (subagent model). `applyRuntime` is the backend
+  session state rule, for a focused and for a background thread.
+- `thread-queue.ts`: pure queue, steer and turn reducers (drain, Send now,
+  steer and its cancel, prompt busy and prompt failed, refused turn).
+- `thread-actions.ts`: send, steer, queue, cancel, answer permission,
+  child permission and elicitation, set config, retryWithModel and
+  retryLimited, review and hunk review, edit, restore and cancel rewind,
+  all on the keyed commands for the thread's own key; `branchSeed` (edit,
+  resend, fork) and `finishHandoff`.
+- `thread.ts`: `createThread(key)`, its own reactive root, disposed with
+  the calling owner or by `dispose`. It follows `liveSessions.onSession`
+  for its key, the new `onConnection` dispatch for the connection level
+  events of its connection (key null: status, log, ready, sign-in), and
+  each delegated child's key. Dispose unsubscribes all of them and stops
+  its delegation poll.
+- `threads.ts`: the registry (one thread per key, `open`, `close`,
+  `branch`), a shared store like the others.
+
+Replay tests feed every adapter fixture of `crates/acp/tests/fixtures`
+(filled to full events) and hand sequences from the sidebar tests both to
+the real controller and to the thread reducer and compare the
+conversation; isolation tests run two threads on interleaved keyed events,
+including the same session id on two connections.
+
+How the sidebar maps onto it, in the next PR: the sidebar's open chat is
+the focused thread, `registry.open(focusedKey)`. The controller keeps its
+public shape and reads `feed`, `queue`, `prompt`, `permission` and the
+rest from that thread instead of its own signals; the connection, catalog,
+history and limits stores stay as they are. Switching chats changes which
+thread the sidebar shows; nothing is copied. A chat left in the
+background keeps its live thread in the registry (a bounded set like
+`CHAT_LIMIT`, never evicting a working thread), instead of a snapshot.
+
+Transitional adapter, and why: the snapshots of `agent-chats.ts` stay for
+now, with `thread.snapshot()` and `seedFromSnapshot` converting both ways.
+The sidebar still follows the unkeyed focused-connection channel and the
+unkeyed commands, and the keyed command set has no resume (session/load),
+authenticate or disconnect yet. Moving
+only prompt, cancel and answers to keyed commands while connect and resume
+stay unkeyed would split one chat over two transports, and every sidebar
+test mocks the unkeyed `api`. So the controller switches in one step once
+the keyed resume and authenticate commands exist, with the replay tests
+as the guard. This PR only shares the thread state types and the queue
+helpers with the controller.
 
 ## UNVERIFIED
 
 - The research findings come from public source, documentation and issue
   trackers of T3 Code and Zed, read on or before 2026-10-29. Neither
   product was run for this record.
-- No phase is implemented. Nothing here ran in the browser preview or the
-  native app.
+- Phase 1 and the phase 2 stores are implemented; the thread store is
+  covered by unit tests only and is not used by the sidebar yet. Nothing
+  here ran in the native app.
 - Whether every installed agent supports `session/load` well enough for
   replay to win in practice (0005 and 0010 already list per-agent gaps).
 - Cmd+Shift+A was checked as unbound in Span's command list only, not
