@@ -545,13 +545,27 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .agent-history-button.on { background: var(--sb-control); color: var(--sb-fg); }
 .agent-attention-badge { position: absolute; top: 0; right: 0; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--sb-warning); color: var(--sb-on-accent); font-size: 9px; font-weight: 700; line-height: 13px; text-align: center; }
 
-/* The step running now, pinned above the composer. */
-.agent-running-step { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 6px 10px; border-top: 1px solid var(--sb-border); font-size: 12px; }
-.agent-running-head { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--sb-fg); }
-.agent-running-output { max-height: 132px; overflow: auto; padding: 4px 6px; border-radius: 4px; background: var(--sb-field); color: var(--sb-dim); font-size: 11px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-.agent-running-output.full { max-height: 320px; }
-.agent-running-more { align-self: flex-start; font-size: 11px; }
-.agent-running-still { margin: 0; color: var(--sb-faint); font-size: 11px; }
+/* Tool activity bar: the one running line above the composer (ToolActivityBar.tsx). Its inset, top radius and
+ * border come from the shared stack rule in agent.css; this block sets only the inside and the tones. */
+.sb-activity.agent-toolbar { position: relative; flex-direction: column; align-items: stretch; gap: 0; height: auto; padding-block: 0; }
+.agent-toolbar-row { display: flex; align-items: center; gap: 8px; height: 30px; min-width: 0; }
+.agent-toolbar-glyph { display: inline-grid; place-items: center; flex: none; width: 13px; height: 13px; color: var(--sb-dim); }
+.agent-toolbar-label { flex: none; color: var(--sb-fg); font-weight: 500; }
+.agent-toolbar-summary { color: var(--sb-dim); font-size: 11px; }
+.agent-toolbar-more { flex: none; padding: 1px 6px; border: 1px solid var(--sb-control-border); border-radius: 9px; background: var(--sb-control); color: var(--sb-dim); font-size: 10.5px; line-height: 14px; cursor: default; }
+.agent-toolbar-elapsed { flex: none; min-width: 4ch; color: var(--sb-dim); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.agent-toolbar-hint { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--sb-faint); font-size: 11px; }
+.agent-toolbar-reason { margin: -4px 0 6px 21px; color: var(--sb-error); font-size: 11px; }
+.agent-toolbar-output { max-height: 132px; margin: 0 0 6px; overflow: auto; padding: 4px 6px; border-radius: 4px; background: var(--sb-field); color: var(--sb-dim); font-size: 11px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-toolbar-output.full { max-height: 320px; }
+.agent-toolbar-toggle { align-self: flex-start; margin: 0 0 6px; font-size: 11px; }
+.agent-toolbar-still { margin: 0 0 6px; color: var(--sb-faint); font-size: 11px; }
+.sb-activity.agent-toolbar.attention { border-color: var(--sb-warn-border); background: var(--sb-warn-surface); }
+.sb-activity.agent-toolbar.attention .sb-spinner { border-top-color: var(--sb-warning); }
+.sb-activity.agent-toolbar.done .agent-toolbar-glyph { color: var(--sb-success); }
+.sb-activity.agent-toolbar.failed { border-color: var(--sb-error-border); background: var(--sb-error-surface); }
+.sb-activity.agent-toolbar.failed :is(.agent-toolbar-glyph, .agent-toolbar-label) { color: var(--sb-error); }
+.sb-activity.agent-toolbar.stopping .agent-toolbar-label { color: var(--sb-dim); }
 
 /* Shown while a turn runs and the user types or presses Send. */
 .agent-run-hint { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 8px; color: var(--sb-dim); font-size: 11px; }

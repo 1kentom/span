@@ -1,4 +1,4 @@
-import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import { parse as parseJsonc } from "jsonc-parser";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Editor, type EditorCommands, type EditorCursor } from "./components/Editor";
@@ -27,6 +27,8 @@ import { createRunWorkbench, CURRENT_FILE_OPTION } from "./stores/runs";
 import { javaSourceRuntimeAvailable } from "./lib/java-runtime";
 import { runOptions as buildRunOptions } from "./lib/run-options";
 import { createRunApprovals } from "./stores/run-approvals";
+import { ToastStack, NotificationBell } from "./components/Notifications";
+import { notifyError } from "./stores/notifications";
 import { TerminalDock, type TerminalDockController } from "./components/TerminalDock";
 import { createTerminalTransport } from "./lib/terminal-transport";
 import { ResizeHandle } from "./components/ResizeHandle";
@@ -83,6 +85,7 @@ import "@fontsource/inter/600.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "./styles/workbench.css";
+import "./styles/notifications.css";
 import "./styles/panel-handle.css";
 import "./styles/internal-drag.css";
 import "./styles/file-icons.css";
@@ -569,6 +572,14 @@ export default function App() {
   let launchChecked = false;
   createEffect(() => { if (isDesktop && settingsApplied() && !launchChecked && w.settings().updates?.checkOnLaunch) { launchChecked = true; afterNextPaint(() => void checkAllUpdates()); } });
   let menuSync = 0;
+  // Every store error becomes a notification: a short toast now, and an entry in the bell history after.
+  createEffect(() => {
+    const message = w.error(); if (!message) return;
+    const path = untrack(() => w.activePath());
+    const failedPath = path && untrack(() => w.failed().has(path)) ? path : undefined;
+    notifyError(message, failedPath ? { key: `save-failed:${failedPath}`, actions: [{ label: "Retry", run: () => void w.save(failedPath) }, { label: "Recover draft", run: () => void w.acceptAgentBuffer(failedPath) }] } : {});
+    w.setError("");
+  });
   createEffect(() => { const keys = bindings(); const recording = recordingShortcut(); const shellFocused = terminalFocused(); if (!isDesktop || !nativeReady()) return; const generation = ++menuSync; void api.syncNativeMenu(menuBindingsForFocus(keys, platform, shellFocused, recording)).then(owned => { if (!disposed && generation === menuSync) setNativeActions(new Set(owned as ActionId[])); }).catch(error => w.setError(String(error))); });
 
   function PanelHandle(props: { label: string; restoreLabel: string; direction: "horizontal" | "vertical"; value: number; min: number; max: number; collapsed: boolean; shortcut?: string; reverse?: boolean; onResize: (value: number) => void; onShown: (shown: boolean) => void }) {
@@ -716,9 +727,9 @@ export default function App() {
     </div>
     <Show when={runManagerOpen()}><RunConfigurationManager catalog={runs.catalog()} selectedId={runs.selectedId()} available={isDesktop && !!w.workspace()} onSave={runs.save} onDuplicate={runs.duplicate} onDelete={runs.remove} onSelect={runs.setSelectedId} onClose={() => setRunManagerOpen(false)} onDirtyChange={setRunDraftDirty} onSaveReady={save => { saveRunDraft = save; }} agentTools={<RunToolsPreference approvals={runApprovals} available={isDesktop} />} /></Show>
     <Show when={!w.busy() && runApprovals.pending()[0]}>{request => <RunApprovalModal request={request()} queued={runApprovals.pending().length} busy={!!runApprovals.resolving()} error={runApprovals.error()} onResolve={(id, allow) => void runApprovals.resolve(id, allow)} />}</Show>
-    <footer class="statusbar"><div class="breadcrumbs"><Show when={w.activePath()} fallback={<span>{w.activeTab() === SETTINGS_TAB ? "Workspace settings" : isViewerTab(w.activeTab() || "") ? "Attachment preview" : w.busy() ? "Opening folder…" : "Ready"}</span>}><Breadcrumbs path={w.activePath()} workspace={w.workspace()} symbols={symbolCrumbs()} onSymbol={symbol => openSymbol(symbol)} focusRequest={breadcrumbFocus()} listDirectory={api.listDirectory} onOpen={path => navigate(path)} onReveal={path => void revealPath(path)} onContextMenu={(event, path, directory) => showContext(event, path, directory ? "directory" : "file")} /></Show></div><div class="status-right"><Show when={!isDesktop}><span class="preview-label" title={previewNotice}>Browser preview</span></Show><span>{cursor().line}:{cursor().column}</span><Show when={w.autoSaveFailures().length}><button title="Review Auto Save error" onClick={() => w.setError(w.autoSaveFailures()[0].message)}>Auto Save failed</button></Show><LanguageServerStatus view={hub.view()} open={hubOpen()} onToggle={toggleHub} /><span>UTF-8</span><span>{languageDisplayName(w.buffers[w.activePath() || ""]?.language || "text")}</span><span class="version-label">span 0.1.0</span></div></footer>
+    <footer class="statusbar"><div class="breadcrumbs"><Show when={w.activePath()} fallback={<span>{w.activeTab() === SETTINGS_TAB ? "Workspace settings" : isViewerTab(w.activeTab() || "") ? "Attachment preview" : w.busy() ? "Opening folder…" : "Ready"}</span>}><Breadcrumbs path={w.activePath()} workspace={w.workspace()} symbols={symbolCrumbs()} onSymbol={symbol => openSymbol(symbol)} focusRequest={breadcrumbFocus()} listDirectory={api.listDirectory} onOpen={path => navigate(path)} onReveal={path => void revealPath(path)} onContextMenu={(event, path, directory) => showContext(event, path, directory ? "directory" : "file")} /></Show></div><div class="status-right"><Show when={!isDesktop}><span class="preview-label" title={previewNotice}>Browser preview</span></Show><span>{cursor().line}:{cursor().column}</span><Show when={w.autoSaveFailures().length}><button title="Review Auto Save error" onClick={() => w.setError(w.autoSaveFailures()[0].message)}>Auto Save failed</button></Show><LanguageServerStatus view={hub.view()} open={hubOpen()} onToggle={toggleHub} /><NotificationBell /><span>UTF-8</span><span>{languageDisplayName(w.buffers[w.activePath() || ""]?.language || "text")}</span><span class="version-label">span 0.1.0</span></div></footer>
     <Show when={hubOpen()}><LanguageIntelligencePanel view={hub.view()} onAction={hubAction} onToggleServer={hubToggleServer} onClose={closeHub} onOpenSettings={openSettings} onCopy={text => api.writeClipboard(text)} /></Show>
-    <Show when={w.error()}><div class="error-toast" role="alert"><Icon name="Warning2" /><span>{w.error()}</span><Show when={w.activePath() && w.failed().has(w.activePath()!)}><button onClick={() => void w.save()}>Retry</button><button onClick={() => { const path = w.activePath(); if (path) void w.acceptAgentBuffer(path); }}>Recover draft</button></Show><button class="close-button" aria-label="Dismiss notification" onClick={() => w.setError("")}>×</button></div></Show>
+    <ToastStack />
     <Show when={quickOpen()}><QuickOpen initialQuery={quickOpenQuery()} symbols={createSymbolSource()} onQueryFiles={w.queryFiles} indexStatus={w.indexStatus()} indexError={w.indexError()} workspaceGeneration={w.workspaceGeneration()} files={w.files()} onOpen={navigate} onClose={() => setQuickOpen(false)} onOpenFolder={requestWorkspace} workspace={w.workspace()} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} recentPaths={w.recentPaths()} handlers={handlers} bindings={bindings()} onPreview={async path => { const document = w.documents()[path]?.document; if (document) return document.sliceString(0, 64 * 1024); if (isBinaryAssetPath(path)) return "Image preview is available when opened."; return (await api.peekBuffer(path)).text.slice(0, 64 * 1024); }} onSearch={api.search} /></Show>
     <NavigationLayer line={cursor().line} column={cursor().column} />
     <WorkspaceTrustDialog trust={workspaceTrust} root={() => w.workspace()?.root} />

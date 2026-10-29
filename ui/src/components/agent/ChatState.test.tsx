@@ -2,7 +2,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "../../bindings";
 import { HistoryList } from "./HistoryList";
-import { RunningStep } from "./RunningStep";
 import { mount, text } from "./test-utils";
 import { activityLabel, clockText, outputPreview, runningTool, stillRunningText, STILL_RUNNING_AFTER_MS } from "../../lib/agent-running";
 import type { FeedItem } from "../../lib/agent-session";
@@ -68,24 +67,5 @@ describe("activity bar text", () => {
   it("says still running only after 30 s without new output", () => {
     expect(stillRunningText(STILL_RUNNING_AFTER_MS - 1)).toBeUndefined();
     expect(stillRunningText(42_000)).toBe("Still running, no new output for 42s");
-  });
-});
-
-describe("pinned running step", () => {
-  it("shows the step with its own elapsed time, live output, the full output toggle and the quiet still-running line", () => {
-    const host = mount(() => (
-      <RunningStep title="mvn test" command elapsed="0:42" lines={["[INFO] Tests run: 12", "[INFO] BUILD"]} hidden={30} still="Still running, no new output for 35s" full={["all", "lines"]} />
-    ));
-    const step = host.querySelector(".agent-running-step")!;
-    expect(step.getAttribute("aria-label")).toBe("Running command: mvn test");
-    expect(text(step.querySelector(".agent-running-elapsed"))).toBe("0:42");
-    expect(step.closest("[aria-live]")).toBeNull();
-    expect(text(step.querySelector(".agent-running-output"))).toContain("[INFO] BUILD");
-    expect(text(step.querySelector(".agent-running-still"))).toBe("Still running, no new output for 35s");
-    const toggle = [...step.querySelectorAll("button")].find((button) => button.textContent?.includes("Show full output"))!;
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    toggle.click();
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect([...step.querySelectorAll(".agent-running-line")].map((line) => line.textContent)).toEqual(["all", "lines"]);
   });
 });
