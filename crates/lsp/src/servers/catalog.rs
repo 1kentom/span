@@ -496,8 +496,8 @@ struct NpmPackage {
 
 impl NpmPackage {
     fn url(&self) -> String {
-        // npm resolves this one to a GitHub commit, not a registry tarball.
-        if self.name == "@emmetio/css-parser" {
+        // Vue's copy (0.4.0) is a GitHub commit, not a registry tarball. Astro's 0.4.1 is a registry one.
+        if self.name == "@emmetio/css-parser" && self.version == "0.4.0" {
             return "https://codeload.github.com/ramya-rao-a/css-parser/tar.gz/370c480ac103bd17c7bcfb34bf5d577dc40d3660".to_string();
         }
         let base = self.name.rsplit('/').next().unwrap_or(self.name);

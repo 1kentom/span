@@ -1243,11 +1243,10 @@ mod install_path_tests {
             &mut options,
             &launch("/cache/vue/2.2.12/node_modules/@vue/language-server/bin/x.js"),
         );
-        let expected = std::path::Path::new("/cache/vue/2.2.12/node_modules/typescript/lib")
-            .to_string_lossy()
-            .into_owned();
-        assert_eq!(options["typescript"]["tsdk"], expected);
-        assert_eq!(options["list"][0], expected);
+        let expected = std::path::Path::new("/cache/vue/2.2.12/node_modules/typescript/lib");
+        let tsdk = |value: &serde_json::Value| std::path::PathBuf::from(value.as_str().unwrap());
+        assert_eq!(tsdk(&options["typescript"]["tsdk"]), expected);
+        assert_eq!(tsdk(&options["list"][0]), expected);
         assert_eq!(options["vue"]["hybridMode"], false);
     }
 
