@@ -18,6 +18,10 @@ import { AgentCatalog, catalogPreset } from "./agent/AgentCatalog";
 import { AgentComposer } from "./agent/AgentComposer";
 import { AgentFeed } from "./agent/AgentFeed";
 import { ErrorCard, OfflineBar } from "./agent/Banners";
+import { LimitCard } from "./agent/LimitCard";
+import { isLimitKind } from "../lib/agent-errors";
+import { otherFreeModels, rankAlternatives } from "../lib/agent-alternatives";
+import { modelCost } from "../lib/model-cost";
 import { ConnectingSteps, ReadyCard } from "./agent/ConnectFlow";
 import { ConnectScreen } from "./agent/ConnectScreen";
 import { EditorToast, OpenRefusal } from "./agent/EditorToast";
@@ -122,7 +126,24 @@ export function AgentPanel(props: AgentPanelProps) {
   });
   const failure = createMemo(() => {
     const current = a.state().failure;
-    return current ? { ...classifyFailure(current), log: current.log } : undefined;
+    return current ? { ...classifyFailure(current, label()), log: current.log } : undefined;
+  });
+  /** A usage limit, rate limit or overload: the limit card replaces the raw error card. */
+  const limitInfo = createMemo(() => {
+    const current = failure();
+    return current && isLimitKind(current.error.kind) ? current.error : undefined;
+  });
+  const limitModelOption = () => a.state().config.find((option) => option.category === "model");
+  /** Up to two other agents that can take the turn now, connected or warm first (agent-alternatives.ts). */
+  const limitAlternatives = createMemo(() =>
+    limitInfo() ? rankAlternatives(a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id })), a.health(), { id: a.agentId(), name: label() }).slice(0, 2) : [],
+  );
+  /** Other free models in the list, for a free-tier limit. */
+  const limitFreeModels = createMemo(() => {
+    const option = limitModelOption();
+    if (!limitInfo()?.freeTier || !option) return [];
+    const choices = option.groups.flatMap((group) => group.choices).map((choice) => ({ value: choice.value, name: choice.name }));
+    return otherFreeModels(choices, option.currentValue, (choice) => modelCost(choice) === "free", a.limitedModelValues());
   });
   const chooseAgent = () => {
     a.dismissFailure();
@@ -577,7 +598,29 @@ export function AgentPanel(props: AgentPanelProps) {
         </Switch>
         <Show when={failure() && body() !== "logs"}>
           <div class="agent-pad">
-            <ErrorCard level={failure()!.level} title={failure()!.title} text={failure()!.text} log={failure()!.log?.length ? failure()!.log : undefined} actions={failureActions()} />
+            <Show
+              when={limitInfo()}
+              fallback={<ErrorCard level={failure()!.level} title={failure()!.title} text={failure()!.text} log={failure()!.log?.length ? failure()!.log : undefined} actions={failureActions()} />}
+            >
+              {(info) => (
+                <LimitCard
+                  info={info()}
+                  raw={a.state().failure?.message ?? ""}
+                  canResend={Boolean(a.limitTurn())}
+                  alternatives={limitAlternatives()}
+                  freeModels={limitFreeModels()}
+                  hasModels={a.connected() && Boolean(limitModelOption())}
+                  onTryModel={() => a.openResendPicker("model")}
+                  onUseModel={(value) => void a.retryWithModel(value)}
+                  onSwitchAgent={(id) => void a.switchAgentAndResend(id)}
+                  onMoreAgents={() => a.openResendPicker("agents")}
+                  onRetry={a.retryLimited}
+                  onOpenLink={(url) => (props.onOpenExternal ? props.onOpenExternal(url) : void api.openExternal(url).catch(() => undefined))}
+                  onShowLog={isDesktop ? () => a.setView("logs") : undefined}
+                  onDismiss={a.dismissFailure}
+                />
+              )}
+            </Show>
           </div>
         </Show>
       </div>

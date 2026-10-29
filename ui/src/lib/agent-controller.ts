@@ -10,6 +10,7 @@ import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { RUN_TEXT } from "./agent-hint-text";
+import { classifyAgentError, isLimitKind, limitStatus, setAgentLimit, type AgentErrorInfo } from "./agent-errors";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
 import { lastFinishedTool, runningTools, toolBarView } from "./agent-tool-bar";
 
@@ -101,6 +102,8 @@ export type Rewind = { itemId: number; sessionId?: string; mode: "edit" | "resto
 export const ATTACH_UNAVAILABLE = "Attachments need the span desktop app, which sends them to a connected agent.";
 export const NATIVE_UNAVAILABLE = "Browser preview cannot write to or open workspace files.";
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+/** The text of a rejected call, including a plain `{ message }` object. */
+const causeText = (error: unknown) => (error && typeof error === "object" && !(error instanceof Error) && typeof (error as { message?: unknown }).message === "string" ? (error as { message: string }).message : errorText(error));
 const utf8 = new TextEncoder();
 let queueCounter = 0;
 
@@ -201,7 +204,14 @@ export function createAgentController(props: AgentPanelProps) {
    * The turn the provider refused for a missing sign-in, in the session it was sent to. Only this turn can be sent
    * again with another model; it is forgotten on any new prompt, chat switch, resume or connection.
    */
-  const [refused, setRefused] = createSignal<{ sessionId: string; entry: Queued; itemId: number }>();
+  const [refused, setRefused] = createSignal<{ sessionId: string; entry: Queued; itemId: number; limit?: AgentErrorInfo }>();
+  /**
+   * Models that hit a usage limit, keyed by agent id and model value, with the time the limit lifts (0 when unknown).
+   * The picker marks them so the user is not surprised twice. Cleared on the next successful turn or at the reset time.
+   */
+  const [limitedModels, setLimitedModels] = createSignal<Record<string, number>>({});
+  /** The picker the limit card opened to resend the refused turn with: a pick there resends instead of only switching. */
+  const [resendArmed, setResendArmed] = createSignal<"model" | "agents">();
   /** Session ids a prompt has gone out to, so a late options restore never races the user's own turn. */
   const prompted = new Set<string>();
   /** Bumped by every option change the user makes, so a restore running meanwhile stops instead of overwriting it. */
@@ -273,6 +283,49 @@ export function createAgentController(props: AgentPanelProps) {
     const turn = refused();
     return Boolean(turn && state().auth && turn.sessionId === state().sessionId);
   });
+  /** The limit the open session's own refused turn hit, while its card shows: the card can resend that turn. */
+  const limitTurn = createMemo(() => {
+    const turn = refused();
+    return turn?.limit && turn.sessionId === state().sessionId && state().failure && !running() ? turn.limit : undefined;
+  });
+  const modelOption = () => state().config.find((candidate) => candidate.category === "model");
+  /** Model values of the connected agent marked "Limit reached". */
+  const limitedModelValues = createMemo<ReadonlySet<string>>(() => {
+    const agent = agentId() ?? agentName();
+    const prefix = `${agent}\n`;
+    return new Set(Object.keys(limitedModels()).filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)));
+  });
+  const limitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  function clearLimited(key: string) {
+    clearTimeout(limitTimers.get(key));
+    limitTimers.delete(key);
+    setLimitedModels((previous) => {
+      if (!(key in previous)) return previous;
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+  }
+  /** Marks the current model as limited until `resetAt` (or the next successful turn). */
+  function markLimited(info: AgentErrorInfo) {
+    const model = modelOption()?.currentValue;
+    const agent = agentId() ?? agentName();
+    setAgentLimit({ kind: info.kind, provider: info.provider, resetAt: info.resetAt, freeTier: info.freeTier, agentId: agent, model });
+    if (info.kind !== "quota" || !model) return;
+    const key = `${agent}\n${model}`;
+    clearTimeout(limitTimers.get(key));
+    setLimitedModels((previous) => ({ ...previous, [key]: info.resetAt ?? 0 }));
+    const wait = info.resetAt !== undefined ? info.resetAt - Date.now() : undefined;
+    // Timers beyond a day are not kept: the next successful turn clears the mark.
+    if (wait !== undefined && wait < 86_400_000) limitTimers.set(key, setTimeout(() => clearLimited(key), Math.max(0, wait)));
+  }
+  /** A turn of the open session completed: the model it ran on works again. */
+  function clearLimitAfterSuccess() {
+    const model = modelOption()?.currentValue;
+    if (model) clearLimited(`${agentId() ?? agentName()}\n${model}`);
+    setAgentLimit(undefined);
+  }
+  createEffect(on(menu, (open) => { if (open !== resendArmed()) setResendArmed(undefined); }));
   const permission = createMemo(() => openPermission(feed()));
   /** Open permission requests from delegated children, oldest first. */
   const childPermissionList = createMemo(() => childPermissions(state().strayPermissions, state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])), state().childRequests));
@@ -481,6 +534,7 @@ export function createAgentController(props: AgentPanelProps) {
       if (agent) void recordSessionMeta({ agentId: agent, sessionId: session, stopReasonLast: event.stopReason, changesTracked: !hasUntrackedEdits(state().feed, props.workspacePath) });
     }
     if (event.kind === "complete" && (!session || event.sessionId === session)) queueMicrotask(() => (flushSteer(), drainQueue()));
+    if (event.kind === "complete" && session && event.sessionId === session && event.stopReason !== "refusal") clearLimitAfterSuccess();
     if (event.kind === "error" || (event.kind === "status" && ["error", "disconnected"].includes(event.state))) {
       // The turn ended abnormally: nothing queued or steered may go out on its own.
       releaseSteer();
@@ -603,6 +657,7 @@ export function createAgentController(props: AgentPanelProps) {
   });
   onCleanup(() => {
     disposed = true;
+    for (const timer of limitTimers.values()) clearTimeout(timer);
     unsubscribe?.();
     unsubscribeStates?.();
     unsubscribeHealth?.();
@@ -1006,6 +1061,51 @@ export function createAgentController(props: AgentPanelProps) {
   }
 
   /**
+   * Takes the refused turn off the card: its bubble leaves the feed (the resend adds it again) and the composer no
+   * longer holds the same text and attachments to send twice. Returns the turn's entry.
+   */
+  function takeRefused(turn: NonNullable<ReturnType<typeof refused>>) {
+    setRefused(undefined);
+    const { entry } = turn;
+    update((previous) => ({ ...previous, failure: undefined, status: "ready", statusMessage: "Connected and ready", feed: previous.feed.filter((item) => item.id !== turn.itemId) }));
+    if (prompt() === entry.text) setPrompt("");
+    if (entry.items.length && attachments().length === entry.items.length && attachments().every((item, index) => item.id === entry.items[index].id)) setAttachments([]);
+    return entry;
+  }
+  /** Retry from the limit card: the same turn, same session and model. Only on a click, never on its own. */
+  function retryLimited() {
+    const turn = refused();
+    if (!turn?.limit || turn.sessionId !== state().sessionId || running() || !connected()) return;
+    void dispatch(takeRefused(turn));
+  }
+  /**
+   * Continue with another agent from the limit card: the existing switch and handoff path (the chat's context goes
+   * with the first prompt), then the refused turn is sent on the new agent.
+   */
+  async function switchAgentAndResend(id: string) {
+    const turn = refused();
+    const target = installed().find((agent) => agent.id === id);
+    if (!target) return;
+    if (!turn?.limit || turn.sessionId !== state().sessionId || running()) return connectInstalled(id);
+    const entry = takeRefused(turn);
+    await connect(target.launch, registryName(target.id) || target.id, target.id, { switching: true });
+    if (disposed || agentId() !== id || !connected() || running()) {
+      // The switch failed: the text goes back to the composer so nothing is lost.
+      if (!prompt()) setPrompt(entry.text);
+      if (!attachments().length && entry.items.length) setAttachments(entry.items);
+      return;
+    }
+    void dispatch(entry);
+  }
+  /** Opens the model or agent picker from the limit card; a pick there resends the refused turn. */
+  function openResendPicker(kind: "model" | "agents") {
+    batch(() => {
+      setResendArmed(kind);
+      setMenu(kind);
+    });
+  }
+
+  /**
    * Signs in with a method that needs a typed value. The secret is a parameter of this call only: it is not put in
    * state or the feed, not logged, and not kept in a closure after the request settles.
    */
@@ -1089,20 +1189,24 @@ export function createAgentController(props: AgentPanelProps) {
         if (!attachments().length && entry.items.length) setAttachments(entry.items);
         return;
       }
+      // Usage limits, rate limits and overloads get their own card, which can send this exact turn again.
+      const classified = classifyAgentError({ message: causeText(cause), agent: agentLabel() });
+      const limit = isLimitKind(classified.kind) ? classified : undefined;
       update((previous) => ({
         ...previous,
         running: false,
         stopRequested: false,
         failure: { phase: "prompt", message: errorText(cause) },
-        ...(previous.sessionId ? { status: "ready", statusMessage: "Prompt failed" } : {}),
+        ...(previous.sessionId ? { status: "ready", statusMessage: limit ? limitStatus(limit) : "Prompt failed" } : {}),
       }));
       holdQueue();
-      if (state().auth && promptSession && promptSession === state().sessionId) {
-        // Refused for a missing sign-in: nothing reached the agent, so the carried context waits for the resend and the
-        // card may send this exact turn again with another model.
+      if ((state().auth || limit) && promptSession && promptSession === state().sessionId) {
+        // Refused for a missing sign-in or a limit: the carried context waits for the resend and the card may send
+        // this exact turn again with another model or agent.
         if (carried && !handoff) handoff = carried;
-        if (turn === turnCounter) setRefused({ sessionId: promptSession, entry, itemId });
+        if (turn === turnCounter) setRefused({ sessionId: promptSession, entry, itemId, ...(limit ? { limit } : {}) });
       }
+      if (limit) markLimited(limit);
       if (steering?.turn === turn) {
         // This turn was being steered: the user wants the steer, not this turn's text, back.
         releaseSteer();
@@ -2281,6 +2385,12 @@ export function createAgentController(props: AgentPanelProps) {
     reconnect,
     retryWithModel,
     canRetryModel,
+    limitTurn,
+    limitedModelValues,
+    retryLimited,
+    switchAgentAndResend,
+    openResendPicker,
+    resendArmed,
     install,
     disconnect,
     authenticate,
