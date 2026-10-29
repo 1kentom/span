@@ -35,6 +35,28 @@ describe("agent history store", () => {
     next.dispose();
   });
 
+  it("hides health check sessions but keeps chats whose titles only look alike", async () => {
+    mocks.api.agentListSessions.mockResolvedValue([
+      { sessionId: "h1", title: "Health check. Reply with exactly one word: OK" },
+      { sessionId: "h2", title: "Health check. Reply with exactly one word..." },
+      { sessionId: "h3", title: "  Health check. Reply with exactly one word\u2026" },
+      { sessionId: "ci", title: "Health check of the CI pipeline" },
+      { sessionId: "two", title: "Health check. Reply with exactly two words: ALL GOOD" },
+      { sessionId: "plain", title: "Health check" },
+      { sessionId: "untitled", title: null },
+    ]);
+    mocks.sessionMetaList.mockResolvedValue([]);
+    const { history, dispose } = held();
+    history.setSessionScope("workspace");
+    await history.loadSessions(() => true);
+    const listed = history.sessions().map((entry) => entry.sessionId);
+    expect(listed).toEqual(["ci", "two", "plain", "untitled"]);
+    // Resuming the last chat only picks a session History lists (agent-controller restoreLastSession), so a health
+    // session saved by an earlier version is never resumed.
+    expect(listed.some((id) => ["h1", "h2", "h3"].includes(id))).toBe(false);
+    dispose();
+  });
+
   it("drops answers for a caller that is no longer current", async () => {
     mocks.api.agentListSessions.mockResolvedValue([{ sessionId: "late" }]);
     mocks.sessionMetaList.mockResolvedValue([meta("codex", "late")]);

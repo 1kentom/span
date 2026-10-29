@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 import type { SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionSummary } from "../../bindings";
 import { api, isDesktop, sessionMetaList, sessionMetaUpdate } from "../client";
-import { threadOf } from "../session-threads";
+import { isHealthCheckSession, threadOf } from "../session-threads";
 import { sharedStore } from "./shared";
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -30,7 +30,8 @@ export function createAgentHistory() {
     void loadSessionMeta(current);
     try {
       const found = sessionScope() === "all" ? await api.agentListAllSessions() : await api.agentListSessions();
-      if (current()) setSessions(found);
+      // The backend already drops health check sessions; this also hides ones a backend of an earlier version lists.
+      if (current()) setSessions(found.filter((entry) => !isHealthCheckSession(entry)));
     } catch (cause) {
       if (current()) setSessionsError(errorText(cause));
     } finally {
