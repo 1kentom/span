@@ -1,27 +1,31 @@
 import { createEffect, createSignal, createUniqueId, onCleanup, Show } from "solid-js";
 import type { Terminal } from "@xterm/xterm";
+import type { TerminalCommandLanguage, TerminalProfile } from "../bindings";
 import type { FitAddon } from "@xterm/addon-fit";
 import { Icon } from "./Icon";
 import "@xterm/xterm/css/xterm.css";
 import "../styles/terminal.css";
-import { terminalFontFamily, terminalTheme } from "../lib/terminal-theme";
+import { loadTerminalFont, terminalTheme } from "../lib/terminal-theme";
 
 /** UI callbacks only. The desktop adapter uses the generated Rust IPC contracts. */
 export interface TerminalTransport {
-  create(cols: number, rows: number, handlers: TerminalHandlers): Promise<string>;
+  create(cols: number, rows: number, handlers: TerminalHandlers, profileId?: string): Promise<string>;
+  createCommand(cols: number, rows: number, handlers: TerminalHandlers, language: TerminalCommandLanguage, code: string): Promise<string>;
+  profiles?(): Promise<TerminalProfile[]>;
   write(id: string, data: Uint8Array): Promise<void>;
   resize(id: string, cols: number, rows: number): Promise<void>;
   interrupt(id: string): Promise<void>;
   close(id: string): Promise<void>;
 }
 export interface TerminalHandlers {
+  started?(shell: string): void;
   data(bytes: Uint8Array, acknowledge?: () => void): void;
   exit(code: number | null): void;
   error(message: string): void;
 }
 export interface TerminalController {
   /** Called only by an explicit user action. Send preserves the exact snippet. */
-  send(code: string, execute: boolean): Promise<void>;
+  send(code: string, execute: boolean, language?: TerminalCommandLanguage): Promise<void>;
   focus(): void;
   clear(): void;
   interrupt(): Promise<void>;
@@ -30,6 +34,10 @@ export interface TerminalController {
   paste(text: string): void;
 }
 export interface TerminalPanelProps {
+  command?: { language: TerminalCommandLanguage; code: string };
+  profileId?: string;
+  onRunCommand?(code: string, language: TerminalCommandLanguage): Promise<void>;
+  onShell?(shell: string): void;
   visible: boolean;
   workspaceLabel: string;
   fontSize?: number;
@@ -43,6 +51,7 @@ export interface TerminalPanelProps {
 }
 
 export function TerminalPanel(props: TerminalPanelProps) {
+  const workspaceName = () => props.workspaceLabel.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || props.workspaceLabel;
   const draftId = `terminal-command-${createUniqueId()}`;
   let host!: HTMLDivElement;
   let terminal: Terminal | undefined;
@@ -53,6 +62,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   let initialization: Promise<void> | undefined;
   let disposed = false;
   let resizeFrame = 0;
+  let fontRequest = 0;
   let generation = 0;
   let inputQueue: Promise<void> = Promise.resolve();
   let startupInput: { token: number; chunks: Uint8Array[]; bytes: number } | undefined;
@@ -61,6 +71,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   const [ready, setReady] = createSignal(false);
   const [exited, setExited] = createSignal(false);
   const [draft, setDraft] = createSignal<string>();
+  let draftLanguage: TerminalCommandLanguage = "shell";
   const [draftRunning, setDraftRunning] = createSignal(false);
   let draftVersion = 0;
   let activeDraftRun: object | undefined;
@@ -88,8 +99,17 @@ export function TerminalPanel(props: TerminalPanelProps) {
     if (!terminal || disposed) return;
     const style = getComputedStyle(host);
     terminal.options.theme = terminalTheme(style);
-    terminal.options.fontFamily = terminalFontFamily(props.fontFamily || style.getPropertyValue("--editor-font-family").trim());
-    terminal.options.fontSize = props.fontSize || 13;
+    const current = terminal;
+    const request = ++fontRequest;
+    const size = props.fontSize || 13;
+    void loadTerminalFont(props.fontFamily || style.getPropertyValue("--editor-font-family").trim(), size).then(family => {
+      if (disposed || request !== fontRequest || current !== terminal) return;
+      if (current.options.fontFamily !== family || current.options.fontSize !== size) {
+        current.options.fontFamily = family;
+        current.options.fontSize = size;
+        resize();
+      }
+    });
   };
   const resize = () => {
     // Native WebViews can throttle frames while retained views still change theme.
@@ -107,9 +127,12 @@ export function TerminalPanel(props: TerminalPanelProps) {
     const [{ Terminal: Xterm }, { FitAddon: Fit }] = await Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]);
     if (disposed || token !== generation) return;
     const style = getComputedStyle(host);
+    const fontSize = props.fontSize || 13;
+    const fontFamily = await loadTerminalFont(props.fontFamily || style.getPropertyValue("--editor-font-family").trim(), fontSize);
+    if (disposed || token !== generation) return;
     terminal = new Xterm({
-      cursorBlink: true, fontFamily: terminalFontFamily(props.fontFamily || style.getPropertyValue("--editor-font-family").trim()), fontSize: props.fontSize || 13,
-      lineHeight: 20 / 13, scrollback: 5000, convertEol: false,
+      cursorBlink: true, fontFamily, fontSize,
+      lineHeight: 1, letterSpacing: 0, scrollback: 5000, convertEol: false,
       theme: terminalTheme(style),
       allowProposedApi: false,
     });
@@ -139,11 +162,15 @@ export function TerminalPanel(props: TerminalPanelProps) {
     terminal.onBinary(data => { void write(Uint8Array.from(data, character => character.charCodeAt(0)), token).catch(reportInput); });
     let id: string;
     try {
-      id = await props.transport.create(terminal.cols, terminal.rows, {
+      const handlers: TerminalHandlers = {
+        started: shell => { if (!disposed && token === generation) props.onShell?.(shell); },
         data: (bytes, acknowledge) => { if (!disposed && token === generation && terminal) terminal.write(bytes, acknowledge); else acknowledge?.(); },
-        exit: code => { if (!disposed && token === generation) { setExited(true); setStatus(code === null ? "Shell exited" : `Shell exited (${code})`); } },
+        exit: code => { if (!disposed && token === generation) { setExited(true); setStatus(code === null ? `${props.command ? "Command" : "Shell"} exited` : `${props.command ? "Command" : "Shell"} exited (${code})`); } },
         error: message => { if (!disposed && token === generation) report(message); },
-      });
+      };
+      id = props.command
+        ? await props.transport.createCommand(terminal.cols, terminal.rows, handlers, props.command.language, props.command.code)
+        : await props.transport.create(terminal.cols, terminal.rows, handlers, props.profileId);
     } catch (failure) {
       if (startupInput?.token === token) startupInput = undefined;
       if (!disposed && token === generation) throw failure;
@@ -155,17 +182,17 @@ export function TerminalPanel(props: TerminalPanelProps) {
     startupInput = undefined;
     for (const bytes of pending) void write(bytes, token).catch(reportInput);
     setReady(true);
-    if (!exited()) setStatus("Shell");
+    if (!exited()) setStatus(props.command ? "Command" : "Shell");
     observer = new ResizeObserver(resize);
     observer.observe(host);
     appearanceObserver = new MutationObserver(resize);
     appearanceObserver.observe(host.closest(".ide") || document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
     props.onReady?.({
-      async send(code, execute) {
+      async send(code, execute, language = "shell") {
         if (disposed || exited()) throw new Error("Terminal session is unavailable");
-        if (!execute) { updateDraft(code); return; }
-        if (props.visible) terminal?.focus();
-        await write(new TextEncoder().encode(!/[\r\n]$/.test(code) ? `${code}\r` : code));
+        if (!execute) { draftLanguage = language; updateDraft(code); return; }
+        if (!props.onRunCommand) throw new Error("Command terminals are unavailable");
+        await props.onRunCommand(code, language);
       },
       focus: () => terminal?.focus(),
       clear: () => terminal?.clear(),
@@ -242,7 +269,8 @@ export function TerminalPanel(props: TerminalPanelProps) {
     setDraftRunning(true);
     const current = () => !disposed && generation === token && sessionId === id && activeDraftRun === intent;
     try {
-      await write(new TextEncoder().encode(!/[\r\n]$/.test(code) ? `${code}\r` : code));
+      if (!props.onRunCommand) throw new Error("Command terminals are unavailable");
+      await props.onRunCommand(code, draftLanguage);
       if (current() && draftVersion === version) { updateDraft(undefined); if (props.visible) terminal?.focus(); }
     } catch (failure) { if (current()) report(failure); }
     finally { if (current()) { activeDraftRun = undefined; setDraftRunning(false); } }
@@ -264,7 +292,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
     <Show when={error()}><div class="terminal-error" role="alert">{error()}</div></Show>
     <Show when={draft() !== undefined}>
       <div class="terminal-draft">
-        <label for={draftId}>Review command before running</label><div class="terminal-draft-cwd" title={props.workspaceLabel}>Working directory: {props.workspaceLabel}</div>
+        <label for={draftId}>Review command before running</label><div class="terminal-draft-cwd" title={props.workspaceLabel} aria-label={`Working directory: ${props.workspaceLabel}`}>Working directory: {workspaceName()}</div>
         <textarea id={draftId} aria-label="Terminal command draft" spellcheck={false} value={draft() ?? ""} onInput={event => updateDraft(event.currentTarget.value)} />
         <div><button type="button" disabled={exited() || draftRunning()} aria-busy={draftRunning()} onClick={() => void runDraft()}>Run draft</button><button type="button" onClick={() => updateDraft(undefined)}>Discard</button></div>
       </div>

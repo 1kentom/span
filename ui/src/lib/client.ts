@@ -3,7 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
-import type { TerminalEvent_Deserialize as TerminalEvent, TerminalInfo } from '../bindings';
+import type { TerminalEvent_Deserialize as TerminalEvent, TerminalInfo, TerminalCommandLanguage, TerminalProfile } from '../bindings';
 import type { LspPort } from './lsp-client';
 import type { BootTheme, StartupTimings } from './startup';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
@@ -148,9 +148,17 @@ function previewEntries(path: string): FileEntry[] {
 
 export const api = {
   // Interactive terminal commands always use the native PTY backend.
-  async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>): Promise<TerminalInfo> {
+  async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>, profileId?: string): Promise<TerminalInfo> {
     if (!isDesktop) nativeRequired('Creating terminal sessions');
-    return commands.terminalCreate(cwd, cols, rows, onEvent);
+    return commands.terminalCreate(cwd, cols, rows, onEvent, profileId ?? null);
+  },
+  async terminalCreateCommand(language: TerminalCommandLanguage, code: string, expectedWorkspaceRoot: string, cols: number, rows: number, onEvent: Channel<TerminalEvent>): Promise<TerminalInfo> {
+    if (!isDesktop) nativeRequired('Running terminal commands');
+    return commands.terminalCreateCommand(language, code, expectedWorkspaceRoot, cols, rows, onEvent);
+  },
+  async terminalProfiles(): Promise<TerminalProfile[]> {
+    if (!isDesktop) nativeRequired('Discovering terminal shells');
+    return commands.terminalProfiles();
   },
   async terminalWrite(id: string, data: Uint8Array): Promise<void> {
     if (!isDesktop) nativeRequired('Writing terminal input');

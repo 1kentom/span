@@ -34,7 +34,9 @@ beforeEach(() => {
 afterEach(() => { cleanup.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); vi.unstubAllGlobals(); });
 function mount(visible = true, embedded = false) {
   let handlers: TerminalHandlers | undefined;
+  const runCommand = vi.fn(async (_code: string, _language: string): Promise<void> => undefined);
   const transport: TerminalTransport = {
+    createCommand: vi.fn(async () => "command-1"),
     create: vi.fn(async (_cols, _rows, value) => { handlers = value; return "terminal-1"; }), write: vi.fn(async () => undefined),
     resize: vi.fn(async () => undefined), interrupt: vi.fn(async () => undefined), close: vi.fn(async () => undefined),
   };
@@ -42,8 +44,8 @@ function mount(visible = true, embedded = false) {
   const [fontSize, setFontSize] = createSignal(13); const [fontFamily, setFontFamily] = createSignal("JetBrains Mono");
   let controller: TerminalController | undefined;
   const root = document.createElement("div"); document.body.append(root);
-  cleanup.push(render(() => <TerminalPanel fontSize={fontSize()} fontFamily={fontFamily()} visible={shown()} embedded={embedded} workspaceLabel="fixture" transport={transport} onReady={value => { controller = value; }} onHide={() => setShown(false)} />, root));
-  return { transport, root, setShown, setFontSize, setFontFamily, controller: () => controller, handlers: () => handlers! };
+  cleanup.push(render(() => <TerminalPanel onRunCommand={runCommand} fontSize={fontSize()} fontFamily={fontFamily()} visible={shown()} embedded={embedded} workspaceLabel="fixture" transport={transport} onReady={value => { controller = value; }} onHide={() => setShown(false)} />, root));
+  return { transport, runCommand, root, setShown, setFontSize, setFontFamily, controller: () => controller, handlers: () => handlers! };
 }
 
 describe("terminal panel", () => {
@@ -73,13 +75,14 @@ describe("terminal panel", () => {
     await expect(view.controller()!.close()).rejects.toThrow("Close denied");
     const bytes = new Uint8Array([65]); view.handlers().data(bytes);
     expect(xterm.write).toHaveBeenCalledWith(bytes, undefined);
-    await view.controller()!.send("printf still-connected", true);
+    xterm.data?.("printf still-connected\r");
+    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalled());
     expect(view.transport.write).toHaveBeenCalled();
     expect(view.root.querySelector('[role="alert"]')?.textContent).toContain("Close denied");
   });
-  it("reports write and shell-exit failures without synthesizing terminal output", async () => {
+  it("reports command and shell-exit failures without synthesizing terminal output", async () => {
     const view = mount(true, true); await vi.waitFor(() => expect(view.controller()).toBeDefined());
-    vi.mocked(view.transport.write).mockRejectedValueOnce(new Error("PTY disconnected"));
+    view.runCommand.mockRejectedValueOnce(new Error("PTY disconnected"));
     await expect(view.controller()!.send("printf explicit", true)).rejects.toThrow("PTY disconnected");
     expect(xterm.write).not.toHaveBeenCalled();
     view.handlers().exit(7);
@@ -105,37 +108,39 @@ describe("terminal panel", () => {
     const code = "printf 'hello 日本語'\nprintf 'second'";
     await view.controller()!.send(code, false);
     expect(view.root.querySelector("textarea")?.value).toBe(code);
+    expect(view.runCommand).not.toHaveBeenCalled();
     expect(view.transport.write).not.toHaveBeenCalled();
     [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!.click();
-    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(1));
-    expect(new TextDecoder().decode(vi.mocked(view.transport.write).mock.calls[0][1])).toBe(`${code}\r`);
+    await vi.waitFor(() => expect(view.runCommand).toHaveBeenCalledTimes(1));
+    expect(view.runCommand).toHaveBeenCalledWith(code, "shell");
+    expect(view.transport.write).not.toHaveBeenCalled();
   });
   it("preserves a newer draft while Run is pending and submits only once", async () => {
     const view = mount(); await vi.waitFor(() => expect(view.controller()).toBeDefined());
     let release!: () => void;
-    vi.mocked(view.transport.write).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    view.runCommand.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
     await view.controller()!.send("printf first", false);
     const run = [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!;
     run.click(); run.click();
-    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(view.runCommand).toHaveBeenCalledTimes(1));
     expect(run.disabled).toBe(true);
     const input = view.root.querySelector("textarea")!;
     input.value = "printf unsent"; input.dispatchEvent(new Event("input", { bubbles: true }));
     release();
     await vi.waitFor(() => expect(run.disabled).toBe(false));
     expect(view.root.querySelector("textarea")?.value).toBe("printf unsent");
-    expect(view.transport.write).toHaveBeenCalledTimes(1);
+    expect(view.runCommand).toHaveBeenCalledTimes(1);
     run.click();
     await vi.waitFor(() => expect(view.root.querySelector("textarea")).toBeNull());
-    expect(new TextDecoder().decode(vi.mocked(view.transport.write).mock.calls[1][1])).toBe("printf unsent\r");
+    expect(view.runCommand).toHaveBeenLastCalledWith("printf unsent", "shell");
   });
   it("keeps replacement drafts and errors when a pending Run fails", async () => {
     const view = mount(); await vi.waitFor(() => expect(view.controller()).toBeDefined());
     let reject!: (error: Error) => void;
-    vi.mocked(view.transport.write).mockImplementationOnce(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
+    view.runCommand.mockImplementationOnce(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
     await view.controller()!.send("printf old", false);
     [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!.click();
-    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(view.runCommand).toHaveBeenCalledTimes(1));
     await view.controller()!.send("printf replacement", false);
     reject(new Error("Write disconnected"));
     await vi.waitFor(() => expect(view.root.querySelector('[role="alert"]')?.textContent).toContain("Write disconnected"));
@@ -144,24 +149,25 @@ describe("terminal panel", () => {
   it("does not focus a disposed terminal when a pending Run completes", async () => {
     const view = mount(); await vi.waitFor(() => expect(view.controller()).toBeDefined());
     let release!: () => void;
-    vi.mocked(view.transport.write).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    view.runCommand.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
     await view.controller()!.send("printf pending", false);
     [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!.click();
-    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(view.runCommand).toHaveBeenCalledTimes(1));
     cleanup.pop()!(); xterm.focus.mockClear(); release();
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(xterm.focus).not.toHaveBeenCalled();
   });
-  it("writes explicit Run exactly, adds Enter once, and preserves binary and keyboard order", async () => {
+  it("routes explicit Run through command creation and preserves keyboard and binary input order", async () => {
     const view = mount();
     await vi.waitFor(() => expect(view.controller()).toBeDefined());
-    await view.controller()!.send("printf 'x'\n", true);
+    await view.controller()!.send("printf 'x'\n", true, "bash");
+    expect(view.runCommand).toHaveBeenCalledExactlyOnceWith("printf 'x'\n", "bash");
+    expect(view.transport.write).not.toHaveBeenCalled();
     xterm.data?.("日本語"); xterm.binary?.("\xff\x80");
-    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledTimes(2));
     const calls = vi.mocked(view.transport.write).mock.calls;
-    expect(new TextDecoder().decode(calls[0][1])).toBe("printf 'x'\n");
-    expect(new TextDecoder().decode(calls[1][1])).toBe("日本語");
-    expect([...calls[2][1]]).toEqual([255, 128]);
+    expect(new TextDecoder().decode(calls[0][1])).toBe("日本語");
+    expect([...calls[1][1]]).toEqual([255, 128]);
   });
   it("keeps Hide reversible and closes the owned process on unmount", async () => {
     const view = mount();
@@ -210,7 +216,8 @@ it("drops failed-create input and refuses callbacks from the old generation afte
   view.root.querySelector<HTMLButtonElement>('[aria-label="Start new shell"]')!.click();
   await vi.waitFor(() => expect(view.controller()).toBeDefined());
   oldInput?.("stale reply");
-  await view.controller()!.send("printf fresh", true);
+  xterm.data?.("printf fresh\r");
+  await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledOnce());
   expect(view.transport.write).toHaveBeenCalledExactlyOnceWith("terminal-1", new TextEncoder().encode("printf fresh\r"));
   expect(view.root.querySelector('[role="alert"]')).toBeNull();
 });
@@ -263,10 +270,10 @@ it("does not surface a superseded resize failure after restarting the shell", as
 it("finishes an explicit draft without focusing a hidden terminal", async () => {
   const view = mount(); await vi.waitFor(() => expect(view.controller()).toBeDefined());
   let release!: () => void;
-  vi.mocked(view.transport.write).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+  view.runCommand.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
   await view.controller()!.send("printf explicit", false);
   [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!.click();
-  await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(view.runCommand).toHaveBeenCalledOnce());
   view.setShown(false); xterm.focus.mockClear(); release();
   await vi.waitFor(() => expect(view.root.querySelector("textarea")).toBeNull());
   expect(xterm.focus).not.toHaveBeenCalled(); expect(view.transport.close).not.toHaveBeenCalled();
@@ -297,7 +304,7 @@ it("applies hidden-session themes and fonts without waiting for an animation fra
   background = "#1c1929"; view.root.className = "ide theme-purple";
   await vi.waitFor(() => expect(options.theme.background).toBe("#1c1929"));
   view.setFontSize(18); view.setFontFamily("Menlo");
-  expect(options).toMatchObject({ fontSize: 18, fontFamily: '"Menlo", monospace' });
+  await vi.waitFor(() => expect(options).toMatchObject({ fontSize: 18, fontFamily: '"Menlo", monospace' }));
   expect(view.transport.resize).not.toHaveBeenCalled();
   expect(view.transport.create).toHaveBeenCalledOnce();
   expect(view.transport.close).not.toHaveBeenCalled();
@@ -330,7 +337,8 @@ it.each([
     expect(xterm.write).toHaveBeenLastCalledWith(bytes, acknowledge);
     xterm.write.mock.calls.at(-1)![1]();
     expect(acknowledge).toHaveBeenCalledOnce();
-    await view.controller()!.send("printf explicit", true);
+    xterm.data?.("printf explicit\r");
+    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledOnce());
     expect(view.transport.write).toHaveBeenCalledExactlyOnceWith("terminal-1", new TextEncoder().encode("printf explicit\r"));
   } finally { platformSpy.mockRestore(); }
 });

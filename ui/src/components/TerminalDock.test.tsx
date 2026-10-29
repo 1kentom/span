@@ -18,7 +18,7 @@ const disposers: (() => void)[] = [];
 beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} }); });
 afterEach(() => { disposers.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); vi.unstubAllGlobals(); });
 function mount(visible = false, headerStart?: JSX.Element) {
-  let next = 0; const transport: TerminalTransport = { create: vi.fn(async () => `pty-${++next}`), write: vi.fn(async () => undefined), close: vi.fn(async () => undefined), resize: vi.fn(async () => undefined), interrupt: vi.fn(async () => undefined) };
+  let next = 0; const transport: TerminalTransport = { profiles: vi.fn(async () => []), create: vi.fn(async () => `pty-${++next}`), createCommand: vi.fn(async () => `pty-${++next}`), write: vi.fn(async () => undefined), close: vi.fn(async () => undefined), resize: vi.fn(async () => undefined), interrupt: vi.fn(async () => undefined) };
   const clipboard = { readText: vi.fn(async () => "pasted text"), writeText: vi.fn(async () => undefined) };
   const [shown, setShown] = createSignal(visible); let dock: TerminalDockController | undefined;
   const root = document.createElement("div"); document.body.append(root);
@@ -31,14 +31,15 @@ function mount(visible = false, headerStart?: JSX.Element) {
 describe("terminal dock integration", () => {
   it("routes real Markdown Run and inferred Send buttons to the native transport fixture", async () => {
     const view = mount(); const preview = document.createElement("div"); document.body.append(preview);
-    disposers.push(render(() => <MarkdownPreview text={"```bash\nprintf 'hello'\n```\n\n```\nnpm run dev\n```"} documentPath="/workspace/README.md" workspaceRoot="/workspace" onRunCode={request => view.dock().send(request.code, request.action === "run" && !request.detected)} />, preview));
+    disposers.push(render(() => <MarkdownPreview text={"```bash\nprintf 'hello'\n```\n\n```\nnpm run dev\n```"} documentPath="/workspace/README.md" workspaceRoot="/workspace" onRunCode={request => view.dock().send(request.code, request.action === "run" && !request.detected, request.language)} />, preview));
     await vi.waitFor(() => expect(preview.querySelector('[aria-label="Run code in terminal"]')).not.toBeNull());
     preview.querySelector<HTMLButtonElement>('[aria-label="Run code in terminal"]')!.click();
-    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledOnce());
-    expect(new TextDecoder().decode(vi.mocked(view.transport.write).mock.calls[0][1])).toBe("printf 'hello'\r");
+    await vi.waitFor(() => expect(view.transport.createCommand).toHaveBeenCalledOnce());
+    expect(view.transport.createCommand).toHaveBeenCalledWith(80, 24, expect.any(Object), "bash", "printf 'hello'");
+    expect(view.transport.write).not.toHaveBeenCalled();
     preview.querySelector<HTMLButtonElement>('[aria-label="Send code to terminal for review"]')!.click();
     await vi.waitFor(() => expect(view.root.querySelector("textarea")?.value).toBe("npm run dev"));
-    expect(view.transport.create).toHaveBeenCalledTimes(2); expect(view.transport.write).toHaveBeenCalledOnce();
+    expect(view.transport.create).toHaveBeenCalledOnce(); expect(view.transport.createCommand).toHaveBeenCalledOnce(); expect(view.transport.write).not.toHaveBeenCalled();
     expect(preview.textContent).toContain("Staged in terminal");
   });
   it("creates one fresh shell and stages exact Markdown Send content without PTY input", async () => {
@@ -46,10 +47,11 @@ describe("terminal dock integration", () => {
     await view.dock().send(code, false);
     expect(view.transport.create).toHaveBeenCalledTimes(1); expect(view.root.querySelectorAll('[role="tab"]')).toHaveLength(1);
     expect(view.root.querySelector("textarea")?.value).toBe(code); expect(view.transport.write).not.toHaveBeenCalled();
-    expect(view.root.textContent).toContain("Working directory: /workspace");
+    expect(view.root.textContent).toContain("Working directory: workspace");
     [...view.root.querySelectorAll("button")].find(button => button.textContent === "Run draft")!.click();
-    await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledOnce());
-    expect(new TextDecoder().decode(vi.mocked(view.transport.write).mock.calls[0][1])).toBe(code);
+    await vi.waitFor(() => expect(view.transport.createCommand).toHaveBeenCalledOnce());
+    expect(view.transport.createCommand).toHaveBeenCalledWith(80, 24, expect.any(Object), "shell", code);
+    expect(view.transport.write).not.toHaveBeenCalled();
   });
   it("keeps shell tabs alive across hide and selection, and closes their real session IDs", async () => {
     const view = mount(true); await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
@@ -71,10 +73,47 @@ describe("terminal dock integration", () => {
   });
   it("rejects Markdown execution when its workspace disappears and closes a late-created orphan PTY", async () => {
     const view = mount(); let finish!: (id: string) => void;
-    vi.mocked(view.transport.create).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    vi.mocked(view.transport.createCommand).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const command = view.dock().send("printf explicit", true); const rejected = expect(command).rejects.toThrow("workspace was closed");
-    await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalled()); view.dispose(); disposers.pop(); await rejected;
+    await vi.waitFor(() => expect(view.transport.createCommand).toHaveBeenCalled()); view.dispose(); disposers.pop(); await rejected;
     finish("late-pty"); await vi.waitFor(() => expect(view.transport.close).toHaveBeenCalledWith("late-pty")); expect(view.transport.write).not.toHaveBeenCalled();
+  });
+
+  it("passes the exact Unicode and multiline payload as a startup command without appending input", async () => {
+    const view = mount();
+    const code = `printf 'SPAN_INSTALLED_TERMINAL_OK %s\\n' '日本語🌱'
+printf '%s\\n' 'quoted "value"'
+`;
+    await view.dock().send(code, true, "bash");
+    expect(view.transport.createCommand).toHaveBeenCalledExactlyOnceWith(80, 24, expect.any(Object), "bash", code);
+    expect(view.transport.create).not.toHaveBeenCalled();
+    expect(view.transport.write).not.toHaveBeenCalled();
+    expect(view.root.textContent).toContain("Bash command 1");
+  });
+
+  it("preserves interactive sessions when command creation fails and never falls back to stdin", async () => {
+    const view = mount(true);
+    await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledOnce());
+    vi.mocked(view.transport.createCommand).mockRejectedValueOnce(new Error("Bash is unavailable"));
+    await expect(view.dock().send("printf explicit", true, "bash")).rejects.toThrow("Bash is unavailable");
+    expect(view.transport.create).toHaveBeenCalledOnce();
+    expect(view.transport.write).not.toHaveBeenCalled();
+    expect(view.transport.close).not.toHaveBeenCalled();
+    expect(view.root.querySelector('[aria-label="Close shell 1"]')).not.toBeNull();
+    expect(view.root.textContent).toContain("Bash is unavailable");
+  });
+
+  it("retains command output and its real exit status even if it exits before creation returns", async () => {
+    const view = mount();
+    vi.mocked(view.transport.createCommand).mockImplementationOnce(async (_cols, _rows, handlers) => {
+      handlers.data(new TextEncoder().encode("command result\r\n"));
+      handlers.exit(7);
+      return "finished-command";
+    });
+    await view.dock().send("exit 7", true, "sh");
+    expect(view.root.textContent).toContain("Command exited (7)");
+    expect(view.transport.write).not.toHaveBeenCalled();
+    expect(view.root.querySelector('[aria-label="Close shell 1"]')).not.toBeNull();
   });
 });
 
@@ -163,4 +202,47 @@ it("refuses controller close after the dock is disposed", async () => {
   const controller = view.dock(); view.dispose(); disposers.pop(); vi.mocked(view.transport.close).mockClear();
   await expect(controller.closeCurrent()).rejects.toThrow("workspace is no longer available");
   expect(view.transport.close).not.toHaveBeenCalled();
+});
+
+it("labels interactive tabs from the actual executable and launches only the chosen installed profile", async () => {
+  const view = mount(true);
+  vi.mocked(view.transport.create).mockImplementationOnce(async (_cols, _rows, handlers) => { handlers.started?.("/bin/zsh"); return "zsh-pty"; });
+  vi.mocked(view.transport.profiles!).mockResolvedValueOnce([
+    { id: "/bin/zsh", name: "Zsh", path: "/bin/zsh", isDefault: true },
+    { id: "/bin/bash", name: "Bash", path: "/bin/bash", isDefault: false },
+  ]);
+  await vi.waitFor(() => expect(view.root.querySelector('[role="tab"]')?.textContent).toBe("zsh"));
+  view.button("Choose terminal shell").click();
+  await vi.waitFor(() => expect(document.querySelectorAll('[role="menuitem"]')).toHaveLength(2));
+  const options = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  expect(options[0].textContent).toContain("ZshDefault");
+  expect(view.transport.create).toHaveBeenCalledOnce();
+  vi.mocked(view.transport.create).mockImplementationOnce(async (_cols, _rows, handlers) => { handlers.started?.("/bin/bash"); return "bash-pty"; });
+  options[1].click();
+  await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledTimes(2));
+  expect(view.transport.create).toHaveBeenLastCalledWith(80, 24, expect.any(Object), "/bin/bash");
+  expect(view.root.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("bash");
+  expect(document.querySelector('[role="menu"]')).toBeNull();
+  expect(view.transport.write).not.toHaveBeenCalled(); expect(view.transport.close).not.toHaveBeenCalled();
+});
+
+it("supports profile picker keyboard navigation, Escape focus restoration and discovery errors", async () => {
+  const view = mount();
+  vi.mocked(view.transport.profiles!).mockResolvedValueOnce([
+    { id: "/bin/zsh", name: "Zsh", path: "/bin/zsh", isDefault: true },
+    { id: "/bin/bash", name: "Bash", path: "/bin/bash", isDefault: false },
+  ]);
+  const trigger = view.button("Choose terminal shell");
+  trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  await vi.waitFor(() => expect(document.activeElement?.getAttribute("role")).toBe("menuitem"));
+  const options = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  options[0].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+  expect(document.activeElement).toBe(options[1]);
+  options[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  expect(document.querySelector('[role="menu"]')).toBeNull(); expect(document.activeElement).toBe(trigger);
+  expect(view.transport.create).not.toHaveBeenCalled();
+  vi.mocked(view.transport.profiles!).mockRejectedValueOnce(new Error("Shell discovery unavailable"));
+  trigger.click();
+  await vi.waitFor(() => expect(view.root.textContent).toContain("Shell discovery unavailable"));
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
 });
