@@ -9,6 +9,7 @@ import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
+import { createSavedImageStore } from "./agent-saved-images";
 import { RUN_TEXT } from "./agent-hint-text";
 import { classifyAgentError, isLimitKind, limitStatus, setAgentLimit, type AgentErrorInfo } from "./agent-errors";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
@@ -118,6 +119,15 @@ export function createAgentController(props: AgentPanelProps) {
   const patch = (values: Partial<AgentState>) => setState((current) => ({ ...current, ...values }));
   const feed = createMemo(() => state().feed);
   const sessionId = createMemo(() => state().sessionId);
+  const savedImages = createSavedImageStore((path, root) => api.readImage(path, root));
+  createEffect(() => {
+    const root = props.workspacePath || "";
+    const scope = JSON.stringify([root, props.workspaceGeneration, sessionId()]);
+    const candidates = feed().flatMap((item) => item.kind === "tool" && item.event.status === "completed" && item.event.savedPath && !toolImages(item.event).length
+      ? [{ id: `${item.event.sessionId}:${item.event.toolCallId}`, path: item.event.savedPath }] : []);
+    savedImages.sync(scope, root, candidates);
+  });
+  onCleanup(() => savedImages.dispose());
   const running = createMemo(() => state().running);
 
   const [prompt, setPrompt] = createSignal("");
@@ -2020,7 +2030,7 @@ export function createAgentController(props: AgentPanelProps) {
       ? undefined
       : attachments().find((item) => item.id === id) ??
         feed().flatMap((item) => (item.kind === "user" ? item.attachments ?? [] : [])).find((item) => item.id === id) ??
-        toolImageAttachment(id);
+        savedImages.findAttachment(id) ?? toolImageAttachment(id);
   const viewingItem = createMemo(() => findAttachment(viewing()));
   /** Set by the panel when a workbench can show attachments as tabs. */
   let attachmentOpener: ((item: Attachment) => void) | undefined;
@@ -2289,6 +2299,7 @@ export function createAgentController(props: AgentPanelProps) {
     toolBar,
     chatCount: () => (chatVersion(), chats.size()),
     feed,
+    savedImage: savedImages.get,
     connected,
     running,
     caps,
