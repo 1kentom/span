@@ -40,6 +40,10 @@ pub use format::{
     native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
     FormatResult,
 };
+pub use fs_ops::{
+    copy_name, ConflictPolicy, ImportItem, ImportLimits, ImportProgress, ImportReport,
+    MAX_IMPORT_BYTES, MAX_IMPORT_ENTRIES,
+};
 pub use git::{
     GitChange, GitCommit, GitCommitResult, GitContext, GitDiff, GitDiffSide, GitHistoryPage,
     GitHistoryQuery, GitRepository, GitService, GitStatus,

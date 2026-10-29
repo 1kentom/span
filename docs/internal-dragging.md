@@ -14,6 +14,10 @@ A primary pointer must move eight CSS pixels before dragging starts. Ordinary cl
 
 The gesture captures its workspace generation and source group/path. Both source and destination are checked again before committing. Escape, pointer cancellation, lost capture, window blur, source removal, workspace transition, group removal, and component disposal cancel the gesture. A completed or canceled drag suppresses its ensuing pointer click; the next pointerdown restores ordinary clicks. Keyboard activation is not suppressed.
 
+## Explorer keyboard and focus
+
+Explorer rows are buttons in a `role="tree"` container. WebKit does not focus a button on a mouse click, so the row click handler focuses the row and a click on the empty tree area focuses the tree container (`tabindex="-1"`); the tree's key handler then receives Cmd/Ctrl+C, X, V, D, Z, A, F2, Enter, Cmd/Ctrl+Down, the arrow keys, Delete and Escape. Alt at release of an internal row drag copies instead of moving, as in JetBrains IDEs and VS Code.
+
 ## Verification boundary
 
 A failing-first Chromium regression blocked every HTML `dragstart`, then reproduced the old failed tab movement. The pointer implementation passes that same scenario, including Explorer-to-group opening. Helper tests cover threshold and primary-pointer rules, capture, copy modifiers, click suppression, stale sources/targets, cancellation, and listener cleanup. Browser checks cover dirty shared text, cancellation and ordinary click/close interaction.
