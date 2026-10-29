@@ -6,7 +6,7 @@ import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
-import { budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
+import { budgetNote, budgetText, decisionView, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
 import { urlRecordText } from "../../lib/agent-url-request";
 import { handoffDivider } from "../../lib/agent-handoff";
 import { branchDivider } from "../../lib/agent-rewind";
@@ -184,6 +184,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
               resultSummary={task().resultSummary}
               artifacts={task().artifacts}
               budget={budgetText(task().budgetUsed)}
+              budgetNote={budgetNote(task())}
               onCancel={a.cancelTask}
               onOpenArtifact={(path) => a.openInEditor(path)}
               onOpenSession={a.openTaskSession}
