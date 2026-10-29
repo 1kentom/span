@@ -8,7 +8,7 @@ import type { EditorEdit, EditorDocumentChange } from "../components/Editor";
 import { api, isDesktop } from "../lib/client";
 import { fileName, normalizePath } from "../lib/navigation";
 import { isViewerTab, viewerTabName } from "../lib/viewer-tabs";
-import type { BufferSnapshot, FileEntry, FileIndexStatus, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
+import type { ExternalFileState, ExternalFileResolution, BufferSnapshot, FileEntry, FileIndexStatus, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
 
 export const SETTINGS_TAB = "span:settings";
 const GIT_TAB_PREFIX = "span:git:";
@@ -64,12 +64,22 @@ export function createWorkbench() {
   const [searching, setSearching] = createSignal(false);
   const [pendingClose, setPendingClose] = createSignal<{ path: string; group: number; closingGroup?: boolean }>();
   const [closeBusy, setCloseBusy] = createSignal(false);
+  const [externalAbandoning, setExternalAbandoning] = createSignal(false);
   let closeOperation = 0;
   let nextGroupId = 2;
   /** Two editor groups are stacked instead of side by side. */
   const [splitVertical, setSplitVertical] = createSignal(false);
   const [pendingWorkspace, setPendingWorkspace] = createSignal(false);
   const [pendingRecovery, setPendingRecovery] = createSignal<{ path: string; document: Text }>();
+  const [externalChanges, setExternalChanges] = createSignal<Record<string, ExternalFileState>>({});
+  const [externalReview, setExternalReview] = createSignal<ExternalFileState>();
+  let externalReviewDocument: Text | undefined;
+  const reviewExternalFile = (path?: string) => { externalReviewDocument = path ? documents()[path]?.document : undefined; setExternalReview(path ? externalChanges()[path] : undefined); };
+  const [externalOperation, setExternalOperation] = createSignal<string>();
+  const externalRetainedDrafts = new Set<string>();
+  let externalRevision: number | null = null;
+  let externalChecking: Promise<void> | undefined;
+  const forgetExternal = (path: string) => { externalRetainedDrafts.delete(path); setExternalChanges(current => { const next = { ...current }; delete next[path]; return next; }); if (externalReview()?.path === path) reviewExternalFile(); };
   const [failed, setFailed] = createSignal<Set<string>>(new Set());
   const accepted = new Map<string, BufferSnapshot>();
   const openingBuffers = new Map<string, { version: number; promise: Promise<BufferSnapshot> }>();
@@ -100,12 +110,62 @@ export function createWorkbench() {
       if (disposed || version !== workspaceVersion || request !== indexRequest) return;
       if (status && normalizePath(status.workspaceRoot) !== normalizePath(root)) return;
       setIndexStatus(status); setIndexError("");
+      void checkExternalChanges();
     } catch (error) {
       if (disposed || version !== workspaceVersion || request !== indexRequest) return;
       setIndexError(error instanceof Error ? error.message : String(error));
     } finally {
       if (!disposed && version === workspaceVersion && request === indexRequest) indexTimer = setTimeout(() => void refreshIndexStatus(version), indexStatus()?.status === "scanning" ? 500 : 2000);
     }
+  }
+  async function checkExternalChanges(force = false): Promise<void> {
+    if (!isDesktop || typeof api.checkExternalFiles !== "function" || disposed || busy() || externalOperation()) return;
+    if (externalChecking) return externalChecking;
+    const version = workspaceVersion; const root = workspace()?.root; if (!root) return;
+    const before = new Map(Object.keys(buffers).filter(path => filesystemTab(path) && hasOpenEditor(path)).map(path => [path, { document: documents()[path]?.document, revision: buffers[path].revision }]));
+    const checks = [...before].map(([path, value]) => ({ path, expectedRevision: value.revision, allowReload: !dirty(path) && !writes.has(path) }));
+    externalChecking = (async () => {
+      let retry = false; let changedDirectories = false; let revision = externalRevision;
+      for (let start = 0; start < Math.max(1, checks.length); start += 256) {
+        const update = await api.checkExternalFiles(checks.slice(start, start + 256), root, force ? null : externalRevision);
+        if (disposed || version !== workspaceVersion || update.workspaceRoot !== root) return;
+        revision = update.revision; changedDirectories ||= update.directoriesChanged;
+        for (const state of update.states) {
+          const previous = before.get(state.path); if (!previous || !hasOpenEditor(state.path)) continue;
+          if (state.kind === "stale") { retry = true; continue; }
+          if (state.kind === "reloaded" && state.snapshot) {
+            if (documents()[state.path]?.document !== previous.document || buffers[state.path]?.revision !== previous.revision || dirty(state.path)) {
+              externalRetainedDrafts.add(state.path);
+              setExternalChanges(current => ({ ...current, [state.path]: { ...state, kind: "conflict", snapshot: null } }));
+              await reconcileLocalDraft(state.path, version); retry = true;
+            } else { applyFormatterSnapshot(state.path, state.snapshot); forgetExternal(state.path); }
+          } else if (state.kind === "conflict" || state.kind === "deleted" || state.kind === "unavailable") {
+            setExternalChanges(current => current[state.path]?.disk?.token === state.disk?.token && current[state.path]?.kind === state.kind && current[state.path]?.error === state.error ? current : ({ ...current, [state.path]: state }));
+          } else if (state.kind === "unchanged" && !externalRetainedDrafts.has(state.path)) forgetExternal(state.path);
+        }
+      }
+      if (disposed || version !== workspaceVersion) return;
+      if (!retry) externalRevision = revision;
+      if (changedDirectories) await Promise.all(Object.keys(directories).filter(path => !!directories[path]).map(async path => { const pending = directoryLoads.get(path); if (pending) await pending; if (!disposed && version === workspaceVersion) await loadDirectory(path); }));
+    })().catch(error => { if (!disposed && version === workspaceVersion) report(error); }).finally(() => { if (version === workspaceVersion) externalChecking = undefined; });
+    return externalChecking;
+  }
+  async function resolveExternalChange(path: string, resolution: ExternalFileResolution) {
+    const conflict = externalReview()?.path === path ? externalReview() : externalChanges()[path]; const root = workspace()?.root; const version = workspaceVersion;
+    if (!conflict?.disk || !root || externalOperation()) throw new Error("Refresh the external change before choosing a resolution.");
+    const document = externalReview()?.path === path ? externalReviewDocument : documents()[path]?.document;
+    setExternalOperation(path);
+    try {
+      await flush(path);
+      if (failed().has(path) || pendingEdits.get(path)?.length) throw new Error("The editor draft is not synchronized. Resolve the edit error before overwriting disk.");
+      if (version !== workspaceVersion || documents()[path]?.document !== document || !hasOpenEditor(path)) throw new Error("The document changed during review. Compare it again before continuing.");
+      const snapshot = await api.resolveExternalFile(path, buffers[path].revision, conflict.disk.token, resolution, root);
+      if (version !== workspaceVersion) return;
+      if (documents()[path]?.document !== document || pendingEdits.get(path)?.length) await reconcileLocalDraft(path, version);
+      else applyFormatterSnapshot(path, snapshot);
+      forgetExternal(path);
+    } catch (error) { if (version === workspaceVersion) report(error); throw error; }
+    finally { if (version === workspaceVersion) { setExternalOperation(undefined); void checkExternalChanges(true); } }
   }
   async function queryFiles(query: string): Promise<FileEntry[]> {
     const version = workspaceVersion; const root = workspace()?.root;
@@ -162,7 +222,7 @@ export function createWorkbench() {
   }
   createEffect(() => { const state = sessionSnapshot(); if (sessionTimer) clearTimeout(sessionTimer); if (!state || !sessionReady() || !isDesktop || busy()) return; sessionTimer = setTimeout(() => void persistSession(), 350); });
   onCleanup(() => { if (sessionTimer) clearTimeout(sessionTimer); });
-  const dirty = (path: string) => { documents()[path]; const buffer = buffers[path]; const revision = buffer?.revision; const savedRevision = buffer?.savedRevision; return !!buffer && ((pendingEdits.get(path)?.length || 0) > 0 || revision !== savedRevision); };
+  const dirty = (path: string) => { documents()[path]; const buffer = buffers[path]; const revision = buffer?.revision; const savedRevision = buffer?.savedRevision; return !!buffer && (!!externalChanges()[path] || (pendingEdits.get(path)?.length || 0) > 0 || revision !== savedRevision); };
   const hasDirty = () => Object.keys(buffers).some(dirty);
   function enforceTabLimit(protectedPaths: ReadonlySet<string> = new Set()) {
     const preferences = settings();
@@ -318,6 +378,8 @@ export function createWorkbench() {
       formatWorkspaceEpoch++;
       cancelAllFormats();
       workspaceVersion++;
+      closeOperation++; setPendingClose(undefined); setCloseBusy(false); setExternalAbandoning(false);
+      externalRetainedDrafts.clear(); externalRevision = null; externalChecking = undefined; setExternalChanges({}); setExternalReview(undefined); setExternalOperation(undefined);
       latestOpenByGroup.clear();
       openingBuffers.clear();
       restoreProtectedTabs.clear();
@@ -435,8 +497,9 @@ export function createWorkbench() {
     writes.delete(path);
   }
   const synchronized = (path: string) => { documents()[path]; buffers[path]?.revision; return !(pendingEdits.get(path)?.length); };
-  async function save(path = activePath()): Promise<boolean> {
+  async function save(path = activePath(), automatic = false): Promise<boolean> {
     if (!path) return false;
+    if (externalChanges()[path]) { if (!automatic) reviewExternalFile(path); return false; }
     const version = workspaceVersion;
     try {
       await flush(path);
@@ -463,6 +526,7 @@ export function createWorkbench() {
       return true;
     } catch (e) {
       report(e);
+      if (version === workspaceVersion && String(e).includes("File changed on disk")) { await checkExternalChanges(true); if (!automatic && externalChanges()[path]) reviewExternalFile(path); }
       if (version === workspaceVersion) try { const snapshot = await readBuffer(path); if (snapshot.revision > (accepted.get(path)?.revision ?? 0)) { await acceptAgentBuffer(path, snapshot, true); report(e); } } catch { /* Preserve the local draft if recovery cannot read the accepted document. */ }
       return false;
     }
@@ -539,7 +603,7 @@ export function createWorkbench() {
   }
   async function confirmClose(action: "save" | "discard" | "cancel") {
     const pending = pendingClose(); if (!pending) return;
-    if (action === "cancel") { closeOperation++; setCloseBusy(false); setPendingClose(undefined); return; }
+    if (action === "cancel") { if (externalAbandoning()) return; closeOperation++; setCloseBusy(false); setPendingClose(undefined); return; }
     if (closeBusy()) return;
     const operation = ++closeOperation; const version = workspaceVersion; setCloseBusy(true);
     try {
@@ -549,19 +613,31 @@ export function createWorkbench() {
         if (pendingClose() !== pending || operation !== closeOperation || version !== workspaceVersion) return;
         const originalDocument = documents()[pending.path]?.document;
         cancelFormat(pending.path);
+        const unavailable = externalChanges()[pending.path]?.kind === "unavailable" && !externalChanges()[pending.path]?.disk;
+        if (unavailable && typeof api.abandonExternalFile === "function") {
+          const revision = buffers[pending.path].revision;
+          setExternalAbandoning(true);
+          await api.abandonExternalFile(pending.path, revision, workspace()!.root);
+          if (version !== workspaceVersion || pendingClose() !== pending || operation !== closeOperation || documents()[pending.path]?.document !== originalDocument) return;
+          accepted.delete(pending.path); pendingEdits.delete(pending.path); histories.delete(pending.path); forgetExternal(pending.path);
+          setBuffers(pending.path, undefined!);
+          setDocuments(current => { const next = { ...current }; delete next[pending.path]; return next; });
+          setFailed(current => { const next = new Set(current); next.delete(pending.path); return next; });
+        } else {
         const base = await discardBuffer(pending.path);
         if (version !== workspaceVersion) return;
         if (pendingClose() !== pending || operation !== closeOperation || documents()[pending.path]?.document !== originalDocument) { await reconcileCanceledDiscard(pending.path, version); return; }
-        accepted.set(pending.path, base); pendingEdits.delete(pending.path); histories.delete(pending.path);
+        accepted.set(pending.path, base); pendingEdits.delete(pending.path); histories.delete(pending.path); forgetExternal(pending.path);
         setBuffers(pending.path, base);
         setDocuments(current => ({ ...current, [pending.path]: { document: Text.of(base.text.split("\n")) } }));
+        }
       }
       if (pendingClose() !== pending || operation !== closeOperation || version !== workspaceVersion) return;
       setPendingClose(undefined);
       if (pending.closingGroup) closeGroup(pending.group);
       else removeTab(pending.path, pending.group);
     } catch (error) { if (version === workspaceVersion) report(error); }
-    finally { if (operation === closeOperation) setCloseBusy(false); }
+    finally { if (operation === closeOperation) { setCloseBusy(false); setExternalAbandoning(false); } }
   }
   /** Direction names follow VS Code: "right" and "left" give side by side groups, "down" and "up" stacked ones. */
   type SplitDirection = "right" | "left" | "down" | "up";
@@ -823,12 +899,12 @@ export function createWorkbench() {
     try { const result = await readBuffer(path); accepted.set(path, result); setBuffers(path, result); setDocuments(current => ({ ...current, [path]: { document: Text.of(result.text.split("\n")) } })); } catch (e) { report(e); }
   }
   const autosave = createAutoSaveController({
-    read: () => ({ generation: workspaceGeneration(), mode: settings().autoSave, delay: settings().autoSaveDelay, paused: busy() || fileOperationBusy() || !!pendingClose() || pendingWorkspace(), buffers: [...new Set(groups().flatMap(group => group.tabs))].filter(path => !!buffers[path]).map(path => ({ path, revision: editCounters()[path] || 0, dirty: dirty(path), eligible: !isSettingsBuffer(path) })) }),
-    save: (path, generation) => generation === workspaceGeneration() ? save(path) : Promise.resolve(false),
+    read: () => ({ generation: workspaceGeneration(), mode: settings().autoSave, delay: settings().autoSaveDelay, paused: busy() || fileOperationBusy() || !!pendingClose() || pendingWorkspace(), buffers: [...new Set(groups().flatMap(group => group.tabs))].filter(path => !!buffers[path]).map(path => ({ path, revision: editCounters()[path] || 0, dirty: dirty(path), eligible: !isSettingsBuffer(path) && !externalChanges()[path] })) }),
+    save: (path, generation) => generation === workspaceGeneration() ? save(path, true) : Promise.resolve(false),
     onFailures: setAutoSaveFailures,
   });
   createEffect(() => autosave.sync());
   onCleanup(() => { autosave.dispose(); cancelAllFormats(); });
-  return { openGitTab, openViewerTab, indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, trashPath, renamePath, duplicatePath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
+  return { checkExternalChanges, externalChanges, externalReview, reviewExternalFile, externalReviewText: () => externalReviewDocument?.toString() ?? "", externalOperation, externalAbandoning, resolveExternalChange, openGitTab, openViewerTab, indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, trashPath, renamePath, duplicatePath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;

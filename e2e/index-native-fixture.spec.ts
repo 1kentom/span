@@ -54,6 +54,7 @@ async function nativeFixture(page: Page) {
           if (command === "get_settings" || command === "get_settings_for_scope") return settings;
           if (command === "get_settings_jsonc" || command === "get_settings_jsonc_for_scope") return "{}";
           if (command === "open_workspace") { root = args.path as string; generation += 1; statusCalls = 0; return { root, name: root.split("/").at(-1) }; }
+          if (command === "check_external_files") return { workspaceRoot: root, revision: 0, directoriesChanged: false, states: [] };
           if (command === "file_index_status") {
             statusCalls += 1;
             return { workspaceRoot: root, generation, status: "scanning", scannedEntries: 20 + statusCalls * 10, indexedFiles: 2 + statusCalls, errorCount: 0, lastError: null, watcherReady: true, watcherError: null };
