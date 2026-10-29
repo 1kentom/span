@@ -61,7 +61,9 @@ export function createSavedImageStore(load: (path: string, expectedRoot: string)
         if (!current(entry) || !source) return;
         const image = safeRasterSource(source);
         if (retainedBytes + image.bytes > SAVED_IMAGE_BYTES) throw new Error('Generated image previews reached the 32 MiB session limit.');
-        const bytes = Uint8Array.from(atob(image.url.slice(image.url.indexOf(',') + 1)), (char) => char.charCodeAt(0));
+        const binary = atob(image.url.slice(image.url.indexOf(',') + 1));
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
         const path = workspaceRelative(expectedRoot, entry.path);
         if (!path) throw new Error('Generated image is outside the workspace.');
         const attachment: Attachment = {
