@@ -16,6 +16,7 @@ import { javaRunGutter } from "../editor/java-run-gutter";
 import { activeLineLayer, indentGuides } from "../editor/indent-guides";
 import { indentationSupport } from "../editor/indentation";
 import { selectionPointer } from "../editor/selection-pointer";
+import { lineSelection } from "../editor/line-selection";
 import "../styles/editor.css";
 import "../styles/syntax.css";
 
@@ -376,7 +377,7 @@ export default function Editor(props: EditorProps) {
 
   function extensions(): Extension[] {
     return [
-      lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), activeLineLayer(), drawSelection(), selectionPointer(), indentationSupport(),
+      lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), activeLineLayer(), drawSelection(), selectionPointer(), lineSelection(), indentationSupport(),
       javaRun.of(javaRunExtensions()),
       props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),
       closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
