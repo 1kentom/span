@@ -109,8 +109,8 @@ impl LanguageServerSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum AutoSaveMode {
-    #[default]
     Off,
+    #[default]
     AfterDelay,
     OnFocusChange,
     OnWindowChange,
@@ -194,6 +194,33 @@ pub struct AgentSettings {
     /// and show whether it replied (ADR 0010). Never starts an agent. On by
     /// default. Honoured only from the user's own settings file.
     pub health_check: bool,
+    /// `agents.startMode.<agent>`: the mode a session Span starts for that
+    /// agent (`claude`, `codex`, `gemini`, `opencode`, `generic`) begins in.
+    /// A missing entry means [`StartMode::Approval`]. Honoured only from the
+    /// user's own settings file. Optional in TypeScript like `agents`.
+    #[specta(optional)]
+    pub start_mode: HashMap<String, StartMode>,
+}
+
+/// How a session Span starts treats the agent's own default mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum StartMode {
+    /// Start in the agent's normal approval mode, so Span's approval prompts
+    /// appear even when the agent's own configuration (for example a global
+    /// `bypassPermissions` default) would skip them. Agent tools that reach
+    /// other sessions on the machine are left out where the agent allows it.
+    #[default]
+    Approval,
+    /// Keep whatever mode the agent's own configuration starts in.
+    AgentDefault,
+}
+
+impl AgentSettings {
+    /// The start mode for one agent kind.
+    pub fn start_mode_for(&self, agent: &str) -> StartMode {
+        self.start_mode.get(agent).copied().unwrap_or_default()
+    }
 }
 
 impl Default for AgentSettings {
@@ -203,6 +230,7 @@ impl Default for AgentSettings {
             run_tools: RunToolsSettings::default(),
             warm_start: true,
             health_check: true,
+            start_mode: HashMap::new(),
         }
     }
 }
@@ -245,7 +273,7 @@ impl Default for Settings {
             collapse_panels_on_drag: true,
             markdown_preview_default: true,
             format_on_save: false,
-            auto_save: AutoSaveMode::Off,
+            auto_save: AutoSaveMode::AfterDelay,
             auto_save_delay: 1000,
             tab_limit_enabled: true,
             tab_limit: 10,
@@ -762,6 +790,8 @@ const USER_ONLY: &[&[&str]] = &[
     &["agents", "warmStart"],
     // Sends prompts to running agents in the background (ADR 0010).
     &["agents", "healthCheck"],
+    // A cloned project must not make agents skip approval prompts.
+    &["agents", "startMode"],
     // A cloned project must not make Span contact the network at launch.
     &["updates", "checkOnLaunch"],
 ];
@@ -775,6 +805,15 @@ impl CoreWorkspace {
             .agents
             .run_tools
             .enabled)
+    }
+
+    /// The start mode for sessions of one agent kind. Read only the user's
+    /// settings scope, so a repository cannot make an agent skip approvals.
+    pub fn agent_start_mode(&self, agent: &str) -> Result<StartMode> {
+        Ok(self
+            .get_settings_for_scope(SettingsScope::User)?
+            .agents
+            .start_mode_for(agent))
     }
 
     /// Change the explicit user-only opt-in without rewriting workspace

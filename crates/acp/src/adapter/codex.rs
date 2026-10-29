@@ -1,10 +1,16 @@
 //! Codex (codex-acp 2.3.0, read from source, not run live).
 use super::{annotate, Quirks, SessionState};
+use crate::ConfigOption;
 use serde_json::{json, Value};
 
 pub(crate) struct Codex;
 
 impl Quirks for Codex {
+    /// `agent` (Auto review) is codex-acp's own default: it asks before
+    /// actions it detects as potentially unsafe.
+    fn approval_mode(&self, option: &ConfigOption) -> Option<String> {
+        super::has_choice(option, "agent").then(|| "agent".into())
+    }
     /// An SSE or ACP MCP server makes the whole `session/new` fail, even
     /// when advertised, so neither is ever sent.
     fn mcp_server(&self, server: Value) -> Option<Value> {

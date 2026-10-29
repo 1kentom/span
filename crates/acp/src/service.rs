@@ -6,7 +6,7 @@ use crate::{
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo, UntypedMessage};
 use serde_json::{json, Value};
-use span_core::CoreWorkspace;
+use span_core::{CoreWorkspace, StartMode};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -1057,8 +1057,12 @@ async fn run(
                 };
                 match command {
                     Command::NewSession(servers, hidden, reply) => {
+                        // The start mode is read from the user's settings only. If it
+                        // cannot be read the session starts in the approval mode.
+                        let approval = workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
                         let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
+                        if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { params["_meta"] = meta; }
                         let result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)).await;
                         let result = match result {
                             Ok(result) => result,
@@ -1087,9 +1091,16 @@ async fn run(
                             if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                             emit(AgentEvent::Session { session_id: id.clone() });
                             let options = adapter.session_config(&id, &response);
-                            if !options.is_empty() { emit_config(&emit, &adapter, &id, options); }
-                            id
+                            (id, options)
                         });
+                        let result = match result {
+                            Ok((id, options)) => {
+                                let options = if approval { apply_start_mode(&cx, &adapter, &id, options, &emit).await } else { options };
+                                if !options.is_empty() { emit_config(&emit, &adapter, &id, options); }
+                                Ok(id)
+                            }
+                            Err(error) => Err(error),
+                        };
                         let _ = reply.send(result);
                         if unsupported { break; }
                     }
@@ -1373,6 +1384,74 @@ fn auth_required(
 
 /// Emit a `Config` event and whatever the adapter derives from it (the
 /// permission bypass notice).
+/// Under the approval start mode, move a session that started in a bypass
+/// mode (from the agent's own configuration) to the agent's approval mode
+/// before the UI sees its options. When the agent refuses, the options come
+/// back unchanged, so the mode chip and the bypass notice still say what the
+/// session really runs in.
+async fn apply_start_mode(
+    cx: &ConnectionTo<Agent>,
+    adapter: &Adapter,
+    id: &str,
+    options: Vec<ConfigOption>,
+    emit: &EventSink,
+) -> Vec<ConfigOption> {
+    let Some((config_id, value)) = adapter.approval_change(&options) else {
+        return options;
+    };
+    let route = adapter.route(id, &config_id);
+    let request = match route {
+        ConfigRoute::Option => raw_request(
+            cx,
+            "session/set_config_option",
+            serde_json::to_value(SetSessionConfigOptionRequest::new(
+                id.to_owned(),
+                config_id.clone(),
+                value.as_str(),
+            ))
+            .unwrap_or_default(),
+        ),
+        ConfigRoute::Mode => raw_request(
+            cx,
+            "session/set_mode",
+            serde_json::to_value(SetSessionModeRequest::new(id.to_owned(), value.clone()))
+                .unwrap_or_default(),
+        ),
+        ConfigRoute::Model => return options,
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(20), request).await {
+        Ok(Ok(response)) => {
+            let applied = match route {
+                ConfigRoute::Option => config_options_value(response.get("configOptions")),
+                _ => adapter.legacy_applied(id, &config_id, &value),
+            };
+            if !applied.is_empty() {
+                return applied;
+            }
+            // An agent that answers `{}` accepted the change without listing options.
+            let mut options = options;
+            for option in options.iter_mut().filter(|o| o.id == config_id) {
+                option.current_value = value.clone();
+            }
+            options
+        }
+        Ok(Err(error)) => {
+            emit(AgentEvent::Log {
+                direction: "Client".into(),
+                line: format!("Start mode: the agent kept its own mode ({error})"),
+            });
+            options
+        }
+        Err(_) => {
+            emit(AgentEvent::Log {
+                direction: "Client".into(),
+                line: "Start mode: the agent did not change mode within 20 seconds".into(),
+            });
+            options
+        }
+    }
+}
+
 fn emit_config(emit: &EventSink, adapter: &Adapter, session: &str, options: Vec<ConfigOption>) {
     let event = AgentEvent::Config {
         session_id: session.to_owned(),

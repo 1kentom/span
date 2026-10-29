@@ -4598,6 +4598,7 @@ dependencies = [
  "serde_json",
  "similar",
  "specta",
+ "span-syntax",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

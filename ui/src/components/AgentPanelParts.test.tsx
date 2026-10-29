@@ -42,18 +42,19 @@ describe("AgentMarkdown", () => {
     expect([...host.querySelectorAll("a")].some((link) => /^javascript:/i.test(link.getAttribute("href") ?? ""))).toBe(false);
   });
 
-  it("keeps streaming text current after the throttle", () => {
+  it("keeps streaming text current after the paced reveal", () => {
     vi.useFakeTimers();
     try {
       let set!: (value: string) => void;
       const host = mount(() => {
-        const [text, setText] = createSignal("first");
+        const [text, setText] = createSignal("first ");
         set = setText;
         return <AgentMarkdown text={text()} workspaceRoot="/work" streaming />;
       });
-      expect(host.textContent).toContain("first");
-      set("first and second");
       vi.advanceTimersByTime(80);
+      expect(host.textContent).toContain("first");
+      set("first and second ");
+      vi.advanceTimersByTime(500);
       expect(host.textContent).toContain("first and second");
     } finally {
       vi.useRealTimers();

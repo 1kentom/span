@@ -8,10 +8,12 @@ mod format_native;
 mod fs_ops;
 mod git;
 mod images;
+mod java_run;
 mod pdf_pages;
 mod proposal_diff;
 mod recent;
 mod run_config;
+mod run_current_file;
 mod run_detection;
 mod search;
 mod session;
@@ -38,6 +40,7 @@ pub use images::RasterImage;
 pub use pdf_pages::pdf_page_count;
 pub use recent::{RecentProject, RecentProjectStore};
 pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration};
+pub use run_current_file::{current_file_run, CurrentFileRun, CURRENT_FILE_RUN_ID};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use session_meta::{
@@ -48,7 +51,7 @@ pub use session_meta::{
 };
 pub use settings::{
     AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, RunToolsSettings,
-    Settings, SettingsScope, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
+    Settings, SettingsScope, StartMode, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
     SYNTAX_THEMES, SYNTAX_TOKEN_IDS,
 };
 pub use tools::{list_tools, ToolInfo};

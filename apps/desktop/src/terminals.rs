@@ -1,7 +1,10 @@
 //! Interactive user terminals. Output is acknowledged after xterm consumes it.
 use crate::DesktopState;
 use serde::{Deserialize, Serialize};
-use span_terminal::{TerminalEvent as PtyEvent, TerminalInfo, TerminalManager};
+use span_terminal::{
+    terminal_profiles as discover_terminal_profiles, TerminalCommandLanguage,
+    TerminalEvent as PtyEvent, TerminalInfo, TerminalManager, TerminalProfile,
+};
 use specta::Type;
 use std::{
     collections::HashMap,
@@ -181,17 +184,62 @@ impl TerminalState {
         rows: u16,
         sink: EventSink,
     ) -> Result<TerminalInfo, String> {
+        self.create_profile(cwd, cols, rows, sink, None).await
+    }
+
+    async fn create_profile(
+        &self,
+        cwd: Option<String>,
+        cols: u16,
+        rows: u16,
+        sink: EventSink,
+        profile_id: Option<String>,
+    ) -> Result<TerminalInfo, String> {
         let _gate = self.gate.lock().await;
         let current = self.current()?;
         let cwd = cwd.as_deref().unwrap_or(".");
         if cwd.contains("://") {
             return Err("Terminal directory must be a workspace folder".to_owned());
         }
-        let (mut info, receiver) = current
+        let (info, receiver) = current
             .manager
-            .create(cwd, cols, rows)
+            .create_with_profile(cwd, cols, rows, profile_id.as_deref())
             .await
             .map_err(|error| error.to_string())?;
+        Self::attach(current, info, receiver, sink).await
+    }
+
+    async fn create_command(
+        &self,
+        language: TerminalCommandLanguage,
+        code: String,
+        expected_workspace_root: String,
+        cols: u16,
+        rows: u16,
+        sink: EventSink,
+    ) -> Result<TerminalInfo, String> {
+        let _gate = self.gate.lock().await;
+        let current = self.current()?;
+        let (info, receiver) = current
+            .manager
+            .create_command(
+                language,
+                code,
+                Path::new(&expected_workspace_root),
+                cols,
+                rows,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Self::attach(current, info, receiver, sink).await
+    }
+
+    async fn attach(
+        current: Arc<WorkspaceTerminals>,
+        mut info: TerminalInfo,
+        receiver: mpsc::Receiver<PtyEvent>,
+        sink: EventSink,
+    ) -> Result<TerminalInfo, String> {
         let internal_id = info.id.clone();
         info.id = current.external_id(&internal_id);
         let flow = Arc::new(OutputFlow::new());
@@ -391,14 +439,50 @@ pub async fn terminal_create(
     cols: u16,
     rows: u16,
     on_event: tauri::ipc::Channel<TerminalEvent>,
+    profile_id: Option<String>,
 ) -> Result<TerminalInfo, String> {
     // Workspace replacement holds this gate through the core-state assignment.
     // A shell cannot start between terminal-manager and core-workspace updates.
     let _workspace_gate = state.connection_gate.lock().await;
+    let sink: EventSink =
+        Arc::new(move |event| on_event.send(event).map_err(|error| error.to_string()));
+    match profile_id {
+        None => state.terminals.create(cwd, cols, rows, sink).await,
+        profile => {
+            state
+                .terminals
+                .create_profile(cwd, cols, rows, sink, profile)
+                .await
+        }
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn terminal_profiles() -> Result<Vec<TerminalProfile>, String> {
+    tokio::task::spawn_blocking(discover_terminal_profiles)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn terminal_create_command(
+    state: State<'_, DesktopState>,
+    language: TerminalCommandLanguage,
+    code: String,
+    expected_workspace_root: String,
+    cols: u16,
+    rows: u16,
+    on_event: tauri::ipc::Channel<TerminalEvent>,
+) -> Result<TerminalInfo, String> {
+    let _workspace_gate = state.connection_gate.lock().await;
     state
         .terminals
-        .create(
-            cwd,
+        .create_command(
+            language,
+            code,
+            expected_workspace_root,
             cols,
             rows,
             Arc::new(move |event| on_event.send(event).map_err(|error| error.to_string())),
@@ -528,6 +612,69 @@ mod tests {
             .unwrap();
         // Carets keep the echoed input from satisfying the executed sentinel.
         output_until(state, receiver, "SPAN_UTF8_READY").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_bridge_streams_complete_source_and_exit_with_output_acknowledgements() {
+        let root = TempDir::new().unwrap();
+        let state = TerminalState::default();
+        state.replace_workspace(root.path()).await.unwrap();
+        let (sink, mut receiver) = collecting_sink();
+        let info = state.create_command(TerminalCommandLanguage::Bash,
+            "items=(one two)\nfor item in \"${items[@]}\"; do printf 'COMMAND:%s\\n' \"$item\"; done\nexit 9".to_owned(),
+            root.path().to_string_lossy().into_owned(), 80, 24, sink).await.unwrap();
+        let output = output_until(&state, &mut receiver, "COMMAND:two").await;
+        assert!(output.contains("COMMAND:one"));
+        assert!(!output.contains("items="));
+        timeout(Duration::from_secs(10), async {
+            while let Some(event) = receiver.recv().await {
+                match event {
+                    TerminalEvent::Output { id, sequence, .. } => {
+                        state.acknowledge(&id, sequence).unwrap()
+                    }
+                    TerminalEvent::Exit { id, code } => {
+                        assert_eq!(id, info.id);
+                        assert_eq!(code, Some(9));
+                        return;
+                    }
+                    TerminalEvent::Error { message, .. } => panic!("{message}"),
+                }
+            }
+            panic!("Command bridge lost exit event");
+        })
+        .await
+        .unwrap();
+        state.close(&info.id).await.unwrap();
+        assert!(state.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn command_bridge_rejects_old_workspace_and_invalid_profile_without_starting_a_session() {
+        let root = TempDir::new().unwrap();
+        let next = TempDir::new().unwrap();
+        let state = TerminalState::default();
+        state.replace_workspace(root.path()).await.unwrap();
+        state.replace_workspace(next.path()).await.unwrap();
+        let (sink, _receiver) = collecting_sink();
+        assert!(state
+            .create_command(
+                TerminalCommandLanguage::Shell,
+                "echo old".to_owned(),
+                root.path().to_string_lossy().into_owned(),
+                80,
+                24,
+                sink
+            )
+            .await
+            .unwrap_err()
+            .contains("workspace changed"));
+        let (sink, _receiver) = collecting_sink();
+        assert!(state
+            .create_profile(None, 80, 24, sink, Some("shell:relative/bash".to_owned()))
+            .await
+            .is_err());
+        assert!(state.list().unwrap().is_empty());
     }
 
     #[tokio::test]

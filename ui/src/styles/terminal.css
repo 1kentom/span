@@ -26,7 +26,7 @@
 .terminal-dock-cwd{height:22px;min-height:22px;padding:3px 12px;color:var(--faint);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none}
 .terminal-dock-session{display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}
 .terminal-dock .terminal-panel{border:0}
-.terminal-host{flex:1;min-height:0;min-width:0;padding:4px 5px 6px 10px;overflow:hidden;font:13px/20px var(--editor-font-family,"JetBrains Mono"),monospace}
+.terminal-host{flex:1;min-height:0;min-width:0;padding:4px 5px 6px 10px;overflow:hidden;font:13px/normal "JetBrains Mono",monospace}
 .terminal-host .xterm{height:100%;--vscode-scrollbar-shadow:transparent}
 .terminal-host .xterm .xterm-viewport{scrollbar-width:thin;background-color:var(--island)}
 .terminal-host .xterm .composition-view{background:var(--island);color:var(--text)}
@@ -39,3 +39,14 @@
 .terminal-unavailable{padding:12px 14px;color:var(--dim);font-size:12px;line-height:20px}
 .terminal-exit-status{padding:5px 11px;color:var(--dim);font-size:11px;border-bottom:1px solid var(--border);flex:none}
 @container span-terminal (max-width:520px){.terminal-dock-actions>.terminal-clear{display:none}.terminal-dock-toolbar{padding:0 5px;gap:3px}.terminal-tab-name{max-width:100px}.terminal-dock-cwd{padding-left:10px}}
+.terminal-profile-menu{position:fixed;z-index:1000;width:min(290px,calc(100vw - 16px));max-height:320px;overflow:auto;padding:4px;border:1px solid var(--border);border-radius:7px;background:var(--island);box-shadow:0 6px 18px #0003;color:var(--text);font:12px var(--ui-font-family,Inter),sans-serif}
+.terminal-profile-menu button{display:flex;align-items:center;gap:8px;width:100%;border:0;border-radius:4px;padding:7px 8px;text-align:left;background:transparent;color:inherit;cursor:pointer}
+.terminal-profile-menu button:hover,.terminal-profile-menu button:focus-visible{background:var(--hover);outline:1px solid var(--accent);outline-offset:-1px}
+.terminal-profile-menu button>span{min-width:0;display:flex;flex-direction:column;gap:3px}.terminal-profile-menu strong{font-weight:500}.terminal-profile-menu small{color:var(--dim);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.terminal-profile-empty{padding:8px;color:var(--dim)}
+.terminal-dock-context{min-width:0;max-width:140px;padding:0 8px;color:var(--faint);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-left:1px solid var(--border)}
+.terminal-profile-title{display:flex;align-items:center;justify-content:space-between;padding:8px;font-size:11px;font-weight:500;color:var(--dim)}.terminal-profile-title small{font-size:10px;font-weight:400;color:var(--faint)}.terminal-profile-default{margin-left:8px;padding:1px 4px;border-radius:3px;background:var(--pill);color:var(--dim);font-size:10px;font-weight:400}
+@container span-terminal (max-width:650px){.terminal-dock-context{max-width:80px;padding:0 5px}}
+
+.terminal-host .xterm{font-variant-ligatures:none;font-feature-settings:"liga" 0,"calt" 0;letter-spacing:0}
+
+.terminal-platform-mark{display:inline-block;flex:none;width:13px;height:16px;background:currentColor;color:var(--dim);mask:url("/brands/apple.svg") center/contain no-repeat;-webkit-mask:url("/brands/apple.svg") center/contain no-repeat}

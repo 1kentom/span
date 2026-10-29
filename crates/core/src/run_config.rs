@@ -255,6 +255,7 @@ impl CoreWorkspace {
         environment: impl Fn(&str) -> Option<String>,
     ) -> Result<PreparedRun> {
         validate(&configuration)?;
+        self.validate_java_run(&configuration)?;
         let variables = std::cell::RefCell::new(BTreeMap::<String, Option<String>>::new());
         let lookup = |name: &str| {
             variables

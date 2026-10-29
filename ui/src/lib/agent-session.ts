@@ -1,3 +1,4 @@
+import { classifyAgentError, isLimitKind, limitStatus } from "./agent-errors";
 import type {
   AgentEvent,
   AgentFeatures,
@@ -391,10 +392,16 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         stopRequested: false,
         lastError: event.message,
         failure: { phase: state.sessionId ? "prompt" : "connect", message: event.message },
-        ...(state.sessionId ? { status: "ready", statusMessage: "The last agent operation failed" } : {}),
+        ...(state.sessionId ? { status: "ready", statusMessage: errorStatus(event.message) } : {}),
       };
   }
   return state;
+}
+
+/** The status line after an error event: a limit says which, anything else stays generic. */
+function errorStatus(message: string): string {
+  const info = classifyAgentError({ message });
+  return isLimitKind(info.kind) ? limitStatus(info) : "The last agent operation failed";
 }
 
 type ToolItem = Extract<FeedItem, { kind: "tool" }>;

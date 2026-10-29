@@ -25,12 +25,16 @@ export const commands = {
 	deleteRunConfiguration: (id: string, expectedWorkspaceRoot: string) => __TAURI_INVOKE<null>("delete_run_configuration", { id, expectedWorkspaceRoot }),
 	duplicateRunConfiguration: (id: string, expectedWorkspaceRoot: string) => __TAURI_INVOKE<RunConfiguration_Serialize>("duplicate_run_configuration", { id, expectedWorkspaceRoot }),
 	startRun: (configuration: RunConfiguration_Deserialize, expectedWorkspaceRoot: string, onEvent: Channel<RunEvent_Deserialize>) => __TAURI_INVOKE<RunInfo_Serialize>("start_run", { configuration, expectedWorkspaceRoot, onEvent }),
+	currentFileRun: (path: string, expectedWorkspaceRoot: string) => __TAURI_INVOKE<CurrentFileRun_Serialize>("current_file_run", { path, expectedWorkspaceRoot }),
+	startCurrentFileRun: (path: string, expectedWorkspaceRoot: string, onEvent: Channel<RunEvent_Deserialize>) => __TAURI_INVOKE<RunInfo_Serialize>("start_current_file_run", { path, expectedWorkspaceRoot, onEvent }),
 	stopRun: (id: string) => __TAURI_INVOKE<RunInfo_Serialize>("stop_run", { id }),
 	restartRun: (id: string, onEvent: Channel<RunEvent_Deserialize>) => __TAURI_INVOKE<RunInfo_Serialize>("restart_run", { id, onEvent }),
 	listRuns: () => __TAURI_INVOKE<RunInfo_Serialize[]>("list_runs"),
 	runOutput: (id: string) => __TAURI_INVOKE<RunOutput>("run_output", { id }),
 	acknowledgeRun: (id: string, sequence: number) => __TAURI_INVOKE<null>("acknowledge_run", { id, sequence }),
-	terminalCreate: (cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent_Deserialize>) => __TAURI_INVOKE<TerminalInfo_Serialize>("terminal_create", { cwd, cols, rows, onEvent }),
+	terminalCreate: (cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent_Deserialize>, profileId: string | null) => __TAURI_INVOKE<TerminalInfo_Serialize>("terminal_create", { cwd, cols, rows, onEvent, profileId }),
+	terminalCreateCommand: (language: TerminalCommandLanguage, code: string, expectedWorkspaceRoot: string, cols: number, rows: number, onEvent: Channel<TerminalEvent_Deserialize>) => __TAURI_INVOKE<TerminalInfo_Serialize>("terminal_create_command", { language, code, expectedWorkspaceRoot, cols, rows, onEvent }),
+	terminalProfiles: () => __TAURI_INVOKE<TerminalProfile[]>("terminal_profiles"),
 	terminalWrite: (id: string, data: number[]) => __TAURI_INVOKE<null>("terminal_write", { id, data }),
 	terminalResize: (id: string, cols: number, rows: number) => __TAURI_INVOKE<null>("terminal_resize", { id, cols, rows }),
 	terminalInterrupt: (id: string) => __TAURI_INVOKE<null>("terminal_interrupt", { id }),
@@ -737,6 +741,13 @@ export type AgentSettings_Deserialize = {
 	 *  default. Honoured only from the user's own settings file.
 	 */
 	healthCheck?: boolean,
+	/**
+	 *  `agents.startMode.<agent>`: the mode a session Span starts for that
+	 *  agent (`claude`, `codex`, `gemini`, `opencode`, `generic`) begins in.
+	 *  A missing entry means [`StartMode::Approval`]. Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	startMode?: { [key in string]: StartMode },
 };
 
 /**  `agents.*` settings. */
@@ -757,6 +768,13 @@ export type AgentSettings_Serialize = {
 	 *  default. Honoured only from the user's own settings file.
 	 */
 	healthCheck: boolean,
+	/**
+	 *  `agents.startMode.<agent>`: the mode a session Span starts for that
+	 *  agent (`claude`, `codex`, `gemini`, `opencode`, `generic`) begins in.
+	 *  A missing entry means [`StartMode::Approval`]. Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	startMode?: { [key in string]: StartMode },
 };
 
 export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
@@ -1135,6 +1153,25 @@ export type ConfigOption_Serialize = {
 	category: string | null,
 	currentValue: string,
 	groups: ConfigGroup_Serialize[],
+};
+
+/**  The runner chosen for one file, or the reason no runner applies. */
+export type CurrentFileRun = CurrentFileRun_Serialize | CurrentFileRun_Deserialize;
+
+/**  The runner chosen for one file, or the reason no runner applies. */
+export type CurrentFileRun_Deserialize = {
+	/**  Workspace relative path with forward slashes. */
+	path: string,
+	configuration?: RunConfiguration_Deserialize | null,
+	reason?: string | null,
+};
+
+/**  The runner chosen for one file, or the reason no runner applies. */
+export type CurrentFileRun_Serialize = {
+	/**  Workspace relative path with forward slashes. */
+	path: string,
+	configuration: RunConfiguration_Serialize | null,
+	reason: string | null,
 };
 
 /**  A decision the lead recorded with `record_decision` (#54). */
@@ -3089,6 +3126,18 @@ export type SourceSnippetDto = {
 	readOnly: boolean,
 };
 
+/**  How a session Span starts treats the agent's own default mode. */
+export type StartMode =
+/**
+ *  Start in the agent's normal approval mode, so Span's approval prompts
+ *  appear even when the agent's own configuration (for example a global
+ *  `bypassPermissions` default) would skip them. Agent tools that reach
+ *  other sessions on the machine are left out where the agent allows it.
+ */
+"approval" |
+/**  Keep whatever mode the agent's own configuration starts in. */
+"agentDefault";
+
 export type StartupFile = StartupFile_Serialize | StartupFile_Deserialize;
 
 export type StartupFile_Deserialize = {
@@ -3191,6 +3240,9 @@ export type SyntaxSnapshot = {
 	truncated: boolean,
 };
 
+/**  Explicit Markdown execution languages. Source is passed as one argv value. */
+export type TerminalCommandLanguage = "bash" | "sh" | "zsh" | "shell";
+
 export type TerminalEvent = TerminalEvent_Serialize | TerminalEvent_Deserialize;
 
 export type TerminalEvent_Deserialize = { kind: "output"; id: string; data: number[]; sequence: number } | { kind: "exit"; id: string; code?: number | null } | { kind: "error"; id: string; message: string };
@@ -3220,6 +3272,16 @@ export type TerminalInfo_Serialize = {
 	exitCode: number | null,
 	exited: boolean,
 };
+
+export type TerminalProfile = {
+	id: string,
+	name: string,
+	path: string,
+	isDefault: boolean,
+	kind: TerminalProfileKind,
+};
+
+export type TerminalProfileKind = "shell" | "node" | "python";
 
 /**  Offsets are UTF-16 code units in the pre-transaction document, as in CodeMirror. */
 export type TextEdit = {

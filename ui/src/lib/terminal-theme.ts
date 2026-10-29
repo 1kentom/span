@@ -42,3 +42,27 @@ export function terminalFontFamily(family: string | undefined): string {
   if (!names.some(name => /^(?:ui-monospace|monospace)$/i.test(name))) normalized.push("monospace");
   return normalized.join(", ");
 }
+
+const terminalFonts = new Map<string, Promise<string>>();
+/** Fixed cell layout requires equal advances for spaces, narrow and wide Latin glyphs. */
+export async function loadTerminalFont(family: string | undefined, size: number): Promise<string> {
+  const requested = terminalFontFamily(family);
+  if (typeof document === "undefined" || !document.fonts) return requested;
+  const key = `${size}:${requested}`;
+  const previous = terminalFonts.get(key);
+  if (previous) return previous;
+  const pending = (async () => {
+    const fallback = terminalFontFamily("JetBrains Mono");
+    try {
+      await Promise.all([document.fonts.load(`${size}px ${requested}`), document.fonts.load(`${size}px ${fallback}`)]);
+      const context = document.createElement("canvas").getContext("2d");
+      if (!context) return fallback;
+      context.font = `64px ${requested}`;
+      const widths = ["i", "W", "0", " "].map(character => context.measureText(character.repeat(8)).width);
+      return Math.max(...widths) - Math.min(...widths) < 0.05 ? requested : fallback;
+    } catch { return fallback; }
+  })();
+  if (terminalFonts.size >= 64) terminalFonts.delete(terminalFonts.keys().next().value!);
+  terminalFonts.set(key, pending);
+  return pending;
+}

@@ -1,0 +1,4 @@
+// OpenCode's modes (build, plan) never skip approval prompts, so the approval start mode sends no mode change and no _meta: the session keeps build and the chip shows it.
+// Mode option shape as OpenCode 2.0.32 live captures (sanitised).
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "promptCapabilities": {"image": true, "embeddedContext": true}, "mcpCapabilities": {"http": true, "sse": false}}, "authMethods": [], "agentInfo": {"name": "OpenCode", "version": "2.0.32"}}}
+{"on": "session/new", "result": {"sessionId": "ses_1", "configOptions": [{"id": "mode", "name": "Session Mode", "category": "mode", "type": "select", "currentValue": "build", "options": [{"value": "build", "name": "build"}, {"value": "plan", "name": "plan"}]}]}}

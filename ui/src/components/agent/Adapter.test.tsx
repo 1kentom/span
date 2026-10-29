@@ -495,6 +495,26 @@ describe("feed and composer with adapter data", () => {
     expect(host.querySelector(".agent-turn-tokens")).toBeNull();
     expect(host.querySelector(".sb-ring")).not.toBeNull();
   });
+  it("opens usage details from the meter and compacts through the agent's own command", async () => {
+    mocks.api.agentPrompt.mockClear();
+    const { host } = await withAgent((agent) => <AgentComposer agent={agent} brand={{ id: "g", name: "G" }} label="G" />);
+    mocks.emit({ kind: "usage", sessionId: "s1", used: 86, size: 100, costAmount: null, costCurrency: null } as AgentEvent);
+    await tick();
+    expect(host.querySelector(".sb-ctx-hint")).toBeNull();
+    expect(text(host.querySelector(".sb-ctx"))).toBe("86% context");
+    click(host.querySelector(".sb-ctx"));
+    await tick();
+    expect(host.querySelector(".sb-ctx-pop [role=progressbar]")!.getAttribute("aria-valuenow")).toBe("86");
+    expect(host.querySelector(".sb-ctx-compact")).toBeNull();
+    mocks.emit({ kind: "availableCommands", sessionId: "s1", commands: [{ name: "compact", description: "Compact the conversation" }] } as AgentEvent);
+    await tick();
+    expect(text(host.querySelector(".sb-ctx-hint-text"))).toBe("Context is 86% full. Compact?");
+    click(host.querySelector(".sb-ctx-compact"));
+    await tick();
+    expect(mocks.api.agentPrompt).toHaveBeenCalledOnce();
+    expect(JSON.stringify((mocks.api.agentPrompt.mock.calls as unknown[][])[0])).toContain("/compact");
+    expect(text(host.querySelector(".sb-ctx-hint-text"))).toBe("Compacting context");
+  });
 });
 
 describe("Gemini legacy modes and models", () => {
@@ -714,8 +734,9 @@ describe("live announcements", () => {
     await tick();
     const bar = host.querySelector(".sb-activity")!;
     expect(bar).not.toBeNull();
-    // The bar names the phase (no tool yet, so the agent is thinking) and ticks a m:ss clock.
-    expect(text(bar)).toMatch(/Thinking · 0:00/);
+    // The bar names the phase (no tool yet, so the agent is thinking) and ticks one m:ss clock.
+    expect(text(bar.querySelector(".agent-toolbar-label"))).toBe("Thinking");
+    expect(text(bar.querySelector(".agent-toolbar-elapsed"))).toBe("0:00");
     const live = [...host.querySelectorAll("[aria-live], [role=status], [role=alert]")];
     for (const region of live) expect(text(region) ?? "", region.outerHTML).not.toMatch(/\d+s\b|\d+:\d\d/);
     expect(bar.closest("[aria-live], [role=status]")).toBeNull();

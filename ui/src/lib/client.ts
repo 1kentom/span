@@ -1,10 +1,10 @@
 import type { GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
-import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest } from '../bindings';
+import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest, CurrentFileRun_Serialize as CurrentFileRun } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
-import type { TerminalEvent_Deserialize as TerminalEvent, TerminalInfo } from '../bindings';
+import type { TerminalEvent_Deserialize as TerminalEvent, TerminalInfo, TerminalCommandLanguage, TerminalProfile } from '../bindings';
 import type { LspPort } from './lsp-client';
 import type { BootTheme, StartupTimings } from './startup';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
@@ -195,9 +195,17 @@ export const api = {
   },
 
   // Interactive terminal commands always use the native PTY backend.
-  async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>): Promise<TerminalInfo> {
+  async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>, profileId?: string): Promise<TerminalInfo> {
     if (!isDesktop) nativeRequired('Creating terminal sessions');
-    return commands.terminalCreate(cwd, cols, rows, onEvent);
+    return commands.terminalCreate(cwd, cols, rows, onEvent, profileId ?? null);
+  },
+  async terminalCreateCommand(language: TerminalCommandLanguage, code: string, expectedWorkspaceRoot: string, cols: number, rows: number, onEvent: Channel<TerminalEvent>): Promise<TerminalInfo> {
+    if (!isDesktop) nativeRequired('Running terminal commands');
+    return commands.terminalCreateCommand(language, code, expectedWorkspaceRoot, cols, rows, onEvent);
+  },
+  async terminalProfiles(): Promise<TerminalProfile[]> {
+    if (!isDesktop) nativeRequired('Discovering terminal shells');
+    return commands.terminalProfiles();
   },
   async terminalWrite(id: string, data: Uint8Array): Promise<void> {
     if (!isDesktop) nativeRequired('Writing terminal input');
@@ -225,6 +233,8 @@ export const api = {
   async duplicateRunConfiguration(id: string, expectedWorkspaceRoot: string): Promise<RunConfiguration> { if (!isDesktop) nativeRequired('Duplicating run configurations'); return commands.duplicateRunConfiguration(id, expectedWorkspaceRoot); },
   async startRun(configuration: RunConfiguration, expectedWorkspaceRoot: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Running configurations'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.startRun(configuration, expectedWorkspaceRoot, channel); },
   async stopRun(id: string): Promise<RunInfo> { if (!isDesktop) nativeRequired('Stopping processes'); return commands.stopRun(id); },
+  async currentFileRun(path: string, expectedWorkspaceRoot: string): Promise<CurrentFileRun> { if (!isDesktop) nativeRequired('Choosing a runner for the current file'); return commands.currentFileRun(path, expectedWorkspaceRoot); },
+  async startCurrentFileRun(path: string, expectedWorkspaceRoot: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Running the current file'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.startCurrentFileRun(path, expectedWorkspaceRoot, channel); },
   async restartRun(id: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Restarting processes'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.restartRun(id, channel); },
   async runContext(): Promise<RunContext> { if (!isDesktop) nativeRequired('Reading run workspace context'); return commands.runContext(); },
   async listRuns(): Promise<RunInfo[]> { if (!isDesktop) nativeRequired('Listing process runs'); return commands.listRuns(); },

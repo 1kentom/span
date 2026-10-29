@@ -16,7 +16,7 @@ The settings search accepts setting names, supported dotted identifiers, `@id:` 
 
 | VS Code setting | Span legacy name | Behavior and limits |
 | --- | --- | --- |
-| `files.autoSave` | `autoSave` | `off`, `afterDelay`, `onFocusChange`, `onWindowChange`. The default is `off`. |
+| `files.autoSave` | `autoSave` | `off`, `afterDelay`, `onFocusChange`, `onWindowChange`. The default is `afterDelay`. |
 | `files.autoSaveDelay` | `autoSaveDelay` | Integer milliseconds, 0 to 3,600,000. Default 1,000. Applies to `afterDelay`. |
 | `editor.wordWrap` | `wordWrap` | Dotted form accepts `on` or `off`. Legacy form accepts a boolean. `bounded` and `wordWrapColumn` are rejected as unimplemented. |
 | `editor.fontSize` | `fontSize` | Integer pixels, 8 to 40. |

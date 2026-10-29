@@ -1,0 +1,49 @@
+{
+  "quirk": "A Gemini CLI configured to start in yolo returns legacy modes with currentModeId yolo. Under the default approval start mode Span sends session/set_mode default at session start, so the synthesised mode option shows Default and no bypass notice is raised.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "g-1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "g-1",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "default"
+        }
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/set_mode",
+      "params": {
+        "sessionId": "g-1",
+        "modeId": "default"
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/set_config_option"
+    }
+  ]
+}

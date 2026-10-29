@@ -2,7 +2,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCle
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
 import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
-import { isNearBottom, relativeTime } from "../lib/agent-feed";
+import { isNearBottom, relativeTime, pillVisible } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
 import type { AgentHint } from "../bindings";
 import { buildAgentCatalog, curatedAgent } from "../lib/acp-catalog";
@@ -18,6 +18,10 @@ import { AgentCatalog, catalogPreset } from "./agent/AgentCatalog";
 import { AgentComposer } from "./agent/AgentComposer";
 import { AgentFeed } from "./agent/AgentFeed";
 import { ErrorCard, OfflineBar } from "./agent/Banners";
+import { LimitCard } from "./agent/LimitCard";
+import { isLimitKind } from "../lib/agent-errors";
+import { otherFreeModels, rankAlternatives } from "../lib/agent-alternatives";
+import { modelCost } from "../lib/model-cost";
 import { ConnectingSteps, ReadyCard } from "./agent/ConnectFlow";
 import { ConnectScreen } from "./agent/ConnectScreen";
 import { EditorToast, OpenRefusal } from "./agent/EditorToast";
@@ -43,6 +47,9 @@ export function AgentPanel(props: AgentPanelProps) {
   /** A curated agent's local command, placed in the custom ACP row for the user to confirm. */
   const [customDraft, setCustomDraft] = createSignal<{ command: string }>();
   const [feedElement, setFeedElement] = createSignal<HTMLDivElement>();
+  /** Scrolled well away from the bottom (with hysteresis), so streaming growth never flickers the Latest pill. */
+  const [away, setAway] = createSignal(false);
+  const jumpShown = () => away() && !a.pinned() && (a.feed().length > 0 || a.view() === "logs");
   const agent = () => a.state().agent;
   const label = () => agent()?.title || agent()?.name || a.agentName();
   const brand = () => ({ id: a.agentId() ?? agent()?.name, name: label() });
@@ -119,7 +126,24 @@ export function AgentPanel(props: AgentPanelProps) {
   });
   const failure = createMemo(() => {
     const current = a.state().failure;
-    return current ? { ...classifyFailure(current), log: current.log } : undefined;
+    return current ? { ...classifyFailure(current, label()), log: current.log } : undefined;
+  });
+  /** A usage limit, rate limit or overload: the limit card replaces the raw error card. */
+  const limitInfo = createMemo(() => {
+    const current = failure();
+    return current && isLimitKind(current.error.kind) ? current.error : undefined;
+  });
+  const limitModelOption = () => a.state().config.find((option) => option.category === "model");
+  /** Up to two other agents that can take the turn now, connected or warm first (agent-alternatives.ts). */
+  const limitAlternatives = createMemo(() =>
+    limitInfo() ? rankAlternatives(a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id })), a.health(), { id: a.agentId(), name: label() }).slice(0, 2) : [],
+  );
+  /** Other free models in the list, for a free-tier limit. */
+  const limitFreeModels = createMemo(() => {
+    const option = limitModelOption();
+    if (!limitInfo()?.freeTier || !option) return [];
+    const choices = option.groups.flatMap((group) => group.choices).map((choice) => ({ value: choice.value, name: choice.name }));
+    return otherFreeModels(choices, option.currentValue, (choice) => modelCost(choice) === "free", a.limitedModelValues());
   });
   const chooseAgent = () => {
     a.dismissFailure();
@@ -236,6 +260,9 @@ export function AgentPanel(props: AgentPanelProps) {
     };
     window.addEventListener("keydown", keyboard);
     onCleanup(() => window.removeEventListener("keydown", keyboard));
+  });
+  createEffect(() => {
+    if (a.pinned()) setAway(false);
   });
   createEffect(() => {
     a.feed();
@@ -360,7 +387,16 @@ export function AgentPanel(props: AgentPanelProps) {
       <Show when={isDesktop && !a.online() && (a.connected() || a.queue().length > 0)}>
         <OfflineBar text={a.queue().length ? "Queued messages wait until the network is back." : "Agents that need the network will fail until you reconnect."} onRetry={() => a.setOnline(navigator.onLine !== false)} />
       </Show>
-      <div class="agent-content" ref={(element) => (a.scrollers.content = element)} onScroll={(event) => a.view() !== "history" && a.setPinned(isNearBottom(event.currentTarget))}>
+      <div class="agent-feed-region">
+      <div
+        class="agent-content"
+        ref={(element) => (a.scrollers.content = element)}
+        onScroll={(event) => {
+          if (a.view() === "history") return;
+          a.setPinned(isNearBottom(event.currentTarget));
+          setAway(pillVisible(away(), event.currentTarget));
+        }}
+      >
         <Switch>
           <Match when={body() === "logs"}>
             <div class="agent-log-note">
@@ -562,16 +598,45 @@ export function AgentPanel(props: AgentPanelProps) {
         </Switch>
         <Show when={failure() && body() !== "logs"}>
           <div class="agent-pad">
-            <ErrorCard level={failure()!.level} title={failure()!.title} text={failure()!.text} log={failure()!.log?.length ? failure()!.log : undefined} actions={failureActions()} />
+            <Show
+              when={limitInfo()}
+              fallback={<ErrorCard level={failure()!.level} title={failure()!.title} text={failure()!.text} log={failure()!.log?.length ? failure()!.log : undefined} actions={failureActions()} />}
+            >
+              {(info) => (
+                <LimitCard
+                  info={info()}
+                  raw={a.state().failure?.message ?? ""}
+                  canResend={Boolean(a.limitTurn())}
+                  alternatives={limitAlternatives()}
+                  freeModels={limitFreeModels()}
+                  hasModels={a.connected() && Boolean(limitModelOption())}
+                  onTryModel={() => a.openResendPicker("model")}
+                  onUseModel={(value) => void a.retryWithModel(value)}
+                  onSwitchAgent={(id) => void a.switchAgentAndResend(id)}
+                  onMoreAgents={() => a.openResendPicker("agents")}
+                  onRetry={a.retryLimited}
+                  onOpenLink={(url) => (props.onOpenExternal ? props.onOpenExternal(url) : void api.openExternal(url).catch(() => undefined))}
+                  onShowLog={isDesktop ? () => a.setView("logs") : undefined}
+                  onDismiss={a.dismissFailure}
+                />
+              )}
+            </Show>
           </div>
         </Show>
       </div>
-      <Show when={!a.pinned() && (a.feed().length > 0 || a.view() === "logs")}>
-        <button class="agent-jump" aria-label="Jump to latest message" onClick={a.followLatest}>
-          <Icon name="arrow-down4" size={11} />
-          {a.running() ? "New activity" : "Latest"}
-        </button>
-      </Show>
+      <button
+        type="button"
+        class="agent-jump"
+        classList={{ shown: jumpShown() }}
+        aria-label="Jump to latest message"
+        aria-hidden={jumpShown() ? undefined : "true"}
+        tabIndex={jumpShown() ? 0 : -1}
+        onClick={a.followLatest}
+      >
+        <Icon name="arrow-down4" size={11} />
+        {a.running() ? "New activity" : "Latest"}
+      </button>
+      </div>
       <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
       <Show when={a.viewingItem()}>
         {(item) => {

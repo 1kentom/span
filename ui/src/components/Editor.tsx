@@ -12,6 +12,7 @@ import { createEditorSearchPanel, openEditorReplacePanel } from "../editor/searc
 import { formatWithLanguageServer, lspExtension, type LspBinding } from "../lib/lsp-codemirror";
 import { navigationExtension } from "../lib/lsp-peek";
 import { syntaxHighlightStyle } from "../editor/syntax-highlight";
+import { javaRunGutter } from "../editor/java-run-gutter";
 import "../styles/editor.css";
 import "../styles/syntax.css";
 
@@ -56,6 +57,8 @@ export interface EditorProps {
   change?: EditorDocumentChange;
   onEdit: (edit: EditorEdit) => void;
   onSave: () => void;
+  onJavaRun?: () => void;
+  javaRunAvailable?: boolean;
   onUndo?: () => void;
   onRedo?: () => void;
   onCursor?: (cursor: EditorCursor) => void;
@@ -321,6 +324,12 @@ export default function Editor(props: EditorProps) {
   const appearance = new Compartment();
   const preferences = new Compartment();
   const editability = new Compartment();
+  const javaRun = new Compartment();
+  let javaRunEnabled = false;
+  function javaRunExtensions(): Extension {
+    javaRunEnabled = Boolean(props.javaRunAvailable && props.onJavaRun && resolveLanguageId(props.buffer.language, props.buffer.path) === "java");
+    return javaRunEnabled ? javaRunGutter(() => props.onJavaRun?.()) : [];
+  }
   function configureLanguage(hint: string, path: string) {
     if (props.active === false) return;
     const key = `${hint}:${path}`;
@@ -394,6 +403,7 @@ export default function Editor(props: EditorProps) {
   function extensions(): Extension[] {
     return [
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(),
+      javaRun.of(javaRunExtensions()),
       props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),
       closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
         const marker = document.createElement("span");
@@ -465,6 +475,7 @@ export default function Editor(props: EditorProps) {
     const wordWrap = props.wordWrap ?? false;
     const active = props.active !== false;
     const readOnly = Boolean(props.readOnly);
+    const canRunJava = Boolean(props.javaRunAvailable && props.onJavaRun && resolveLanguageId(snapshot.language, snapshot.path) === "java");
     const font = `${props.fontFamily}:${props.fontSize}`;
     const generation = ++syncGeneration;
     // Store acknowledgments can arrive inside the update listener. Defer their
@@ -486,6 +497,7 @@ export default function Editor(props: EditorProps) {
         : transition && transition.before === sharedDocument ? transition.changes
         : persistentDocumentChange(view.state.doc, wanted);
       const effects: StateEffect<unknown>[] = [];
+      if (canRunJava !== javaRunEnabled) { javaRunEnabled = canRunJava; effects.push(javaRun.reconfigure(canRunJava ? javaRunGutter(() => props.onJavaRun?.()) : [])); }
       if (snapshot.language !== currentLanguage) {
         currentLanguage = snapshot.language;
         configureLanguage(snapshot.language, snapshot.path);

@@ -6,6 +6,7 @@ import type { RunCatalog_Serialize as RunCatalog, RunConfiguration_Serialize as 
 import { RunConfigurationManager } from "./RunConfigurationManager";
 import { RunConfigurationSelect } from "./RunConfigurationSelect";
 import { RunApprovalModal } from "./RunApprovalModal";
+import { CURRENT_FILE_OPTION, runOptions } from "../lib/run-options";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { cleanups.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); });
@@ -25,13 +26,45 @@ describe("run configuration controls", () => {
   it("selects by keyboard without launching, then runs only on explicit Shift Enter", async () => {
     const root = document.createElement("div"); document.body.append(root); const run = vi.fn(); const stop = vi.fn(); const manage = vi.fn();
     const [selected, setSelected] = createSignal("saved");
-    cleanups.push(render(() => <RunConfigurationSelect options={[{ id: "saved", label: "Application", detected: false }, { id: "detected", label: "npm test", detected: true }]} value={selected()} onSelect={setSelected} onManage={manage} onRun={run} onStop={stop} />, root));
+    cleanups.push(render(() => <RunConfigurationSelect options={[{ id: "saved", label: "Application", kind: "saved" }, { id: "detected", label: "npm test", kind: "detected", source: "package.json" }]} value={selected()} onSelect={setSelected} onManage={manage} onRun={run} onStop={stop} />, root));
     root.querySelector<HTMLButtonElement>('[aria-label="Run configuration"]')!.click(); await settle();
     const detected = root.querySelector<HTMLButtonElement>('[data-configuration="detected"]')!; detected.click();
     expect(selected()).toBe("detected"); expect(run).not.toHaveBeenCalled();
     root.querySelector<HTMLButtonElement>('[aria-label="Run configuration"]')!.click(); await settle();
     root.querySelector('[data-configuration="saved"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
     expect(selected()).toBe("saved"); expect(run).toHaveBeenCalledOnce(); expect(stop).not.toHaveBeenCalled();
+  });
+  it("groups rows by origin on one grid, marks detected groups Auto, and keeps the current file entry disabled with its reason", async () => {
+    const root = document.createElement("div"); document.body.append(root); const run = vi.fn(); const select = vi.fn(); const manage = vi.fn();
+    const options = runOptions({ workspaceRoot: "/workspace", configurations: [configuration], detected: [{ configuration: { ...configuration, id: "detected:maven:maven-package", name: "Maven package", executable: "mvn", args: ["package"] }, source: "pom.xml" }, { configuration: { ...configuration, id: "detected:npm:test", name: "npm test", executable: "npm", args: ["test"] }, source: "package.json" }] }, { path: "README.md", configuration: null, reason: "No runner for .md files." }, true);
+    cleanups.push(render(() => <RunConfigurationSelect options={options} value="detected:maven:maven-package" onSelect={select} onManage={manage} onRun={run} onStop={vi.fn()} />, root));
+    root.querySelector<HTMLButtonElement>('[aria-label="Run configuration"]')!.click(); await settle();
+    const headings = [...root.querySelectorAll(".run-select-heading")].map(node => node.textContent);
+    expect(headings).toEqual(["Saved configurations", "Detected from pom.xmlAuto", "Detected from package.json scriptsAuto"]);
+    const rows = [...root.querySelectorAll<HTMLElement>(".run-select-row")];
+    expect(rows.every(row => row.querySelector(".run-select-lead") && row.querySelector(".run-select-text") && row.querySelector(".run-select-check"))).toBe(true);
+    expect(root.querySelector('[data-configuration="detected:maven:maven-package"] .run-select-command')!.textContent).toBe("mvn package");
+    expect(root.querySelector('[data-configuration="detected:maven:maven-package"] .run-select-check .icon')).not.toBeNull();
+    expect((document.activeElement as HTMLElement).dataset.configuration).toBe("detected:maven:maven-package");
+    const current = root.querySelector<HTMLButtonElement>('[data-kind="current-file"]')!;
+    expect(current.getAttribute("aria-disabled")).toBe("true"); expect(current.textContent).toContain("No runner for .md files.");
+    current.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true })); current.click();
+    expect(select).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+    root.querySelector(".run-selector")!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }));
+    expect((document.activeElement as HTMLElement).textContent).toContain("Edit configurations");
+    root.querySelector(".run-selector")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(root.querySelector(".run-select-popup")).toBeNull();
+  });
+  it("selects and runs the current file through the same Shift Enter path when a runner exists", async () => {
+    const root = document.createElement("div"); document.body.append(root); const run = vi.fn(); const [selected, setSelected] = createSignal<string>();
+    const options = runOptions({ workspaceRoot: "/workspace", configurations: [], detected: [] }, { path: "tool.py", configuration: { id: "current-file", name: "Run tool.py", executable: "python3", args: ["tool.py"], cwd: ".", env: {} }, reason: null }, true);
+    cleanups.push(render(() => <RunConfigurationSelect options={options} value={selected()} onSelect={setSelected} onManage={vi.fn()} onRun={run} onStop={vi.fn()} />, root));
+    root.querySelector<HTMLButtonElement>('[aria-label="Run configuration"]')!.click(); await settle();
+    const current = root.querySelector<HTMLButtonElement>(`[data-configuration="${CURRENT_FILE_OPTION}"]`)!;
+    expect(current.textContent).toContain("python3 tool.py");
+    current.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+    expect(selected()).toBe(CURRENT_FILE_OPTION); expect(run).toHaveBeenCalledOnce();
+    expect(root.querySelector('[aria-label="Run configuration"]')!.textContent).toContain("Run tool.py");
   });
   it("retains invalid and rejected edits, then applies the exact executable arguments and environment", async () => {
     const view = manager(); await settle();

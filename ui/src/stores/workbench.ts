@@ -45,7 +45,7 @@ export function createWorkbench() {
     for (const path of recentPaths()) known.set(path, { path, name: fileName(path), isDir: false });
     return [...known.values()];
   });
-  const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] } });
+  const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "afterDelay", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] } });
   const [settingsScope, setSettingsScope] = createSignal<SettingsScope>("workspace");
   const [scopeSettings, setScopeSettings] = createSignal<Settings>(settings());
   const [configuredSettingsKeys, setConfiguredSettingsKeys] = createSignal<string[]>([]);
@@ -439,7 +439,8 @@ export function createWorkbench() {
     try {
       await flush(path);
       const base = accepted.get(path);
-      if (!base || failed().has(path)) return false;
+      if (!base) return false;
+      if (failed().has(path)) { report(new Error(`${path} could not be saved because an earlier edit failed to sync. Close the file and discard changes to reload it from disk.`)); return false; }
       const documentAtSave = documents()[path]?.document;
       const editCounterAtSave = editCounters()[path] || 0;
       const scope = settingsBufferScope(path);
@@ -680,6 +681,8 @@ export function createWorkbench() {
   async function newFile(path: string) { return fileOperation(async assertCurrent => { const snapshot = await api.newFile(path); assertCurrent(); accepted.set(snapshot.path, snapshot); setBuffers(snapshot.path, snapshot); setDocuments(current => ({ ...current, [snapshot.path]: { document: Text.of(snapshot.text.split("\n")) } })); await refreshFiles(); await openFile(snapshot.path); return snapshot; }); }
   async function newDirectory(path: string) { return fileOperation(async assertCurrent => { const entry = await api.newDirectory(path); assertCurrent(); await refreshFiles(); await loadDirectory(entry.path); setExpanded(current => new Set([...current, entry.path])); return entry; }); }
   async function renamePath(from: string, to: string) {
+    // The backend refuses to move a path with unsaved edits, so save them first and stop if one cannot be saved.
+    for (const path of Object.keys(buffers)) if (buffers[path] && inSubtree(path, from) && dirty(path) && !await save(path)) throw new Error(`Could not save ${path}, so it was not moved.`);
     return fileOperation(async assertCurrent => {
       const entry = await api.renamePath(from, to); assertCurrent();
       const mapped = (path: string) => inSubtree(path, from) ? `${entry.path}${path.slice(from.length)}` : path;

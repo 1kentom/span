@@ -33,6 +33,7 @@ async function fixture(page: Page) {
         if (command === "stop_run") { trace.stops.push(args.id); const run = runs.find(run => run.id === args.id)!; run.status = "stopped"; state(run); return { ...run }; }
         if (command === "run_output") return { id: args.id, text: output.get(args.id) || "", truncated: false };
         if (command === "acknowledge_run") return null;
+        if (command === "current_file_run") return { path: "README.md", configuration: null, reason: "No runner for .md files." };
         if (command === "resolve_run_approval") { trace.approvals.push(args); emit("run-approvals-changed", { pending: [] }); return null; }
         if (command === "open_workspace") return { root, name: "Run IPC fixture" };
         if (command === "list_directory" || command === "list_files") return [{ path: "README.md", name: "README.md", isDir: false }];
@@ -65,9 +66,9 @@ test("manager validates, saves, duplicates detected tasks and deletes configurat
   expect(await page.evaluate(() => (window as any).__runFixture.trace.starts)).toEqual([]);
 });
 test("Run, Stop and Restart use live state and preserve workspace selection on reload", async ({ page }, testInfo) => {
-  await fixture(page); await page.getByRole("button", { name: "Run selected configuration", exact: true }).click(); const panel = page.getByRole("region", { name: "Run output", exact: true });
+  await fixture(page); await expect(page.getByRole("tab", { name: "Run", exact: true })).toHaveCount(0); await page.getByRole("button", { name: "Run selected configuration", exact: true }).click(); const panel = page.getByRole("region", { name: "Run output", exact: true });
   await expect(panel.getByRole("log")).toContainText("No command executed"); await expect(panel.getByRole("status")).toContainText("Running");
-  await panel.getByRole("button", { name: "Stop selected run", exact: true }).click(); await expect(panel.getByRole("status")).toContainText("Stopped"); await panel.getByRole("button", { name: "Restart selected run", exact: true }).click(); await expect(panel.getByRole("status")).toContainText("Running");
+  await panel.getByRole("button", { name: "Stop selected run", exact: true }).click(); await expect(panel.getByRole("status")).toContainText("Stopped"); await expect(panel.getByRole("tab", { name: "Run", exact: true })).toBeVisible(); await panel.getByRole("button", { name: "Restart selected run", exact: true }).click(); await expect(panel.getByRole("status")).toContainText("Running");
   await panel.screenshot({ path: testInfo.outputPath("run-output.png") });
   await panel.getByRole("button", { name: "Stop selected run", exact: true }).click(); await page.getByRole("button", { name: "Run configuration", exact: true }).click(); await page.getByRole("option").filter({ hasText: "npm test" }).click();
   await page.reload(); await expect(page.getByRole("button", { name: "Run configuration", exact: true })).toContainText("npm test");
