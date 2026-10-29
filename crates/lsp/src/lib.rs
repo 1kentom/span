@@ -17,6 +17,7 @@ mod protocol;
 pub mod servers;
 mod trace;
 mod transport;
+mod watched_files;
 
 pub use bytes::Bytes;
 pub use client::{

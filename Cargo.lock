@@ -4620,6 +4620,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "embed-resource",
+ "ignore",
  "libc",
  "notify",
  "serde",
@@ -4663,6 +4664,7 @@ dependencies = [
  "bytes",
  "flate2",
  "fluent-uri",
+ "globset",
  "lsp-types",
  "reqwest 0.12.28",
  "serde",
