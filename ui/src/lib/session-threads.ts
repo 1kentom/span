@@ -119,6 +119,18 @@ export function visibleThreadRows(listed: readonly string[], metas: readonly Ses
   });
 }
 
+/**
+ * What an agent titles a Span health check session (ADR 0010; the prompt is "Health check. Reply with exactly one
+ * word: OK", and agents may cut it short). Matches HEALTH_TITLE_PREFIX in crates/acp. A chat that merely starts with
+ * "Health check" is the user's and is never matched.
+ */
+const HEALTH_TITLE_PREFIX = "Health check. Reply with exactly one word";
+
+/** True for a session Span opened for its health check: never shown in History, never resumed, never counted. */
+export function isHealthCheckSession(session: { title?: string | null }): boolean {
+  return Boolean(session.title?.trimStart().startsWith(HEALTH_TITLE_PREFIX));
+}
+
 /** The header Span puts ahead of carried context (agent-handoff.ts). An agent that titles a session by its first prompt shows it. */
 const CARRIED_PREFIX = "[Context from an earlier session";
 

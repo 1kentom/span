@@ -24,6 +24,10 @@ seen) or not checked.
   a file).
 - Settings > Agents shows its switches and they persist after a restart.
 - No error card or blank panel at startup.
+- Agent health check (ADR 0010): with the app open and an agent connected
+  for 10 minutes or more, History shows no "Health check. Reply with exactly
+  one word" rows, in this workspace and in All folders. Earlier leftovers
+  are gone after a restart where the agent supports `session/delete`.
 
 ## Phase 1: backend multi-session
 

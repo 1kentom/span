@@ -70,7 +70,20 @@ fn scaled() -> HealthPolicy {
         retry_after: Duration::from_millis(50),
         tick: Duration::from_millis(20),
         settle: Duration::from_millis(500),
+        cleanup_max: 3,
+        cleanup_gap: Duration::from_millis(10),
     }
+}
+
+/// A JSON list of strings answered by the fixture.
+fn strings(answer: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(answer)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect()
 }
 
 impl Harness {
@@ -336,25 +349,232 @@ async fn the_hidden_session_never_shows_in_list_sessions_and_is_reused() {
     assert!(!span_acp::is_hidden_session("other", Some("Fix the build")));
 }
 
-async fn ended_after_check(flags: &[&str], agent: &str) {
+/// N consecutive checks on one connection create exactly one session and
+/// prompt it N times, whatever the agent advertises: closing or deleting
+/// it after each check would make the next check open another one, and
+/// real agents keep every session in their history.
+async fn one_session_for_every_check(name: &str, flags: &[&str]) {
     let mut h = harness();
-    let connection = h.connect(flags).await;
-    let monitor = h.monitor(scaled(), vec![target(agent, &connection)], on());
+    let mut all = vec![format!("--name={name}")];
+    all.extend(flags.iter().map(|f| f.to_string()));
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    let connection = h.connect(&all).await;
+    let monitor = h.monitor(scaled(), vec![target(name, &connection)], on());
+    const N: usize = 4;
+    for _ in 0..N {
+        assert_eq!(
+            only(&monitor.check_now().await, name).state,
+            HealthState::Live
+        );
+    }
+    let hidden = monitor
+        .hidden_session(&connection)
+        .expect("one session kept");
+    let (user, created) = h.ask(&connection, "created").await;
+    // The hidden session and the user session asking.
+    assert_eq!(created, "2", "exactly one health session was created");
+    let prompted = h.answer(&user, "health-prompts").await;
+    assert_eq!(strings(&prompted), vec![hidden.clone(); N]);
+    let ended = h.answer(&user, "ended").await;
+    assert!(
+        strings(&ended).is_empty(),
+        "nothing closed or deleted: {ended}"
+    );
+    assert_quiet(&h.drain());
+}
+
+#[tokio::test]
+async fn consecutive_checks_reuse_one_session() {
+    one_session_for_every_check("reuser", &[]).await;
+}
+
+#[tokio::test]
+async fn consecutive_checks_reuse_one_session_when_close_is_advertised() {
+    one_session_for_every_check("reuse-closer", &["--close", "--list", "--keep-closed"]).await;
+}
+
+#[tokio::test]
+async fn consecutive_checks_reuse_one_session_when_delete_is_advertised() {
+    one_session_for_every_check(
+        "reuse-deleter",
+        &["--close", "--delete", "--list", "--keep-closed"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_rejected_session_is_replaced_once_and_the_replacement_reused() {
+    let mut h = harness();
+    let connection = h.connect(&["--name=forgetful"]).await;
+    let monitor = h.monitor(scaled(), vec![target("forgetful", &connection)], on());
     assert_eq!(
-        only(&monitor.check_now().await, agent).state,
+        only(&monitor.check_now().await, "forgetful").state,
         HealthState::Live
     );
-    assert_eq!(monitor.hidden_session(&connection), None);
-    let (user, ended) = h.ask(&connection, "ended").await;
-    let ended: Vec<String> = serde_json::from_str::<Value>(&ended)
+    let first = monitor.hidden_session(&connection).unwrap();
+    // The agent loses every other session (as after a restart of its state).
+    let (user, _) = h.ask(&connection, "forget").await;
+    tokio::time::sleep(scaled().interval + Duration::from_millis(100)).await;
+    assert_eq!(
+        only(&monitor.check_now().await, "forgetful").state,
+        HealthState::Live
+    );
+    let second = monitor.hidden_session(&connection).unwrap();
+    assert_ne!(first, second, "the rejected id was replaced");
+    tokio::time::sleep(scaled().interval + Duration::from_millis(100)).await;
+    assert_eq!(
+        only(&monitor.check_now().await, "forgetful").state,
+        HealthState::Live
+    );
+    assert_eq!(monitor.hidden_session(&connection), Some(second.clone()));
+    let created = h.answer(&user, "created").await;
+    // First hidden, the user's, one replacement.
+    assert_eq!(created, "3");
+    let prompted = strings(&h.answer(&user, "health-prompts").await);
+    assert_eq!(prompted, vec![first, second.clone(), second]);
+}
+
+#[tokio::test]
+async fn health_sessions_are_filtered_from_listings_including_old_titles() {
+    let mut h = harness();
+    let connection = h
+        .connect(&[
+            "--name=filterer",
+            "--list",
+            "--keep-closed",
+            "--seed-health=3",
+            "--seed-chats",
+        ])
+        .await;
+    let monitor = h.monitor(scaled(), vec![target("filterer", &connection)], on());
+    monitor.check_now().await;
+    let hidden = monitor.hidden_session(&connection).unwrap();
+    let (user, _) = h.ask(&connection, "reply:mine").await;
+    let service = h.manager.service(&connection).unwrap();
+    for all_folders in [false, true] {
+        let mut listed: Vec<String> = service
+            .list_sessions_in(all_folders)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        listed.sort();
+        let mut expected = vec![
+            "chat-build".to_owned(),
+            "chat-ci".to_owned(),
+            "chat-two".to_owned(),
+            user.session_id.clone(),
+        ];
+        expected.sort();
+        assert_eq!(listed, expected, "all folders: {all_folders}");
+    }
+    let mut health: Vec<String> = service
+        .list_health_sessions()
+        .await
         .unwrap()
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_owned())
+        .into_iter()
+        .map(|s| s.session_id)
         .collect();
-    assert_eq!(ended.len(), 1, "one hidden session ended: {ended:?}");
-    assert_ne!(ended[0], user.session_id);
+    health.sort();
+    assert_eq!(
+        health,
+        vec![
+            hidden,
+            "old-health-1".into(),
+            "old-health-2".into(),
+            "old-health-3".into()
+        ]
+    );
+    // A health session is never resumed as a chat.
+    assert!(service.load_session("old-health-1".into()).await.is_err());
+}
+
+#[test]
+fn only_the_health_check_title_matches() {
+    use span_acp::is_health_title;
+    for title in [
+        HEALTH_PROMPT,
+        "Health check. Reply with exactly one word...",
+        "Health check. Reply with exactly one word\u{2026}",
+        "  Health check. Reply with exactly one word: OK",
+    ] {
+        assert!(is_health_title(Some(title)), "{title}");
+        assert!(span_acp::is_hidden_session("not-recorded", Some(title)));
+    }
+    for title in [
+        "Health check",
+        "Health check of the CI pipeline",
+        "Health check. Reply with exactly two words: ALL GOOD",
+        "health check. reply with exactly one word: ok",
+        "Re: Health check. Reply with exactly one word: OK",
+        "Fix the build",
+        "",
+    ] {
+        assert!(!is_health_title(Some(title)), "{title}");
+        assert!(!span_acp::is_hidden_session("not-recorded", Some(title)));
+    }
+    assert!(!is_health_title(None));
+}
+
+#[tokio::test]
+async fn cleanup_deletes_leftover_health_sessions_only_capped_and_once() {
+    let mut h = harness();
+    let connection = h
+        .connect(&[
+            "--name=cleaner",
+            "--list",
+            "--delete",
+            "--keep-closed",
+            "--seed-health=5",
+            "--seed-chats",
+        ])
+        .await;
+    let monitor = h.monitor(scaled(), vec![target("cleaner", &connection)], on());
+    monitor.check_now().await;
+    let in_use = monitor.hidden_session(&connection).unwrap();
+    let cleaner = target("cleaner", &connection);
+    // At most three per run (the scaled cap), then the rest, then nothing.
+    assert_eq!(monitor.cleanup(&cleaner).await, 3);
+    assert_eq!(monitor.cleanup(&cleaner).await, 2);
+    assert_eq!(monitor.cleanup(&cleaner).await, 0);
+    let (_, ended) = h.ask(&connection, "ended").await;
+    let mut ended = strings(&ended);
+    ended.sort();
+    assert_eq!(
+        ended,
+        (1..=5)
+            .map(|i| format!("old-health-{i}"))
+            .collect::<Vec<_>>(),
+        "only leftover health sessions were deleted"
+    );
+    assert!(!ended.contains(&in_use));
+    // The session in use still answers the next check.
+    tokio::time::sleep(scaled().interval + Duration::from_millis(100)).await;
+    assert_eq!(
+        only(&monitor.check_now().await, "cleaner").state,
+        HealthState::Live
+    );
+    assert_eq!(monitor.hidden_session(&connection), Some(in_use));
+}
+
+#[tokio::test]
+async fn cleanup_without_delete_relies_on_the_filter() {
+    let mut h = harness();
+    let connection = h
+        .connect(&[
+            "--name=keeper",
+            "--list",
+            "--close",
+            "--keep-closed",
+            "--seed-health=2",
+        ])
+        .await;
+    let monitor = h.monitor(scaled(), vec![target("keeper", &connection)], on());
+    monitor.check_now().await;
+    assert_eq!(monitor.cleanup(&target("keeper", &connection)).await, 0);
+    let (_, ended) = h.ask(&connection, "ended").await;
+    assert!(strings(&ended).is_empty());
     let listed = h
         .manager
         .service(&connection)
@@ -362,18 +582,29 @@ async fn ended_after_check(flags: &[&str], agent: &str) {
         .list_sessions()
         .await
         .unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].session_id, user.session_id);
+    assert_eq!(listed.len(), 1, "only the user's chat: {listed:?}");
 }
 
 #[tokio::test]
-async fn the_hidden_session_is_closed_after_the_check_when_supported() {
-    ended_after_check(&["--name=closer", "--close", "--list"], "closer").await;
-}
-
-#[tokio::test]
-async fn the_hidden_session_is_deleted_when_only_delete_is_supported() {
-    ended_after_check(&["--name=deleter", "--delete", "--list"], "deleter").await;
+async fn health_session_ids_are_remembered_across_runs() {
+    let h = harness();
+    let ledger = h.directory.path().join("state/agent-health-sessions.json");
+    let connection = h.connect(&["--name=ledgered"]).await;
+    let monitor = h.monitor(scaled(), vec![target("ledgered", &connection)], on());
+    monitor.set_ledger(ledger.clone());
+    monitor.check_now().await;
+    let hidden = monitor.hidden_session(&connection).unwrap();
+    assert_eq!(
+        monitor.remembered_sessions("ledgered"),
+        vec![hidden.clone()]
+    );
+    let saved = std::fs::read_to_string(&ledger).unwrap();
+    assert!(saved.contains(&hidden), "{saved}");
+    // A later run reads it back.
+    let later = h.monitor(scaled(), vec![], on());
+    later.set_ledger(ledger);
+    assert_eq!(later.remembered_sessions("ledgered"), vec![hidden.clone()]);
+    assert!(span_acp::is_hidden_session(&hidden, None));
 }
 
 #[tokio::test]

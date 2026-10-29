@@ -119,3 +119,70 @@ stop it.
   background map and are not checked.
 - The protocol debug log (`AgentEvent::Log`) still shows the check's
   JSON-RPC lines.
+
+## Amendment 2026-10-29: one reused session per connection
+
+The first version flooded History: when an agent advertised
+`session/close` (or `session/delete`) the check closed its hidden session
+after every check, so the next check opened a new one with `session/new`.
+Real agents keep closed sessions in their own history, and the title filter
+required the whole prompt while agents cut long titles (for example
+"Health check. Reply with exactly one word..."), so dozens of check rows
+reached History. Changed:
+
+- One hidden session per agent connection, created on the first check and
+  prompted again (same one word prompt) by every later check. A check never
+  calls `session/new` otherwise. Nothing is closed or deleted after a
+  check. When the agent rejects the kept session (an error answer to the
+  prompt, for example after its state was reset) one replacement is created
+  in the same attempt and stored instead. A new connection (agent restart)
+  gets its own session on its first check. Idle only, the schedule, the
+  states and timeouts are unchanged; a chat turn in the last interval still
+  skips the check, since a successful turn already proves liveness.
+- Filtered everywhere: listings (`agent_list_sessions`,
+  `agent_list_all_sessions`) drop sessions recorded as hidden in this
+  process, ids remembered from earlier runs (the ledger,
+  `agent-health-sessions.json` in the app data folder, at most 500 ids per
+  list per agent), and every session whose title starts with
+  `Health check. Reply with exactly one word` (`HEALTH_TITLE_PREFIX`;
+  strict prefix after leading whitespace, case sensitive, so a chat such as
+  "Health check of the CI pipeline" stays). Filtering happens page by page,
+  so check sessions no longer use up the 100 session cap. The UI history
+  store applies the same title filter. `session/load` refuses a hidden id
+  (resume last chat cannot pick one), `session_meta_update` refuses one and
+  `session_meta_list` leaves out stored entries for one. They are never in
+  the session manager, so never in session state counters or the Live
+  agents strip.
+- Cleanup: once per agent per run, `first_check` after the agent is first
+  seen by a scheduled round, a background task deletes leftover health
+  sessions (listed by remembered id or by title in every folder, plus
+  remembered ids the agent no longer lists) with `session/delete`, only
+  when the agent advertises it (ADR 0001 gating). At most 20 per run, one
+  every 2 seconds, never the session in use, stopping while a user turn
+  runs. Every id the agent answered for is recorded in the ledger, so the
+  cleanup is idempotent and continues on the next run. `session/close` is
+  not used for cleanup: it cannot remove a session from the agent's
+  history and is only accepted for sessions held on the connection. Agents
+  without delete rely on the filter. App exit deletes the session in use
+  where delete is advertised, else closes it.
+- No cheaper liveness request exists in the protocol version Span speaks
+  (no ping method), so none is used.
+
+Tests: `crates/acp/tests/health.rs` adds N consecutive checks creating one
+session and prompting it N times (plain, with close, with close and
+delete), a rejected session replaced once and the replacement reused,
+listings without health sessions including old style truncated titles and
+near miss chats, strict title matching with near misses, cleanup capped,
+idempotent and limited to health sessions, cleanup without delete, ledger
+across runs. `apps/desktop/src/session_meta.rs` tests metadata refusal;
+`ui/src/lib/agent-stores/history.test.ts` tests History hiding health
+sessions while near miss titles stay.
+
+UNVERIFIED: not run in a native window or against a real agent: whether
+each real agent accepts repeated prompts on one session for hours, how
+long a reused session's context grows (each check adds one short exchange),
+whether real agents honour `session/delete` for sessions not loaded on the
+connection, and the cleanup against a real History with dozens of
+leftovers. The previous section's close and delete after each check no
+longer applies.
+
