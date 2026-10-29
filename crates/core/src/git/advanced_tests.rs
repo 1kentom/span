@@ -16,7 +16,8 @@ impl Repo {
         repo.git(&["config", "user.name", "Span Git Test"]);
         repo.git(&["config", "user.email", "span@example.invalid"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
-        repo.git(&["config", "core.autocrlf", "false"]);
+        repo.git(&["config", "--local", "core.autocrlf", "false"]);
+        repo.git(&["config", "--local", "core.eol", "lf"]);
         repo
     }
     fn git(&self, args: &[&str]) -> Output {
@@ -66,7 +67,10 @@ fn lines() -> String {
 #[tokio::test]
 async fn stages_and_unstages_only_selected_hunk_of_literal_hostile_path() {
     let repo = Repo::new();
+    #[cfg(unix)]
     let path = "-:(glob)*[x] hostile\tname.txt";
+    #[cfg(not(unix))]
+    let path = "-[x] hostile name.txt";
     let original = lines();
     repo.write(path, &original);
     repo.write("other", "original\n");

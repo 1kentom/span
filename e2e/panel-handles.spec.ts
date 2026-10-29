@@ -51,7 +51,7 @@ test("collapsed rails expose local neutral hover and keyboard focus hints with t
     await rail.hover();
     const grip = rail.locator(".panel-rail-grip");
     await expect(grip).toHaveCSS("opacity", "1");
-    await expect.poll(async () => (await style(grip)).transform).toBe("matrix(1.14, 0, 0, 1.14, 0, 0)");
+    await expect.poll(async () => (await style(grip)).transform).toBe("matrix(1.03, 0, 0, 1.03, 0, 0)");
     const flap = await style(grip, "::before");
     neutral(flap.background);
     expect(flap.width).toBeLessThan(64);

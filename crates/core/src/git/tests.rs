@@ -32,6 +32,8 @@ impl Fixture {
         );
         git(&root, &["config", "--local", "commit.gpgsign", "false"]);
         git(&root, &["config", "--local", "core.fsmonitor", "false"]);
+        git(&root, &["config", "--local", "core.autocrlf", "false"]);
+        git(&root, &["config", "--local", "core.eol", "lf"]);
         git(
             &root,
             &[

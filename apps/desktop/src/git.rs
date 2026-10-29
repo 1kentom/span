@@ -992,6 +992,8 @@ mod tests {
 
     fn initialize_repository(root: &Path) {
         git(root, &["init", "--quiet"]);
+        git(root, &["config", "--local", "core.autocrlf", "false"]);
+        git(root, &["config", "--local", "core.eol", "lf"]);
         git(root, &["config", "user.name", "Span Git Test"]);
         git(
             root,
