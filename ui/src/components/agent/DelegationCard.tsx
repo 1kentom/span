@@ -1,7 +1,8 @@
-import { For, Show, createSignal, onCleanup, createEffect } from "solid-js";
+import { For, Show, createSignal, onCleanup, createEffect, type JSX } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
-import type { Artifact } from "../../bindings";
+import type { Artifact, DelegationTranscript_Serialize as DelegationTranscript } from "../../bindings";
+import { ChildSession } from "./ChildSession";
 import { formatElapsed } from "../../lib/agent-feed";
 import { STATUS_TEXT, boundedSummary, isFinished, taskElapsedMs, type DelegationStatusKind } from "../../lib/agent-delegation";
 
@@ -24,6 +25,10 @@ type DelegationCardProps = {
   onCancel?: (taskId: string) => Promise<void>;
   /** Opens a workspace-relative path through the validated open path. False when nothing opened. */
   onOpenArtifact?: (path: string) => boolean;
+  /** Reads the child session for "Open session". The button is hidden without it. */
+  onOpenSession?: (taskId: string) => Promise<DelegationTranscript>;
+  /** Renders the child's text in the opened session. */
+  renderText?: (text: string) => JSX.Element;
 };
 
 const GLYPH: Partial<Record<DelegationStatusKind, { name: string; tone: string }>> = {
@@ -64,6 +69,8 @@ export function DelegationCard(props: DelegationCardProps) {
       setPending(false);
     }
   };
+  const [sessionOpen, setSessionOpen] = createSignal(false);
+  const canOpenSession = () => Boolean(props.onOpenSession && props.taskId && props.status !== "starting");
   const openArtifact = (path: string) => setOpenError(props.onOpenArtifact?.(path) ? undefined : `Could not open ${path}`);
   return (
     <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}: ${STATUS_TEXT[props.status]}`}>
@@ -106,6 +113,15 @@ export function DelegationCard(props: DelegationCardProps) {
         <div class="sb-delegation-actions">
           <button type="button" class="sb-btn danger" disabled={pending()} onClick={() => void cancel()}>{pending() ? "Cancelling" : "Cancel"}</button>
         </div>
+      </Show>
+      <Show when={canOpenSession()}>
+        <button type="button" class="sb-link sb-delegation-open" aria-expanded={sessionOpen()} onClick={() => setSessionOpen(!sessionOpen())}>
+          <Icon name={sessionOpen() ? "arrow-up3" : "arrow-down4"} size={10} />
+          {sessionOpen() ? "Close session" : "Open session"}
+        </button>
+      </Show>
+      <Show when={sessionOpen() && canOpenSession()}>
+        <ChildSession taskId={props.taskId!} agent={props.agent} status={props.status} load={props.onOpenSession!} renderText={props.renderText} />
       </Show>
       <Show when={cancelError()}><div class="sb-sub sb-bad sb-delegation-error" role="alert">Could not cancel: {cancelError()}</div></Show>
     </section>
