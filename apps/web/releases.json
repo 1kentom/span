@@ -1,61 +1,61 @@
 [
   {
-    "id": 427450771,
-    "name": "Span v0.1.0-nightly.20261029.37",
-    "tag_name": "v0.1.0-nightly.20261029.37",
-    "body": "# Span 0.1.0-nightly.20261029.37\n\nChannel: `nightly`. Source: `ffa63c011e310b79f0a58dcd81804bd26678dda8`.\n\nFoundation release. Review the known limitations below before installing.\n\n### Added\n\n- Rust workspace with separate editor core, tree-sitter syntax, ACP, and Tauri desktop crates.\n- SolidJS desktop interface with CodeMirror 6, project navigation, tabs, editor panes, and a contextual agent panel.\n- Rope-backed document operations, syntax parsing, generated Rust-to-TypeScript IPC contracts, and native file commands.\n- Agent Client Protocol transport foundation and provider configuration interfaces.\n- Branded application assets, macOS window integration, and browser interaction evidence.\n- CI and a release pipeline for nightly, preview, and gated stable installer builds.\n- Supported editor settings and custom shortcuts, Markdown and image previews, safe formatting paths, session history, and native CLI routing.\n- Material file and folder icons and SVG provider branding with vendored license and provenance records.\n- Public LSP client foundation, with native editor integration tracked separately.\n- A production website with verified manual installer links and a local release manifest for public API rate limits.\n- Agent Markdown rendering, follow-latest scrolling, queued follow-ups, resumable sessions, and subagent metadata, combined with the scoped installation and settings workflow.\n\n### Changed\n\n- Expand validated settings, keybinding controls, autosave choices, whole-workbench zoom, and the Alt+Z word-wrap action.\n- Add HTML/CSS Emmet expansion, broader Markdown fence highlighting, Copy controls, and a shared source/preview toggle.\n- Refine Go to completion and line jumps, context menus, modal focus, rounded overlay resize handles, and a Find-first search panel with Replace behind an explicit toggle.\n- Add guarded native file operations, a detached desktop launcher, and more specific ACP catalog, installation, removal, and compatibility feedback.\n\n### Fixed\n\n- Provide an explicit save fallback when formatting fails without discarding the user's edits.\n- Reconcile canceled discard requests and protect workspace transitions from stale or concurrent editor commands.\n- Derive dirty state from actual content changes, including edits reverted to their saved content.\n- Restrict numeric agent permission shortcuts to focused approval choices so normal editor typing cannot approve a request.\n- Guard late session responses from updating a newer connection and resolve the Windows user profile when HOME is unavailable.\n- Preserve Windows desktop test manifests and exact vendored SVG provenance across checkout platforms.\n\n### Known limitations\n\n- Phase 0.1 is an editor foundation. Full editor feature coverage and production readiness have not been established.\n- Native performance budgets and large-project behavior have not been verified across the release platform matrix.\n- One live provider prompt round trip has completed. Model authentication UI and a real provider edit proposal have not been verified. Broader provider integration remains incomplete.\n- The first nightly installer matrix and publication succeeded for macOS Apple Silicon, macOS Intel, Windows x64, and Linux x64. Installation checks and operating-system signing or notarization review across every target remain incomplete.\n- Preview configuration exists but has not been separately exercised. Stable publication remains gated.\n- Internal HTML5 dragging on Windows WebView2 conflicts with the enabled native external-drop handler and remains unverified or unsupported pending a platform-specific strategy.\n- New desktop work remains unreleased until its reviewed source, hosted checks, and installed behavior are recorded. In particular, automatic clean-tab LRU eviction and the application connection from Markdown Run to the real PTY backend are not complete. Folder opening still awaits a full scan, and saving still rescans.\n- The updater plugin, public-key trust configuration, signed updater manifests, and end-to-end channel switching are not implemented. Releases provide installers and checksums for manual installation.\n\n<!-- Move reviewed entries into a dated version section when preparing a stable release. -->\n\n## Changes since previous channel release\n\n### Maintenance\n\n- refresh nightly release downloads (a1bbd41d)\n\nInstallers and SHA-256 checksums are attached. Automatic updates are not available in Phase 0.1.\n",
-    "html_url": "https://github.com/1kentom/span/releases/tag/v0.1.0-nightly.20261029.37",
+    "id": 427464115,
+    "name": "Span v0.1.0-nightly.20261029.38",
+    "tag_name": "v0.1.0-nightly.20261029.38",
+    "body": "# Span 0.1.0-nightly.20261029.38\n\nChannel: `nightly`. Source: `da16d0ce4db576dfd2ea115a2cd5e127f2c0ca50`.\n\nFoundation release. Review the known limitations below before installing.\n\n### Added\n\n- Rust workspace with separate editor core, tree-sitter syntax, ACP, and Tauri desktop crates.\n- SolidJS desktop interface with CodeMirror 6, project navigation, tabs, editor panes, and a contextual agent panel.\n- Rope-backed document operations, syntax parsing, generated Rust-to-TypeScript IPC contracts, and native file commands.\n- Agent Client Protocol transport foundation and provider configuration interfaces.\n- Branded application assets, macOS window integration, and browser interaction evidence.\n- CI and a release pipeline for nightly, preview, and gated stable installer builds.\n- Supported editor settings and custom shortcuts, Markdown and image previews, safe formatting paths, session history, and native CLI routing.\n- Material file and folder icons and SVG provider branding with vendored license and provenance records.\n- Public LSP client foundation, with native editor integration tracked separately.\n- A production website with verified manual installer links and a local release manifest for public API rate limits.\n- Agent Markdown rendering, follow-latest scrolling, queued follow-ups, resumable sessions, and subagent metadata, combined with the scoped installation and settings workflow.\n\n### Changed\n\n- Expand validated settings, keybinding controls, autosave choices, whole-workbench zoom, and the Alt+Z word-wrap action.\n- Add HTML/CSS Emmet expansion, broader Markdown fence highlighting, Copy controls, and a shared source/preview toggle.\n- Refine Go to completion and line jumps, context menus, modal focus, rounded overlay resize handles, and a Find-first search panel with Replace behind an explicit toggle.\n- Add guarded native file operations, a detached desktop launcher, and more specific ACP catalog, installation, removal, and compatibility feedback.\n\n### Fixed\n\n- Provide an explicit save fallback when formatting fails without discarding the user's edits.\n- Reconcile canceled discard requests and protect workspace transitions from stale or concurrent editor commands.\n- Derive dirty state from actual content changes, including edits reverted to their saved content.\n- Restrict numeric agent permission shortcuts to focused approval choices so normal editor typing cannot approve a request.\n- Guard late session responses from updating a newer connection and resolve the Windows user profile when HOME is unavailable.\n- Preserve Windows desktop test manifests and exact vendored SVG provenance across checkout platforms.\n\n### Known limitations\n\n- Phase 0.1 is an editor foundation. Full editor feature coverage and production readiness have not been established.\n- Native performance budgets and large-project behavior have not been verified across the release platform matrix.\n- One live provider prompt round trip has completed. Model authentication UI and a real provider edit proposal have not been verified. Broader provider integration remains incomplete.\n- The first nightly installer matrix and publication succeeded for macOS Apple Silicon, macOS Intel, Windows x64, and Linux x64. Installation checks and operating-system signing or notarization review across every target remain incomplete.\n- Preview configuration exists but has not been separately exercised. Stable publication remains gated.\n- Internal HTML5 dragging on Windows WebView2 conflicts with the enabled native external-drop handler and remains unverified or unsupported pending a platform-specific strategy.\n- New desktop work remains unreleased until its reviewed source, hosted checks, and installed behavior are recorded. In particular, automatic clean-tab LRU eviction and the application connection from Markdown Run to the real PTY backend are not complete. Folder opening still awaits a full scan, and saving still rescans.\n- The updater plugin, public-key trust configuration, signed updater manifests, and end-to-end channel switching are not implemented. Releases provide installers and checksums for manual installation.\n\n<!-- Move reviewed entries into a dated version section when preparing a stable release. -->\n\n## Changes since previous channel release\n\n### Features\n\n- add repository review and staged commit foundation (990bb87d)\n\n### Fixes\n\n- finalize typed IPC and strict validation fixtures (fc34d6f3)\n\n### Maintenance\n\n- record Git validation and verified website and release delivery (82d3929a)\n- preserve current navigation and terminal fixes in Git integration (dca00d95)\n\nInstallers and SHA-256 checksums are attached. Automatic updates are not available in Phase 0.1.\n",
+    "html_url": "https://github.com/1kentom/span/releases/tag/v0.1.0-nightly.20261029.38",
     "draft": false,
     "prerelease": true,
-    "published_at": "2026-10-29T03:56:25Z",
+    "published_at": "2026-10-29T04:22:59Z",
     "assets": [
       {
-        "name": "aarch64-apple-darwin-span_0.1.0-nightly.20261029.37_aarch64.dmg",
-        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.37/aarch64-apple-darwin-span_0.1.0-nightly.20261029.37_aarch64.dmg",
-        "size": 19269991,
-        "digest": "sha256:f2c3b2e9f714425b9fd6b5e5327c76d1b1aa713e6c3dbb78587bb1f569c64d00"
+        "name": "aarch64-apple-darwin-span_0.1.0-nightly.20261029.38_aarch64.dmg",
+        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.38/aarch64-apple-darwin-span_0.1.0-nightly.20261029.38_aarch64.dmg",
+        "size": 19554596,
+        "digest": "sha256:98bb1f546ef8d8530c731309b80f1931ac55c00b707fe17ccc03c89c40f1c3cb"
       },
       {
         "name": "release-notes.md",
-        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.37/release-notes.md",
-        "size": 4447,
-        "digest": "sha256:1d6cd34667534f4138bb8c38df4d3fb8294268028414d4880fc11ad5857fe6cd"
+        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.38/release-notes.md",
+        "size": 4710,
+        "digest": "sha256:01c0c4147084ec2409de53ce4f0e092b72ad4469de38980d59bffa00ac94974f"
       },
       {
         "name": "release-plan.json",
-        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.37/release-plan.json",
+        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.38/release-plan.json",
         "size": 203,
-        "digest": "sha256:537398cd21a04b9f33f85e9db069cfdda785d3ba377bfb0cd7cddd3f74ab61d8"
+        "digest": "sha256:6ee70710f06bbea07495e4ed458c892de0f1fa3eaa3294be8bcd0aa47b839d8c"
       },
       {
         "name": "SHA256SUMS",
-        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.37/SHA256SUMS",
+        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.38/SHA256SUMS",
         "size": 825,
-        "digest": "sha256:f0d0f2671a21334207776b1d3b76073bd15adbbc135500c124f1bc7ef2cb2048"
+        "digest": "sha256:10e2a4c07b6340d90933fb3eace8bb607e6f18615efd0ef86bf9126a5f1bf18a"
       },
       {
-        "name": "x86_64-apple-darwin-span_0.1.0-nightly.20261029.37_x64.dmg",
-        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.37/x86_64-apple-darwin-span_0.1.0-nightly.20261029.37_x64.dmg",
-        "size": 20203473,
-        "digest": "sha256:62c6c4038d63a14a16eb8a67542a16e4eae79e6c2bc3a26abb602ed3cea81cae"
+        "name": "x86_64-apple-darwin-span_0.1.0-nightly.20261029.38_x64.dmg",
+        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.38/x86_64-apple-darwin-span_0.1.0-nightly.20261029.38_x64.dmg",
+        "size": 20483676,
+        "digest": "sha256:7111e29e39420a1406a9e5beede99754bfb69f9fd6075f421e052a901e0933a1"
       },
       {
-        "name": "x86_64-pc-windows-msvc-span_0.1.0-nightly.20261029.37_x64-setup.exe",
-        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.37/x86_64-pc-windows-msvc-span_0.1.0-nightly.20261029.37_x64-setup.exe",
-        "size": 13636281,
-        "digest": "sha256:ed3201d69f939ca2daa29ef46a98fc8db20d3ac5235591e26477b651338dd057"
+        "name": "x86_64-pc-windows-msvc-span_0.1.0-nightly.20261029.38_x64-setup.exe",
+        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.38/x86_64-pc-windows-msvc-span_0.1.0-nightly.20261029.38_x64-setup.exe",
+        "size": 13834154,
+        "digest": "sha256:12b7b82fe0ed79b2afcc15712db21f9a944ef74b736a402b1c7178c7a4d5d185"
       },
       {
-        "name": "x86_64-unknown-linux-gnu-span_0.1.0-nightly.20261029.37_amd64.AppImage",
-        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.37/x86_64-unknown-linux-gnu-span_0.1.0-nightly.20261029.37_amd64.AppImage",
-        "size": 98269688,
-        "digest": "sha256:be591890929dcc1e2530f4a0afc312ef7ddfa9cfe0ffc87474e4e3a374d9bbf8"
+        "name": "x86_64-unknown-linux-gnu-span_0.1.0-nightly.20261029.38_amd64.AppImage",
+        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.38/x86_64-unknown-linux-gnu-span_0.1.0-nightly.20261029.38_amd64.AppImage",
+        "size": 98556408,
+        "digest": "sha256:516898513e8a23c9f359903fe6f8101fa58a046aefcd9d49e75c2f40296e202a"
       },
       {
-        "name": "x86_64-unknown-linux-gnu-span_0.1.0-nightly.20261029.37_amd64.deb",
-        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.37/x86_64-unknown-linux-gnu-span_0.1.0-nightly.20261029.37_amd64.deb",
-        "size": 21647192,
-        "digest": "sha256:ccd6ff9fde48e168bc642263429b0fde372b0bebd09da6a73c364923ca8e4518"
+        "name": "x86_64-unknown-linux-gnu-span_0.1.0-nightly.20261029.38_amd64.deb",
+        "browser_download_url": "https://github.com/1kentom/span/releases/download/v0.1.0-nightly.20261029.38/x86_64-unknown-linux-gnu-span_0.1.0-nightly.20261029.38_amd64.deb",
+        "size": 21955328,
+        "digest": "sha256:9ffcbce6682538ff505df6e09eb95af1b43c13790cc96781bd19df574f67802b"
       }
     ]
   },
