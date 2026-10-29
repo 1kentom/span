@@ -53,7 +53,7 @@ export function buildArchiveTree(entries: readonly ArchiveEntry[]): ArchiveTree 
     return node.children;
   };
   entries.forEach((entry, i) => {
-    if (isUnsafePath(entry.path)) {
+    if (entry.unsafeReason || isUnsafePath(entry.path)) {
       unsafe.push(entry);
       unsafeNodes.push({ ...makeNode(`u:${i}`, entry.path, entry.path, entry.dir, entry), unsafe: true, implicit: false });
       return;

@@ -17,6 +17,8 @@ export interface ArchiveEntry {
   /** Milliseconds since the epoch. */
   modified?: number;
   encrypted?: boolean;
+  /** Native policy refusal, including links and colliding paths. */
+  unsafeReason?: string;
 }
 export interface ArchiveListing { format: string; method?: string; entries: ArchiveEntry[]; truncated?: boolean }
 export type ConflictMode = 'ask' | 'skip' | 'replace';
@@ -37,6 +39,8 @@ export interface ExtractResult { extracted: number; skipped: number; destination
 
 export interface ArchiveApi {
   readonly canExtract: boolean;
+  /** The native foundation writes only into a fresh workspace folder. */
+  readonly freshFolderOnly?: boolean;
   targets(): ExtractTarget[];
   list(): Promise<ArchiveListing>;
   readEntry(path: string): Promise<Uint8Array>;

@@ -1,5 +1,6 @@
 import { Match, Show, Switch, createEffect, createMemo, createSignal, on } from 'solid-js';
 import { MAX_IMAGE_BYTES, MAX_SVG_BYTES, formatAssetBytes, safeRasterSource, sanitizeSvg } from '../../lib/asset-preview';
+import type { ArchiveApi } from '../../lib/archive-api';
 import type { UploadExtras } from '../../lib/uploads-api';
 import {
   FONT_READ_BYTES, MEDIA_MAX_BYTES, TEXT_PREVIEW_BYTES, bytesToDataUrl, classifyFile, decodeTextPreview, formatDuration, isLikelyBinary, lineEnding, mediaMime, modeLabelFor, modeUsesIcons, parseJson,
@@ -50,6 +51,7 @@ export interface ViewerSource {
 }
 
 export interface FileViewerProps {
+  archiveApi?: ArchiveApi;
   name: string;
   mime?: string;
   /** Byte size. Falls back to the loaded content length. */
@@ -311,7 +313,7 @@ export function FileViewer(props: FileViewerProps) {
             <Show when={v().error || mode() === 'source'} fallback={<JsonView value={v().value} name={props.name} />}><TextView text={v().text} name={props.name} /></Show>
           </>; })()}</Match>
         <Match when={view().t === 'office'}>{(() => { const v = () => view() as { kind: OfficeKind; bytes: Uint8Array };
-          return <OfficeView kind={v().kind} name={props.name} bytes={v().bytes} onMeta={setOfficeMeta} onOpenWithSystem={props.onOpenWithSystem ? () => void run('Open with system app', props.onOpenWithSystem!) : undefined} />; })()}</Match>
+          return <OfficeView archiveApi={props.archiveApi} kind={v().kind} name={props.name} bytes={v().bytes} onMeta={setOfficeMeta} onOpenWithSystem={props.onOpenWithSystem ? () => void run('Open with system app', props.onOpenWithSystem!) : undefined} />; })()}</Match>
         <Match when={view().t === 'hex'}>{(() => { const v = () => view() as { bytes: Uint8Array; binary: boolean };
           return <>
             <HexView bytes={v().bytes} name={props.name} />

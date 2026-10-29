@@ -27,7 +27,7 @@ describe('ArchiveView with a backend', () => {
     await settle();
     expect(names(root)).toEqual(['dist', 'assets', 'index.html', 'logs', 'build.log', '../escape.sh', '/etc/passwd']);
     expect(meta).toHaveBeenLastCalledWith(['4 files · 3 folders', '2.2 KiB unpacked', '720 B packed', 'ZIP · Deflate']);
-    expect(root.querySelector('.ox-warning')?.textContent).toContain('2 entries point outside the archive and are always skipped.');
+    expect(root.querySelector('.ox-warning')?.textContent).toContain('2 entries cannot be extracted safely and are always skipped.');
     expect([...root.querySelectorAll('.ox-unsafe-list li')].map(li => li.textContent)).toEqual(['../escape.sh', '/etc/passwd']);
     expect(root.querySelectorAll('.ox-row-unsafe')).toHaveLength(2);
     button(root, 'Expand all')!.click(); await settle();
@@ -104,6 +104,35 @@ describe('ArchiveView with a backend', () => {
     await settle();
     button(root, 'Open build.log in a tab')!.click(); await settle();
     expect(opened).toHaveBeenCalledWith('logs/build.log', strToU8('ok'));
+  });
+});
+
+describe('native fresh-folder policy', () => {
+  it('hides unsupported replacement and open-folder controls', async () => {
+    const mem = createMemoryArchiveApi(entries);
+    Object.assign(mem.api, { freshFolderOnly: true });
+    const root = mount(() => <ArchiveView name="safe.zip" api={mem.api} />);
+    await settle();
+    expect(button(root, 'Extract all into new folder')).toBeTruthy();
+    expect(root.textContent).toContain('Existing files are never replaced.');
+    root.querySelector<HTMLButtonElement>('[aria-label="Extract options"]')!.click();
+    expect(root.querySelector('.ox-popover')?.textContent).not.toContain('Open folder when done');
+    expect(root.querySelector('.ox-pop-conflict')).toBeNull();
+  });
+  it('keeps cancellation pending until the extractor reports its actual result', async () => {
+    const mem = createMemoryArchiveApi(entries);
+    mem.api.cancel = async () => undefined;
+    const root = mount(() => <ArchiveView name="safe.zip" api={mem.api} />);
+    await settle();
+    button(root, 'Extract all to workspace')!.click();
+    await settle();
+    button(root, 'Cancel')!.click();
+    await settle();
+    expect(root.textContent).toContain('Cancelling');
+    expect(root.textContent).not.toContain('Extraction cancelled.');
+    mem.finish({ extracted: 1, cancelled: true });
+    await settle();
+    expect(root.textContent).toContain('Extraction cancelled. 1 file written');
   });
 });
 

@@ -1,3 +1,4 @@
+import type { ArchiveExtractOptions, ArchiveListing, ArchiveProgress, ArchiveResult, NativeArchivePlan, ArchiveEntryBytes } from '../bindings';
 import type { GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
 import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest, CurrentFileRun_Serialize as CurrentFileRun } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -451,6 +452,27 @@ export const api = {
     const parsed = new URL(url);
     if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) throw new Error('Only http, https and mailto links can open externally.');
     window.open(parsed.href, '_blank', 'noopener,noreferrer');
+  },
+  async archiveListEntries(uploadId: string, expectedWorkspaceRoot: string): Promise<ArchiveListing> {
+    if (!isDesktop) nativeRequired('Listing stored ZIP archives');
+    return commands.archiveListEntries(uploadId, expectedWorkspaceRoot);
+  },
+  async archiveReadEntry(uploadId: string, expectedWorkspaceRoot: string, path: string): Promise<ArchiveEntryBytes> {
+    if (!isDesktop) nativeRequired('Reading stored ZIP entries');
+    return commands.archiveReadEntry(uploadId, expectedWorkspaceRoot, path);
+  },
+  async archivePlanExtract(uploadId: string, expectedWorkspaceRoot: string, options: ArchiveExtractOptions): Promise<NativeArchivePlan> {
+    if (!isDesktop) nativeRequired('Preparing ZIP extraction');
+    return commands.archivePlanExtract(uploadId, expectedWorkspaceRoot, options);
+  },
+  async archiveExtract(planId: string, expectedWorkspaceRoot: string, onProgress: (progress: ArchiveProgress) => void): Promise<ArchiveResult> {
+    if (!isDesktop) nativeRequired('Extracting ZIP archives');
+    const channel = new Channel<ArchiveProgress>();
+    channel.onmessage = onProgress;
+    return commands.archiveExtract(planId, expectedWorkspaceRoot, channel);
+  },
+  async archiveCancel(planId: string): Promise<void> {
+    if (isDesktop) await commands.archiveCancel(planId);
   },
   async readImage(path: string): Promise<ImageSource> {
     if (!isDesktop) { const image = previewAssetImage(path); if (image) return image; nativeRequired('Loading workspace images'); }

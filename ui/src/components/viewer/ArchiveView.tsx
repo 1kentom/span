@@ -33,7 +33,7 @@ type Job =
   | { phase: 'idle' }
   | { phase: 'planning'; label: string }
   | { phase: 'confirm'; label: string; plan: ExtractPlan; options: ExtractOptions }
-  | { phase: 'running'; label: string; destination: string; progress: ExtractProgress }
+  | { phase: 'running'; label: string; destination: string; progress: ExtractProgress; cancelling?: boolean }
   | { phase: 'done' | 'cancelled' | 'error'; text: string };
 
 function Checkbox(props: { state: 'on' | 'off' | 'mixed'; label: string; disabled?: boolean; onToggle: () => void }) {
@@ -92,7 +92,7 @@ function ArchiveBody(props: { name: string; api: ArchiveApi; listing: ArchiveLis
   };
 
   const options = (paths: string[] | 'all', target: ExtractTargetKind, conflictMode = conflict()): ExtractOptions =>
-    ({ target, paths, keepStructure: keepStructure(), skipHidden: skipHidden(), openWhenDone: openWhenDone(), conflict: conflictMode });
+    ({ target, paths, keepStructure: keepStructure(), skipHidden: skipHidden(), openWhenDone: props.api.freshFolderOnly ? false : openWhenDone(), conflict: props.api.freshFolderOnly ? 'ask' : conflictMode });
   async function run(opts: ExtractOptions, label: string, plan: ExtractPlan) {
     setJob({ phase: 'running', label, destination: plan.destination, progress: { done: 0, total: plan.files } });
     try {
@@ -113,9 +113,10 @@ function ArchiveBody(props: { name: string; api: ArchiveApi; listing: ArchiveLis
   }
   const resolveConflict = (mode: Exclude<ConflictMode, 'ask'>) => { const j = job(); if (j.phase === 'confirm') void run({ ...j.options, conflict: mode }, j.label, j.plan); };
   const cancel = async () => {
-    try { await props.api.cancel(); } catch { /* the job result reports the outcome */ }
-    if (job().phase !== 'running') return;
-    setJob({ phase: 'cancelled', text: 'Extraction cancelled.' });
+    try {
+      await props.api.cancel();
+      setJob(current => current.phase === 'running' ? { ...current, cancelling: true } : current);
+    } catch (cause) { setStatus(`Could not request cancellation: ${cause instanceof Error ? cause.message : String(cause)}`); }
   };
 
   // Close the options popover on Escape or a click outside it.
@@ -176,7 +177,7 @@ function ArchiveBody(props: { name: string; api: ArchiveApi; listing: ArchiveLis
         <button type="button" class="vw-btn vw-btn-outline" disabled={!gate().selected} onClick={() => void extract(selectedPaths(tree().root, selected()), 'workspace', plural(selectedCount(), 'selected file'))}>Extract {selectedCount()} selected</button>
       </Show>
       <div class="ox-split">
-        <button type="button" class="vw-btn vw-btn-primary ox-split-main" disabled={!gate().all} onClick={() => void extract('all', 'workspace', plural(tree().files, 'file'))}>Extract all to workspace</button>
+        <button type="button" class="vw-btn vw-btn-primary ox-split-main" disabled={!gate().all} onClick={() => void extract('all', 'workspace', plural(tree().files, 'file'))}>{props.api.freshFolderOnly ? 'Extract all into new folder' : 'Extract all to workspace'}</button>
         <button type="button" class="vw-btn vw-btn-primary ox-split-toggle" ref={menuButton} aria-label="Extract options" aria-haspopup="dialog" aria-expanded={menu()} disabled={!gate().all} onClick={() => setMenu(!menu())}><Icon name="arrow-down4" size={10} /></button>
       </div>
       <Show when={menu()}>
@@ -190,21 +191,22 @@ function ArchiveBody(props: { name: string; api: ArchiveApi; listing: ArchiveLis
           <div class="ox-pop-sep" />
           <label class="ox-pop-toggle"><input type="checkbox" class="ox-check" checked={keepStructure()} onChange={e => setKeepStructure(e.currentTarget.checked)} />Keep folder structure</label>
           <label class="ox-pop-toggle"><input type="checkbox" class="ox-check" checked={skipHidden()} onChange={e => setSkipHidden(e.currentTarget.checked)} />Skip hidden files (.DS_Store, __MACOSX)</label>
-          <label class="ox-pop-toggle"><input type="checkbox" class="ox-check" checked={openWhenDone()} onChange={e => setOpenWhenDone(e.currentTarget.checked)} />Open folder when done</label>
+          <Show when={!props.api.freshFolderOnly}><label class="ox-pop-toggle"><input type="checkbox" class="ox-check" checked={openWhenDone()} onChange={e => setOpenWhenDone(e.currentTarget.checked)} />Open folder when done</label>
           <div class="ox-pop-conflict"><span id="ox-conflict-label">If a file exists</span><span class="vw-spacer" />
             <div class="ox-segmented" role="radiogroup" aria-labelledby="ox-conflict-label">
               <For each={['ask', 'skip', 'replace'] as ConflictMode[]}>{mode => <button type="button" role="radio" aria-checked={conflict() === mode} class="ox-seg" onClick={() => setConflict(mode)}>{conflictLabels[mode]}</button>}</For>
             </div>
-          </div>
+          </div></Show>
         </div>
       </Show>
     </div>
+    <Show when={props.api.freshFolderOnly}><p class="vw-note" role="note">Extraction creates a new workspace folder. Existing files are never replaced.</p></Show>
     <Show when={gate().note}><p class="vw-note" role="note">{gate().note}</p></Show>
     <Show when={tree().unsafe.length}>
       <div class="ox-warning" role="note">
         <Icon name="Warning2" size={13} />
         <div class="ox-warning-body">
-          <span>{plural(tree().unsafe.length, 'entry', 'entries')} {tree().unsafe.length === 1 ? 'points' : 'point'} outside the archive and {tree().unsafe.length === 1 ? 'is' : 'are'} always skipped.</span>
+          <span>{plural(tree().unsafe.length, 'entry', 'entries')} cannot be extracted safely and {tree().unsafe.length === 1 ? 'is' : 'are'} always skipped.</span>
           <details><summary>Show {tree().unsafe.length === 1 ? 'it' : 'them'}</summary><ul class="ox-unsafe-list"><For each={tree().unsafe}>{entry => <li>{entry.path}</li>}</For></ul></details>
         </div>
       </div>
@@ -223,7 +225,7 @@ function ArchiveBody(props: { name: string; api: ArchiveApi; listing: ArchiveLis
           <span class="ox-progress-text">Extracting {j().label} to {j().destination}</span>
           <span class="ox-bar" role="progressbar" aria-label="Extraction progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent()}><span class="ox-bar-fill" style={{ width: `${progressPercent()}%` }} /></span>
           <span class="ox-mono ox-dim">{progressPercent()}%</span>
-          <button type="button" class="vw-btn" onClick={() => void cancel()}>Cancel</button>
+          <button type="button" class="vw-btn" disabled={j().cancelling} onClick={() => void cancel()}>{j().cancelling ? 'Cancelling…' : 'Cancel'}</button>
         </div>; })()}</Match>
       <Match when={job().phase === 'done' || job().phase === 'cancelled' || job().phase === 'error'}>{(() => { const j = () => job() as { phase: string; text: string };
         return <div class="ox-progress" classList={{ 'ox-progress-error': j().phase === 'error' }} role={j().phase === 'error' ? 'alert' : 'status'}>
@@ -281,7 +283,7 @@ export default function ArchiveView(props: ArchiveViewProps) {
   const [listing, setListing] = createSignal<{ state: 'loading' } | { state: 'ready'; value: ArchiveListing } | { state: 'error'; message: string; tooLarge: boolean }>({ state: 'loading' });
   createEffect(on(api, current => {
     let live = true;
-    onCleanup(() => { live = false; });
+    onCleanup(() => { live = false; void current?.cancel().catch(() => undefined); });
     if (!current) return;
     setListing({ state: 'loading' });
     current.list().then(value => { if (live) setListing({ state: 'ready', value }); }, cause => { if (live) setListing({ state: 'error', message: cause instanceof Error ? cause.message : String(cause), tooLarge: cause instanceof OfficeError && cause.kind === 'too-large' }); });

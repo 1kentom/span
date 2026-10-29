@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
+mod archives;
 mod cli;
 mod events;
 mod file_index;
@@ -34,6 +35,7 @@ type FormatterJobs =
 pub struct DesktopState {
     pub workspace: Arc<Mutex<Option<Arc<Mutex<CoreWorkspace>>>>>,
     pub(crate) terminals: terminals::TerminalState,
+    pub(crate) archives: archives::ArchiveState,
     pub(crate) runs: runs::RunService,
     pub(crate) run_approvals: run_approval::RunApprovalState,
     pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
@@ -153,6 +155,7 @@ async fn open_workspace(
     // Background agents run in the old folder; they end with it.
     agents::background(&state).shutdown();
     services::cancel_all_formatter_jobs(&state);
+    state.archives.cancel_all();
     let (result, settings, workspace) = tauri::async_runtime::spawn_blocking(move || {
         let result = workspace.workspace();
         let settings = workspace.get_settings().unwrap_or_default();
@@ -1082,6 +1085,11 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_task_transcript,
             agents::agent_warm_start,
             agents::agent_health,
+            archives::archive_list_entries,
+            archives::archive_read_entry,
+            archives::archive_plan_extract,
+            archives::archive_extract,
+            archives::archive_cancel,
             uploads::uploads_list,
             uploads::uploads_usage,
             uploads::uploads_add,

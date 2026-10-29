@@ -1,5 +1,6 @@
 //! The editor's authoritative text and workspace services.
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
+mod archive;
 mod attachment;
 mod buffer;
 mod folder_outline;
@@ -25,6 +26,10 @@ mod uploads;
 pub mod version;
 mod workspace;
 
+pub use archive::{
+    ArchiveEntry, ArchiveExtractOptions, ArchiveListing, ArchivePlan, ArchiveProgress,
+    ArchiveResult, ZipBundle,
+};
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
 pub use folder_outline::{FolderOutline, FOLDER_OUTLINE_LIMIT, MAX_FOLDER_OUTLINE_LIMIT};

@@ -92,3 +92,10 @@ describe('extraction gating', () => {
     expect(extractGate({ canExtract: true, safeFiles: 4, selected: 2, running: true })).toEqual({ all: false, selected: false });
   });
 });
+
+
+it('excludes native link and collision refusals from extractable files', () => {
+  const tree = buildArchiveTree([{ path: 'safe.txt', dir: false, size: 1, packed: 1 }, { path: 'link', dir: false, size: 4, packed: 4, unsafeReason: 'Symbolic link' }]);
+  expect(tree.files).toBe(1);
+  expect(tree.unsafe.map(entry => entry.path)).toEqual(['link']);
+});
