@@ -1,6 +1,6 @@
 # Local Git integration: research and selected boundary
 
-Checked **2026-10-29** for [#110](https://github.com/1kentom/span/issues/110) and its five bounded children. This records primary-source observations and the selected Span contract during implementation. It does **not** establish that this research preceded every earlier change, that the implementation meets the contract, or that the reference editors were exercised locally. Core/desktop acceptance and review are pending.
+Checked **2026-10-29** for [#110](https://github.com/1kentom/span/issues/110) and its five bounded children. This records primary-source observations and the selected Span contract during implementation. It does **not** establish that this research preceded every earlier change, that the implementation meets the contract, or that the reference editors were exercised locally. Local core/desktop/UI acceptance and independent review now pass at `fc34d6f`; hosted CI/publication and installed Git acceptance remain pending. See the dated verification ledger for exact counts and the preserved earlier parallel timeout failure.
 
 ## Primary-source comparison
 
