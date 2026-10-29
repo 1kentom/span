@@ -7,12 +7,13 @@ import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, lis
 import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
 import { agentCatalog } from "./agent-stores/catalog";
 import { agentBackground } from "./agent-stores/background";
+import { agentLimits } from "./agent-stores/limits";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { createSavedImageStore } from "./agent-saved-images";
 import { RUN_TEXT } from "./agent-hint-text";
-import { classifyAgentError, isLimitKind, limitStatus, setAgentLimit, type AgentErrorInfo } from "./agent-errors";
+import { classifyAgentError, isLimitKind, limitStatus, type AgentErrorInfo } from "./agent-errors";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
 import { lastFinishedTool, runningTools, toolBarView } from "./agent-tool-bar";
 
@@ -222,11 +223,8 @@ export function createAgentController(props: AgentPanelProps) {
    * again with another model; it is forgotten on any new prompt, chat switch, resume or connection.
    */
   const [refused, setRefused] = createSignal<{ sessionId: string; entry: Queued; itemId: number; limit?: AgentErrorInfo }>();
-  /**
-   * Models that hit a usage limit, keyed by agent id and model value, with the time the limit lifts (0 when unknown).
-   * The picker marks them so the user is not surprised twice. Cleared on the next successful turn or at the reset time.
-   */
-  const [limitedModels, setLimitedModels] = createSignal<Record<string, number>>({});
+  /** Models that hit a usage limit (see the limits store). */
+  const limits = agentLimits.use();
   /** The picker the limit card opened to resend the refused turn with: a pick there resends instead of only switching. */
   const [resendArmed, setResendArmed] = createSignal<"model" | "agents">();
   /** Session ids a prompt has gone out to, so a late options restore never races the user's own turn. */
@@ -300,41 +298,11 @@ export function createAgentController(props: AgentPanelProps) {
   });
   const modelOption = () => state().config.find((candidate) => candidate.category === "model");
   /** Model values of the connected agent marked "Limit reached". */
-  const limitedModelValues = createMemo<ReadonlySet<string>>(() => {
-    const agent = agentId() ?? agentName();
-    const prefix = `${agent}\n`;
-    return new Set(Object.keys(limitedModels()).filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)));
-  });
-  const limitTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  function clearLimited(key: string) {
-    clearTimeout(limitTimers.get(key));
-    limitTimers.delete(key);
-    setLimitedModels((previous) => {
-      if (!(key in previous)) return previous;
-      const next = { ...previous };
-      delete next[key];
-      return next;
-    });
-  }
+  const limitedModelValues = createMemo<ReadonlySet<string>>(() => limits.limitedValues(agentId() ?? agentName()));
   /** Marks the current model as limited until `resetAt` (or the next successful turn). */
-  function markLimited(info: AgentErrorInfo) {
-    const model = modelOption()?.currentValue;
-    const agent = agentId() ?? agentName();
-    setAgentLimit({ kind: info.kind, provider: info.provider, resetAt: info.resetAt, freeTier: info.freeTier, agentId: agent, model });
-    if (info.kind !== "quota" || !model) return;
-    const key = `${agent}\n${model}`;
-    clearTimeout(limitTimers.get(key));
-    setLimitedModels((previous) => ({ ...previous, [key]: info.resetAt ?? 0 }));
-    const wait = info.resetAt !== undefined ? info.resetAt - Date.now() : undefined;
-    // Timers beyond a day are not kept: the next successful turn clears the mark.
-    if (wait !== undefined && wait < 86_400_000) limitTimers.set(key, setTimeout(() => clearLimited(key), Math.max(0, wait)));
-  }
+  const markLimited = (info: AgentErrorInfo) => limits.markLimited(info, agentId() ?? agentName(), modelOption()?.currentValue);
   /** A turn of the open session completed: the model it ran on works again. */
-  function clearLimitAfterSuccess() {
-    const model = modelOption()?.currentValue;
-    if (model) clearLimited(`${agentId() ?? agentName()}\n${model}`);
-    setAgentLimit(undefined);
-  }
+  const clearLimitAfterSuccess = () => limits.clearAfterSuccess(agentId() ?? agentName(), modelOption()?.currentValue);
   createEffect(on(menu, (open) => { if (open !== resendArmed()) setResendArmed(undefined); }));
   const permission = createMemo(() => openPermission(feed()));
   /** Open permission requests from delegated children, oldest first. */
@@ -674,7 +642,6 @@ export function createAgentController(props: AgentPanelProps) {
   });
   onCleanup(() => {
     disposed = true;
-    for (const timer of limitTimers.values()) clearTimeout(timer);
     unsubscribe?.();
     unsubscribeStates?.();
   });
