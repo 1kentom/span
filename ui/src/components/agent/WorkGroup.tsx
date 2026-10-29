@@ -180,7 +180,7 @@ export function StepRow(props: { step: StepView; open?: boolean; onToggle?: () =
         <div class="sb-step-saved sb-sub">
           <span>Saved by the agent at </span>
           <span class="sb-mono" title={props.step.savedPath}>{props.step.savedPath}</span>
-          <span>. Span shows this path only and does not open it.</span>
+          <span>. {props.step.savedImageNote ?? "No file preview was loaded from this path."}</span>
         </div>
       </Show>
       <Show when={props.step.children?.length}><ChildRows children={props.step.children!} /></Show>

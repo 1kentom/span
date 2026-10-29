@@ -463,9 +463,9 @@ export const api = {
     if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) throw new Error('Only http, https and mailto links can open externally.');
     window.open(parsed.href, '_blank', 'noopener,noreferrer');
   },
-  async readImage(path: string): Promise<ImageSource> {
+  async readImage(path: string, expectedWorkspaceRoot?: string): Promise<ImageSource> {
     if (!isDesktop) { const image = previewAssetImage(path); if (image) return image; nativeRequired('Loading workspace images'); }
-    return commands.readImage(path);
+    return commands.readImage(path, expectedWorkspaceRoot ?? null);
   },
   /** Writes an attachment into the workspace without overwriting. Returns the workspace-relative path. */
   async saveAttachment(dir: string, fileName: string, dataBase64: string): Promise<SavedAttachment> {
@@ -765,6 +765,80 @@ export async function agentTaskTranscript(taskId: string): Promise<import('../bi
   if (!isDesktop) nativeRequired('Opening a delegated session');
   return commands.agentTaskTranscript(taskId);
 }
+
+type SessionKey = import('../bindings').SessionKey;
+type LiveSession = import('../bindings').LiveSession_Serialize;
+type AgentKeyedEvent = import('../bindings').AgentKeyedEvent_Serialize;
+
+/** Rethrows a typed prompt refusal as an Error whose `prompt` field is the `PromptError`, like `api.agentPrompt`. */
+function promptFailure(cause: unknown): never {
+  if (cause && typeof cause === 'object' && 'kind' in cause && 'message' in cause) throw Object.assign(new Error(String((cause as PromptError).message)), { prompt: cause as PromptError });
+  throw cause;
+}
+
+/**
+ * Keyed agent sessions (ADR 0011 phase 1). Every call names its session by `SessionKey` (connection id plus session id),
+ * so several live threads can run at once. The sidebar keeps using the unkeyed `api.agent*` calls, which the backend
+ * resolves to the focused session; `focused()` returns that key.
+ */
+export const agentSessions = {
+  /** Open a new session on `connectionId`, on a process for `command`, or on the focused connection. Never closes another session. */
+  async open(options: { connectionId?: string; command?: AgentCommand; focus?: boolean } = {}): Promise<SessionKey> {
+    if (!isDesktop) nativeRequired('Opening agent sessions');
+    return commands.agentOpenSession(options.connectionId ?? null, options.command ?? null, options.focus ?? false);
+  },
+  /** Every live session with state, agent, title, model, mode, health and parent key. */
+  async live(): Promise<LiveSession[]> {
+    return isDesktop ? commands.agentLiveSessions() : [];
+  },
+  /** The session the unkeyed sidebar commands act on, null without one. */
+  async focused(): Promise<SessionKey | null> {
+    return isDesktop ? commands.agentFocusedSession() : null;
+  },
+  async prompt(key: SessionKey, text: string, attachments: PromptAttachment[] = []): Promise<void> {
+    if (!isDesktop) nativeRequired('Sending agent prompts');
+    try {
+      await commands.agentPromptKeyed(key, text, attachments.length ? attachments : null);
+    } catch (cause) {
+      promptFailure(cause);
+    }
+  },
+  async cancel(key: SessionKey): Promise<void> {
+    if (!isDesktop) nativeRequired('Cancelling agents');
+    await commands.agentCancelKeyed(key);
+  },
+  /** The user's own answer only. */
+  async permission(key: SessionKey, requestId: string, optionId: string | null): Promise<void> {
+    if (!isDesktop) nativeRequired('Responding to agent permissions');
+    await commands.agentPermissionKeyed(key, requestId, optionId);
+  },
+  /** The user's own answer only. */
+  async elicitation(key: SessionKey, requestId: string, action: 'accept' | 'decline' | 'cancel', contentJson: string | null = null): Promise<void> {
+    if (!isDesktop) nativeRequired('Answering agent requests');
+    await commands.agentElicitationKeyed(key, requestId, action, contentJson);
+  },
+  async setConfig(key: SessionKey, configId: string, value: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Changing agent options');
+    await commands.agentSetConfigKeyed(key, configId, value);
+  },
+  async review(key: SessionKey, proposalId: string, accept: boolean, expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Reviewing agent edits');
+    return commands.agentReviewKeyed(key, proposalId, accept, expectedRevision);
+  },
+  async reviewHunks(key: SessionKey, proposalId: string, acceptedHunkIds: string[], expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Reviewing agent edit hunks');
+    return commands.agentReviewHunksKeyed(key, proposalId, acceptedHunkIds, expectedRevision);
+  },
+  /** Close a session; its delegated children close with it. */
+  async close(key: SessionKey): Promise<void> {
+    if (!isDesktop) nativeRequired('Closing a chat');
+    await commands.agentCloseKeyed(key);
+  },
+  /** Every agent event of every connection, tagged with its session key (null for connection level events). */
+  async onEvent(listener: (event: AgentKeyedEvent) => void): Promise<() => void> {
+    return isDesktop ? events.agentKeyedEvent.listen(event => listener(event.payload)) : () => undefined;
+  },
+};
 
 /** Preview only: the browser answers navigation requests from a labelled text-scanning fixture, see navigation-preview.ts. */
 const previewNavigation = createPreviewNavigationPort(() => Object.fromEntries(Object.keys(fixture).map(path => { const buffer = buffers.get(path); return [path, { text: buffer?.text ?? fixture[path], revision: buffer?.revision ?? 0 }]; })));

@@ -9,6 +9,7 @@ import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
+import { createSavedImageStore } from "./agent-saved-images";
 import { RUN_TEXT } from "./agent-hint-text";
 import { classifyAgentError, isLimitKind, limitStatus, setAgentLimit, type AgentErrorInfo } from "./agent-errors";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
@@ -31,7 +32,8 @@ import {
 } from "./agent-session";
 
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
-import { FOLDER_OUTLINE_LIMIT, bytesToBase64, createFileAttachment, createFolderAttachment, folderOutline, isInWorkspace, needsStoredLink, planAttachment, redactPaths, type Attachment, type PromptCapabilities } from "./attachments";
+import { FOLDER_OUTLINE_LIMIT, bytesToBase64, classifyFile, createFileAttachment, createFolderAttachment, createWorkspaceFile, folderOutline, isInWorkspace, isTextLike, maxBytesFor, needsStoredLink, planAttachment, redactPaths, resolveMime, type Attachment, type PromptCapabilities } from "./attachments";
+import { droppedPathInfo, droppedRelative, readDroppedFile } from "./native-drop";
 import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
 import { feedTurns } from "./agent-handoff";
 import { moveItem } from "./agent-queue";
@@ -69,6 +71,10 @@ export type AgentPanelProps = {
   onReviewBusyChange?: (busy: boolean) => void;
   onReviewInEditor?: (path: string, line?: number) => void;
   onReviewReady?: (review: (proposalId: string, acceptedHunkIds: string[]) => Promise<void>) => void;
+  /** Receives the attach function for Explorer rows and editor tabs dragged onto the panel (workspace relative paths). */
+  onAttachReady?: (attach: (paths: { path: string; isDir: boolean }[]) => void) => void;
+  /** True while one of Span's own pointer drags (Explorer row, editor tab) is over the panel. */
+  dropHover?: boolean;
   /** Opens an attachment as a workbench viewer tab. Without it attachments open in the panel's modal viewer. */
   onOpenAttachment?: (view: AttachmentTabView) => void;
   /** The uploads store (ADR 0006). With it, sent attachments are recorded and link fallbacks point at stored copies. */
@@ -118,6 +124,15 @@ export function createAgentController(props: AgentPanelProps) {
   const patch = (values: Partial<AgentState>) => setState((current) => ({ ...current, ...values }));
   const feed = createMemo(() => state().feed);
   const sessionId = createMemo(() => state().sessionId);
+  const savedImages = createSavedImageStore((path, root) => api.readImage(path, root));
+  createEffect(() => {
+    const root = props.workspacePath || "";
+    const scope = JSON.stringify([root, props.workspaceGeneration, sessionId()]);
+    const candidates = feed().flatMap((item) => item.kind === "tool" && item.event.status === "completed" && item.event.savedPath && !toolImages(item.event).length
+      ? [{ id: `${item.event.sessionId}:${item.event.toolCallId}`, path: item.event.savedPath }] : []);
+    savedImages.sync(scope, root, candidates);
+  });
+  onCleanup(() => savedImages.dispose());
   const running = createMemo(() => state().running);
 
   const [prompt, setPrompt] = createSignal("");
@@ -359,6 +374,10 @@ export function createAgentController(props: AgentPanelProps) {
     onSettled: (ids) => setAttachments((previous) => previous.filter((item) => !ids.includes(item.id))),
     unavailable: () => (isDesktop ? undefined : ATTACH_UNAVAILABLE),
     countPages: (bytes) => props.countPdfPages?.(bytes) ?? Promise.resolve(undefined),
+    insertText: (text) => {
+      setPrompt((previous) => (previous && !/\s$/.test(previous) ? `${previous} ${text}` : `${previous}${text}`));
+      focusPrompt();
+    },
   });
 
   createEffect(on(proposals, (list) => props.onProposalsChange?.(list)));
@@ -629,6 +648,7 @@ export function createAgentController(props: AgentPanelProps) {
 
   onMount(() => {
     props.onReviewReady?.(reviewHunks);
+    props.onAttachReady?.((paths) => void attachWorkspacePaths(paths));
     if (isDesktop) {
       void api
         .onAgentEvent(receive)
@@ -2020,7 +2040,7 @@ export function createAgentController(props: AgentPanelProps) {
       ? undefined
       : attachments().find((item) => item.id === id) ??
         feed().flatMap((item) => (item.kind === "user" ? item.attachments ?? [] : [])).find((item) => item.id === id) ??
-        toolImageAttachment(id);
+        savedImages.findAttachment(id) ?? toolImageAttachment(id);
   const viewingItem = createMemo(() => findAttachment(viewing()));
   /** Set by the panel when a workbench can show attachments as tabs. */
   let attachmentOpener: ((item: Attachment) => void) | undefined;
@@ -2108,6 +2128,108 @@ export function createAgentController(props: AgentPanelProps) {
     }
   }
 
+  /**
+   * Files and folders dropped from Finder or Explorer onto the panel (native drop). Only the dropped paths are read,
+   * through Rust, which refuses any path that was not part of the latest drop. Workspace files become workspace file
+   * chips (a mention by relative path, no copy, content embedded when within the limits); other files go through
+   * the same intake as the attach menu, so the uploads store keeps them on send (ADR 0006).
+   */
+  async function attachDroppedPaths(paths: readonly string[]) {
+    if (!paths.length) return;
+    if (!isDesktop) {
+      intake.reject(paths.map((path) => ({ name: leaf(path) || path, reason: ATTACH_UNAVAILABLE })));
+      return;
+    }
+    const root = props.workspacePath;
+    const files: File[] = [];
+    const items: Attachment[] = [];
+    for (const path of paths.slice(0, 128)) {
+      const fallback = leaf(path.replaceAll("\\", "/")) || path;
+      let info: Awaited<ReturnType<typeof droppedPathInfo>>;
+      try {
+        info = await droppedPathInfo(path);
+      } catch (cause) {
+        intake.reject([{ name: fallback, reason: errorText(cause) }]);
+        continue;
+      }
+      const relative = droppedRelative(root, info.path);
+      if (info.isDir) {
+        if (relative !== undefined || droppedRelative(root, `${info.path}/x`) === "x") await attachWorkspaceFolder(relative ?? "");
+        // Outside the project: a path mention only. The folder is never listed or read.
+        else items.push(createFolderAttachment({ name: info.name, text: `${info.name}/ (folder outside the open project)\nPath: ${info.path}`, files: 0, truncated: false, path: info.path, source: "dropped" }));
+        continue;
+      }
+      const mime = resolveMime(info.name, "");
+      const limit = maxBytesFor(classifyFile(info.name, mime), mime);
+      if (info.size > limit) {
+        // A large workspace file still goes out as a link to its path. Anything else is refused unread.
+        if (relative) items.push(createWorkspaceFile(relative, 0));
+        else intake.reject([{ name: info.name, reason: `Larger than the attachment limit for this file type.` }]);
+        continue;
+      }
+      let bytes: Uint8Array;
+      try {
+        bytes = await readDroppedFile(info.path, limit);
+      } catch (cause) {
+        intake.reject([{ name: info.name, reason: errorText(cause) }]);
+        continue;
+      }
+      if (relative) items.push({ ...createFileAttachment({ name: info.name, mime, bytes, source: "dropped" }), source: "workspace-file", path: relative });
+      else files.push(new File([bytes as BlobPart], info.name, { type: mime }));
+    }
+    if (items.length) intake.addItems(items);
+    if (files.length) await intake.addFiles(files, "dropped");
+    focusPrompt();
+  }
+  /**
+   * Explorer rows and editor tabs dragged onto the panel (Span's own pointer gestures). Paths are workspace relative.
+   * Files become workspace file chips with their current text when it is small; folders become outlines.
+   */
+  async function attachWorkspacePaths(paths: readonly { path: string; isDir: boolean }[]) {
+    const items: Attachment[] = [];
+    for (const entry of paths.slice(0, 128)) {
+      const relative = workspaceRelative(props.workspacePath, entry.path) ?? (entry.path && !/^(?:\/|[A-Za-z]:)/.test(entry.path) ? entry.path : undefined);
+      if (!relative) continue;
+      if (entry.isDir) {
+        await attachWorkspaceFolder(relative);
+        continue;
+      }
+      const item = createWorkspaceFile(relative);
+      if (isTextLike(item.name, item.mime)) {
+        try {
+          const text = (await api.openBuffer(relative)).text;
+          const size = utf8.encode(text).length;
+          if (size <= maxBytesFor(item.kind, item.mime)) Object.assign(item, { text, size });
+        } catch {
+          /* unreadable as text: the chip stays a link to the path */
+        }
+      }
+      items.push(item);
+    }
+    if (items.length) intake.addItems(items);
+    focusPrompt();
+  }
+  /** A workspace folder ("" is the root) as a bounded outline plus a link to the folder. */
+  async function attachWorkspaceFolder(relative: string) {
+    const root = props.workspacePath;
+    if (!root) return;
+    const name = relative ? leaf(relative) : leaf(root.replace(/[\\/]+$/, "")) || "workspace";
+    // One backend call when the desktop offers it (workspace ignore rules apply); otherwise a listing per folder.
+    let outline: { text: string; files: number; truncated: boolean };
+    try {
+      outline = props.folderOutline
+        ? await props.folderOutline(relative || ".", FOLDER_OUTLINE_LIMIT)
+        : await folderOutline(name, async (inner) => {
+          const path = [relative, inner].filter(Boolean).join("/");
+          return (await api.listDirectory(path)).map((entry) => ({ name: entry.name, isDir: entry.isDir }));
+        });
+    } catch (cause) {
+      intake.reject([{ name, reason: `Could not outline the folder: ${errorText(cause)}` }]);
+      return;
+    }
+    intake.addItems([createFolderAttachment({ name, text: outline.text, files: outline.files, truncated: outline.truncated, path: relative || ".", source: "workspace-file" })]);
+  }
+
   /** Folder: a workspace folder becomes a bounded outline (text) plus a link to the folder. Folders outside the workspace are refused. */
   async function addFolder() {
     const root = props.workspacePath;
@@ -2129,21 +2251,7 @@ export function createAgentController(props: AgentPanelProps) {
       intake.reject([{ name: leaf(trimmed) || trimmed, reason: "Outside this workspace, so it cannot be attached. Pick a folder inside it." }]);
       return;
     }
-    const name = relative ? leaf(relative) : leaf(root.replace(/[\\/]+$/, "")) || "workspace";
-    // One backend call when the desktop offers it (workspace ignore rules apply); otherwise a listing per folder.
-    let outline: { text: string; files: number; truncated: boolean };
-    try {
-      outline = props.folderOutline
-        ? await props.folderOutline(relative || ".", FOLDER_OUTLINE_LIMIT)
-        : await folderOutline(name, async (inner) => {
-          const path = [relative, inner].filter(Boolean).join("/");
-          return (await api.listDirectory(path)).map((entry) => ({ name: entry.name, isDir: entry.isDir }));
-        });
-    } catch (cause) {
-      intake.reject([{ name, reason: `Could not outline the folder: ${errorText(cause)}` }]);
-      return;
-    }
-    intake.addItems([createFolderAttachment({ name, text: outline.text, files: outline.files, truncated: outline.truncated, path: relative || ".", source: "workspace-file" })]);
+    await attachWorkspaceFolder(relative);
   }
 
   /** Earlier chats this window holds (other than the open one) that have something to export. */
@@ -2289,6 +2397,7 @@ export function createAgentController(props: AgentPanelProps) {
     toolBar,
     chatCount: () => (chatVersion(), chats.size()),
     feed,
+    savedImage: savedImages.get,
     connected,
     running,
     caps,
@@ -2362,6 +2471,8 @@ export function createAgentController(props: AgentPanelProps) {
     clearOpenRefusal: () => setOpenRefusal(undefined),
     pasteScreenshot,
     addFolder,
+    attachDroppedPaths,
+    attachWorkspacePaths,
     earlierChats,
     attachSession,
     openInEditor,

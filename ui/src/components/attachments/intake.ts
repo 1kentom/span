@@ -15,6 +15,8 @@ export interface IntakeOptions {
   onSettled?: (ids: string[]) => void;
   /** Reads the page count of a PDF. Undefined or a failure leaves the count out rather than guessing. */
   countPages?: (bytes: Uint8Array) => Promise<number | undefined>;
+  /** Inserts short dropped text into the prompt when it lands outside the prompt box. */
+  insertText?: (text: string) => void;
 }
 
 export interface Intake {
@@ -72,6 +74,20 @@ function readBytes(file: Blob): Promise<Uint8Array> {
   });
 }
 const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files');
+/** Text dragged from the editor or another app (no files). */
+const hasText = (event: DragEvent) => !hasFiles(event) && Array.from(event.dataTransfer?.types ?? []).some(type => type === 'text/plain' || type === 'text/uri-list');
+/** The prompt box takes short text drops itself, at the drop position. */
+const onPromptBox = (event: DragEvent) => event.target instanceof HTMLTextAreaElement;
+/** An in-page image dragged as a data URL (Span's own previews). Remote URLs are never fetched. */
+function droppedImage(event: DragEvent): File | undefined {
+  const uri = (event.dataTransfer?.getData('text/uri-list') ?? '').split(/\r?\n/).find(line => line && !line.startsWith('#')) ?? '';
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/i.exec(uri.trim());
+  if (!match) return undefined;
+  try {
+    const bytes = Uint8Array.from(atob(match[2]), char => char.charCodeAt(0));
+    return new File([bytes], `Dropped image.${match[1].slice(6).replace('jpeg', 'jpg').replace('svg+xml', 'svg')}`, { type: match[1] });
+  } catch { return undefined; }
+}
 
 export function createAttachmentIntake(options: IntakeOptions): Intake {
   const [dragging, setDragging] = createSignal(false);
@@ -155,10 +171,29 @@ export function createAttachmentIntake(options: IntakeOptions): Intake {
       // Short text pastes into the textarea as usual; long text becomes a chip.
       if (text && shouldChipPastedText(text)) { event.preventDefault(); addPastedText(text); }
     },
-    onDragEnter(event) { if (!hasFiles(event)) return; event.preventDefault(); depth += 1; setDragging(true); },
-    onDragOver(event) { if (!hasFiles(event)) return; event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = options.unavailable?.() ? 'none' : 'copy'; },
+    onDragEnter(event) {
+      if (hasText(event)) { if (!onPromptBox(event)) event.preventDefault(); return; }
+      if (!hasFiles(event)) return; event.preventDefault(); depth += 1; setDragging(true);
+    },
+    onDragOver(event) {
+      // Text over the prompt box keeps the browser's own caret placement; elsewhere on the panel it is accepted here.
+      if (hasText(event)) { if (!onPromptBox(event)) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; } return; }
+      if (!hasFiles(event)) return; event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = options.unavailable?.() ? 'none' : 'copy';
+    },
     onDragLeave(event) { if (!hasFiles(event)) return; depth = Math.max(0, depth - 1); if (depth === 0) setDragging(false); },
     onDrop(event) {
+      if (hasText(event)) {
+        const image = droppedImage(event);
+        if (image) { event.preventDefault(); void addFiles([image], 'dropped'); return; }
+        const text = event.dataTransfer?.getData('text/plain') || event.dataTransfer?.getData('text/uri-list') || '';
+        if (!text) return;
+        // Long text becomes a chip, like a long paste. Short text on the prompt box is inserted there by the browser.
+        if (shouldChipPastedText(text)) { event.preventDefault(); addPastedText(text); return; }
+        if (onPromptBox(event)) return;
+        event.preventDefault();
+        options.insertText?.(text);
+        return;
+      }
       if (!hasFiles(event)) return;
       event.preventDefault(); depth = 0; setDragging(false);
       // Entries must be taken while the event runs. Folders become bounded outlines; files are read as before.

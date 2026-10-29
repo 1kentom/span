@@ -74,12 +74,18 @@ describe('drop and file input intake', () => {
     zone.dispatchEvent(event('dragleave', { dataTransfer: transfer() }));
     expect(root.querySelector('.att-drop-overlay')).toBeNull();
   });
-  it('ignores drags that carry no files', () => {
+  it('never shows the file overlay for text drags and leaves the prompt box its own text drop', () => {
     const root = mount(() => <Harness />);
     const zone = root.querySelector('.att-dropzone')!;
     const e = event('dragenter', { dataTransfer: transfer([], ['text/plain']) });
     zone.dispatchEvent(e);
-    expect(e.defaultPrevented).toBe(false); expect(zone.classList.contains('att-dragging')).toBe(false);
+    expect(e.defaultPrevented).toBe(true); expect(zone.classList.contains('att-dragging')).toBe(false);
+    const onPrompt = event('dragover', { dataTransfer: transfer([], ['text/plain']) });
+    root.querySelector('textarea')!.dispatchEvent(onPrompt);
+    expect(onPrompt.defaultPrevented).toBe(false);
+    const none = event('dragenter', { dataTransfer: transfer([], ['text/html']) });
+    zone.dispatchEvent(none);
+    expect(none.defaultPrevented).toBe(false);
   });
   it('adds dropped files and reports oversized ones without reading them', async () => {
     const root = mount(() => <Harness />);

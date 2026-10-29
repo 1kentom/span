@@ -1,7 +1,7 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { Annotation, Compartment, EditorState, Prec, StateEffect, StateField, Text, Transaction, type ChangeSet, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, WidgetType, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection, crosshairCursor, type DecorationSet, type ViewUpdate } from "@codemirror/view";
-import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, foldService, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
+import { Decoration, EditorView, WidgetType, tooltips, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection, crosshairCursor, type DecorationSet } from "@codemirror/view";
+import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, foldService, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from "@codemirror/commands";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from "@codemirror/search";
@@ -13,6 +13,10 @@ import { formatWithLanguageServer, lspExtension, type LspBinding } from "../lib/
 import { navigationExtension } from "../lib/lsp-peek";
 import { syntaxHighlightStyle } from "../editor/syntax-highlight";
 import { javaRunGutter } from "../editor/java-run-gutter";
+import { activeLineLayer, indentGuides } from "../editor/indent-guides";
+import { indentationSupport } from "../editor/indentation";
+import { selectionPointer } from "../editor/selection-pointer";
+import { lineSelection } from "../editor/line-selection";
 import "../styles/editor.css";
 import "../styles/syntax.css";
 
@@ -255,35 +259,6 @@ export function transactionEdits(changes: ChangeSet): TextEdit[] {
 
 export const codeHighlighting = syntaxHighlightStyle;
 
-function indentation(view: EditorView): DecorationSet {
-  const decorations = [];
-  const visited = new Set<number>();
-  for (const range of view.visibleRanges) {
-    let position = range.from;
-    while (position <= range.to) {
-      const line = view.state.doc.lineAt(position);
-      if (!visited.has(line.from)) {
-        visited.add(line.from);
-        const leading = /^\s*/.exec(line.text)?.[0] ?? "";
-        let columns = 0;
-        for (const character of leading) columns += character === "\t" ? view.state.tabSize - (columns % view.state.tabSize) : 1;
-        if (columns > 0) decorations.push(Decoration.line({ attributes: { class: "cm-indent-guides", style: `--indent-guide-width: ${columns}ch` } }).range(line.from));
-      }
-      if (line.to >= range.to || line.to === view.state.doc.length) break;
-      position = line.to + 1;
-    }
-  }
-  return Decoration.set(decorations, true);
-}
-
-const indentGuides = ViewPlugin.fromClass(class {
-  decorations: DecorationSet;
-  constructor(view: EditorView) { this.decorations = indentation(view); }
-  update(update: ViewUpdate) {
-    if (update.docChanged || update.viewportChanged || update.state.tabSize !== update.startState.tabSize) this.decorations = indentation(update.view);
-  }
-}, { decorations: (plugin) => plugin.decorations });
-
 const syntaxState = StateField.define<SyntaxSnapshot | undefined>({
   create: () => undefined,
   update(value, transaction) {
@@ -390,7 +365,7 @@ export default function Editor(props: EditorProps) {
   });
 
   const preferenceExtensions = (tabSize: number, wordWrap: boolean): Extension => [
-    EditorState.tabSize.of(tabSize), indentUnit.of(" ".repeat(tabSize)), wordWrap ? EditorView.lineWrapping : [],
+    EditorState.tabSize.of(tabSize), wordWrap ? EditorView.lineWrapping : [],
   ];
 
   function reportCursor() {
@@ -402,7 +377,9 @@ export default function Editor(props: EditorProps) {
 
   function extensions(): Extension[] {
     return [
-      lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), drawSelection(),
+      // Tooltips may only use the editor itself. The default is the whole window, which puts a tall hover under the tab bar.
+      tooltips({ tooltipSpace: view => { const box = view.scrollDOM.getBoundingClientRect(); return { top: box.top, left: box.left, bottom: box.bottom, right: box.right }; } }),
+      lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), activeLineLayer(), drawSelection(), selectionPointer(), lineSelection(), indentationSupport(),
       javaRun.of(javaRunExtensions()),
       props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),
       closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
@@ -411,7 +388,7 @@ export default function Editor(props: EditorProps) {
         marker.setAttribute("aria-hidden", "true");
         return marker;
       } }),
-      search({ top: true, createPanel: createEditorSearchPanel }), highlightSelectionMatches(), indentGuides, syntaxState, proposalState,
+      search({ top: true, createPanel: createEditorSearchPanel }), highlightSelectionMatches(), indentGuides(), syntaxState, proposalState,
       editability.of([EditorState.readOnly.of(Boolean(props.readOnly)), EditorView.editable.of(!props.readOnly)]),
       EditorState.allowMultipleSelections.of(true),
       preferences.of(preferenceExtensions(props.tabSize ?? 2, props.wordWrap ?? false)),
@@ -561,7 +538,7 @@ export default function Editor(props: EditorProps) {
   });
 
   onCleanup(() => { view?.destroy(); view = undefined; });
-  return <div class="span-editor" classList={{ "is-active": props.active !== false }} data-theme={props.theme ?? "dark"} style={{ "--editor-font-size": `${props.fontSize ?? 13}px`, "--editor-font-family": `${props.fontFamily ? `"${props.fontFamily.replace(/["\\]/g, "")}"` : '"JetBrains Mono"'}, monospace`, "--editor-line-height": `${Math.max(22, Math.round((props.fontSize ?? 13) * 22 / 13))}px`, "--editor-indent-size": `${props.tabSize ?? 2}ch` }}>
+  return <div class="span-editor" classList={{ "is-active": props.active !== false }} data-theme={props.theme ?? "dark"} style={{ "--editor-font-size": `${props.fontSize ?? 13}px`, "--editor-font-family": `${props.fontFamily ? `"${props.fontFamily.replace(/["\\]/g, "")}"` : '"JetBrains Mono"'}, monospace`, "--editor-line-height": `${Math.max(22, Math.round((props.fontSize ?? 13) * 22 / 13))}px` }}>
     <Show when={props.proposal}>{(proposal) => <div class="editor-proposal-review" role="region" aria-label="Review suggested changes">
       <div class="editor-proposal-summary"><strong>{proposalIsStale() ? "Proposal needs a fresh revision" : `${proposal().hunks.length} suggested ${proposal().hunks.length === 1 ? "change" : "changes"}`}</strong><span>{proposalIsStale() ? "This file changed. Reject this proposal and request a new one." : "Keep or skip each change, then apply your selection."}</span></div>
       <div class="editor-proposal-actions"><button type="button" class="proposal-reject" disabled={props.proposalBusy || !props.onRejectProposal} onClick={() => props.onRejectProposal?.(proposal().id)}>Reject proposal</button><button type="button" class="proposal-apply" disabled={props.proposalBusy || proposalIsStale() || selectedHunks().size === 0 || !props.onApplyProposal} onClick={() => props.onApplyProposal?.(proposal().id, [...selectedHunks()])}>{props.proposalBusy ? "Reviewing…" : `Apply selected (${selectedHunks().size})`}</button></div>

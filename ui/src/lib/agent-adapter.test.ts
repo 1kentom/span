@@ -181,7 +181,7 @@ describe("tool steps from typed fields", () => {
     expect(preparing.verb).toBe("Preparing tool");
     expect(preparing.note).toBeUndefined();
   });
-  it("reports savedPath as text only and offers no open action for it", () => {
+  it("keeps unverified savedPath separate from editor open actions", () => {
     const step = toStep(tool({ title: "Generate image", savedPath: "/Users/x/out.png" }), [], "/w", () => undefined);
     expect(step.savedPath).toBe("/Users/x/out.png");
     expect(step.onOpen).toBeUndefined();

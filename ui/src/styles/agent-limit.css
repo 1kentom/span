@@ -1,19 +1,87 @@
-/* Limit card (usage limit, rate limit, overloaded provider). Kept apart from agent-sidebar.css, which other work edits. */
-.sb-limit { gap: 10px; }
-.sb-limit .sb-limit-free { color: var(--sb-fg); }
-.sb-limit-actions { padding: 0 12px; }
-.sb-limit-actions > .sb-btn .icon { color: currentColor; opacity: 0.8; }
-.sb-limit-agent .sb-limit-note {
-  padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 16px; font-weight: 400;
-  background: color-mix(in srgb, var(--sb-warning) 16%, transparent); color: var(--sb-dim);
+/*
+ * Limit card (usage limit, rate limit, overloaded provider) and the plain error card under the feed. Kept apart from
+ * agent-sidebar.css, which other work edits. Same family as the bars stacked on the prompt box: the raised neutral
+ * surface, a 1px neutral border, radius 12 and a 14px inset. The tone lives only in the small icon.
+ */
+.agent-pad > :is(.sb-limit, .sb-card.alert) {
+  margin-inline: 2px;
+  border: 1px solid var(--sb-border);
+  border-radius: 12px;
+  background: var(--sb-raised);
 }
-.sb-limit-host { color: var(--sb-dim); font-weight: 400; font-size: 11px; }
-.sb-limit-quiet { display: flex; align-items: center; gap: 2px; padding: 0 6px; }
+
+.sb-limit {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 14px;
+  overflow: visible;
+  animation: sb-limit-in 150ms ease-out both;
+}
+.sb-limit-head { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.sb-limit-head > .sb-glyph { margin-top: 2px; }
+.sb-limit-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.sb-limit-title { overflow: hidden; font-size: 14px; font-weight: 500; line-height: 18px; color: var(--sb-fg); text-overflow: ellipsis; white-space: nowrap; }
+.sb-limit-body {
+  display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  font-size: 12px; line-height: 18px; color: var(--sb-dim); text-wrap: pretty;
+}
+
+/* One row, never wrapping: lead, secondary, then the overflow menu at the end. */
+.sb-limit-actions { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; min-width: 0; padding-left: 22px; }
+.sb-limit-actions > .sb-btn, .sb-limit-menu-wrap > .sb-btn { height: 26px; padding: 0 10px; border-radius: 6px; }
+.sb-limit-actions .sb-btn { min-width: 0; font: 500 12px/1 Inter, system-ui, sans-serif; }
+.sb-limit .sb-menu-item { font: 400 12px/1 Inter, system-ui, sans-serif; }
+.sb-limit-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Full size while the row fits, so an overflow is measurable; once narrow, the lead may ellipsize as a last resort. */
+.sb-limit-lead { flex: none; border-color: var(--sb-accent-border); background: var(--sb-control); color: var(--sb-fg); }
+.sb-limit-lead:hover:not(:disabled) { background: var(--sb-accent-surface); }
+.sb-limit-lead > .icon { color: var(--sb-dim); }
+.sb-limit-lead:disabled { opacity: 1; border-color: var(--sb-control-border); color: var(--sb-dim); font-variant-numeric: tabular-nums; }
+.sb-limit-quiet { border-color: var(--sb-control-border); background: transparent; color: var(--sb-fg); }
+.sb-limit-quiet:hover:not(:disabled), .sb-limit-quiet[aria-expanded="true"] { background: var(--sb-hover); }
+.sb-limit-more { width: 26px; height: 26px; border-radius: 6px; color: var(--sb-dim); }
+.sb-limit-more[aria-expanded="true"] { background: var(--sb-hover); color: var(--sb-fg); }
+
+.sb-limit-menu-wrap { position: relative; display: flex; flex: none; min-width: 0; }
+.sb-limit[data-narrow] .sb-limit-lead { flex: 0 1 auto; }
+.sb-limit-menu {
+  position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 6;
+  display: flex; flex-direction: column; width: max-content; min-width: 188px; max-width: 260px; padding: 4px;
+  border: 1px solid var(--sb-control-border); border-radius: 10px; background: var(--sb-menu); box-shadow: var(--sb-shadow);
+  animation: sb-limit-in 150ms ease-out both;
+}
+.sb-limit-menu.end { left: auto; right: 0; }
+.sb-limit-menu.below { top: calc(100% + 6px); bottom: auto; }
+.sb-limit-item { width: 100%; flex: none; white-space: nowrap; }
+.sb-limit-item:hover, .sb-limit-item:focus-visible { background: var(--sb-hover); }
+.sb-limit-item .sb-menu-label { overflow: hidden; text-overflow: ellipsis; }
+.sb-limit-trail { color: var(--sb-dim); }
+.sb-limit-cost, .sb-limit-note {
+  flex: none; padding: 0 5px; border-radius: 4px; background: var(--sb-field); color: var(--sb-dim);
+  font-size: 10.5px; line-height: 16px;
+}
+
 .sb-limit-raw {
-  margin: 0 12px; padding: 7px 9px; border-radius: 6px; background: var(--sb-field);
+  max-height: 160px; margin: 0 0 0 22px; padding: 8px 10px; overflow: auto; border-radius: 8px; background: var(--sb-field);
   color: var(--sb-dim); font-size: 11px; line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere;
 }
+
+/* The model picker's limit mark, shared with ModelPopover. Neutral: the row's text says what it means. */
 .sb-limit-chip {
   flex: none; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 16px; white-space: nowrap;
-  background: color-mix(in srgb, var(--sb-warning) 16%, transparent); color: color-mix(in srgb, var(--sb-warning) 70%, var(--sb-fg));
+  background: var(--sb-field); color: var(--sb-dim);
+}
+
+/* The plain error card under the feed: same surface and inset, the tone only on its icon, no saturated fill. */
+.agent-pad > .sb-card.alert { gap: 10px; padding: 0 0 12px; }
+.agent-pad > .sb-card.alert > .sb-alert-head { gap: 8px; padding: 12px 14px 0; }
+.agent-pad > .sb-card.alert .sb-card-title { font-size: 14px; line-height: 18px; }
+.agent-pad > .sb-card.alert > :is(.sb-actions, .sb-body.pad) { padding: 0 14px 0 36px; }
+.agent-pad > .sb-card.alert .sb-btn { height: 26px; padding: 0 10px; border-radius: 6px; font: 500 12px/1 Inter, system-ui, sans-serif; }
+.agent-pad > .sb-card.alert .sb-btn:not(.primary) { border-color: var(--sb-control-border); background: transparent; }
+.agent-pad > .sb-card.alert .sb-btn:not(.primary):hover:not(:disabled) { background: var(--sb-hover); }
+.agent-pad > .sb-card.alert .sb-btn.primary { border-color: var(--sb-accent-border); background: var(--sb-control); color: var(--sb-fg); }
+.agent-pad > .sb-card.alert .sb-btn.primary:hover:not(:disabled) { background: var(--sb-accent-surface); }
+
+@keyframes sb-limit-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .sb-limit, .sb-limit-menu { animation: none; }
 }

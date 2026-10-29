@@ -1,0 +1,936 @@
+{
+  "source": "devicon",
+  "repository": "https://github.com/devicons/devicon",
+  "commit": "32fe1d3b3f36ad11f90ab94f7db59738139c2bf6",
+  "retrieved": "2026-10-29",
+  "license": "MIT (repository). Logos and names identify their products; their owners keep trademark rights and any brand restrictions. The span project license does not relicense this artwork.",
+  "licenseFile": "LICENSE.devicon.txt",
+  "processing": "Files are byte-identical copies of the pinned devicon commit. Inspected as XML: no scripts, event attributes, embedded documents, images or external references.",
+  "contrastRule": "A logo renders in color on a theme only when its best painted color reaches 3:1 against every surface token (--canvas, --island, --popup) of that theme. Otherwise it renders as a currentColor mask. \"dark\" covers the dark and purple themes.",
+  "assets": [
+    {
+      "key": "astro",
+      "file": "astro-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/astro/astro-original.svg",
+      "variant": "original",
+      "sha256": "f48e027603ad5d9823b86bd94fb77a499b0fae27e91649d5f9290fc9c92cecae",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 6.46,
+        "dark.island": 5.71,
+        "dark.popup": 5.29,
+        "light.canvas": 18.06,
+        "light.island": 20.79,
+        "light.popup": 20.79,
+        "purple.canvas": 6.48,
+        "purple.island": 5.71,
+        "purple.popup": 5.25
+      }
+    },
+    {
+      "key": "bash",
+      "file": "bash-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/bash/bash-original.svg",
+      "variant": "original",
+      "sha256": "8e9b1f859331c8d11571e77b1371c5d7ac7e380abfcd2f31160ed81dc37de403",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 6.66,
+        "dark.island": 5.88,
+        "dark.popup": 5.45,
+        "light.canvas": 11.47,
+        "light.island": 13.2,
+        "light.popup": 13.2,
+        "purple.canvas": 6.67,
+        "purple.island": 5.88,
+        "purple.popup": 5.41
+      }
+    },
+    {
+      "key": "c",
+      "file": "c-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/c/c-original.svg",
+      "variant": "original",
+      "sha256": "8cce48da91084256f15653e02bfd7046ccb34489d030cb1aa34dee766daad6b7",
+      "render": {
+        "light": "mono",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 10.04,
+        "dark.island": 8.87,
+        "dark.popup": 8.22,
+        "light.canvas": 1.72,
+        "light.island": 1.98,
+        "light.popup": 1.98,
+        "purple.canvas": 10.06,
+        "purple.island": 8.87,
+        "purple.popup": 8.16
+      }
+    },
+    {
+      "key": "clojure",
+      "file": "clojure-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/clojure/clojure-original.svg",
+      "variant": "original",
+      "sha256": "405b1b05bbbdd7ddfdbe331fec17360de2b6b482b7f67aa66540fa12e6e73e25",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 3.29,
+        "light.island": 3.79,
+        "light.popup": 3.79,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "cmake",
+      "file": "cmake-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/cmake/cmake-original.svg",
+      "variant": "original",
+      "sha256": "c3a8a666d1ceaa0ab92e8d267c3e03e56a62a73c84a6722c92b23e79886f99b4",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 12.53,
+        "dark.island": 11.07,
+        "dark.popup": 10.25,
+        "light.canvas": 7.28,
+        "light.island": 8.38,
+        "light.popup": 8.38,
+        "purple.canvas": 12.56,
+        "purple.island": 11.07,
+        "purple.popup": 10.18
+      }
+    },
+    {
+      "key": "cplusplus",
+      "file": "cplusplus-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/cplusplus/cplusplus-original.svg",
+      "variant": "original",
+      "sha256": "7ff8253551235e3a6b002a7c2bd6e3190d85113a64fcb40f2254473caeb025d4",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 8.49,
+        "light.island": 9.77,
+        "light.popup": 9.77,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "csharp",
+      "file": "csharp-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/csharp/csharp-original.svg",
+      "variant": "original",
+      "sha256": "7093478d0888e22a224b6fa832da6c9ffd14c433de8bd14aab0c1cb50925f3ee",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 8.74,
+        "light.island": 10.06,
+        "light.popup": 10.06,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "css3",
+      "file": "css3-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/css3/css3-original.svg",
+      "variant": "original",
+      "sha256": "36b7d94b657d571d3f94042acbf6a4c86a5301a222f83f4b4583ad2acf6e297d",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 4.43,
+        "light.island": 5.1,
+        "light.popup": 5.1,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "dart",
+      "file": "dart-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/dart/dart-original.svg",
+      "variant": "original",
+      "sha256": "8dec3d6f6d92d5c8db294baf7ea89cbad5c3dd0f7fde5ca972ffc6cebf9b2d40",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 10.61,
+        "dark.island": 9.38,
+        "dark.popup": 8.68,
+        "light.canvas": 4.16,
+        "light.island": 4.79,
+        "light.popup": 4.79,
+        "purple.canvas": 10.63,
+        "purple.island": 9.37,
+        "purple.popup": 8.62
+      }
+    },
+    {
+      "key": "docker",
+      "file": "docker-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/docker/docker-original.svg",
+      "variant": "original",
+      "sha256": "3fd830ea69431ed7a0b8d068cd5b34ad3f00a1a78195d50f13ff56713f2462e1",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 16.4,
+        "dark.island": 14.49,
+        "dark.popup": 13.42,
+        "light.canvas": 7.7,
+        "light.island": 8.86,
+        "light.popup": 8.86,
+        "purple.canvas": 16.44,
+        "purple.island": 14.49,
+        "purple.popup": 13.33
+      }
+    },
+    {
+      "key": "elixir",
+      "file": "elixir-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/elixir/elixir-original.svg",
+      "variant": "original",
+      "sha256": "8710ad49e53ec4a2a4efc82381cc8c8bff5c630e4ad82801d186759228d867ab",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 7.39,
+        "dark.island": 6.53,
+        "dark.popup": 6.04,
+        "light.canvas": 9.89,
+        "light.island": 11.38,
+        "light.popup": 11.38,
+        "purple.canvas": 7.4,
+        "purple.island": 6.53,
+        "purple.popup": 6
+      }
+    },
+    {
+      "key": "erlang",
+      "file": "erlang-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/erlang/erlang-original.svg",
+      "variant": "original",
+      "sha256": "b605010afdc6ac75a2c53ebbf079bbcc47948133fcb1765f8b5eec8494a6d9c0",
+      "render": {
+        "light": "color",
+        "dark": "mono"
+      },
+      "contrast": {
+        "dark.canvas": 2.61,
+        "dark.island": 2.31,
+        "dark.popup": 2.14,
+        "light.canvas": 6.62,
+        "light.island": 7.62,
+        "light.popup": 7.62,
+        "purple.canvas": 2.62,
+        "purple.island": 2.31,
+        "purple.popup": 2.12
+      }
+    },
+    {
+      "key": "go",
+      "file": "go-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/go/go-original.svg",
+      "variant": "original",
+      "sha256": "2d4558b96d3ec71d0d922a62668cb2ea5a5d83ed7d4caf6b0479b3266f795a2f",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "graphql",
+      "file": "graphql-plain.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/graphql/graphql-plain.svg",
+      "variant": "plain",
+      "sha256": "1fafe03a1f77be5a1c25c20db6e52f292ed8ae5a9b2536f807ee2a3d2e78d3d3",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 5.09,
+        "dark.island": 4.5,
+        "dark.popup": 4.17,
+        "light.canvas": 3.4,
+        "light.island": 3.91,
+        "light.popup": 3.91,
+        "purple.canvas": 5.1,
+        "purple.island": 4.5,
+        "purple.popup": 4.14
+      }
+    },
+    {
+      "key": "groovy",
+      "file": "groovy-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/groovy/groovy-original.svg",
+      "variant": "original",
+      "sha256": "df1a25f5531b99cd95c0c5ae47f0880fb886f7ab3a7ea6aa9828f632e9dee9b0",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "haskell",
+      "file": "haskell-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/haskell/haskell-original.svg",
+      "variant": "original",
+      "sha256": "70aee9daacf630e53b54c3e3049d636e69c006d6eb5669c535a221d4fc3f9871",
+      "render": {
+        "light": "color",
+        "dark": "mono"
+      },
+      "contrast": {
+        "dark.canvas": 3.49,
+        "dark.island": 3.09,
+        "dark.popup": 2.86,
+        "light.canvas": 8.83,
+        "light.island": 10.16,
+        "light.popup": 10.16,
+        "purple.canvas": 3.5,
+        "purple.island": 3.08,
+        "purple.popup": 2.84
+      }
+    },
+    {
+      "key": "html5",
+      "file": "html5-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/html5/html5-original.svg",
+      "variant": "original",
+      "sha256": "34826e5b3315daadf4fa15f723a3c1d5ba4a89277bfd94e22ac4d7d3d54338c5",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 3.39,
+        "light.island": 3.9,
+        "light.popup": 3.9,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "java",
+      "file": "java-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/java/java-original.svg",
+      "variant": "original",
+      "sha256": "7582e518a9c02425f97155e5a3bd39d1a3a7d421b78caf9c8df7443dad3edc5d",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 4.66,
+        "dark.island": 4.12,
+        "dark.popup": 3.81,
+        "light.canvas": 4.31,
+        "light.island": 4.96,
+        "light.popup": 4.96,
+        "purple.canvas": 4.67,
+        "purple.island": 4.12,
+        "purple.popup": 3.79
+      }
+    },
+    {
+      "key": "javascript",
+      "file": "javascript-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/javascript/javascript-original.svg",
+      "variant": "original",
+      "sha256": "0656ff65fc8eeacda5c78d7f9ffe91ec1eb919db64f56e0b7dcd460af4bbd36c",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 14.18,
+        "dark.island": 12.52,
+        "dark.popup": 11.6,
+        "light.canvas": 11.04,
+        "light.island": 12.71,
+        "light.popup": 12.71,
+        "purple.canvas": 14.2,
+        "purple.island": 12.52,
+        "purple.popup": 11.52
+      }
+    },
+    {
+      "key": "json",
+      "file": "json-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/json/json-original.svg",
+      "variant": "original",
+      "sha256": "f36df74e684c6142c837c192f99f3d1c399d3dd523ec74ef579b831f5b970867",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "kotlin",
+      "file": "kotlin-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/kotlin/kotlin-original.svg",
+      "variant": "original",
+      "sha256": "5053c2e1288582d1ac2cfc1e807eabb7f6059b1aa2f7d04e5cf00063682a2cbe",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 5.09,
+        "dark.island": 4.49,
+        "dark.popup": 4.16,
+        "light.canvas": 4.01,
+        "light.island": 4.61,
+        "light.popup": 4.61,
+        "purple.canvas": 5.1,
+        "purple.island": 4.49,
+        "purple.popup": 4.13
+      }
+    },
+    {
+      "key": "lua",
+      "file": "lua-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/lua/lua-original.svg",
+      "variant": "original",
+      "sha256": "7bd82efe74ca5dc3741b8cdcf6c373c96123c638e79c42d0806b15c47e2fccb8",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 13.91,
+        "light.island": 16.01,
+        "light.popup": 16.01,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "markdown",
+      "file": "markdown-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/markdown/markdown-original.svg",
+      "variant": "original",
+      "sha256": "9d0c0aeff8d36500dd4023a50bf9bfd7152541402eab1ae8fcd7b86cdcb91853",
+      "render": {
+        "light": "color",
+        "dark": "mono"
+      },
+      "contrast": {
+        "dark.canvas": 1.05,
+        "dark.island": 1.19,
+        "dark.popup": 1.29,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 1.05,
+        "purple.island": 1.19,
+        "purple.popup": 1.3
+      }
+    },
+    {
+      "key": "objectivec",
+      "file": "objectivec-plain.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/objectivec/objectivec-plain.svg",
+      "variant": "plain",
+      "sha256": "8ef92e435763fc39f5b66d09d77267383550a22685ceec5ef2783ebb8f3101b6",
+      "render": {
+        "light": "color",
+        "dark": "mono"
+      },
+      "contrast": {
+        "dark.canvas": 2.81,
+        "dark.island": 2.48,
+        "dark.popup": 2.3,
+        "light.canvas": 6.15,
+        "light.island": 7.09,
+        "light.popup": 7.09,
+        "purple.canvas": 2.82,
+        "purple.island": 2.48,
+        "purple.popup": 2.28
+      }
+    },
+    {
+      "key": "perl",
+      "file": "perl-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/perl/perl-original.svg",
+      "variant": "original",
+      "sha256": "f6cd4249349b4681ba273699aa31cf4df43f8c63dafdc640803b91cf239b8c8b",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 11.74,
+        "light.island": 13.52,
+        "light.popup": 13.52,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "php",
+      "file": "php-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/php/php-original.svg",
+      "variant": "original",
+      "sha256": "f22619a19c99a123e4678d71826f65f223721a739631dff46de39827c9ee0633",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "powershell",
+      "file": "powershell-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/powershell/powershell-original.svg",
+      "variant": "original",
+      "sha256": "f72bc9843ff04005045b659f1ce960d03ddf7707fe02cb5d3dee373914a6d750",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "python",
+      "file": "python-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/python/python-original.svg",
+      "variant": "original",
+      "sha256": "71493b4a732f0532b3a03a7a95da3ee11a65766367c8303b901ffbe7bf91a3a2",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 16.16,
+        "dark.island": 14.28,
+        "dark.popup": 13.22,
+        "light.canvas": 5.07,
+        "light.island": 5.83,
+        "light.popup": 5.83,
+        "purple.canvas": 16.19,
+        "purple.island": 14.27,
+        "purple.popup": 13.13
+      }
+    },
+    {
+      "key": "r",
+      "file": "r-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/r/r-original.svg",
+      "variant": "original",
+      "sha256": "9d135e1a56f58f89203afc9253f1db91901e19522f92dfc10575e3312336e61b",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 12.59,
+        "dark.island": 11.12,
+        "dark.popup": 10.3,
+        "light.canvas": 5.8,
+        "light.island": 6.68,
+        "light.popup": 6.68,
+        "purple.canvas": 12.62,
+        "purple.island": 11.12,
+        "purple.popup": 10.23
+      }
+    },
+    {
+      "key": "ruby",
+      "file": "ruby-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/ruby/ruby-original.svg",
+      "variant": "original",
+      "sha256": "74ead50b8f0f31e1b34618088bc0b0e16c04f1d4539039ef9358717d8505a63c",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 9.54,
+        "light.island": 10.98,
+        "light.popup": 10.98,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "rust",
+      "file": "rust-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/rust/rust-original.svg",
+      "variant": "original",
+      "sha256": "16c6c6a98e990944fc5e1cc64cc8fc7b8be3a662ec4ee7951b7995d2e52f5e12",
+      "render": {
+        "light": "color",
+        "dark": "mono"
+      },
+      "contrast": {
+        "dark.canvas": 1.05,
+        "dark.island": 1.19,
+        "dark.popup": 1.29,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 1.05,
+        "purple.island": 1.19,
+        "purple.popup": 1.3
+      }
+    },
+    {
+      "key": "sass",
+      "file": "sass-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/sass/sass-original.svg",
+      "variant": "original",
+      "sha256": "c5cfd1072695faba7d5c23ee4c4e373dad16463cb55980e8118002d445bd764e",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 5.59,
+        "dark.island": 4.94,
+        "dark.popup": 4.58,
+        "light.canvas": 3.09,
+        "light.island": 3.56,
+        "light.popup": 3.56,
+        "purple.canvas": 5.61,
+        "purple.island": 4.94,
+        "purple.popup": 4.55
+      }
+    },
+    {
+      "key": "scala",
+      "file": "scala-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/scala/scala-original.svg",
+      "variant": "original",
+      "sha256": "2565b6286bf30ab28c7d6a988ab7a76c5ce28182b80634e2a2ae21e29b4ad7b9",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 4.38,
+        "dark.island": 3.87,
+        "dark.popup": 3.58,
+        "light.canvas": 14.76,
+        "light.island": 17,
+        "light.popup": 17,
+        "purple.canvas": 4.39,
+        "purple.island": 3.87,
+        "purple.popup": 3.56
+      }
+    },
+    {
+      "key": "svelte",
+      "file": "svelte-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/svelte/svelte-original.svg",
+      "variant": "original",
+      "sha256": "1941fe737cb55f6a88bf919d43131d3e346a1d2a0117bcf319f6638cf21f69f8",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 3.07,
+        "light.island": 3.53,
+        "light.popup": 3.53,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "swift",
+      "file": "swift-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/swift/swift-original.svg",
+      "variant": "original",
+      "sha256": "46b6e4abd3ab12c589b8e276295f9439e2869bc4788d918efbc6e76147e8a06e",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.74,
+        "dark.island": 17.44,
+        "dark.popup": 16.15,
+        "light.canvas": 3.07,
+        "light.island": 3.54,
+        "light.popup": 3.54,
+        "purple.canvas": 19.78,
+        "purple.island": 17.44,
+        "purple.popup": 16.04
+      }
+    },
+    {
+      "key": "terraform",
+      "file": "terraform-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/terraform/terraform-original.svg",
+      "variant": "original",
+      "sha256": "0be6427291ae47f057b75f9010dffd6f58a40f0c83c43606ff68851cef1621dc",
+      "render": {
+        "light": "color",
+        "dark": "mono"
+      },
+      "contrast": {
+        "dark.canvas": 3.49,
+        "dark.island": 3.08,
+        "dark.popup": 2.85,
+        "light.canvas": 7.03,
+        "light.island": 8.09,
+        "light.popup": 8.09,
+        "purple.canvas": 3.49,
+        "purple.island": 3.08,
+        "purple.popup": 2.83
+      }
+    },
+    {
+      "key": "toml",
+      "file": "toml-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/toml/toml-original.svg",
+      "variant": "original",
+      "sha256": "037cb2174d5d28a2428743ce218bf49d2d442613e22b4eed91ad59c4ddde3cdb",
+      "render": {
+        "light": "color",
+        "dark": "mono"
+      },
+      "contrast": {
+        "dark.canvas": 3.05,
+        "dark.island": 2.69,
+        "dark.popup": 2.49,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 3.05,
+        "purple.island": 2.69,
+        "purple.popup": 2.48
+      }
+    },
+    {
+      "key": "typescript",
+      "file": "typescript-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/typescript/typescript-original.svg",
+      "variant": "original",
+      "sha256": "c9191199f4049920c2fc19035b8a6664f37f4689fcd9e8434e786097e78863f0",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 19.91,
+        "dark.island": 17.59,
+        "dark.popup": 16.29,
+        "light.canvas": 3.92,
+        "light.island": 4.51,
+        "light.popup": 4.51,
+        "purple.canvas": 19.95,
+        "purple.island": 17.59,
+        "purple.popup": 16.18
+      }
+    },
+    {
+      "key": "vuejs",
+      "file": "vuejs-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/vuejs/vuejs-original.svg",
+      "variant": "original",
+      "sha256": "4cc1153600c0845c645ac6c718c11d516d6899079a0dc406e3d62f68b1d02c49",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 7.97,
+        "dark.island": 7.04,
+        "dark.popup": 6.52,
+        "light.canvas": 8.05,
+        "light.island": 9.27,
+        "light.popup": 9.27,
+        "purple.canvas": 7.99,
+        "purple.island": 7.04,
+        "purple.popup": 6.48
+      }
+    },
+    {
+      "key": "xml",
+      "file": "xml-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/xml/xml-original.svg",
+      "variant": "original",
+      "sha256": "0edaba97b87a3eff6153b480c71081db68ad170f54e21de2da0b4b89ff4d1bdf",
+      "render": {
+        "light": "color",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 9.1,
+        "dark.island": 8.04,
+        "dark.popup": 7.44,
+        "light.canvas": 5.87,
+        "light.island": 6.76,
+        "light.popup": 6.76,
+        "purple.canvas": 9.12,
+        "purple.island": 8.04,
+        "purple.popup": 7.39
+      }
+    },
+    {
+      "key": "yaml",
+      "file": "yaml-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/yaml/yaml-original.svg",
+      "variant": "original",
+      "sha256": "7fecdaa89f0c22424ea16b655c739ab147dc31d4b72a128ea4de2f28ed1d75d3",
+      "render": {
+        "light": "color",
+        "dark": "mono"
+      },
+      "contrast": {
+        "dark.canvas": 3.49,
+        "dark.island": 3.08,
+        "dark.popup": 2.86,
+        "light.canvas": 18.24,
+        "light.island": 21,
+        "light.popup": 21,
+        "purple.canvas": 3.5,
+        "purple.island": 3.08,
+        "purple.popup": 2.84
+      }
+    },
+    {
+      "key": "zig",
+      "file": "zig-original.svg",
+      "source": "https://raw.githubusercontent.com/devicons/devicon/32fe1d3b3f36ad11f90ab94f7db59738139c2bf6/icons/zig/zig-original.svg",
+      "variant": "original",
+      "sha256": "f4af51779b6d6f6a0de1172f11cb19803b42b6c4a02eb6e43ed97d2dd640323f",
+      "render": {
+        "light": "mono",
+        "dark": "color"
+      },
+      "contrast": {
+        "dark.canvas": 9.75,
+        "dark.island": 8.61,
+        "dark.popup": 7.98,
+        "light.canvas": 1.77,
+        "light.island": 2.04,
+        "light.popup": 2.04,
+        "purple.canvas": 9.77,
+        "purple.island": 8.61,
+        "purple.popup": 7.92
+      }
+    }
+  ]
+}

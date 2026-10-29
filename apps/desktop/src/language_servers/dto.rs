@@ -203,6 +203,13 @@ pub struct DiagnosticDto {
     pub range: RangeDto,
     pub source: Option<String>,
     pub code: Option<String>,
+    /// The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+    /// dims it, and the problems list counts it as a warning, as IntelliJ does.
+    #[serde(default)]
+    pub unnecessary: bool,
+    /// The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`).
+    #[serde(default)]
+    pub deprecated: bool,
 }
 
 /// What a ready server advertised, as reported by `lsp_status`. A request the server did
@@ -592,8 +599,13 @@ pub fn map_diagnostic(d: lsp::Diagnostic) -> DiagnosticDto {
             DiagnosticSeverityDto::Hint
         }
     });
+    let tagged = |tag: lsp::DiagnosticTag| d.tags.as_ref().is_some_and(|tags| tags.contains(&tag));
+    let unnecessary = tagged(lsp::DiagnosticTag::UNNECESSARY);
+    let deprecated = tagged(lsp::DiagnosticTag::DEPRECATED);
     DiagnosticDto {
         severity,
+        unnecessary,
+        deprecated,
         message: d.message,
         range: d.range.into(),
         source: d.source,
@@ -622,6 +634,28 @@ mod tests {
 
     fn from<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn diagnostic_tags_map_to_unused_and_deprecated() {
+        let unused: lsp::Diagnostic = from(json!({
+            "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 3}},
+            "severity": 4, "message": "'x' is declared but never used", "tags": [1]
+        }));
+        let dto = map_diagnostic(unused);
+        assert!(dto.unnecessary && !dto.deprecated);
+        assert_eq!(dto.severity, Some(DiagnosticSeverityDto::Hint));
+        let old: lsp::Diagnostic = from(json!({
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "message": "deprecated", "tags": [2]
+        }));
+        assert!(map_diagnostic(old).deprecated);
+        let plain: lsp::Diagnostic = from(json!({
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "message": "plain"
+        }));
+        let dto = map_diagnostic(plain);
+        assert!(!dto.unnecessary && !dto.deprecated);
     }
 
     #[test]
