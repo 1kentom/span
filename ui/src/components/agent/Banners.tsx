@@ -1,7 +1,6 @@
 import { For, Show, createSignal } from "solid-js";
 import { Icon } from "../Icon";
 import type { ActionView, Level } from "./types";
-import { percent } from "./util";
 import { configFilesIn, warningParts } from "../../lib/agent-view";
 
 function Actions(props: { actions: ActionView[] }) {
@@ -148,43 +147,6 @@ export function WarningNote(props: { title: string; description?: string; /** Co
         </div>
       </div>
     </div>
-  );
-}
-
-type ContextBannerProps = {
-  used: number;
-  size: number;
-  /** True only when the agent advertised a compact command. */
-  canCompact?: boolean;
-  onCompact?: () => void;
-  onDismiss?: () => void;
-};
-
-/** Warns that the context window is nearly full. Compact appears only when the agent can compact. */
-export function ContextBanner(props: ContextBannerProps) {
-  const pct = () => percent(props.used, props.size);
-  return (
-    <section class="sb-banner" role="status" aria-label="Context nearly full">
-      <div class="sb-banner-head">
-        <Icon name="Warning2" size={13} class="sb-glyph warn" />
-        <span>Context {pct()}% full</span>
-        <span class="sb-flex" />
-        <span class="sb-mono dim">{props.used.toLocaleString()} / {props.size.toLocaleString()}</span>
-      </div>
-      <div class="sb-meter" role="progressbar" aria-label="Context used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct()}>
-        <div class="sb-meter-fill" style={{ width: `${pct()}%` }} />
-      </div>
-      <Show when={(props.canCompact && props.onCompact) || props.onDismiss}>
-        <div class="sb-actions">
-          <Show when={props.canCompact && props.onCompact}>
-            <button class="sb-btn primary" onClick={() => props.onCompact?.()}>Compact now</button>
-          </Show>
-          <Show when={props.onDismiss}>
-            <button class="sb-btn" onClick={() => props.onDismiss?.()}>Dismiss</button>
-          </Show>
-        </div>
-      </Show>
-    </section>
   );
 }
 
