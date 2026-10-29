@@ -62,6 +62,7 @@ struct Shared {
     config: ToolServerConfig,
     registry: Registry,
     control: Mutex<Option<AgentControl>>,
+    editor: Mutex<Option<Arc<crate::EditorTools>>>,
     /// Holds registry and manager enqueue together so tasks of one child
     /// are registered in the order the manager runs them.
     order: Mutex<()>,
@@ -136,6 +137,7 @@ impl ToolServer {
             config,
             registry: Registry::default(),
             control: Mutex::new(None),
+            editor: Mutex::new(None),
             order: Mutex::new(()),
             shutdown,
             subscription: Mutex::new(None),
@@ -169,6 +171,14 @@ impl ToolServer {
             return Err("The lead session is on a different connection".into());
         }
         let control = manager.agent_control(lead)?;
+        if let Some(access) = self.shared.config.editor_tools.clone() {
+            let key = control.caller();
+            let service = manager
+                .service(&key.connection_id)
+                .ok_or("Review agent disconnected")?;
+            *lock(&self.shared.editor) =
+                Some(Arc::new(service.editor_tools(&key.session_id, access)?));
+        }
         let weak = Arc::downgrade(&self.shared);
         control.on_caller_end(Box::new(move || {
             if let Some(shared) = weak.upgrade() {
@@ -288,6 +298,12 @@ impl ToolServer {
         !*self.shared.shutdown.borrow()
     }
 
+    pub fn revoke_editor_tools(&self) {
+        if let Some(editor) = lock(&self.shared.editor).take() {
+            editor.revoke();
+        }
+    }
+
     /// Stop serving and cancel every child this server started.
     pub fn shutdown(&self) {
         self.shared.stop();
@@ -340,6 +356,9 @@ impl Shared {
             return;
         }
         self.shutdown.send_replace(true);
+        if let Some(editor) = lock(&self.editor).take() {
+            editor.revoke();
+        }
         let control = lock(&self.control).take();
         if let Some(control) = control {
             for child in self.registry.children() {
@@ -981,6 +1000,8 @@ async fn call_tool(
     progress: Option<Progress>,
 ) -> Result<Value, RpcError> {
     match name {
+        "read_buffer" => editor_read(shared, parse(arguments)?),
+        "propose_edit" => editor_propose(shared, parse(arguments)?).await,
         "list_agents" if shared.config.delegation_enabled => list_agents(shared),
         "delegate" if shared.config.delegation_enabled => delegate(shared, parse(arguments)?).await,
         "get_result" if shared.config.delegation_enabled => {
@@ -1006,6 +1027,60 @@ async fn call_tool(
         "run_output" => run_output(shared, parse(arguments)?).await,
         _ => Err(invalid(format!("Unknown tool: {name}"))),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EditorReadArgs {
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EditorProposeArgs {
+    path: String,
+    content: String,
+    expected_revision: u64,
+    read_token: String,
+}
+
+fn editor_backend(shared: &Shared) -> Result<Arc<crate::EditorTools>, RpcError> {
+    shared.control()?;
+    lock(&shared.editor)
+        .clone()
+        .filter(|editor| editor.enabled())
+        .ok_or_else(|| {
+            invalid("Editor tools were not enabled for this review chat or consent was revoked")
+        })
+}
+
+fn editor_read(shared: &Shared, args: EditorReadArgs) -> Result<Value, RpcError> {
+    let editor = editor_backend(shared)?;
+    Ok(match editor.read_buffer(&args.path) {
+        Ok(read) => result::ok("Current editor buffer. Use its normalized path, revision and readToken for one proposal.".into(), serde_json::to_value(read).map_err(|_| invalid("Editor read could not be encoded"))?),
+        Err(error) => json!({"content":[{"type":"text","text":error}],"isError":true}),
+    })
+}
+
+async fn editor_propose(shared: &Shared, args: EditorProposeArgs) -> Result<Value, RpcError> {
+    let editor = editor_backend(shared)?;
+    // Dropping the proposal future cancels exactly its staged review through
+    // the shared broker's RAII guard, including a user who never responds.
+    let result = tokio::time::timeout(
+        Duration::from_secs(120),
+        editor.propose_edit(
+            &args.path,
+            args.content,
+            args.expected_revision,
+            &args.read_token,
+        ),
+    )
+    .await;
+    Ok(match result {
+        Ok(Ok(outcome)) => result::ok("Editor content is in the buffer. This tool never calls Save; the user's configured AutoSave may apply after acceptance.".into(), serde_json::to_value(outcome).map_err(|_| invalid("Editor result could not be encoded"))?),
+        Ok(Err(error)) => json!({"content":[{"type":"text","text":error}],"isError":true}),
+        Err(_) => json!({"content":[{"type":"text","text":"Editor review timed out and was cancelled. No pending edit can apply later."}],"isError":true}),
+    })
 }
 
 fn run_backend(shared: &Shared) -> Result<Arc<dyn RunToolBackend>, RpcError> {
@@ -1323,15 +1398,19 @@ const DELEGATION_INSTRUCTIONS: &str = "Delegate work to other agents in Span. li
 const RUN_TOOL_INSTRUCTIONS: &str = "Saved workspace run configuration tools are available. Run configuration changes, starts, stops and restarts require user approval. Environment values are hidden from configuration results. Raw run output is arbitrary and may contain anything the process prints.";
 
 fn server_instructions(shared: &Shared) -> String {
-    match (
+    let mut instructions = match (
         shared.config.delegation_enabled,
         shared.config.run_tools.is_some(),
     ) {
         (true, true) => format!("{DELEGATION_INSTRUCTIONS} {RUN_TOOL_INSTRUCTIONS}"),
         (true, false) => DELEGATION_INSTRUCTIONS.into(),
         (false, true) => RUN_TOOL_INSTRUCTIONS.into(),
-        (false, false) => "No tools are enabled for this session.".into(),
+        (false, false) => String::new(),
+    };
+    if shared.config.editor_tools.is_some() {
+        instructions.push_str(" Use read_buffer to read an existing workspace text file, then propose_edit with its exact normalized path, revision and readToken. propose_edit waits for the user's real review; rejection is an error. These tools never call Save; configured AutoSave may apply after acceptance. They never answer a permission or review decision.");
     }
+    instructions
 }
 
 fn tool_definitions_for(shared: &Shared) -> Value {
@@ -1361,8 +1440,28 @@ fn tool_definitions_for(shared: &Shared) -> Value {
                     && tool.get("name").and_then(Value::as_str) != Some("runs_list")
             });
         }
+        if shared
+            .config
+            .editor_tools
+            .as_ref()
+            .is_some_and(|access| access.allowed())
+        {
+            tools.extend(
+                editor_tool_definitions()
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
     }
     tools
+}
+
+fn editor_tool_definitions() -> Value {
+    json!([
+        {"name":"read_buffer","title":"Read editor buffer","description":"Read an existing workspace UTF-8 text file from the current editor buffer, including unsaved edits. Returns normalized path, revision and a single-use readToken. Limited to 512 KiB. Does not create files.","inputSchema":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string","maxLength":4096}},"required":["path"]},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
+        {"name":"propose_edit","title":"Propose editor edit","description":"Propose replacement text for an existing file after read_buffer. Requires its exact normalized path, expectedRevision and single-use readToken. Waits for user review. Only accepted hunks enter the editor buffer; rejection, partial acceptance or conflict is an error. Never calls Save or approves its own change. Configured AutoSave may apply after acceptance.","inputSchema":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string","maxLength":4096},"content":{"type":"string","maxLength":524288},"expectedRevision":{"type":"integer","minimum":0},"readToken":{"type":"string","minLength":64,"maxLength":64}},"required":["path","content","expectedRevision","readToken"]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
+    ])
 }
 
 fn list_agents(shared: &Shared) -> Result<Value, RpcError> {

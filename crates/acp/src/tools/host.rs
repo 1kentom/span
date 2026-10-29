@@ -33,6 +33,65 @@ pub enum LeadDelegation {
 }
 
 impl LeadServers {
+    /// Explicit fresh review chat. Ordinary open/load paths never opt in.
+    pub async fn open_review_lead(
+        &self,
+        manager: &SessionManager,
+        connection_id: &str,
+        config: ToolServerConfig,
+    ) -> Result<(SessionKey, LeadDelegation), String> {
+        if config
+            .editor_tools
+            .as_ref()
+            .is_none_or(|access| !access.allowed())
+        {
+            return Err(
+                "Review chat requires explicit consent in the current trusted workspace".into(),
+            );
+        }
+        if config.delegation_enabled
+            || config.run_tools.is_some()
+            || config.background.is_some()
+            || !config.installed.is_empty()
+        {
+            return Err("A review chat exposes only the owned editor tools".into());
+        }
+        if manager
+            .connection(connection_id)
+            .and_then(|c| c.features)
+            .and_then(|f| f.adapter)
+            .as_deref()
+            != Some("claude")
+        {
+            return Err("Review-only chat currently supports the managed Claude adapter".into());
+        }
+        Self::availability(manager, connection_id)?;
+        let server = ToolServer::start(manager, connection_id, config).await?;
+        let service = manager
+            .service(connection_id)
+            .ok_or("Review agent disconnected")?;
+        let session = service
+            .new_review_session_with(server.mcp_server_json())
+            .await?;
+        let key = SessionKey::new(connection_id, session);
+        if let Err(error) = manager.adopt(key.clone(), SessionOrigin::User) {
+            let _ = service.close_session(key.session_id.clone()).await;
+            return Err(error);
+        }
+        if let Err(error) = self.attach(manager, key.clone(), server) {
+            let _ = manager.close(&key).await;
+            return Err(error);
+        }
+        Ok((key, LeadDelegation::Attached))
+    }
+
+    /// Revoke before changing workspace identity or its trust decision.
+    pub fn revoke_editor_tools(&self) {
+        for server in self.servers().values() {
+            server.revoke_editor_tools();
+        }
+    }
+
     fn servers(&self) -> MutexGuard<'_, HashMap<SessionKey, ToolServer>> {
         self.servers.lock().unwrap_or_else(|p| p.into_inner())
     }

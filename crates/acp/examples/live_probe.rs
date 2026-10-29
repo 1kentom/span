@@ -849,6 +849,7 @@ async fn probe(agent: &str, out: &Path) -> Res<()> {
         let events_rec = rec.clone();
         let config = ToolServerConfig {
             workspace: workspace.clone(),
+            editor_tools: None,
             policy: ToolPolicy::default(),
             // The probe exercises the delegation tools; run tools stay off.
             delegation_enabled: true,
