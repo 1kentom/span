@@ -6,6 +6,8 @@ import { api } from "../../lib/client";
 import "../../styles/git.css";
 
 type GitPanelProps = { git: GitWorkbench; available: boolean };
+/** Embedded panels skip the repository header because the Source Control view shows it once. */
+type GitPanelViewProps = GitPanelProps & { embedded?: boolean };
 
 export function GitRepositoryHeader(props: GitPanelProps & { onRefresh?: () => void }) {
   const repository = () => props.git.status()?.repository || props.git.context()?.repository;
@@ -136,7 +138,7 @@ function GitChanges(props: { git: GitWorkbench; staged: boolean }) {
   );
 }
 
-export function GitPanel(props: GitPanelProps) {
+export function GitPanel(props: GitPanelViewProps) {
   const g = props.git;
   const [helpError, setHelpError] = createSignal("");
   const openHelp = (event: MouseEvent, url: string) => {
@@ -152,8 +154,8 @@ export function GitPanel(props: GitPanelProps) {
     }
   };
   return (
-    <section class="git-panel" tabIndex={-1} aria-label="Git source control" aria-busy={g.loading()}>
-      <GitRepositoryHeader git={g} available={props.available} />
+    <section class="git-panel" tabIndex={-1} aria-label={props.embedded ? "Git changes" : "Git source control"} aria-busy={g.loading()}>
+      <Show when={!props.embedded}><GitRepositoryHeader git={g} available={props.available} /></Show>
       <Show when={!props.available}>
         <div class="git-empty">
           <strong>Native Git required</strong>
