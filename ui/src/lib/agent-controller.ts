@@ -182,6 +182,13 @@ export function createAgentController(props: AgentPanelProps) {
   /** The focused agent connection (see the connection store). */
   const connection = agentConnection.use();
   const { agentName, setAgentName, agentId, setAgentId, launch, setLaunch, connecting, setConnecting, sessionStates, setSessionStates, connectionKey, setConnectionKey, attentionAnnouncement, setAttentionAnnouncement, runtimeOf, isLive } = connection;
+  /** Where the open chat's thread went when it moved to a new key, so a late result finds the chat it belongs to. */
+  const movedTo = new WeakMap<Thread, Thread>();
+  const followMoves = (thread: Thread) => {
+    let current = thread;
+    for (let next = movedTo.get(current); next; next = movedTo.get(current)) current = next;
+    return current;
+  };
   /** The open chat's key: its session on the current connection, or a transient key before either is known. */
   const openKey = createMemo<SessionKey>(() => {
     const id = state().sessionId;
@@ -194,7 +201,9 @@ export function createAgentController(props: AgentPanelProps) {
     if (sameKey(left.key, key)) return;
     const value = left.state();
     threads.close(key);
-    setFocused(place(key, value));
+    const next = place(key, value);
+    movedTo.set(left, next);
+    setFocused(next);
     threads.close(left.key);
   })));
   const [contextPaths, setContextPaths] = createSignal<string[]>([]);
@@ -235,7 +244,6 @@ export function createAgentController(props: AgentPanelProps) {
   /** First and latest update time of each tool call, keyed by session and tool call id. */
   const toolTimes = new Map<string, { start: number; last: number }>();
   /** agent_prompt calls still waiting for their turn to end. */
-  let promptsInFlight = 0;
   let history: string[] = [];
   let historyIndex = -1;
   /** The queued message picked with Send now, until it goes out (or is dropped). The panel shows a spinner on it. */
@@ -264,8 +272,8 @@ export function createAgentController(props: AgentPanelProps) {
   /** The options restore in flight. A send waits for it, and a user change goes out after it. */
   const [restoring, setRestoring] = createSignal<Promise<void>>();
   const [rewindPick, setRewind] = threadField("rewind");
-  /** Counts dispatched turns, so a steer can tell its own turn from a later one. */
-  let turnCounter = 0;
+  /** Counts dispatched turns of the open chat, so a steer can tell its own turn from a later one. */
+  const turnCounter = () => untrack(threadState).turn;
   const followed = new Set<string>();
   let disposed = false;
   let agentEpoch = 0;
@@ -571,27 +579,20 @@ export function createAgentController(props: AgentPanelProps) {
       if (!(connected() && (!key || (key.startsWith("local-") && untrack(backgroundThreads).length === 0)))) return;
       setConnectionKey(states.connectionId);
     }
-    const open = state().sessionId;
-    const fresh = newAttention(sessionStates(), states, open);
+    const openId = state().sessionId;
+    const fresh = newAttention(sessionStates(), states, openId);
     setSessionStates(states);
     if (fresh.length) setAttentionAnnouncement(`${chatTitle(fresh[0].sessionId)} is ${(fresh[0].state === "waitingForAnswer" ? RUN_TEXT.answer : RUN_TEXT.approval).toLowerCase()}`);
-    // A background chat whose turn ended while away is idle, whatever its snapshot last said.
+    // A background chat whose turn ended while away is idle, whatever it last showed. The open chat follows the
+    // backend: running when a turn runs that this view did not start (a chat reopened while busy), idle when nothing
+    // this view sent is still in flight. Both are the thread's own rule (thread-events.ts `applyRuntime`).
+    const open = untrack(focused);
     for (const entry of states.sessions) {
       const thread = threadOf(states.connectionId, entry.sessionId);
-      if (thread && thread !== untrack(focused) && entry.state === "idle" && thread.state().conversation.running) {
-        thread.update((chat) => ({ ...chat, conversation: { ...chat.conversation, running: false, stopRequested: false } }));
-      }
+      if (thread && thread !== open) thread.applyRuntime(entry, { focused: false, working: false });
     }
-    // The open chat follows the backend: running when a turn runs that this view did not start (a chat reopened while
-    // busy), idle when nothing this view sent is still in flight.
-    const mine = states.sessions.find((entry) => entry.sessionId === open);
-    if (!mine || working()) return;
-    if (mine.state !== "idle" && !running()) {
-      patch({ running: true, status: "busy", statusMessage: "Agent is working" });
-      setTurnStart(mine.startedAtMs ?? Date.now());
-    } else if (mine.state === "idle" && mine.queued === 0 && running() && promptsInFlight === 0 && !steering()) {
-      patch({ running: false, stopRequested: false, status: "ready" });
-    }
+    const mine = states.sessions.find((entry) => entry.sessionId === openId);
+    open.applyRuntime(mine, { focused: true, working: working() });
   }
 
   /** The finished event carries the reason; the status command adds the detail text. A failure here leaves the card as the events made it. */
@@ -1032,7 +1033,10 @@ export function createAgentController(props: AgentPanelProps) {
     const current = guard(agentEpoch);
     // A steer still waiting here belongs to an earlier turn; it must not fire after this one.
     if (steering() && !options.steered) releaseSteer();
-    const turn = ++turnCounter;
+    const turn = turnCounter() + 1;
+    // The thread this prompt goes to: its prompts in flight settle there even when the user switches chats meanwhile.
+    const owner = untrack(focused);
+    updateThread((current) => ({ ...current, turn }));
     setBusyNotice(false);
     setRefused(undefined);
     const promptSession = state().sessionId;
@@ -1063,7 +1067,7 @@ export function createAgentController(props: AgentPanelProps) {
     setTurnStart(Date.now());
     setView("session");
     followLatest();
-    promptsInFlight += 1;
+    followMoves(owner).update((current) => ({ ...current, promptsInFlight: current.promptsInFlight + 1 }));
     try {
       await api.agentPrompt(message, entry.attachments);
       if (turnMeta) void recordSessionMeta(turnMeta);
@@ -1102,7 +1106,7 @@ export function createAgentController(props: AgentPanelProps) {
         // Refused for a missing sign-in or a limit: the carried context waits for the resend and the card may send
         // this exact turn again with another model or agent.
         if (carried && !handoff()) setHandoff(carried);
-        if (turn === turnCounter) setRefused({ sessionId: promptSession, entry, itemId, ...(limit ? { limit } : {}) });
+        if (turn === turnCounter()) setRefused({ sessionId: promptSession, entry, itemId, ...(limit ? { limit } : {}) });
       }
       if (limit) markLimited(limit);
       if (steering()?.turn === turn) {
@@ -1110,11 +1114,11 @@ export function createAgentController(props: AgentPanelProps) {
         releaseSteer();
         return;
       }
-      if (turn !== turnCounter) return;
+      if (turn !== turnCounter()) return;
       if (!prompt()) setPrompt(entry.text);
       if (!attachments().length && entry.items.length) setAttachments(entry.items);
     } finally {
-      promptsInFlight -= 1;
+      followMoves(owner).update((current) => ({ ...current, promptsInFlight: current.promptsInFlight - 1 }));
     }
   }
   /** Sends plain prompt text, for Continue, agent slash commands and Compact. */
@@ -1179,7 +1183,7 @@ export function createAgentController(props: AgentPanelProps) {
       setQueue((previous) => [...previous, entry]);
       return;
     }
-    const pending: NonNullable<ThreadState["steering"]> = { entry, cancelled: false, turn: turnCounter };
+    const pending: NonNullable<ThreadState["steering"]> = { entry, cancelled: false, turn: turnCounter() };
     setSteering(pending);
     patch({ stopRequested: true, statusMessage: "Steering the agent" });
     try {
@@ -1200,7 +1204,7 @@ export function createAgentController(props: AgentPanelProps) {
   function flushSteer() {
     const waiting = steering();
     if (!waiting?.cancelled || running()) return;
-    if (waiting.turn !== turnCounter) {
+    if (waiting.turn !== turnCounter()) {
       // Another turn ran since this steer started, so its moment has passed.
       releaseSteer();
       return;

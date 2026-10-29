@@ -278,6 +278,29 @@ describe("thread per chat in the controller", () => {
     expect(a.prompt()).toBe("");
   });
 
+  it("a prompt in flight when the open chat learns its connection settles on the chat's moved thread", async () => {
+    let states!: (value: SessionStates) => void;
+    mocks.api.agentSessionStates.mockImplementationOnce(() => new Promise<SessionStates>((resolve) => (states = resolve)));
+    let answered!: () => void;
+    mocks.api.agentPrompt.mockImplementationOnce(() => new Promise<void>((resolve) => (answered = resolve)));
+    const a = await connected();
+    expect(a.focusedThread().key).toEqual({ connectionId: "", sessionId: "s1" });
+    a.setPrompt("go");
+    await a.send();
+    expect(a.focusedThread().state().promptsInFlight).toBe(1);
+    states({ connectionId: "connection-1", sessions: [] });
+    await tick();
+    expect(a.focusedThread().key).toEqual({ connectionId: "connection-1", sessionId: "s1" });
+    expect(a.focusedThread().state().promptsInFlight).toBe(1);
+    answered();
+    await tick();
+    expect(a.focusedThread().state().promptsInFlight).toBe(0);
+    // Nothing in flight, so the backend's idle state ends the turn on screen.
+    mocks.publish({ connectionId: "connection-1", sessions: [runtime("s1")] });
+    expect(a.running()).toBe(false);
+    expect(texts(a)).toContain("go");
+  });
+
   it("disconnecting disposes every background thread", async () => {
     const a = await connected();
     const first = a.focusedThread();
