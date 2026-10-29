@@ -178,10 +178,12 @@ impl CoreWorkspace {
         ))
     }
     pub fn run_configurations(&self) -> Result<RunCatalog> {
+        let mut detected = crate::run_detection::detect_tasks(&self.root)?;
+        detected.extend(self.java_run_tasks());
         Ok(RunCatalog {
             workspace_root: self.workspace().root,
             configurations: self.load_run_file()?.configurations,
-            detected: crate::run_detection::detect_tasks(&self.root)?,
+            detected,
         })
     }
     pub fn save_run_configuration(
@@ -255,6 +257,7 @@ impl CoreWorkspace {
         environment: impl Fn(&str) -> Option<String>,
     ) -> Result<PreparedRun> {
         validate(&configuration)?;
+        self.validate_java_run(&configuration)?;
         let variables = std::cell::RefCell::new(BTreeMap::<String, Option<String>>::new());
         let lookup = |name: &str| {
             variables

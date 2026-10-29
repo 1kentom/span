@@ -28,6 +28,29 @@ function setup() {
   return { store, transport, reveal, root, switchWorkspace: () => { setRoot("/other"); setGeneration(2); }, event: (event: RunEvent) => listener?.(event), globalEvent: (event: RunEvent) => globalListener?.(event) };
 }
 describe("run workbench", () => {
+  it("refreshes and runs the exact Java source target through the real run transport", async () => {
+    const view = setup(); await settle();
+    const java = { ...configuration, id: "detected:java-main:test", name: "Java: Test.main()", executable: "/jdk/bin/java", args: ["./space dir/Test.java"] };
+    view.transport.runConfigurations.mockResolvedValueOnce({ workspaceRoot: "/workspace", configurations: [configuration], detected: [{ configuration: java, source: "space dir/Test.java" }] });
+    await view.store.launchJava("space dir/Test.java");
+    expect(view.transport.startRun).toHaveBeenCalledWith(java, "/workspace", expect.any(Function));
+    expect(view.store.selectedId()).toBe(java.id); expect(view.reveal).toHaveBeenCalledOnce();
+  });
+  it("does not launch a missing Java target and ignores a workspace switch during target refresh", async () => {
+    const view = setup(); await settle();
+    await expect(view.store.launchJava("Test.java")).rejects.toThrow("project run configuration");
+    expect(view.transport.startRun).not.toHaveBeenCalled();
+    let release!: (value: RunCatalog) => void;
+    view.transport.runConfigurations.mockImplementationOnce(async () => new Promise(resolve => { release = resolve; }));
+    const pending = view.store.launchJava("Test.java"); view.switchWorkspace(); await settle();
+    release({ workspaceRoot: "/workspace", configurations: [], detected: [] }); await pending;
+    expect(view.transport.startRun).not.toHaveBeenCalled();
+  });
+  it("preserves pending edits when Java source changes while the catalog is loading", async () => {
+    const view = setup(); await settle();
+    await expect(view.store.launchJava("Test.java", () => false)).rejects.toThrow("source changed");
+    expect(view.transport.startRun).not.toHaveBeenCalled();
+  });
   it("loads and selects without execution, persists selection by workspace, and sends exact root/argv only on Run", async () => {
     const view = setup(); await settle(); expect(view.transport.startRun).not.toHaveBeenCalled();
     view.store.setSelectedId("second"); expect(localStorage.getItem("span:run-selected:/workspace")).toBe("second");

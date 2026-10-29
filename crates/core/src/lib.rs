@@ -7,6 +7,7 @@ mod format_native;
 mod fs_ops;
 mod git;
 mod images;
+mod java_run;
 mod proposal_diff;
 mod recent;
 mod run_config;
