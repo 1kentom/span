@@ -35,11 +35,24 @@ enum Listing {
     Health,
 }
 
+/// What a new session is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opened {
+    /// The user's chat: the user's start mode applies.
+    User,
+    /// A delegated child: always the approval start mode, whatever the
+    /// user's start mode for this agent, so a child never runs looser than
+    /// its lead could (ADR 0003, amendment of 2026-10-29). Kept out of the
+    /// agent's own history where the agent allows it.
+    Child,
+    /// A hidden Span session (see [`AgentService::new_hidden_session`]),
+    /// kept out of the agent's own history where the agent allows it.
+    Hidden,
+}
+
 enum Command {
-    /// MCP servers, whether the session is a hidden Span session (see
-    /// [`AgentService::new_hidden_session`]), and whether it should stay out
-    /// of the agent's own history where the agent allows it.
-    NewSession(Vec<Value>, bool, bool, Reply<String>),
+    /// MCP servers and what the session is for.
+    NewSession(Vec<Value>, Opened, Reply<String>),
     Prompt(String, Vec<ContentBlock>, Reply<()>),
     Authenticate(String, Option<Meta>, Reply<()>),
     Cancel(String),
@@ -414,18 +427,21 @@ impl AgentService {
     pub async fn new_session_with(&self, mcp_servers: Vec<Value>) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(mcp_servers, false, false, tx))
+            .send(Command::NewSession(mcp_servers, Opened::User, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
-    /// Create a delegated child session (no MCP servers). Where the agent
-    /// has an option for it (Claude: `persistSession: false`), the child is
-    /// not saved to the agent's own history, so it never shows in the
-    /// agent's resume list (ADR 0003, amendment of 2026-10-29).
+    /// Create a delegated child session (no MCP servers). It always starts
+    /// in the approval start mode, so its permission requests reach the user
+    /// even when the user let this agent keep its own (looser) default for
+    /// chats. Where the agent has an option for it (Claude:
+    /// `persistSession: false`), the child is not saved to the agent's own
+    /// history, so it never shows in the agent's resume list (ADR 0003,
+    /// amendment of 2026-10-29).
     pub async fn new_child_session(&self) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(Vec::new(), false, true, tx))
+            .send(Command::NewSession(Vec::new(), Opened::Child, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -438,7 +454,7 @@ impl AgentService {
     pub async fn new_hidden_session(&self) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(Vec::new(), true, true, tx))
+            .send(Command::NewSession(Vec::new(), Opened::Hidden, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -1134,10 +1150,13 @@ async fn run(
                     },
                 };
                 match command {
-                    Command::NewSession(servers, hidden, ephemeral, reply) => {
+                    Command::NewSession(servers, opened, reply) => {
+                        let hidden = opened == Opened::Hidden;
+                        let ephemeral = opened != Opened::User;
                         // The start mode is read from the user's settings only. If it
-                        // cannot be read the session starts in the approval mode.
-                        let approval = workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
+                        // cannot be read the session starts in the approval mode. A
+                        // delegated child always does: no permission laundering.
+                        let approval = opened == Opened::Child || workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
                         let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { merge_meta(&mut params, meta); }

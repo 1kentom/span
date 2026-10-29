@@ -1,0 +1,63 @@
+{
+  "quirk": "The user opted Codex chats in to its own default mode (agents.startMode.codex = agentDefault), but a delegated child always starts in the approval mode: Span changes agent-full-access to agent (Auto review) at once, so a looser child can never launder a lead's approvals (ADR 0003, amendment of 2026-10-29).",
+  "drive": [
+    {
+      "do": "newChildSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "x-1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "x-1",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "agent"
+        },
+        {
+          "id": "collaboration_mode"
+        }
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newChildSession",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "x-1",
+        "configId": "mode",
+        "value": "agent"
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/new",
+      "params": {
+        "_meta": {}
+      }
+    }
+  ],
+  "userSettings": {
+    "agents": {
+      "startMode": {
+        "codex": "agentDefault"
+      }
+    }
+  }
+}
