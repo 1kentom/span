@@ -3,12 +3,12 @@ import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
 import type { Attachment } from "../../lib/attachments";
 import { changedFiles, diffLines } from "../../lib/agent-view";
-import { liveStateText, liveTone, type LiveAgent } from "../../lib/live-agents";
+import { agentTree, compactTokens, type TreeNode } from "../../lib/agents-page-tree";
 import type { DiffLine } from "../agent/types";
 import { ChangesCard, DiffView } from "../agent/WorkGroup";
 import { AttachmentIcon, tileMeta } from "../attachments";
 import { BrandIcon } from "../BrandIcon";
-import { Icon } from "../Icon";
+import { FileIcon, Icon } from "../Icon";
 
 export type SideTab = "changes" | "agents" | "files";
 export const SIDE_TABS: { id: SideTab; label: string; icon: string }[] = [
@@ -28,6 +28,17 @@ export function sessionFiles(feed: readonly FeedItem[], composer: readonly Attac
     for (const item of entry.attachments ?? []) if (!seen.has(item.id)) (seen.add(item.id), found.push({ item, where: "sent" }));
   }
   for (const item of composer) if (!seen.has(item.id)) (seen.add(item.id), found.push({ item, where: "composer" }));
+  return found;
+}
+
+/** Files the agents wrote in this thread: images a tool saved and the artifacts of delegated tasks, newest first, one per path. */
+export function generatedFiles(feed: readonly FeedItem[]): { path: string; by: string }[] {
+  const seen = new Set<string>();
+  const found: { path: string; by: string }[] = [];
+  for (const entry of [...feed].reverse()) {
+    const paths = entry.kind === "tool" && entry.event.savedPath ? [{ path: entry.event.savedPath, by: "Saved by the lead" }] : entry.kind === "delegation" ? (entry.task.artifacts ?? []).map((artifact) => ({ path: artifact.path, by: `From ${entry.task.agentName || "a delegated agent"}` })) : [];
+    for (const file of paths) if (!seen.has(file.path)) (seen.add(file.path), found.push(file));
+  }
   return found;
 }
 
@@ -86,26 +97,66 @@ function ChangesTab(props: { agent: AgentController; onOpenFile: (path: string) 
   );
 }
 
-function AgentNode(props: { agent: LiveAgent; child: boolean; last: boolean; showHealth: boolean; onOpen?: () => void; onStop?: () => void }) {
-  const tone = () => liveTone(props.agent, props.showHealth);
+function TreeRow(props: { node: TreeNode; onOpen?: () => void; onStop?: () => void }) {
+  const node = () => props.node;
   return (
-    <li class="ap-node" classList={{ child: props.child, last: props.last }} data-tone={tone()}>
+    <li class="ap-node" classList={{ child: node().child, last: node().last, command: node().kind === "command" }} data-tone={node().tone} data-kind={node().kind}>
       <div class="ap-node-head">
-        <span class="ap-node-face">
-          <BrandIcon id={props.agent.id} name={props.agent.name} size={props.child ? 16 : 20} />
+        <Show
+          when={node().kind === "agent"}
+          fallback={
+            <span class="ap-node-cmd" aria-hidden="true">
+              <Icon name="u-terminal" size={11} />
+            </span>
+          }
+        >
+          <span class="ap-node-face">
+            <BrandIcon id={node().id} name={node().name} size={node().child ? 16 : 20} />
+            <Show when={node().live}>
+              <span class="ap-node-live" data-tone={node().tone} aria-hidden="true" />
+            </Show>
+          </span>
+        </Show>
+        <span class="ap-node-name">{node().name}</span>
+        <span class="ap-node-role">{node().role}</span>
+        <span class="ap-pill" data-tone={node().tone}>
+          <Show when={node().tone === "working" || node().tone === "running"}>
+            <span class="ap-pill-spin" aria-hidden="true" />
+          </Show>
+          {node().state}
         </span>
-        <span class="ap-node-name">{props.agent.name}</span>
-        <span class="ap-node-role">{props.agent.lead ? "Lead" : "Delegated"}</span>
-        <span class="ap-pill" data-tone={tone()}>{liveStateText(props.agent, props.showHealth)}</span>
       </div>
-      <Show when={props.agent.detail}>
-        <div class="ap-node-detail">{props.agent.detail}</div>
+      <Show when={node().model || node().meta}>
+        <div class="ap-node-line">
+          <Show when={node().model}>
+            <span class="ap-node-model">{node().model}</span>
+          </Show>
+          <Show when={node().meta}>
+            <span class="ap-node-meta">{node().meta}</span>
+          </Show>
+        </div>
+      </Show>
+      <Show when={node().note}>
+        <div class="ap-node-note" data-tone={node().tone}>
+          <span class="ap-node-bullet" aria-hidden="true" />
+          <span class="ap-node-note-text">{node().note}</span>
+        </div>
+      </Show>
+      <Show when={node().budget}>
+        {(budget) => (
+          <div class="ap-node-budget">
+            <span class="ap-node-bar" role="progressbar" aria-label="Token budget" aria-valuemin={0} aria-valuemax={budget().limit} aria-valuenow={budget().used}>
+              <span style={{ width: `${Math.min(100, Math.round((budget().used / budget().limit) * 100))}%` }} />
+            </span>
+            <span class="ap-node-meta">{`${compactTokens(budget().used)} / ${compactTokens(budget().limit)} tokens`}</span>
+          </div>
+        )}
       </Show>
       <Show when={props.onOpen || props.onStop}>
         <div class="ap-node-actions">
           <Show when={props.onOpen}>
             <button type="button" class="ap-btn small" onClick={() => props.onOpen?.()}>
-              Show task
+              {node().kind === "command" ? "Show output" : node().tone === "error" ? "Show task" : "Open session"}
             </button>
           </Show>
           <Show when={props.onStop}>
@@ -121,48 +172,45 @@ function AgentNode(props: { agent: LiveAgent; child: boolean; last: boolean; sho
 
 function AgentsTab(props: { agent: AgentController; onShowTask: (taskId: string) => void }) {
   const a = props.agent;
-  const crew = createMemo(() => a.liveAgents());
-  const lead = () => crew().find((entry) => entry.lead);
-  const delegates = () => crew().filter((entry) => !entry.lead);
-  const busy = () => a.running() || delegates().some((entry) => entry.state === "Working" || entry.state === "Starting" || entry.state === "Waiting for you");
-  const summary = () => {
-    const working = crew().filter((entry) => entry.state === "Working").length;
-    const waiting = crew().filter((entry) => entry.state === "Waiting for you").length;
-    return [working ? `${working} working` : "", waiting ? `${waiting} waiting for you` : ""].filter(Boolean).join(", ") || "Nothing running";
+  const tree = createMemo(() => (a.state().sessionId ? agentTree({ agents: a.liveAgents(), feed: a.feed(), showHealth: a.healthOn(), leadRunning: a.running() }) : undefined));
+  const stopRow = (node: TreeNode) => {
+    // The lead stops through "Stop all" in the header, which cancels every task it started (the design's rule).
+    if (!node.canStop || !node.child) return undefined;
+    return node.taskId ? () => void a.cancelTask(node.taskId!) : undefined;
   };
+  const openRow = (node: TreeNode) => (node.taskId ? () => props.onShowTask(node.taskId!) : node.toolCallId ? () => a.followLatest() : undefined);
   return (
-    <Show when={crew().length && a.state().sessionId} fallback={<Empty title="No agents yet" text="Agents appear here once the session starts." />}>
-      <div class="ap-tab-scroll ap-tab-pad">
-        <div class="ap-tree-head">
-          <span class="ap-tree-title">{crew().length === 1 ? "1 agent" : `${crew().length} agents`}</span>
-          <span class="ap-tree-sub">{summary()}</span>
-          <Show when={busy()}>
-            <button type="button" class="ap-btn small ghost" title="Stopping the lead cancels every task it started" onClick={() => void a.stop()}>
-              Stop all
-            </button>
-          </Show>
+    <Show when={tree()?.nodes.length ? tree() : undefined} fallback={<Empty title="No agents yet" text="Agents appear here once the session starts." />}>
+      {(current) => (
+        <div class="ap-tab-scroll ap-tab-pad">
+          <div class="ap-tree-head">
+            <span class="ap-tree-title">{current().head}</span>
+            <span class="ap-tree-sub">{current().sub}</span>
+            <Show when={current().canStopAll}>
+              <button type="button" class="ap-btn small" title="Stopping the lead cancels every task it started" onClick={() => void a.stop()}>
+                Stop all
+              </button>
+            </Show>
+          </div>
+          <ul class="ap-tree" aria-label="Agents in this session">
+            <For each={current().nodes}>{(node) => <TreeRow node={node} onOpen={openRow(node)} onStop={stopRow(node)} />}</For>
+          </ul>
+          <ul class="ap-rules">
+            <li>
+              <Icon name="Check" size={12} />
+              Delegated agents can't delegate further (depth 1).
+            </li>
+            <li>
+              <Icon name="Check" size={12} />
+              Their permission requests come to you, never to the lead.
+            </li>
+            <li>
+              <Icon name="Check" size={12} />
+              Stopping the lead cancels every task it started.
+            </li>
+          </ul>
         </div>
-        <ul class="ap-tree" aria-label="Agents in this session">
-          <Show when={lead()}>{(entry) => <AgentNode agent={entry()} child={false} last={!delegates().length} showHealth={a.healthOn()} onStop={a.running() ? () => void a.stop() : undefined} />}</Show>
-          <For each={delegates()}>
-            {(entry, index) => (
-              <AgentNode
-                agent={entry}
-                child
-                last={index() === delegates().length - 1}
-                showHealth={a.healthOn()}
-                onOpen={entry.taskId ? () => props.onShowTask(entry.taskId!) : undefined}
-                onStop={entry.taskId && (entry.state === "Working" || entry.state === "Starting") ? () => void a.cancelTask(entry.taskId!) : undefined}
-              />
-            )}
-          </For>
-        </ul>
-        <ul class="ap-rules">
-          <li><Icon name="Check" size={12} />Delegated agents cannot delegate further.</li>
-          <li><Icon name="Check" size={12} />Their permission requests come to you, never to the lead.</li>
-          <li><Icon name="Check" size={12} />Stopping the lead cancels every task it started.</li>
-        </ul>
-      </div>
+      )}
     </Show>
   );
 }
@@ -170,24 +218,48 @@ function AgentsTab(props: { agent: AgentController; onShowTask: (taskId: string)
 function FilesTab(props: { agent: AgentController }) {
   const a = props.agent;
   const files = createMemo(() => sessionFiles(a.feed(), a.attachments()));
+  const generated = createMemo(() => generatedFiles(a.feed()));
   return (
-    <Show when={files().length} fallback={<Empty title="No files in this session" text="Drop files on the composer to attach them. Images and files you send stay listed here." />}>
-      <ul class="ap-tab-scroll ap-files" aria-label="Files in this session">
-        <For each={files()}>
-          {(entry) => (
-            <li>
-              <button type="button" class="ap-file" onClick={() => a.openAttachment(entry.item)} aria-label={`${entry.item.name}, ${entry.where === "sent" ? "sent" : "in the composer"}. Open preview`}>
-                <AttachmentIcon kind={entry.item.kind} size={15} />
-                <span class="ap-file-text">
-                  <span class="ap-file-name">{entry.item.name}</span>
-                  <span class="ap-file-source">{entry.where === "sent" ? "Sent in this thread" : "In the composer"}</span>
-                </span>
-                <span class="ap-file-meta">{tileMeta(entry.item)}</span>
-              </button>
-            </li>
-          )}
-        </For>
-      </ul>
+    <Show when={files().length || generated().length} fallback={<Empty title="No files in this session" text="Drop files on the composer to attach them. Files you send and files the agents write stay listed here." />}>
+      <div class="ap-tab-scroll">
+        <Show when={files().length}>
+          <h4 class="ap-files-head">Attached</h4>
+          <ul class="ap-files" aria-label="Files in this session">
+            <For each={files()}>
+              {(entry) => (
+                <li>
+                  <button type="button" class="ap-file" onClick={() => a.openAttachment(entry.item)} aria-label={`${entry.item.name}, ${entry.where === "sent" ? "sent" : "in the composer"}. Open preview`}>
+                    <AttachmentIcon kind={entry.item.kind} size={15} />
+                    <span class="ap-file-text">
+                      <span class="ap-file-name">{entry.item.name}</span>
+                      <span class="ap-file-source">{entry.where === "sent" ? "Sent in this thread" : "In the composer"}</span>
+                    </span>
+                    <span class="ap-file-meta">{tileMeta(entry.item)}</span>
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+        <Show when={generated().length}>
+          <h4 class="ap-files-head">Generated</h4>
+          <ul class="ap-files" aria-label="Files the agents wrote">
+            <For each={generated()}>
+              {(entry) => (
+                <li>
+                  <button type="button" class="ap-file" onClick={() => void a.openInEditor(entry.path)} aria-label={`${entry.path}, ${entry.by}. Open in editor`}>
+                    <FileIcon path={entry.path} />
+                    <span class="ap-file-text">
+                      <span class="ap-file-name">{entry.path.split("/").pop()}</span>
+                      <span class="ap-file-source">{entry.by}</span>
+                    </span>
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+      </div>
     </Show>
   );
 }
@@ -203,7 +275,7 @@ export function SidePanel(props: { agent: AgentController; tab: SideTab; onTab: 
   const counts = createMemo<Record<SideTab, number>>(() => ({
     changes: a.feed().filter((item) => item.kind === "proposal").length,
     agents: a.state().sessionId ? a.liveAgents().length : 0,
-    files: sessionFiles(a.feed(), a.attachments()).length,
+    files: sessionFiles(a.feed(), a.attachments()).length + generatedFiles(a.feed()).length,
   }));
   const move = (event: KeyboardEvent) => {
     const order = SIDE_TABS.map((tab) => tab.id);
