@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'solid-js/web';
+import { zipSync } from 'fflate';
+import { OFFICE_PREVIEW_BYTES } from '../../lib/office/limits';
 import { createMemoryUploadsApi, createUnavailableUploadsApi, type MemoryUpload, type UploadsApi, type UploadsCapabilities } from '../../lib/uploads-api';
 import { UploadsWorkspace } from './UploadsWorkspace';
 
@@ -203,4 +205,28 @@ describe('uploads workspace mounted in the app', () => {
     tab[0].click();
     expect(onShowExplorer).toHaveBeenCalledOnce();
   });
+});
+
+
+it('reads the complete ZIP container above the hex prefix limit before listing its directory', async () => {
+  const data = zipSync({ 'payload.bin': Uint8Array.from({ length: 80 * 1024 }, (_, index) => index % 251) }, { level: 0 });
+  expect(data.length).toBeGreaterThan(64 * 1024);
+  const api = createMemoryUploadsApi([{ entry: { id: 'archive', name: 'complete.zip', size: data.length, createdAt: now, origin: 'sent' }, data }]);
+  const read = vi.spyOn(api, 'read');
+  const root = await mount(api);
+  row(root, 'complete.zip').click();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledWith('archive', 0, data.length));
+  await vi.waitFor(() => expect(root.querySelector('.ox-archive')?.textContent).toContain('payload.bin'));
+  expect(root.querySelector('[data-state="damaged"]')).toBeNull();
+});
+
+
+it('shows an oversized document without reading decoder bytes', async () => {
+  const api = createMemoryUploadsApi();
+  vi.spyOn(api, 'list').mockResolvedValue([{ id: 'large', name: 'large.pdf', size: OFFICE_PREVIEW_BYTES.pdf + 1, createdAt: now, origin: 'sent' }]);
+  const read = vi.spyOn(api, 'read');
+  const root = await mount(api);
+  row(root, 'large.pdf').click();
+  await vi.waitFor(() => expect(root.querySelector('[data-state="too-large"]')?.textContent).toContain('PDF preview is limited'));
+  expect(read).not.toHaveBeenCalled();
 });

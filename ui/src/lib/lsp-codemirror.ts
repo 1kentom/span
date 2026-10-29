@@ -289,7 +289,7 @@ function createCompletionSource(runtime: Runtime) {
 
 // ------------------------------------------------------------- diagnostics
 
-export interface LspMark { from: number; to: number; severity: Diagnostic["severity"]; message: string; source?: string; code?: string }
+export interface LspMark { from: number; to: number; severity: Diagnostic["severity"]; message: string; source?: string; code?: string; unnecessary?: boolean; deprecated?: boolean }
 
 const severities: Record<string, Diagnostic["severity"]> = { error: "error", warning: "warning", information: "info", hint: "info" };
 
@@ -301,7 +301,7 @@ export function mapDiagnostics(doc: Text, diagnostics: readonly DiagnosticDto_De
       if (to < doc.length && doc.sliceString(to, to + 1) !== "\n") to += 1;
       else if (from > 0) from -= 1;
     }
-    return { from, to, severity: severities[item.severity ?? "error"] ?? "error", message: item.message, source: item.source ?? undefined, code: item.code ?? undefined };
+    return { from, to, severity: severities[item.severity ?? "error"] ?? "error", message: item.message, source: item.source ?? undefined, code: item.code ?? undefined, unnecessary: item.unnecessary || undefined, deprecated: item.deprecated || undefined };
   });
 }
 
@@ -335,6 +335,8 @@ export function decideDiagnostics(event: Pick<DiagnosticsPublished_Deserialize, 
 function createDiagnostics(runtime: Runtime): Extension {
   const source = linter(view => view.state.field(marksField).map((mark): Diagnostic => ({
     from: mark.from, to: mark.to, severity: mark.severity, message: mark.message,
+    // Unused code is dimmed and deprecated code struck through, like IntelliJ, instead of underlined.
+    markClass: mark.unnecessary ? "cm-lsp-unused" : mark.deprecated ? "cm-lsp-deprecated" : undefined,
     source: [mark.source ?? serverLabels[runtime.binding.server], mark.code].filter(Boolean).join(" "),
   })), { delay: 250, tooltipFilter: () => [] });
   const plugin = ViewPlugin.fromClass(class {

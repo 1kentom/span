@@ -10,6 +10,7 @@ use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode}
 mod agents;
 mod cli;
 mod events;
+mod external_files;
 mod file_index;
 mod git;
 #[doc(hidden)]
@@ -36,7 +37,8 @@ pub struct DesktopState {
     pub(crate) terminals: terminals::TerminalState,
     pub(crate) runs: runs::RunService,
     pub(crate) run_approvals: run_approval::RunApprovalState,
-    pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
+    /// The focused agent session and the leads opened by key (ADR 0011).
+    pub agent: Arc<Mutex<agents::LiveAgents>>,
     pub user_settings: Arc<Mutex<Option<CoreWorkspace>>>,
     /// Every agent connection. The single agent commands use its primary one.
     pub sessions: span_acp::SessionManager,
@@ -50,6 +52,8 @@ pub struct DesktopState {
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
+    /// Canonical paths of the latest native drop, the only ones `read_dropped_file` may read.
+    pub dropped_paths: Arc<Mutex<Vec<PathBuf>>>,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     pub formatter_jobs: FormatterJobs,
@@ -926,7 +930,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::WorkspaceTrustChanged,
             startup::StartupRequestError,
             agents::AgentSessionStatesChanged,
-            agents::AgentHealthChanged
+            agents::AgentHealthChanged,
+            agents::AgentKeyedEvent
         ])
         .commands(collect_commands![
             open_workspace,
@@ -969,6 +974,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             list_directory,
             list_files,
             file_index::file_index_status,
+            external_files::check_external_files,
+            external_files::resolve_external_file,
+            external_files::abandon_external_file,
             file_index::query_file,
             file_index::reconcile_file_index,
             new_file,
@@ -1012,6 +1020,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             services::write_clipboard,
             startup::take_startup_requests,
             startup::enqueue_dropped_paths,
+            startup::dropped_path_info,
+            startup::read_dropped_file,
             services::open_external,
             services::read_image,
             menu::sync_native_menu,
@@ -1078,6 +1088,17 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::lsp_status,
             agents::agent_delegation_status,
             agents::agent_child_permission,
+            agents::agent_open_session,
+            agents::agent_live_sessions,
+            agents::agent_focused_session,
+            agents::agent_prompt_keyed,
+            agents::agent_cancel_keyed,
+            agents::agent_permission_keyed,
+            agents::agent_elicitation_keyed,
+            agents::agent_set_config_keyed,
+            agents::agent_review_keyed,
+            agents::agent_review_hunks_keyed,
+            agents::agent_close_keyed,
             agents::agent_cancel_task,
             agents::agent_task_transcript,
             agents::agent_warm_start,
@@ -1157,6 +1178,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             app.manage(lsp);
             agents::watch_session_states(app.handle());
+            agents::watch_keyed_events(app.handle());
             menu::install(app.handle())?;
             // The window starts hidden; the frontend shows it once the session has rendered (its
             // own cap is 2s after the first render). This only catches a frontend that never
@@ -1165,12 +1187,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             window::log_window_created();
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
+                // Native drops only record their paths. The frontend routes them by where they landed: the
+                // agent panel attaches them, the editor opens files inside the project, a lone folder asks to
+                // open as a project. A dropped file never switches the project to its parent folder.
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
                         paths, ..
                     }) = event
                     {
-                        startup::receive_drop(handle.clone(), paths.clone());
+                        startup::record_drop(&handle.state::<DesktopState>(), paths);
                     }
                 });
             }

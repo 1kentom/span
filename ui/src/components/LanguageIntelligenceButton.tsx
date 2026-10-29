@@ -31,7 +31,7 @@ export function LanguageIntelligenceButton(props: LanguageIntelligenceButtonProp
           stroke-dasharray={ring().kind === "determinate" ? `${(CIRCUMFERENCE * (ring().percent ?? 0)) / 100} ${CIRCUMFERENCE}` : `${CIRCUMFERENCE * 0.25} ${CIRCUMFERENCE}`} /></Show>
       </svg>
       <Icon name="flash" size={16} />
-      <Show when={button().badge}><i class="hub-badge dot" data-kind={button().badge} /></Show>
+      <Show when={button().badge}><i class="hub-badge dot" data-kind={button().badge} data-state={button().badgeState} /></Show>
     </button>
     <Show when={(hover() || focus()) && !props.open}><span class="hub-tooltip" role="tooltip" aria-hidden="true">{button().tooltip}</span></Show>
   </span>;

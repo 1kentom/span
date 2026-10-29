@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => {
       agentPermission: vi.fn(async () => undefined),
       agentAuthenticate: vi.fn(async () => "s1"),
       writeClipboard: vi.fn(async () => undefined),
+      readImage: vi.fn(async () => ({ mime: "image/png", dataUrl: "data:image/png;base64,iVBORw0KGgo=" })),
     },
     agentPresets: vi.fn(async (): Promise<unknown[]> => []),
     agentAuthenticateWith: vi.fn(async (_method: string, _credential: unknown): Promise<string> => "s1"),
@@ -52,6 +53,8 @@ beforeEach(() => {
   mocks.api.agentConnect.mockReset();
   mocks.api.agentSetConfig.mockClear();
   mocks.api.agentPermission.mockClear();
+  mocks.api.readImage.mockReset();
+  mocks.api.readImage.mockResolvedValue({ mime: "image/png", dataUrl: "data:image/png;base64,iVBORw0KGgo=" });
   mocks.agentAuthenticateWith.mockReset();
   mocks.agentAuthenticateWith.mockResolvedValue("s1");
   mocks.agentPresets.mockReset();
@@ -172,7 +175,7 @@ describe("internal tool steps", () => {
     expect(host.querySelector("img.sb-thumb")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
     const saved = host.querySelector(".sb-step-saved")!;
     expect(text(saved)).toContain("/Users/x/out.png");
-    expect(text(saved)).toContain("does not open it");
+    expect(text(saved)).toContain("No file preview was loaded");
     expect(saved.querySelector("button, a")).toBeNull();
   });
 });
@@ -458,6 +461,39 @@ describe("feed and composer with adapter data", () => {
     expect(a.viewingItem()?.bytes?.length).toBe(8);
     expect(a.viewingItem()?.path).toBeUndefined();
     expect(text(host.querySelector(".sb-step-saved"))).toContain("/Users/x/out.png");
+  });
+  it("loads completed savedPath output through the workspace boundary and opens the shared viewer", async () => {
+    const { a, host } = await withAgent((agent) => <AgentFeed agent={agent} />);
+    const event = { kind: "tool", sessionId: "s1", toolCallId: "saved", title: "Generate image", status: "in_progress", toolKind: "other", parentToolCallId: null, contentJson: "{}", savedPath: "/w/assets/image.png" } as AgentEvent;
+    mocks.emit(event);
+    await tick();
+    expect(mocks.api.readImage).not.toHaveBeenCalled();
+    mocks.emit({ ...event, status: "completed" } as AgentEvent);
+    await tick();
+    expect(mocks.api.readImage).toHaveBeenCalledWith("/w/assets/image.png", "/w");
+    expect(host.querySelector(".sb-thumb")?.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+    const open = vi.fn();
+    a.setAttachmentOpener(open);
+    click(host.querySelector(".sb-thumb-btn"));
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ path: "assets/image.png", name: "image.png", kind: "image", size: 8 }));
+    const item = open.mock.calls[0][0];
+    expect(a.findAttachment(item.id)?.bytes).toEqual(item.bytes);
+    expect(text(host.querySelector(".sb-step-saved"))).toContain("Workspace image preview loaded");
+  });
+  it("shows refused savedPath errors without offering a thumbnail or OS open action", async () => {
+    mocks.api.readImage.mockRejectedValueOnce(new Error("Path leaves the workspace"));
+    const { host } = await withAgent((agent) => <AgentFeed agent={agent} />);
+    mocks.emit({ kind: "tool", sessionId: "s1", toolCallId: "outside", title: "Generate image", status: "completed", toolKind: "other", parentToolCallId: null, contentJson: "{}", savedPath: "/outside/image.png" } as AgentEvent);
+    await tick();
+    expect(text(host.querySelector(".sb-step-saved"))).toContain("Path leaves the workspace");
+    expect(host.querySelector(".sb-thumb-btn, .sb-step-saved a, .sb-step-saved button")).toBeNull();
+  });
+  it("prefers valid inline bytes and never reads the accompanying savedPath", async () => {
+    const { host } = await withAgent((agent) => <AgentFeed agent={agent} />);
+    mocks.emit({ kind: "tool", sessionId: "s1", toolCallId: "inline", title: "Generate image", status: "completed", toolKind: "other", parentToolCallId: null, contentJson: "{}", images: [{ mimeType: "image/png", data: "iVBORw0KGgo=", uri: null }], savedPath: "/w/image.png" } as AgentEvent);
+    await tick();
+    expect(mocks.api.readImage).not.toHaveBeenCalled();
+    expect(host.querySelectorAll(".sb-thumb-btn")).toHaveLength(1);
   });
   const permissionEvent = (patch: Record<string, unknown> = {}): AgentEvent =>
     ({ kind: "permission", sessionId: "s1", requestId: "r1", toolCallId: "t1", title: "Edit a.ts", options, toolKind: "edit", locations: [{ path: "/w/src/a.ts", line: 7 }, { path: "/etc/passwd" }], diffs: [{ path: "/w/src/a.ts", resolved: true, change: "modify", oldText: "a\n", newText: "b\n" }], ...patch }) as AgentEvent;

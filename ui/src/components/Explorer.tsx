@@ -13,9 +13,9 @@ import { fileName, parentPath } from "../lib/navigation";
 import "../styles/explorer.css";
 
 type DragItem = { paths: string[]; generation: number };
-type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: EditorDropTarget };
+type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: EditorDropTarget } | { kind: "agent" };
 
-export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void }) {
+export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void; onAgentTarget?: (x: number, y: number) => boolean; onAgentPreview?: (over: boolean) => void; onAgentDrop?: (entries: { path: string; isDir: boolean }[]) => void }) {
   const w = props.workbench; const state = props.state;
   const mac = currentPlatform() === "mac";
   let treeElement!: HTMLDivElement;
@@ -31,6 +31,8 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
   const dragger = createInternalDrag<DragItem, DragTarget>({
     valid: item => item.generation === w.workspaceGeneration() && !w.busy() && !state.edit(),
     targetAt: (x, y) => {
+      // Rows dropped on the agent panel attach there: files as chips, folders as outlines.
+      if (props.onAgentDrop && props.onAgentTarget?.(x, y)) return { kind: "agent" };
       const editor = dragPaths.every(path => !state.isDirectory(path)) ? props.onEditorTarget(x, y) : undefined;
       if (editor) return { kind: "editor", target: editor };
       const element = document.elementFromPoint(x, y);
@@ -44,6 +46,7 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
     preview: next => {
       setDrag(next);
       props.onEditorPreview(next?.target?.kind === "editor" ? next.target.target : undefined);
+      props.onAgentPreview?.(next?.target?.kind === "agent");
       const folder = next?.target?.kind === "folder" ? next.target.path : undefined;
       if (folder !== hoverFolder) {
         hoverFolder = folder; clearTimeout(hoverTimer);
@@ -51,7 +54,7 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
       }
       if (next) { const box = scroller(); if (box) { const rect = box.getBoundingClientRect(); if (next.y < rect.top + 28) box.scrollTop -= 14; else if (next.y > rect.bottom - 28) box.scrollTop += 14; } }
     },
-    drop: (item, target, copy) => { if (target.kind === "folder") void state.transfer(item.paths, target.path, copy); else props.onEditorDrop(item.paths.filter(path => !state.isDirectory(path)), target.target); },
+    drop: (item, target, copy) => { if (target.kind === "agent") props.onAgentDrop?.(item.paths.map(path => ({ path, isDir: state.isDirectory(path) }))); else if (target.kind === "folder") void state.transfer(item.paths, target.path, copy); else props.onEditorDrop(item.paths.filter(path => !state.isDirectory(path)), target.target); },
   });
   onCleanup(dragger.dispose);
   createEffect(() => { w.workspaceGeneration(); dragger.cancel(); });
@@ -193,13 +196,12 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
       </Show>
     </Show>
     <Show when={state.notice()}><div class="tree-notice" role="status">{state.notice()}</div></Show>
-    <Show when={drag()}>{current => <div class="explorer-drag-pill" role="status" aria-live="off" style={{ left: `${(current().x + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px`, top: `${(current().y + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px` }}>{current().item.paths.length > 1 ? `${current().item.paths.length} items` : fileName(current().item.paths[0])}{current().target === undefined ? " (no drop target)" : current().copy ? " (copy)" : ""}</div>}</Show>
+    <Show when={drag()}>{current => <div class="explorer-drag-pill" role="status" aria-live="off" style={{ left: `${(current().x + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px`, top: `${(current().y + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px` }}>{current().item.paths.length > 1 ? `${current().item.paths.length} items` : fileName(current().item.paths[0])}{current().target === undefined ? " (no drop target)" : current().target!.kind === "agent" ? " (attach to AI)" : current().copy ? " (copy)" : ""}</div>}</Show>
     <Show when={props.view === "Search"}>
       <div class="search-box"><Icon name="SearchNormal1" /><input id="workspace-search" aria-label="Search workspace" placeholder="Search in files" value={query()} onInput={e => search(e.currentTarget.value)} /><Show when={query()}><button class="close-button" aria-label="Clear search" onClick={() => search("")}>×</button></Show></div>
       <div class="search-summary" aria-live="polite">{w.searching() ? "Searching…" : query() ? `${w.searchResults().length} results` : "Find text across your workspace"}</div>
       <div class="search-results"><For each={w.searchResults()}>{match => <button class="search-result" onClick={() => props.onNavigate(match.path, match.line)} title={`${match.path}:${match.line}`}><span class="search-result-file"><FileIcon path={match.path} /><span>{match.path.split("/").pop()}</span><span class="dim">:{match.line}</span></span><span class="search-result-text">{match.text}</span><span class="search-result-path">{match.path}</span></button>}</For></div>
     </Show>
     <Show when={props.view === "Git"}>{props.git}</Show>
-    <Show when={props.view === "History"}>{props.history}</Show>
   </>;
 }

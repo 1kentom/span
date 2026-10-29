@@ -1,16 +1,15 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import { LanguageIntelligencePanel } from "./LanguageIntelligencePanel";
-import { allLanguagesOpen, setAllLanguagesOpen } from "../lib/hub-prefs";
 import { allCapabilities, javaInstalling, makeServer, viewOf } from "../stores/language-intelligence.testkit";
 import type { HubView } from "../stores/language-intelligence";
+import { serverOrder } from "../lib/language-intelligence-copy";
 
 // Fixture tests: static views are passed in, no store or server is running.
 const MB = 1024 * 1024;
 const disposers: (() => void)[] = [];
 afterEach(() => { disposers.splice(0).forEach(d => d()); document.body.replaceChildren(); });
-beforeEach(() => { try { window.localStorage.clear(); } catch { /* jsdom storage */ } setAllLanguagesOpen(false); });
 function mount(view: HubView, extra: Partial<Parameters<typeof LanguageIntelligencePanel>[0]> = {}) {
   const root = document.createElement("div"); document.body.append(root);
   const fns = { onAction: vi.fn(), onToggleServer: vi.fn(), onClose: vi.fn(), onOpenSettings: vi.fn(), onCopy: vi.fn(async () => undefined) };
@@ -19,193 +18,238 @@ function mount(view: HubView, extra: Partial<Parameters<typeof LanguageIntellige
 }
 const button = (root: HTMLElement, label: string) => [...root.querySelectorAll("button")].find(item => item.textContent === label)!;
 const java = (state: any, entry: any = {}, activity: any[] = []) => makeServer("jdtls", state, { state: { kind: "ready" }, ...entry }, activity);
+const ready = () => viewOf(java({ kind: "ready", server: "jdtls" }));
+const text = (root: HTMLElement, selector: string) => root.querySelector(selector)?.textContent ?? null;
+const key = (target: Element, name: string) => target.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
 
-const status = (root: HTMLElement) => root.querySelector(".hub-status-text")!.textContent;
-
-describe("fixture: hub panel", () => {
-  it("is a labelled dialog with the language, a short technical line and one status line", () => {
-    const m = mount(viewOf(java({ kind: "ready", server: "jdtls" })));
+describe("fixture: language server popover", () => {
+  it("is a labelled dialog: header with logo, name, server and version, a state pill, chips, trust line, list and footer", () => {
+    const m = mount(ready(), { fileLanguage: "java" });
     expect(m.panel.getAttribute("role")).toBe("dialog");
     expect(m.panel.getAttribute("aria-label")).toBe("Language intelligence");
-    expect(m.root.querySelector(".hub-name strong")!.textContent).toBe("Java");
-    expect(m.root.querySelector(".hub-name small")!.textContent).toBe("Eclipse JDT LS 1.62");
-    expect(status(m.root)).toBe("Completions, errors, hover, go to definition, references, rename, format");
-    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(7);
-    expect(m.root.querySelector(".hub-chip")).toBeNull();
-    expect(m.root.textContent).toContain("Language server settings");
+    expect(m.root.querySelector(".hub-head .language-icon")!.getAttribute("data-language")).toBe("java");
+    expect(text(m.root, ".hub-name strong")).toBe("Java");
+    expect(text(m.root, ".hub-name small")).toBe("Eclipse JDT LS 1.62");
+    expect(text(m.root, ".hub-pill")).toBe("Ready");
+    expect(m.root.querySelector(".hub-pill")!.getAttribute("data-state")).toBe("ready");
+    expect([...m.panel.children].map(child => child.className.split(" ")[0])).toEqual(["hub-head", "hub-chips", "hub-trust-block", "hub-list", "hub-foot"]);
+    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(serverOrder.length);
+    expect(text(m.root, ".hub-settings-link")).toBe("Language server settings");
+    expect(m.root.textContent).not.toContain("All languages");
   });
-  it("shows Ready as a dot with a label and no word, and never says Ready twice", () => {
-    const m = mount(viewOf(java({ kind: "ready", server: "jdtls" })));
-    expect(m.root.querySelector(".hub-state-word")!.textContent).toBe("");
-    expect(m.root.querySelector(".hub-state .lsp-dot")!.getAttribute("aria-label")).toBe("Ready");
-    expect(m.root.querySelector(".hub-state")!.getAttribute("data-tip")).toBe("Ready");
-    expect((m.root.textContent!.match(/Ready/g) ?? []).length).toBe(0);
+  it("shows all seven capabilities as chips and dims the unsupported ones with a spoken note", () => {
+    const m = mount(viewOf(java({ kind: "ready", server: "jdtls" }, { capabilities: { ...allCapabilities, rename: false } })));
+    const chips = [...m.root.querySelectorAll<HTMLElement>(".hub-chip")];
+    expect(m.root.querySelector(".hub-chips")!.getAttribute("aria-label")).toBe("Capabilities");
+    expect(chips.map(chip => chip.firstChild!.textContent)).toEqual(["Completions", "Diagnostics", "Hover", "Definition", "References", "Rename", "Format"]);
+    const rename = chips.find(chip => chip.textContent!.startsWith("Rename"))!;
+    expect(rename.dataset.on).toBe("false");
+    expect(rename.querySelector(".sr-only")!.textContent).toBe(", not supported");
+    expect(chips.filter(chip => chip.dataset.on === "true")).toHaveLength(6);
   });
-  it("has the same zones in every state: header, status, progress track, action row and footer", () => {
-    const states = [
-      viewOf(java({ kind: "ready", server: "jdtls" })), viewOf(javaInstalling(42, 134 * MB, 320 * MB)),
-      viewOf(java({ kind: "crashed", server: "jdtls" }, { state: { kind: "crashed" } })), viewOf(undefined),
-    ];
-    for (const view of states) {
-      const m = mount(view);
-      expect([...m.panel.children].map(child => child.className.split(" ")[0])).toEqual(["hub-head", "hub-status", "hub-progress", "hub-actions", "hub-foot", "hub-rows"]);
-      disposers.splice(0).forEach(d => d()); document.body.replaceChildren();
-    }
+  it("names the file's own language in the header, for example JavaScript on the TypeScript server", () => {
+    const m = mount(viewOf(makeServer("vtsls", { kind: "ready", server: "vtsls" }, { state: { kind: "ready" }, version: "0.3.0" })), { fileLanguage: "javascript" });
+    expect(text(m.root, ".hub-name strong")).toBe("JavaScript");
+    expect(m.root.querySelector(".hub-head .language-icon")!.getAttribute("data-language")).toBe("javascript");
+    expect(text(m.root, ".hub-name small")).toBe("vtsls 0.3");
   });
-  it("needs install: one sentence, the size, and an Install button", () => {
+  it("keeps Restart, Stop and Copy details in an overflow menu driven by the keyboard", () => {
+    const m = mount(ready());
+    expect(m.root.querySelector(".hub-actions")).toBeNull();
+    const trigger = m.root.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    expect(trigger.getAttribute("aria-label")).toBe("More actions");
+    trigger.click();
+    const menu = m.root.querySelector<HTMLElement>("[role=menu]")!;
+    expect([...menu.querySelectorAll("[role=menuitem]")].map(item => item.textContent)).toEqual(["Restart", "Stop"]);
+    return Promise.resolve().then(() => {
+      expect(document.activeElement!.textContent).toBe("Restart");
+      key(menu, "ArrowDown");
+      expect(document.activeElement!.textContent).toBe("Stop");
+      key(menu, "Escape");
+      expect(m.root.querySelector("[role=menu]")).toBeNull();
+      expect(m.onClose).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(trigger);
+      trigger.click();
+      (m.root.querySelector<HTMLElement>('[role=menuitem][data-action="stop"]')!).click();
+      expect(m.onAction).toHaveBeenCalledWith("stop", "jdtls");
+      trigger.click();
+      (m.root.querySelector<HTMLElement>('[role=menuitem][data-action="restart"]')!).click();
+      expect(m.onAction).toHaveBeenCalledWith("restart", "jdtls");
+    });
+  });
+  it("needs install: the sentence, the size and an Install button", () => {
     const view = viewOf(makeServer("jdtls", { kind: "needs-install", server: "jdtls", version: "1.62.0", sizeHint: 120 * MB }, { state: { kind: "needsInstall", version: "1" }, installed: false }), { autoInstall: false });
     const m = mount(view);
-    expect(status(m.root)).toBe("Install for completions and errors (about 120 MB)");
+    expect(text(m.root, ".hub-pill")).toBe("Not installed");
+    expect(text(m.root, ".hub-status-text")).toBe("Install for completions and errors (about 120 MB)");
     expect(m.root.querySelector(".hub-status")!.getAttribute("data-tip")).toContain("Automatic install is off");
     button(m.root, "Install").click();
     expect(m.onAction).toHaveBeenCalledWith("install", "jdtls");
   });
-  it("installing: a single progress bar with the value, the phase line, a fixed percent slot and Cancel", () => {
+  it("installing: one progress bar with its value, the phase line, the percent and Cancel", () => {
     const m = mount(viewOf(javaInstalling(42, 134 * MB, 320 * MB)));
     const bars = m.root.querySelectorAll("[role=progressbar]");
     expect(bars).toHaveLength(1);
     expect(bars[0].getAttribute("aria-valuenow")).toBe("42");
-    expect(bars[0].getAttribute("aria-valuemin")).toBe("0");
-    expect(bars[0].getAttribute("aria-valuemax")).toBe("100");
     expect(bars[0].getAttribute("aria-label")).toBe("Installing Java");
     expect((bars[0].querySelector("i") as HTMLElement).style.width).toBe("42%");
-    expect(status(m.root)).toBe("Downloading 134 of 320 MB");
-    expect(m.root.querySelector(".hub-state-word")!.textContent).toBe("Installing");
-    expect(m.root.querySelector("[data-testid=hub-percent]")!.textContent).toBe("42%");
+    expect(text(m.root, ".hub-status-text")).toBe("Downloading 134 of 320 MB");
+    expect(text(m.root, ".hub-pill")).toBe("Installing");
+    expect(m.root.querySelector(".hub-pill")!.getAttribute("data-state")).toBe("starting");
+    expect(text(m.root, "[data-testid=hub-percent]")).toBe("42%");
     button(m.root, "Cancel").click();
     expect(m.onAction).toHaveBeenCalledWith("cancel", "jdtls");
   });
-  it("keeps an idle track in the layout when nothing runs", () => {
-    const track = mount(viewOf(java({ kind: "ready", server: "jdtls" }))).root.querySelector(".hub-progress")!;
-    expect(track.classList.contains("idle")).toBe(true);
-    expect(track.hasAttribute("role")).toBe(false);
-    expect(track.getAttribute("aria-hidden")).toBe("true");
-  });
-  it("installing with an unknown total shows an indeterminate bar without a value", () => {
-    const m = mount(viewOf(makeServer("jdtls", { kind: "installing", server: "jdtls", phase: "downloading", overallReceived: 3 * MB, overallTotal: null }, { state: { kind: "installing" } })));
-    const bar = m.root.querySelector("[role=progressbar]")!;
-    expect(bar.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar.querySelector("i")!.classList.contains("indeterminate")).toBe(true);
-    expect(m.root.querySelector("[data-testid=hub-percent]")!.textContent).toBe("");
+  it("has no progress bar and no status line when the server is ready", () => {
+    const m = mount(ready());
+    expect(m.root.querySelector(".hub-progress")).toBeNull();
+    expect(m.root.querySelector(".hub-status")).toBeNull();
   });
   it("starting and indexing", () => {
-    expect(status(mount(viewOf(java({ kind: "starting", server: "jdtls" }, { state: { kind: "starting" } }))).root)).toBe("The first start can take a minute");
+    expect(text(mount(viewOf(java({ kind: "starting", server: "jdtls" }, { state: { kind: "starting" } }))).root, ".hub-status-text")).toBe("The first start can take a minute");
     const m = mount(viewOf(java({ kind: "ready", server: "jdtls" }, {}, [{ title: "Indexing project", message: "Reading classes", percentage: 35 }])));
-    expect(m.root.querySelector(".hub-state-word")!.textContent).toBe("Indexing");
-    expect(status(m.root)).toBe("Reading classes");
+    expect(text(m.root, ".hub-pill")).toBe("Indexing");
+    expect(text(m.root, ".hub-status-text")).toBe("Reading classes");
     expect(m.root.querySelector("[role=progressbar]")!.getAttribute("aria-valuenow")).toBe("35");
-    expect(m.root.querySelector("[data-testid=hub-percent]")!.textContent).toBe("35%");
-  });
-  it("ready: lists only what is on, with no off features, and Restart works", () => {
-    const m = mount(viewOf(java({ kind: "ready", server: "jdtls" }, { capabilities: { ...allCapabilities, rename: false } })));
-    expect(status(m.root)).toBe("Completions, errors, hover, go to definition, references, format");
-    expect(m.root.querySelector(".hub-status")!.textContent).not.toMatch(/rename/i);
-    button(m.root, "Restart").click();
-    expect(m.onAction).toHaveBeenCalledWith("restart", "jdtls");
-    expect(m.root.querySelectorAll(".hub-actions button")).toHaveLength(1);
   });
   it("runtime missing: states what was found and offers to choose or check again", () => {
     const m = mount(viewOf(java({ kind: "runtime-missing", server: "jdtls", runtime: "Java", requiredVersion: 25, found: ["21"] }, { state: { kind: "runtimeMissing", runtime: "Java", requiredVersion: 25, found: ["21"] }, hub: { runtime: { name: "JDK", requiredVersion: 25, foundVersion: "21", foundPath: "/jdks/21" } } })));
-    expect(status(m.root)).toBe("Needs JDK 25 or newer. Found JDK 21");
-    expect(m.root.querySelector(".hub-status")!.getAttribute("data-tip")).toBe("Found at /jdks/21. Install a newer JDK, or choose one.");
+    expect(text(m.root, ".hub-status-text")).toBe("Needs JDK 25 or newer. Found JDK 21");
+    expect(m.root.querySelector(".hub-pill")!.getAttribute("data-state")).toBe("error");
     button(m.root, "Choose JDK").click();
     button(m.root, "Check again").click();
     expect(m.onAction.mock.calls.map(call => call[0])).toEqual(["chooseRuntime", "checkAgain"]);
   });
-  it("failed: a short line, the reason and details in the tooltip, Retry, and details that can be copied", async () => {
+  it("errors: the real message and details on screen, Retry, and details that can be copied", async () => {
     const m = mount(viewOf(java({ kind: "install-failed", server: "jdtls", reason: "raw", retryable: true }, { state: { kind: "installFailed", reason: "raw", retryable: true }, hub: { failureReason: "Could not download Java support.", failureDetails: "GET https://x: reset" } })));
-    expect(status(m.root)).toBe("Couldn't install. Check your connection");
-    expect(m.root.querySelector(".hub-status")!.getAttribute("data-tip")).toBe("Could not download Java support. GET https://x: reset");
-    expect(m.root.querySelector("details")).toBeNull();
+    expect(text(m.root, ".hub-pill")).toBe("Install failed");
+    const alert = m.root.querySelector("[role=alert]")!;
+    expect(text(alert as HTMLElement, ".hub-error-reason")).toBe("Could not download Java support.");
+    expect(text(alert as HTMLElement, ".hub-error-details")).toBe("GET https://x: reset");
+    expect(m.root.querySelector(".hub-chips"), "no chips while nothing runs").toBeNull();
     button(m.root, "Retry").click();
     expect(m.onAction).toHaveBeenCalledWith("retry", "jdtls");
     button(m.root, "Copy details").click();
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(m.onCopy).toHaveBeenCalledWith("GET https://x: reset");
-    expect(m.onAction).toHaveBeenCalledTimes(1);
     expect(button(m.root, "Copied")).toBeDefined();
   });
-  it("crashed, disabled and unavailable each have their one action", () => {
+  it("crashed, disabled and unavailable each keep their action", () => {
     const crashed = mount(viewOf(java({ kind: "crashed", server: "jdtls" }, { state: { kind: "crashed" } })));
-    expect(status(crashed.root)).toBe("Stopped unexpectedly");
+    expect(text(crashed.root, ".hub-status-text")).toBe("Stopped unexpectedly");
     button(crashed.root, "Restart").click();
+    expect(crashed.onAction).toHaveBeenCalledWith("restart", "jdtls");
     const off = mount(viewOf(java({ kind: "disabled", server: "jdtls" }, { state: { kind: "disabled" }, enabled: false })));
-    expect(status(off.root)).toBe("Turn on for completions and errors");
-    expect(off.root.querySelector(".hub-state-word")!.textContent).toBe("Off");
+    expect(text(off.root, ".hub-pill")).toBe("Off");
+    expect(off.root.querySelector(".hub-pill")!.getAttribute("data-state")).toBe("off");
     button(off.root, "Turn on").click();
     expect(off.onAction).toHaveBeenCalledWith("turnOn", "jdtls");
     const down = mount(viewOf(makeServer("vtsls", { kind: "unknown", server: "vtsls" }), { statusError: "Could not read language server status: boom" }));
-    expect(status(down.root)).toBe("Status unavailable. Try again.");
-    expect(down.root.querySelector(".hub-status")!.getAttribute("data-tip")).toBe("Could not read language server status: boom");
+    expect(text(down.root, ".hub-status-text")).toBe("Status unavailable. Try again.");
     button(down.root, "Retry").click();
     expect(down.onAction).toHaveBeenCalledWith("refresh", "vtsls");
   });
-  it("trust: a footer line with a tooltip, Trust folder when untrusted, Stop trusting when trusted", () => {
+  it("trust: one compact line with one action, and the short explanation only when untrusted", () => {
     const restricted = mount(viewOf(java({ kind: "ready", server: "jdtls" }, { hub: { trust: { workspaceTrusted: false, needsTrust: true } } })));
-    const line = restricted.root.querySelector(".hub-trust")!;
-    expect(line.textContent).toBe("Untrusted folderWhy?");
-    expect(line.getAttribute("data-tip")).toContain("Only trust folders from a source you trust.");
-    expect(restricted.root.textContent).not.toContain("Stop trusting");
-    button(restricted.root, "Trust folder").click();
+    expect(text(restricted.root, ".hub-pill")).toBe("Needs trust");
+    expect(restricted.root.querySelector(".hub-pill")!.getAttribute("data-state")).toBe("needs-trust");
+    expect(text(restricted.root, ".hub-trust")).toBe("Untrusted folder");
+    expect(text(restricted.root, ".hub-trust-why")).toContain("Trust only folders you know.");
+    expect(restricted.root.querySelectorAll(".hub-trust-block button")).toHaveLength(1);
+    expect(restricted.root.querySelector(".hub-actions [data-action=trust]")).toBeNull();
+    button(restricted.root, "Trust").click();
     expect(restricted.onAction).toHaveBeenCalledWith("trust", "jdtls");
-    const trusted = mount(viewOf(java({ kind: "ready", server: "jdtls" })));
-    expect(trusted.root.querySelector(".hub-trust")!.textContent).toBe("Trusted folder");
+    const trusted = mount(ready());
+    expect(text(trusted.root, ".hub-trust")).toBe("Trusted folder");
+    expect(trusted.root.querySelector(".hub-trust-why")).toBeNull();
     button(trusted.root, "Stop trusting").click();
     expect(trusted.onAction).toHaveBeenCalledWith("stopTrusting", "jdtls");
   });
-  it("shows the plain sentence and no card for a file without a language server", () => {
-    const m = mount(viewOf(undefined));
-    expect(m.root.querySelector(".hub-state")).toBeNull();
-    expect(m.root.querySelector(".hub-name strong")!.textContent).toBe("Language intelligence");
-    expect(status(m.root)).toBe("No language support for this file type.");
-    expect(m.root.querySelectorAll(".hub-actions button")).toHaveLength(0);
+  it("explains what is missing for a file whose language has no server", () => {
+    const m = mount(viewOf(undefined), { fileLanguage: "markdown" });
+    expect(text(m.root, ".hub-name strong")).toBe("Markdown");
+    expect(text(m.root, ".hub-name small")).toBe("No language support");
+    expect(m.root.querySelector(".hub-head .language-icon")!.getAttribute("data-language")).toBe("markdown");
+    expect(m.root.querySelector(".hub-pill")).toBeNull();
+    expect(text(m.root, ".hub-status-text")).toBe("No completions or error checking for Markdown. Editing works as usual.");
+    expect(m.root.querySelector(".hub-chips")).toBeNull();
+    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(serverOrder.length);
+    const plain = mount(viewOf(undefined), { fileLanguage: "text" });
+    expect(text(plain.root, ".hub-status-text")).toBe("No language support for this file type.");
+    expect(plain.root.querySelector(".hub-head .language-icon")!.getAttribute("data-language")).toBe("unknown");
   });
-  it("all languages: collapsed by default, remembered when opened, and the only thing the list changes", () => {
-    const m = mount(viewOf(java({ kind: "ready", server: "jdtls" })));
-    const toggle = button(m.root, "All languages");
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(m.root.querySelector<HTMLElement>(".hub-rows")!.hidden).toBe(true);
-    toggle.click();
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(m.root.querySelector<HTMLElement>(".hub-rows")!.hidden).toBe(false);
-    expect(allLanguagesOpen()).toBe(true);
-    expect(window.localStorage.getItem("span.languageIntelligence.allLanguagesOpen")).toBe("true");
-    const again = mount(viewOf(java({ kind: "ready", server: "jdtls" })));
-    expect(again.root.querySelector<HTMLElement>(".hub-rows")!.hidden).toBe(false);
-  });
-  it("all languages: switches write through, row actions act, and only a word for a language that is not ready", () => {
-    setAllLanguagesOpen(true);
-    const view = viewOf(java({ kind: "ready", server: "jdtls" }), { servers: [java({ kind: "ready", server: "jdtls" }), makeServer("html", { kind: "needs-install", server: "html", version: "1" }, { state: { kind: "needsInstall", version: "1" }, installed: false })] });
+  it("rows: logo, name, server, state dot or spinner, and a switch; the row action still acts", () => {
+    const view = viewOf(java({ kind: "ready", server: "jdtls" }), { servers: [java({ kind: "ready", server: "jdtls" }), makeServer("html", { kind: "needs-install", server: "html", version: "1" }, { state: { kind: "needsInstall", version: "1" }, installed: false }), makeServer("css", { kind: "starting", server: "css" }, { state: { kind: "starting" } })] });
     const m = mount(view);
-    m.root.querySelector<HTMLElement>('.hub-row[data-server="html"] [role=switch]')!.click();
+    const row = (id: string) => m.root.querySelector<HTMLElement>(`.hub-row[data-server="${id}"]`)!;
+    expect(row("jdtls").classList.contains("current")).toBe(true);
+    expect(row("jdtls").querySelector(".language-icon")!.getAttribute("data-language")).toBe("java");
+    expect(text(row("jdtls"), ".hub-row-server")).toBe("Eclipse JDT LS");
+    expect(row("jdtls").querySelector(".lsp-dot")!.getAttribute("aria-label")).toBe("Ready");
+    expect(row("css").querySelector(".hub-spinner")!.getAttribute("aria-label")).toBe("Starting");
+    expect(row("css").querySelector(".lsp-dot")).toBeNull();
+    expect(text(row("html"), ".hub-row-word")).toBe("Not installed");
+    row("html").querySelector<HTMLElement>("[role=switch]")!.click();
     expect(m.onToggleServer).toHaveBeenCalledWith("html", false);
-    m.root.querySelector<HTMLElement>('.hub-row[data-server="html"] .hub-row-action')!.click();
+    row("html").querySelector<HTMLElement>(".hub-row-action")!.click();
     expect(m.onAction).toHaveBeenCalledWith("install", "html");
-    expect(m.root.querySelector('.hub-row[data-server="html"] .hub-row-word')!.textContent).toBe("Not installed");
-    expect(m.root.querySelector('.hub-row[data-server="jdtls"] .hub-row-word')!.textContent).toBe("");
-    expect(m.root.querySelector('.hub-row[data-server="jdtls"] .hub-row-action')).toBeNull();
+    expect(row("jdtls").querySelector("[role=switch]")!.getAttribute("aria-label")).toBe("Java language support");
   });
-  it("closes on Escape and an outside click and from the settings link; embedded has no link and the list stays open", () => {
-    const m = mount(viewOf(java({ kind: "ready", server: "jdtls" })));
-    m.panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  it("arrow keys move between rows, Home and End jump, and Space on a switch toggles it", () => {
+    const m = mount(ready());
+    const switches = [...m.root.querySelectorAll<HTMLButtonElement>(".hub-row [role=switch]")];
+    switches[0].focus();
+    key(switches[0], "ArrowDown");
+    expect(document.activeElement).toBe(switches[1]);
+    key(switches[1], "ArrowUp");
+    expect(document.activeElement).toBe(switches[0]);
+    key(switches[0], "End");
+    expect(document.activeElement).toBe(switches.at(-1));
+    key(switches.at(-1)!, "Home");
+    expect(document.activeElement).toBe(switches[0]);
+    expect(switches[0].tagName).toBe("BUTTON");
+  });
+  it("shows the All / Active filter only when it filters, and it really filters", () => {
+    expect(mount(ready()).root.querySelector("[role=radiogroup]")).toBeNull();
+    const view = viewOf(java({ kind: "ready", server: "jdtls" }), { servers: [java({ kind: "ready", server: "jdtls" }), makeServer("html", { kind: "disabled", server: "html" }, { state: { kind: "disabled" }, enabled: false })] });
+    const m = mount(view);
+    const group = m.root.querySelector("[role=radiogroup]")!;
+    expect(group.getAttribute("aria-label")).toBe("Show languages");
+    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(2);
+    button(m.root, "Active").click();
+    expect([...m.root.querySelectorAll<HTMLElement>(".hub-row")].map(row => row.dataset.server)).toEqual(["jdtls"]);
+    expect(button(m.root, "Active").getAttribute("aria-checked")).toBe("true");
+    key(button(m.root, "Active"), "ArrowLeft");
+    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(2);
+    expect(m.root.querySelector(".hub-search")).toBeNull();
+  });
+  it("closes on Escape and an outside click and from the settings link; embedded is a region without the link", () => {
+    const m = mount(ready());
+    key(m.panel, "Escape");
     expect(m.onClose).toHaveBeenLastCalledWith(true);
     button(m.root, "Language server settings").click();
     expect(m.onOpenSettings).toHaveBeenCalled();
     document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     expect(m.onClose).toHaveBeenLastCalledWith(false);
-    expect(m.root.querySelector(".close-button")).toBeNull();
-    const embedded = mount(viewOf(java({ kind: "ready", server: "jdtls" })), { embedded: true });
+    const embedded = mount(ready(), { embedded: true });
     expect(embedded.panel.getAttribute("role")).toBe("region");
     expect(embedded.root.textContent).not.toContain("Language server settings");
-    expect(embedded.root.querySelector<HTMLElement>(".hub-rows")!.hidden).toBe(false);
+    expect(embedded.root.querySelectorAll(".hub-row")).toHaveLength(serverOrder.length);
   });
-  it("moves focus into the popover and labels the preview fixture in the technical line", () => {
-    const m = mount({ ...viewOf(java({ kind: "ready", server: "jdtls" })), preview: true });
-    expect(m.root.querySelector(".hub-name small")!.textContent).toBe("Eclipse JDT LS 1.62 \u00b7 preview");
+  it("opens above the status bar when asked, and under the top bar by default", () => {
+    expect(mount(ready()).panel.dataset.placement).toBe("top");
+    expect(mount(ready(), { placement: "bottom" }).panel.dataset.placement).toBe("bottom");
+  });
+  it("moves focus into the popover and tags the preview fixture", () => {
+    const m = mount({ ...ready(), preview: true });
+    expect(text(m.root, ".hub-name small")).toBe("Eclipse JDT LS 1.62 · preview");
     return Promise.resolve().then(() => expect(m.panel.contains(document.activeElement)).toBe(true));
   });
-  it("has no title attribute anywhere: tooltips come from the view", () => {
-    const m = mount(viewOf(java({ kind: "crashed", server: "jdtls" }, { state: { kind: "crashed" } })));
-    expect(m.root.querySelector("[title]")).toBeNull();
+  it("has no title attribute and no em dash anywhere", () => {
+    for (const view of [ready(), viewOf(java({ kind: "crashed", server: "jdtls" }, { state: { kind: "crashed" } })), viewOf(undefined)]) {
+      const m = mount(view, { fileLanguage: "rust" });
+      expect(m.root.querySelector("[title]")).toBeNull();
+      expect(m.root.textContent).not.toContain("\u2014");
+    }
   });
 });

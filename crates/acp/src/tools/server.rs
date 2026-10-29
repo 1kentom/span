@@ -1760,6 +1760,8 @@ fn task_result(shared: &Shared, task_id: &str) -> Result<Value, RpcError> {
         text: &task.text,
         artifacts,
         usage: Some(view.usage.clone()),
+        spent_tokens: view.spent_tokens,
+        max_tokens: view.max_tokens,
         progress,
         lead_accepts_images: shared.lead_accepts_images,
         image_preview_cap: shared.config.policy.image_preview_bytes,

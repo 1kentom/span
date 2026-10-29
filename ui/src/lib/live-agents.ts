@@ -4,7 +4,7 @@
  * comes from facts Span already has: the lead's turn and requests, each task's reported status and open child
  * permission requests. Nothing is guessed.
  */
-import { isFinished, type DelegationTaskState } from "./agent-delegation";
+import { budgetNote, isFinished, type DelegationTaskState } from "./agent-delegation";
 import { agentKey, findHealth, type AgentHealth } from "./agent-health";
 
 export type LiveState = "Working" | "Waiting for you" | "Idle" | "Done" | "Starting" | "Failed";
@@ -113,7 +113,8 @@ export function liveAgentsOf(input: LiveInput): LiveAgent[] {
     const known = input.resolve?.(task.startingAgentId || reported) ?? (task.startingAgentId ? input.resolve?.(reported) : undefined);
     const id = known?.id ?? task.startingAgentId;
     const name = friendlyAgentName(known?.name ?? reported);
-    const detail = task.status === "failed" ? task.detail || task.progressText : isFinished(task.status) ? task.resultSummary : task.progressText;
+    // Only a real failure reads as failed; a completed task over its token budget keeps "Done" with a quiet note first.
+    const detail = task.status === "failed" ? task.detail || task.progressText : isFinished(task.status) ? [budgetNote(task), task.resultSummary].filter(Boolean).join(". ") : task.progressText;
     add({ key: "", id, name, state: taskState(task, input.waiting?.(task) ?? false), taskId: task.taskId, detail: detail || undefined, health: findHealth(input.health, id, task.agentName, name) }, id || reported);
   }
   for (const segment of input.earlier ?? []) {

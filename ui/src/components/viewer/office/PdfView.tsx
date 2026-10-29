@@ -9,7 +9,8 @@ import { ViewerState } from '../ViewerStates';
 import { OfficeFailure, createParse, plural, type DocumentViewProps } from './shared';
 import '../../../styles/office.css';
 
-export const PDF_MAX_BYTES = 128 * 1024 * 1024;
+import { PDF_MAX_BYTES } from '../../../lib/office/limits';
+export { PDF_MAX_BYTES };
 /** Text of at most this many pages is searched. */
 export const PDF_FIND_MAX_PAGES = 1000;
 const GAP = 16;

@@ -106,9 +106,13 @@ test("outside selection uses the existing startup dirty guard and Cancel retains
   await editor.focus(); await page.keyboard.insertText("// keep outside picker draft\n");
   await page.evaluate(() => { (window as PickerWindow).pickerFixture.selected = "/outside/README.md"; });
   await pickFile(page);
+  // An explicit pick outside the project asks before opening its folder; it never switches silently.
+  const outside = page.getByRole("dialog", { name: "File outside the open folder", exact: true });
+  await expect(outside).toBeVisible();
+  expect(await page.evaluate(() => (window as PickerWindow).pickerFixture.roots)).toEqual([]);
+  await outside.getByRole("button", { name: "Open that folder", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Open requested project", exact: true });
   await expect(dialog).toBeVisible();
-  expect(await page.evaluate(() => (window as PickerWindow).pickerFixture.enqueued)).toEqual([["/outside/README.md"]]);
   expect(await page.evaluate(() => (window as PickerWindow).pickerFixture.roots)).toEqual([]);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(editor).toContainText("keep outside picker draft");

@@ -130,6 +130,15 @@ export function taskNote(task: DelegationTaskState): string | undefined {
   return undefined;
 }
 
+/**
+ * A quiet note for a task that finished normally while its delegation spent more than its token budget, for example
+ * "Used about 1500 tokens, over the 1000 token budget". The backend only sets a completed task's detail for this, and
+ * such a task is never a failure.
+ */
+export function budgetNote(task: DelegationTaskState): string | undefined {
+  return task.status === "completed" ? task.detail : undefined;
+}
+
 /** The status line near the composer: only when the agent cannot get the delegation tools. Working delegation shows no text. */
 export function delegationLine(note: DelegationNote, _sessionId: string | undefined): { tone: "warn"; text: string } | undefined {
   if (note.unavailable) return { tone: "warn", text: `Delegation unavailable: ${note.unavailable.reason}` };
@@ -181,7 +190,8 @@ export function budgetText(budget: UsageReport_Deserialize | undefined): string 
   if (!budget) return undefined;
   const parts: string[] = [];
   if (budget.turns > 0) parts.push(`${budget.turns} ${budget.turns === 1 ? "turn" : "turns"}`);
-  if (typeof budget.tokens === "number") parts.push(`${budget.tokens.toLocaleString("en-US")} tokens`);
+  // With a window size the figure is context occupancy (system prompt and tools included), not what the task spent.
+  if (typeof budget.tokens === "number") parts.push(`${budget.tokens.toLocaleString("en-US")} tokens${typeof budget.contextSize === "number" ? " in context" : ""}`);
   if (typeof budget.cost === "number") parts.push(`${budget.currency ?? ""} ${budget.cost.toFixed(2)}`.trim());
   return parts.length ? parts.join(", ") : undefined;
 }

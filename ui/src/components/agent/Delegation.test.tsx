@@ -49,6 +49,13 @@ describe("DelegationCard", () => {
     expect(text(host.querySelector(".sb-delegation-status"))).toBe("Failed");
     expect(text(host.querySelector(".sb-delegation-note"))).toBe("The task timed out. No reply");
   });
+  it("shows an after-the-fact token overrun as a quiet note on a completed card, not a failure", () => {
+    const host = mount(() => <DelegationCard agent="Claude Agent" status="completed" budget="1 turn, 31,690 tokens in context" budgetNote="Used about 400 tokens, over the 300 token budget" />);
+    expect(text(host.querySelector(".sb-delegation-status"))).toBe("Completed");
+    expect(host.querySelector(".sb-delegation.failed")).toBeNull();
+    expect(host.querySelector(".sb-delegation-note")).toBeNull();
+    expect(text(host.querySelector(".sb-delegation-budget-note"))).toBe("Used about 400 tokens, over the 300 token budget");
+  });
   it("shows cancelled and the waiting-for-approval line", () => {
     const host = mount(() => <DelegationCard agent="Codex" status="cancelled" waiting />);
     expect(text(host.querySelector(".sb-delegation-status"))).toBe("Cancelled");

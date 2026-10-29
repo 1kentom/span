@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { OFFICE_PREVIEW_BYTES } from './office/limits';
 import {
   FONT_READ_BYTES, HEX_PREVIEW_BYTES, MAX_IMAGE_BYTES, MAX_SVG_BYTES, MEDIA_MAX_BYTES, PLAYBACK_SPEEDS, TEXT_PREVIEW_BYTES, ZOOM_MAX, ZOOM_MIN, bytesToDataUrl, classifyFile, clampVolume, clampZoom, closeAllTabs, closeOtherTabs,
   closeTab, closeTabsToRight, decodeTextPreview, fitPercent, formatDuration, hexRows, isLikelyBinary, isPreviewTab, jsonRows, lineEnding, mediaKeyAction, modeLabelFor, modeUsesIcons, openTab, parseJson, pinTab,
@@ -57,7 +58,7 @@ describe('classifyFile', () => {
     expect(readLimit('a.txt', '', 50)).toBe(50);
     expect(readLimit('a.ttf', '', FONT_READ_BYTES + 10)).toBe(0);
     expect(readLimit('a.mp4', '', MEDIA_MAX_BYTES + 1)).toBe(0);
-    expect(readLimit('a.pdf', '', 10 * 1024 * 1024)).toBe(HEX_PREVIEW_BYTES);
+    expect(readLimit('a.pdf', '', 10 * 1024 * 1024)).toBe(10 * 1024 * 1024);
     expect(readLimit('a.png', '', 10 * 1024 * 1024, true)).toBe(HEX_PREVIEW_BYTES);
   });
 });
@@ -221,4 +222,18 @@ describe('tab model', () => {
     expect(removeFromTabs(three, new Set(['a', 'b']))).toEqual({ tabs: three.tabs.slice(0, 2), active: 'b' });
     expect(removeFromTabs(three, new Set(['a', 'b', 'c']))).toBe(three);
   });
+});
+
+
+it.each([
+  ['document.docx', '', 'docx'], ['slides.pptx', '', 'pptx'], ['book.xlsx', '', 'xlsx'], ['macros.xlsm', '', 'xlsx'],
+  ['document.pdf', '', 'pdf'], ['archive.zip', '', 'archive'],
+  ['download', 'application/pdf', 'pdf'], ['download', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx'],
+  ['download', 'application/zip', 'archive'],
+] as const)('reads the complete bounded %s document and leaves explicit hex reads capped', (name, mime, kind) => {
+  const limit = OFFICE_PREVIEW_BYTES[kind];
+  expect(readLimit(name, mime, 80 * 1024)).toBe(80 * 1024);
+  expect(readLimit(name, mime, limit)).toBe(limit);
+  expect(readLimit(name, mime, limit + 1)).toBe(0);
+  expect(readLimit(name, mime, limit + 1, true)).toBe(HEX_PREVIEW_BYTES);
 });

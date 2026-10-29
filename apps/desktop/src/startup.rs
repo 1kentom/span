@@ -17,33 +17,110 @@ pub struct StartupRequestError {
     pub message: String,
 }
 
-pub fn receive_drop(app: tauri::AppHandle, paths: Vec<std::path::PathBuf>) {
-    tauri::async_runtime::spawn(async move {
-        let state = app.state::<DesktopState>().inner().clone();
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            let paths = paths
-                .into_iter()
-                .map(|path| {
-                    path.into_os_string()
-                        .into_string()
-                        .map_err(|_| "Dropped path is not valid Unicode".to_owned())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-            enqueue(&state, paths_request(paths, &cwd)?)
+/// Most paths one native drop may hand to the frontend.
+const MAX_DROPPED_PATHS: usize = 128;
+/// Hard ceiling for reading one dropped file, whatever the frontend asks for.
+const MAX_DROPPED_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Remembers the paths of the latest native drop. The frontend decides what the drop does (attach it on the agent
+/// panel, open files in the editor, open a folder as a project), and only these paths may be inspected or read
+/// through [`dropped_path_info`] and [`read_dropped_file`]. Nothing is opened or enqueued here.
+pub fn record_drop(state: &DesktopState, paths: &[std::path::PathBuf]) {
+    let canonical = paths
+        .iter()
+        .take(MAX_DROPPED_PATHS)
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .collect();
+    if let Ok(mut dropped) = state.dropped_paths.lock() {
+        *dropped = canonical;
+    }
+}
+
+/// The canonical path when it belongs to the latest native drop, else an error. Never reads anything else.
+fn allowed_drop(state: &DesktopState, path: &str) -> Result<std::path::PathBuf, String> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|_| "The dropped item is no longer available".to_owned())?;
+    let dropped = state
+        .dropped_paths
+        .lock()
+        .map_err(|_| "Drop state is unavailable".to_owned())?;
+    if dropped.iter().any(|item| item == &canonical) {
+        Ok(canonical)
+    } else {
+        Err("Only items from the latest drop can be read".to_owned())
+    }
+}
+
+#[derive(Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedPath {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn dropped_path_info(
+    state: State<'_, DesktopState>,
+    path: String,
+) -> Result<DroppedPath, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let canonical = allowed_drop(&state, &path)?;
+        let meta = std::fs::metadata(&canonical).map_err(|error| error.to_string())?;
+        Ok(DroppedPath {
+            path: canonical
+                .to_str()
+                .ok_or("Dropped path is not valid Unicode")?
+                .to_owned(),
+            name: canonical
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            is_dir: meta.is_dir(),
+            size: if meta.is_dir() { 0 } else { meta.len() },
         })
-        .await
-        .map_err(|error| format!("Open dropped paths task failed: {error}"))
-        .and_then(|result| result);
-        match result {
-            Ok(()) => {
-                crate::events::emit(&app, &StartupRequestsChanged { pending: true });
-            }
-            Err(message) => {
-                crate::events::emit(&app, &StartupRequestError { message });
-            }
+    })
+    .await
+    .map_err(|error| format!("Dropped path task failed: {error}"))?
+}
+
+/// Reads one file of the latest native drop as base64, refusing anything larger than `max_bytes`.
+#[tauri::command]
+#[specta::specta]
+pub async fn read_dropped_file(
+    state: State<'_, DesktopState>,
+    path: String,
+    max_bytes: u32,
+) -> Result<String, String> {
+    use base64::Engine;
+    use std::io::Read;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let canonical = allowed_drop(&state, &path)?;
+        let limit = u64::from(max_bytes).min(MAX_DROPPED_FILE_BYTES);
+        let file = std::fs::File::open(&canonical).map_err(|error| error.to_string())?;
+        let meta = file.metadata().map_err(|error| error.to_string())?;
+        if !meta.is_file() {
+            return Err("Only files can be read".to_owned());
         }
-    });
+        if meta.len() > limit {
+            return Err("The file is larger than the attachment limit".to_owned());
+        }
+        // The size can change between the check and the read: bound the read itself.
+        let mut bytes = Vec::new();
+        file.take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > limit {
+            return Err("The file is larger than the attachment limit".to_owned());
+        }
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
+    .await
+    .map_err(|error| format!("Dropped file task failed: {error}"))?
 }
 
 pub fn enqueue(state: &DesktopState, request: StartupRequest) -> Result<(), String> {
@@ -129,6 +206,21 @@ pub async fn take_startup_requests(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_paths_of_the_latest_drop_can_be_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let dropped = directory.path().join("dropped.txt");
+        let other = directory.path().join("other.txt");
+        std::fs::write(&dropped, "fixture").unwrap();
+        std::fs::write(&other, "secret").unwrap();
+        let state = crate::DesktopState::default();
+        super::record_drop(&state, std::slice::from_ref(&dropped));
+        assert!(super::allowed_drop(&state, dropped.to_str().unwrap()).is_ok());
+        assert!(super::allowed_drop(&state, other.to_str().unwrap()).is_err());
+        super::record_drop(&state, &[]);
+        assert!(super::allowed_drop(&state, dropped.to_str().unwrap()).is_err());
+    }
+
     #[test]
     fn dropped_paths_are_literal_and_use_the_explicit_invoking_directory() {
         let directory = tempfile::tempdir().unwrap();
