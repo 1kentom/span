@@ -158,6 +158,14 @@ fn choice_name(options: &[ConfigOption], value: &str) -> String {
         .unwrap_or_else(|| value.to_owned())
 }
 
+/// `option` offers `value` as a choice.
+fn has_choice(option: &ConfigOption, value: &str) -> bool {
+    option
+        .groups
+        .iter()
+        .any(|group| group.choices.iter().any(|choice| choice.value == value))
+}
+
 /// Agent specific rewriting. Every method defaults to changing nothing.
 pub(crate) trait Quirks: Send + Sync {
     fn profile(&self) -> Profile {
@@ -198,6 +206,17 @@ pub(crate) trait Quirks: Send + Sync {
     }
     fn internal_permission(&self, _tool_call_id: &str) -> bool {
         false
+    }
+    /// The mode value that asks before running tools, used in place of a
+    /// bypass mode when a session starts under the approval start mode.
+    /// `None` leaves the mode as the agent started it.
+    fn approval_mode(&self, option: &ConfigOption) -> Option<String> {
+        has_choice(option, "default").then(|| "default".into())
+    }
+    /// `_meta` for `session/new` under the approval start mode, for example
+    /// to leave out tools that reach other sessions on the machine.
+    fn approval_session_meta(&self) -> Option<Value> {
+        None
     }
 }
 
@@ -350,6 +369,27 @@ impl Adapter {
                 },
             }]
         })
+    }
+
+    /// Under the approval start mode: the mode option to change, and the
+    /// value to change it to, when `options` start in a bypass mode.
+    pub(crate) fn approval_change(&self, options: &[ConfigOption]) -> Option<(String, String)> {
+        options
+            .iter()
+            .filter(|option| {
+                is_mode_option(option) && BYPASS_VALUES.contains(&option.current_value.as_str())
+            })
+            .find_map(|option| {
+                self.quirks
+                    .approval_mode(option)
+                    .filter(|value| value != &option.current_value && has_choice(option, value))
+                    .map(|value| (option.id.clone(), value))
+            })
+    }
+
+    /// `_meta` for `session/new` under the approval start mode.
+    pub(crate) fn approval_session_meta(&self) -> Option<Value> {
+        self.quirks.approval_session_meta()
     }
 
     pub(crate) fn begin_turn(&self, session: &str, slash: bool) {

@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { type JSX, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { FileEntry } from "../bindings";
 import type { Workbench } from "../stores/workbench";
 import Icon, { FileIcon } from "./Icon";
@@ -15,7 +15,7 @@ import "../styles/explorer.css";
 type DragItem = { paths: string[]; generation: number };
 type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: EditorDropTarget };
 
-export function Explorer(props: { workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void }) {
+export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void }) {
   const w = props.workbench; const state = props.state;
   const mac = currentPlatform() === "mac";
   let treeElement!: HTMLDivElement;
@@ -199,6 +199,7 @@ export function Explorer(props: { workbench: Workbench; view: "Files" | "Search"
       <div class="search-summary" aria-live="polite">{w.searching() ? "Searching…" : query() ? `${w.searchResults().length} results` : "Find text across your workspace"}</div>
       <div class="search-results"><For each={w.searchResults()}>{match => <button class="search-result" onClick={() => props.onNavigate(match.path, match.line)} title={`${match.path}:${match.line}`}><span class="search-result-file"><FileIcon path={match.path} /><span>{match.path.split("/").pop()}</span><span class="dim">:{match.line}</span></span><span class="search-result-text">{match.text}</span><span class="search-result-path">{match.path}</span></button>}</For></div>
     </Show>
-    <Show when={props.view === "Git" || props.view === "History"}><div class="panel-empty"><Icon name={props.view === "Git" ? "Hierarchy" : "Clock"} size={28} /><strong>{props.view === "Git" ? "Source control" : "File history"}</strong><p>{props.view === "Git" ? "Git integration is planned for phase 0.3." : "History will be available with Git integration in phase 0.3."}</p></div></Show>
+    <Show when={props.view === "Git"}>{props.git}</Show>
+    <Show when={props.view === "History"}>{props.history}</Show>
   </>;
 }

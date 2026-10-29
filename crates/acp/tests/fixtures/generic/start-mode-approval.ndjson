@@ -1,0 +1,5 @@
+// An unknown agent whose mode option starts in bypassPermissions and offers default is moved to default at session start under the approval start mode; a set_config_option answered with {} still updates the chip from the known options.
+// Protocol-conformant shapes from an unknown agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}, "authMethods": [], "agentInfo": {"name": "span-test-peer", "version": "1.0.0"}}}
+{"on": "session/new", "result": {"sessionId": "p-1", "configOptions": [{"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": "bypassPermissions", "options": [{"value": "default", "name": "Ask"}, {"value": "bypassPermissions", "name": "Bypass permissions"}]}]}}
+{"on": "session/set_config_option", "result": {}}

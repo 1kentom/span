@@ -27,7 +27,14 @@ export type RecentSession = { id: string; title: string; time: string; brand?: B
 
 /** What a sign-in method asks the user to type. Absent for methods that need nothing. */
 export type AuthInputKind = "apiKey" | "gateway";
-export type AuthMethod = { id: string; name: string; description?: string; input?: AuthInputKind };
+export type AuthMethod = {
+  id: string;
+  name: string;
+  description?: string;
+  input?: AuthInputKind;
+  /** For a gateway method, the protocol the agent expects from the gateway, for example `anthropic` or `openai`. */
+  protocol?: string;
+};
 /** A secret the user typed. It exists only inside the form and the call that sends it. */
 export type AuthSecret = { kind: "apiKey"; key: string } | { kind: "gateway"; baseUrl: string; headers: Record<string, string> };
 

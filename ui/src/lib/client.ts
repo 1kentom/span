@@ -1,3 +1,4 @@
+import type { GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
 import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
@@ -109,6 +110,15 @@ let previewSession: SessionState | null = null;
 const previewWorkspace: Workspace = { name: 'intellij', root: '/preview/intellij' };
 const agentListeners = new Set<(event: AgentEvent) => void>();
 let agentGeneration = 0;
+/**
+ * The connect generation whose channel reaches the agent listeners. A failed connect hands it back to the channel
+ * before it, because the backend keeps the old connection when a switch fails (issue #87).
+ */
+let liveChannel = 0;
+/** A disconnect or a new folder: no channel delivers until the next connect. */
+const supersedeAgent = () => {
+  liveChannel = ++agentGeneration;
+};
 let searchSequence = 0;
 
 function language(path: string): string {
@@ -147,6 +157,43 @@ function previewEntries(path: string): FileEntry[] {
 }
 
 export const api = {
+  async gitContext(): Promise<GitContext> {
+    if (!isDesktop) nativeRequired('Reading Git repositories');
+    return commands.gitContext();
+  },
+  async gitEnable(context: GitContext): Promise<GitStatus> {
+    if (!isDesktop) nativeRequired('Enabling Git');
+    return commands.gitEnable(context);
+  },
+  async gitStatus(context: GitContext): Promise<GitStatus> {
+    if (!isDesktop) nativeRequired('Reading Git status');
+    return commands.gitStatus(context);
+  },
+  async gitDiff(context: GitContext, path: string, side: GitDiffSide, expectedIndexRevision: string): Promise<GitDiff> {
+    if (!isDesktop) nativeRequired('Reading Git differences');
+    return commands.gitDiff(context, path, side, expectedIndexRevision);
+  },
+  async gitHistory(context: GitContext, query: GitHistoryQuery): Promise<GitHistoryPage> {
+    if (!isDesktop) nativeRequired('Reading Git history');
+    return commands.gitHistory(context, query);
+  },
+  async gitCommitDiff(context: GitContext, commitId: string, path: string | null): Promise<GitDiff> {
+    if (!isDesktop) nativeRequired('Reading Git commit differences');
+    return commands.gitCommitDiff(context, commitId, path);
+  },
+  async gitStage(context: GitContext, paths: string[], expectedIndexRevision: string): Promise<GitStatus> {
+    if (!isDesktop) nativeRequired('Staging Git changes');
+    return commands.gitStage(context, paths, expectedIndexRevision);
+  },
+  async gitUnstage(context: GitContext, paths: string[], expectedIndexRevision: string): Promise<GitStatus> {
+    if (!isDesktop) nativeRequired('Unstaging Git changes');
+    return commands.gitUnstage(context, paths, expectedIndexRevision);
+  },
+  async gitCommit(context: GitContext, message: string, expectedIndexRevision: string, expectedStagedSnapshot: string): Promise<GitCommitResult> {
+    if (!isDesktop) nativeRequired('Creating Git commits');
+    return commands.gitCommit(context, message, expectedIndexRevision, expectedStagedSnapshot);
+  },
+
   // Interactive terminal commands always use the native PTY backend.
   async terminalCreate(cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent>, profileId?: string): Promise<TerminalInfo> {
     if (!isDesktop) nativeRequired('Creating terminal sessions');
@@ -216,7 +263,7 @@ export const api = {
     const selected = path ?? await open({ directory: true, multiple: false, title: 'Open a folder in span' });
     if (!selected || Array.isArray(selected)) return null;
     const workspace = await commands.openWorkspace(selected);
-    agentGeneration += 1;
+    supersedeAgent();
     return workspace;
   },
   async listDirectory(path: string): Promise<FileEntry[]> {
@@ -530,13 +577,22 @@ export const api = {
   },
   async agentConnect(command: AgentCommand, cwd: string): Promise<string> {
     if (!isDesktop) nativeRequired('Connecting agents');
+    const previous = liveChannel;
     const generation = ++agentGeneration;
+    liveChannel = generation;
     const channel = new Channel<AgentEvent>();
     channel.onmessage = event => {
-      if (generation !== agentGeneration) return;
+      if (generation !== liveChannel) return;
       for (const listener of agentListeners) listener(event);
     };
-    const session = await commands.agentConnect(command, cwd, channel);
+    let session: string;
+    try {
+      session = await commands.agentConnect(command, cwd, channel);
+    } catch (cause) {
+      // The backend connects the new agent before it closes the old one, so a failed connect leaves the old one active.
+      if (generation === agentGeneration) liveChannel = previous;
+      throw cause;
+    }
     if (generation !== agentGeneration) throw new Error('Agent connection was superseded by another connection or disconnect.');
     return session;
   },
@@ -607,7 +663,7 @@ export const api = {
   },
   async agentDisconnect(): Promise<void> {
     if (!isDesktop) nativeRequired('Disconnecting agents');
-    agentGeneration += 1;
+    supersedeAgent();
     await commands.agentDisconnect();
   },
   async agentPermission(requestId: string, optionId: string | null): Promise<void> {

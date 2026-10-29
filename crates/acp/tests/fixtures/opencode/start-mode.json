@@ -1,0 +1,49 @@
+{
+  "quirk": "OpenCode's modes (build, plan) never skip approval prompts, so the approval start mode sends no mode change and no _meta: the session keeps build and the chip shows it.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "ses_1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "ses_1",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "build"
+        }
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/set_config_option"
+    },
+    {
+      "method": "session/set_mode"
+    },
+    {
+      "method": "session/new",
+      "params": {
+        "_meta": {}
+      }
+    }
+  ]
+}

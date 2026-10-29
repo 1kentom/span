@@ -11,6 +11,7 @@ mod agents;
 mod cli;
 mod events;
 mod file_index;
+mod git;
 #[doc(hidden)]
 pub mod language_servers;
 mod menu;
@@ -54,6 +55,7 @@ pub struct DesktopState {
     pub formatter_jobs: FormatterJobs,
     pub file_index: file_index::FileIndexRuntime,
     pub file_index_root: Arc<Mutex<Option<PathBuf>>>,
+    pub(crate) git: git::GitAdapterState,
 }
 
 async fn with_workspace<T, F>(state: DesktopState, operation: F) -> Result<T, String>
@@ -146,6 +148,7 @@ async fn open_workspace(
     })
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
+    git::cancel_workspace(&state).await?;
     agents::disconnect_and_wait(&state).await?;
     // Background agents run in the old folder; they end with it.
     agents::background(&state).shutdown();
@@ -893,6 +896,15 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         ])
         .commands(collect_commands![
             open_workspace,
+            git::git_context,
+            git::git_enable,
+            git::git_status,
+            git::git_diff,
+            git::git_history,
+            git::git_commit_diff,
+            git::git_stage,
+            git::git_unstage,
+            git::git_commit,
             runs::run_configurations,
             runs::run_context,
             run_approval::pending_run_approvals,

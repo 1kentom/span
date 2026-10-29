@@ -10,7 +10,17 @@ pub(crate) struct Claude;
 /// a user chunk when the session is restored (live capture, 0.98.0).
 const INTERRUPTED: &str = "[Request interrupted by user]";
 
+/// Claude Code tools that reach sessions outside this one.
+const PEER_SESSION_TOOLS: &[&str] = &["ListAgents"];
+
 impl Quirks for Claude {
+    /// claude-agent-acp merges `_meta.claudeCode.options.disallowedTools`
+    /// into the SDK options (0.98.0 source). `ListAgents` lists the other
+    /// Claude Code sessions on the machine. `SendMessage` stays: Claude also
+    /// uses it to continue its own subagents.
+    fn approval_session_meta(&self) -> Option<Value> {
+        Some(json!({ "claudeCode": { "options": { "disallowedTools": PEER_SESSION_TOOLS } } }))
+    }
     /// Claude drops a stdio MCP server that carries an explicit
     /// `type: "stdio"`, so stdio servers are sent without a `type` field.
     fn mcp_server(&self, mut server: Value) -> Option<Value> {

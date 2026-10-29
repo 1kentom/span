@@ -6,6 +6,15 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	openWorkspace: (path: string) => __TAURI_INVOKE<Workspace>("open_workspace", { path }),
+	gitContext: () => __TAURI_INVOKE<GitContext_Serialize>("git_context"),
+	gitEnable: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStatus_Serialize>("git_enable", { context }),
+	gitStatus: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStatus_Serialize>("git_status", { context }),
+	gitDiff: (context: GitContext_Deserialize, path: string, side: GitDiffSide, expectedIndexRevision: string) => __TAURI_INVOKE<GitDiff_Serialize>("git_diff", { context, path, side, expectedIndexRevision }),
+	gitHistory: (context: GitContext_Deserialize, query: GitHistoryQuery_Deserialize) => __TAURI_INVOKE<GitHistoryPage_Serialize>("git_history", { context, query }),
+	gitCommitDiff: (context: GitContext_Deserialize, commitId: string, path: string | null) => __TAURI_INVOKE<GitDiff_Serialize>("git_commit_diff", { context, commitId, path }),
+	gitStage: (context: GitContext_Deserialize, paths: string[], expectedIndexRevision: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_stage", { context, paths, expectedIndexRevision }),
+	gitUnstage: (context: GitContext_Deserialize, paths: string[], expectedIndexRevision: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_unstage", { context, paths, expectedIndexRevision }),
+	gitCommit: (context: GitContext_Deserialize, message: string, expectedIndexRevision: string, expectedStagedSnapshot: string) => __TAURI_INVOKE<GitCommitResult_Serialize>("git_commit", { context, message, expectedIndexRevision, expectedStagedSnapshot }),
 	runConfigurations: () => __TAURI_INVOKE<RunCatalog_Serialize>("run_configurations"),
 	runContext: () => __TAURI_INVOKE<RunContext_Serialize>("run_context"),
 	pendingRunApprovals: () => __TAURI_INVOKE<RunApprovalRequest[]>("pending_run_approvals"),
@@ -701,6 +710,13 @@ export type AgentSettings_Deserialize = {
 	 *  default. Honoured only from the user's own settings file.
 	 */
 	healthCheck?: boolean,
+	/**
+	 *  `agents.startMode.<agent>`: the mode a session Span starts for that
+	 *  agent (`claude`, `codex`, `gemini`, `opencode`, `generic`) begins in.
+	 *  A missing entry means [`StartMode::Approval`]. Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	startMode?: { [key in string]: StartMode },
 };
 
 /**  `agents.*` settings. */
@@ -721,6 +737,13 @@ export type AgentSettings_Serialize = {
 	 *  default. Honoured only from the user's own settings file.
 	 */
 	healthCheck: boolean,
+	/**
+	 *  `agents.startMode.<agent>`: the mode a session Span starts for that
+	 *  agent (`claude`, `codex`, `gemini`, `opencode`, `generic`) begins in.
+	 *  A missing entry means [`StartMode::Approval`]. Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	startMode?: { [key in string]: StartMode },
 };
 
 export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
@@ -883,6 +906,12 @@ export type AuthMethodInfo_Deserialize = {
 	 *  `agent_authenticate_with` and an [`AuthCredential`] of the same kind.
 	 */
 	input?: AuthInput | null,
+	/**
+	 *  For a gateway method, the wire protocol the agent expects from the
+	 *  gateway (`_meta.gateway.protocol`), for example `anthropic`,
+	 *  `bedrock` or `openai`. The UI offers provider presets by it.
+	 */
+	gatewayProtocol?: string | null,
 	/**  Set when the method cannot run from Span and the user must act instead. */
 	hint?: AgentHint | null,
 };
@@ -904,6 +933,12 @@ export type AuthMethodInfo_Serialize = {
 	 *  `agent_authenticate_with` and an [`AuthCredential`] of the same kind.
 	 */
 	input?: AuthInput,
+	/**
+	 *  For a gateway method, the wire protocol the agent expects from the
+	 *  gateway (`_meta.gateway.protocol`), for example `anthropic`,
+	 *  `bedrock` or `openai`. The UI offers provider presets by it.
+	 */
+	gatewayProtocol?: string,
 	/**  Set when the method cannot run from Span and the user must act instead. */
 	hint?: AgentHint,
 };
@@ -1462,6 +1497,192 @@ export type FormatWarning = {
 	message: string,
 };
 
+export type GitChange = GitChange_Serialize | GitChange_Deserialize;
+
+export type GitChange_Deserialize = {
+	id: string,
+	/**  Invalid UTF-8 filenames remain visible but cannot be passed back as paths. */
+	path?: string | null,
+	displayPath: string,
+	oldPath?: string | null,
+	displayOldPath?: string | null,
+	indexStatus: string,
+	worktreeStatus: string,
+	untracked: boolean,
+	conflicted: boolean,
+	submodule: boolean,
+	unsupportedReason?: string | null,
+};
+
+export type GitChange_Serialize = {
+	id: string,
+	/**  Invalid UTF-8 filenames remain visible but cannot be passed back as paths. */
+	path: string | null,
+	displayPath: string,
+	oldPath: string | null,
+	displayOldPath: string | null,
+	indexStatus: string,
+	worktreeStatus: string,
+	untracked: boolean,
+	conflicted: boolean,
+	submodule: boolean,
+	unsupportedReason: string | null,
+};
+
+export type GitCommit = {
+	id: string,
+	parents: string[],
+	author: string,
+	authorEmail: string,
+	timestamp: number,
+	subject: string,
+	body: string,
+};
+
+export type GitCommitResult = GitCommitResult_Serialize | GitCommitResult_Deserialize;
+
+export type GitCommitResult_Deserialize = {
+	commitId: string,
+	commit?: GitCommit | null,
+	status?: GitStatus_Deserialize | null,
+	/**  A commit can succeed before a post-commit hook times out or fails. */
+	warning?: string | null,
+};
+
+export type GitCommitResult_Serialize = {
+	commitId: string,
+	commit: GitCommit | null,
+	status: GitStatus_Serialize | null,
+	/**  A commit can succeed before a post-commit hook times out or fails. */
+	warning: string | null,
+};
+
+export type GitContext = GitContext_Serialize | GitContext_Deserialize;
+
+export type GitContext_Deserialize = {
+	workspaceRoot: string,
+	repository?: GitRepository_Deserialize | null,
+	unavailableReason?: string | null,
+	enabled: boolean,
+};
+
+export type GitContext_Serialize = {
+	workspaceRoot: string,
+	repository: GitRepository_Serialize | null,
+	unavailableReason: string | null,
+	enabled: boolean,
+};
+
+export type GitDiff = GitDiff_Serialize | GitDiff_Deserialize;
+
+export type GitDiffSide = "working" | "staged" | "commit";
+
+export type GitDiff_Deserialize = {
+	repositoryId: string,
+	path: string,
+	oldPath?: string | null,
+	side: GitDiffSide,
+	indexRevision: string,
+	oldText?: string | null,
+	newText?: string | null,
+	patch: string,
+	binary: boolean,
+	truncated: boolean,
+	summary?: string | null,
+	commitId?: string | null,
+};
+
+export type GitDiff_Serialize = {
+	repositoryId: string,
+	path: string,
+	oldPath: string | null,
+	side: GitDiffSide,
+	indexRevision: string,
+	oldText: string | null,
+	newText: string | null,
+	patch: string,
+	binary: boolean,
+	truncated: boolean,
+	summary: string | null,
+	commitId: string | null,
+};
+
+export type GitHistoryPage = GitHistoryPage_Serialize | GitHistoryPage_Deserialize;
+
+export type GitHistoryPage_Deserialize = {
+	repositoryId: string,
+	anchor?: string | null,
+	commits: GitCommit[],
+	nextSkip?: number | null,
+};
+
+export type GitHistoryPage_Serialize = {
+	repositoryId: string,
+	anchor: string | null,
+	commits: GitCommit[],
+	nextSkip: number | null,
+};
+
+export type GitHistoryQuery = GitHistoryQuery_Serialize | GitHistoryQuery_Deserialize;
+
+export type GitHistoryQuery_Deserialize = {
+	anchor?: string | null,
+	skip: number,
+	limit: number,
+	path?: string | null,
+};
+
+export type GitHistoryQuery_Serialize = {
+	anchor: string | null,
+	skip: number,
+	limit: number,
+	path: string | null,
+};
+
+export type GitRepository = GitRepository_Serialize | GitRepository_Deserialize;
+
+export type GitRepository_Deserialize = {
+	/**  Opaque identity for this workspace session and discovered repository. */
+	id: string,
+	root: string,
+	workspacePrefix: string,
+	branch?: string | null,
+	head?: string | null,
+	detached: boolean,
+	unborn: boolean,
+};
+
+export type GitRepository_Serialize = {
+	/**  Opaque identity for this workspace session and discovered repository. */
+	id: string,
+	root: string,
+	workspacePrefix: string,
+	branch: string | null,
+	head: string | null,
+	detached: boolean,
+	unborn: boolean,
+};
+
+export type GitStatus = GitStatus_Serialize | GitStatus_Deserialize;
+
+export type GitStatus_Deserialize = {
+	repository: GitRepository_Deserialize,
+	indexRevision: string,
+	stagedSnapshot: string,
+	entries: GitChange_Deserialize[],
+	operation?: string | null,
+	truncated: boolean,
+};
+
+export type GitStatus_Serialize = {
+	repository: GitRepository_Serialize,
+	indexRevision: string,
+	stagedSnapshot: string,
+	entries: GitChange_Serialize[],
+	operation: string | null,
+	truncated: boolean,
+};
+
 /**  The outcome of the latest check of one agent. */
 export type HealthState =
 /**  The agent replied within the slow threshold. */
@@ -1893,7 +2114,7 @@ export type ModelUse_Serialize = {
 	subagent?: boolean,
 };
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
@@ -2807,6 +3028,18 @@ export type SourceSnippetDto = {
 	external: boolean,
 	readOnly: boolean,
 };
+
+/**  How a session Span starts treats the agent's own default mode. */
+export type StartMode =
+/**
+ *  Start in the agent's normal approval mode, so Span's approval prompts
+ *  appear even when the agent's own configuration (for example a global
+ *  `bypassPermissions` default) would skip them. Agent tools that reach
+ *  other sessions on the machine are left out where the agent allows it.
+ */
+"approval" |
+/**  Keep whatever mode the agent's own configuration starts in. */
+"agentDefault";
 
 export type StartupFile = StartupFile_Serialize | StartupFile_Deserialize;
 

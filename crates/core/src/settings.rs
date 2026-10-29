@@ -194,6 +194,33 @@ pub struct AgentSettings {
     /// and show whether it replied (ADR 0010). Never starts an agent. On by
     /// default. Honoured only from the user's own settings file.
     pub health_check: bool,
+    /// `agents.startMode.<agent>`: the mode a session Span starts for that
+    /// agent (`claude`, `codex`, `gemini`, `opencode`, `generic`) begins in.
+    /// A missing entry means [`StartMode::Approval`]. Honoured only from the
+    /// user's own settings file. Optional in TypeScript like `agents`.
+    #[specta(optional)]
+    pub start_mode: HashMap<String, StartMode>,
+}
+
+/// How a session Span starts treats the agent's own default mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum StartMode {
+    /// Start in the agent's normal approval mode, so Span's approval prompts
+    /// appear even when the agent's own configuration (for example a global
+    /// `bypassPermissions` default) would skip them. Agent tools that reach
+    /// other sessions on the machine are left out where the agent allows it.
+    #[default]
+    Approval,
+    /// Keep whatever mode the agent's own configuration starts in.
+    AgentDefault,
+}
+
+impl AgentSettings {
+    /// The start mode for one agent kind.
+    pub fn start_mode_for(&self, agent: &str) -> StartMode {
+        self.start_mode.get(agent).copied().unwrap_or_default()
+    }
 }
 
 impl Default for AgentSettings {
@@ -203,6 +230,7 @@ impl Default for AgentSettings {
             run_tools: RunToolsSettings::default(),
             warm_start: true,
             health_check: true,
+            start_mode: HashMap::new(),
         }
     }
 }
@@ -375,6 +403,7 @@ pub const COMMAND_IDS: &[&str] = &[
     "toggleProject",
     "toggleAssistant",
     "toggleTerminal",
+    "showSourceControl",
     "toggleWordWrap",
     "markdownPreview",
     "formatDocument",
@@ -408,6 +437,7 @@ pub const COMMAND_IDS: &[&str] = &[
 const INHERITED_DEFAULT_IDS: &[&str] = &[
     "toggleFiles",
     "focusFiles",
+    "showSourceControl",
     "splitEditorDown",
     "newFile",
     "newFolder",
@@ -674,6 +704,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("toggleProject", vec!["Mod+B"]),
         ("toggleAssistant", vec!["Mod+Alt+B"]),
         ("toggleTerminal", vec!["Mod+J"]),
+        ("showSourceControl", vec!["Ctrl+Shift+G"]),
         ("toggleWordWrap", vec!["Alt+Z"]),
         ("markdownPreview", vec!["Mod+Shift+V"]),
         ("formatDocument", vec!["Alt+Shift+F"]),
@@ -759,6 +790,8 @@ const USER_ONLY: &[&[&str]] = &[
     &["agents", "warmStart"],
     // Sends prompts to running agents in the background (ADR 0010).
     &["agents", "healthCheck"],
+    // A cloned project must not make agents skip approval prompts.
+    &["agents", "startMode"],
     // A cloned project must not make Span contact the network at launch.
     &["updates", "checkOnLaunch"],
 ];
@@ -772,6 +805,15 @@ impl CoreWorkspace {
             .agents
             .run_tools
             .enabled)
+    }
+
+    /// The start mode for sessions of one agent kind. Read only the user's
+    /// settings scope, so a repository cannot make an agent skip approvals.
+    pub fn agent_start_mode(&self, agent: &str) -> Result<StartMode> {
+        Ok(self
+            .get_settings_for_scope(SettingsScope::User)?
+            .agents
+            .start_mode_for(agent))
     }
 
     /// Change the explicit user-only opt-in without rewriting workspace
@@ -1596,6 +1638,35 @@ mod language_server_tests {
 #[cfg(test)]
 mod file_open_shortcut_tests {
     use super::*;
+
+    #[test]
+    fn source_control_shortcut_validates_and_preserves_explicit_existing_keys() {
+        assert!(COMMAND_IDS.contains(&"showSourceControl"));
+        for command in ["showSourceControl", "save"] {
+            Settings {
+                keybindings: HashMap::from([(command.into(), vec!["Ctrl+Shift+G".into()])]),
+                ..Default::default()
+            }
+            .validate()
+            .unwrap();
+        }
+        assert!(Settings {
+            keybindings: HashMap::from([
+                ("showSourceControl".into(), vec!["Ctrl+Shift+G".into()]),
+                ("save".into(), vec!["Ctrl+Shift+G".into()]),
+            ]),
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+        assert!(schema["properties"]["keybindings"]["propertyNames"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == "showSourceControl"));
+    }
 
     #[test]
     fn picker_command_validates_and_preserves_existing_explicit_keys() {
