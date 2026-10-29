@@ -218,7 +218,8 @@ impl Quirks for OpenCode {
                     let id = text(update, "toolCallId")?;
                     state.tools.get(&id).and_then(|tool| text(tool, "kind"))
                 });
-                (kind.as_deref() == Some("think")).then(|| (child.to_owned(), Some(session.to_owned())))
+                (kind.as_deref() == Some("think"))
+                    .then(|| (child.to_owned(), Some(session.to_owned())))
             }
             Some("user_message_chunk") => {
                 let first = !state.user_seen;
@@ -287,8 +288,12 @@ mod native_subagent_tests {
 
     #[test]
     fn child_titles_match_only_the_exact_agent_shapes() {
-        assert!(is_child_fallback_title("Child session - 2026-10-28T10:00:00.000Z"));
-        assert!(is_v1_subagent_title("Generate BMW M2 PNG image (@general subagent)"));
+        assert!(is_child_fallback_title(
+            "Child session - 2026-10-28T10:00:00.000Z"
+        ));
+        assert!(is_v1_subagent_title(
+            "Generate BMW M2 PNG image (@general subagent)"
+        ));
         assert!(is_v1_subagent_title("Find callers (@explore subagent)"));
         // Near misses stay ordinary chats.
         for title in [
@@ -306,19 +311,26 @@ mod native_subagent_tests {
             "Review (@ subagent)",
             "You are a subagent spawned by another session",
         ] {
-            assert!(!is_child_fallback_title(title) && !is_v1_subagent_title(title), "{title}");
+            assert!(
+                !is_child_fallback_title(title) && !is_v1_subagent_title(title),
+                "{title}"
+            );
         }
     }
 
     #[test]
     fn listed_items_are_marked_from_title_or_meta_only() {
         let quirks = OpenCode;
-        assert_eq!(quirks.listed_subagent(Some("Generate BMW M2 PNG image"), None), None);
+        assert_eq!(
+            quirks.listed_subagent(Some("Generate BMW M2 PNG image"), None),
+            None
+        );
         assert_eq!(
             quirks.listed_subagent(Some("Child session - 2026-10-28T10:00:00.000Z"), None),
             Some(None)
         );
-        let meta = json!({"opencode/child-session": {"id": "ses_c", "parentID": "ses_p", "depth": 1}});
+        let meta =
+            json!({"opencode/child-session": {"id": "ses_c", "parentID": "ses_p", "depth": 1}});
         assert_eq!(
             quirks.listed_subagent(Some("anything"), Some(&meta)),
             Some(Some("ses_p".into()))
@@ -347,7 +359,10 @@ mod native_subagent_tests {
             Some(("ses_child2".into(), Some("ses_parent".into())))
         );
         // Another tool's metadata with a sessionID is not a subagent.
-        state.tools.insert("prt_2".into(), json!({"toolCallId": "prt_2", "kind": "read"}));
+        state.tools.insert(
+            "prt_2".into(),
+            json!({"toolCallId": "prt_2", "kind": "read"}),
+        );
         let other = json!({"sessionUpdate": "tool_call_update", "toolCallId": "prt_2", "status": "completed",
             "rawOutput": {"metadata": {"sessionID": "ses_x"}}});
         assert_eq!(quirks.native_child(&mut state, "ses_parent", &other), None);
@@ -355,7 +370,10 @@ mod native_subagent_tests {
         let mut child = SessionState::default();
         let first = json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text",
             "text": "You are a subagent spawned by another session.\nCreate a high-resolution PNG image"}});
-        assert_eq!(quirks.native_child(&mut child, "ses_c3", &first), Some(("ses_c3".into(), None)));
+        assert_eq!(
+            quirks.native_child(&mut child, "ses_c3", &first),
+            Some(("ses_c3".into(), None))
+        );
         let mut chat = SessionState::default();
         let ordinary = json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Explain subagents"}});
         assert_eq!(quirks.native_child(&mut chat, "ses_u", &ordinary), None);

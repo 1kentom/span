@@ -241,7 +241,11 @@ pub(crate) trait Quirks: Send + Sync {
     }
     /// Whether a `session/list` item is a native subagent session, from its
     /// title and `_meta` alone: `Some(parent)` (the parent may be unknown).
-    fn listed_subagent(&self, _title: Option<&str>, _meta: Option<&Value>) -> Option<Option<String>> {
+    fn listed_subagent(
+        &self,
+        _title: Option<&str>,
+        _meta: Option<&Value>,
+    ) -> Option<Option<String>> {
         None
     }
 }
@@ -421,11 +425,17 @@ impl Adapter {
     /// listing shape identifies (`meta` is the item's `_meta`). Nothing is
     /// hidden here; History decides what to show.
     pub(crate) fn mark_listed(&self, summary: &mut crate::SessionSummary, meta: Option<&Value>) {
-        let found = crate::native_subagents::native_subagent_parent(&summary.session_id).or_else(|| {
-            let parent = self.quirks.listed_subagent(summary.title.as_deref(), meta)?;
-            crate::native_subagents::record_native_subagent(&summary.session_id, parent.as_deref());
-            Some(parent)
-        });
+        let found =
+            crate::native_subagents::native_subagent_parent(&summary.session_id).or_else(|| {
+                let parent = self
+                    .quirks
+                    .listed_subagent(summary.title.as_deref(), meta)?;
+                crate::native_subagents::record_native_subagent(
+                    &summary.session_id,
+                    parent.as_deref(),
+                );
+                Some(parent)
+            });
         if let Some(parent) = found {
             summary.native_subagent = true;
             summary.parent_session_id = parent;

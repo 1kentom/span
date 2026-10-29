@@ -170,7 +170,9 @@ mod tests {
             "you are a subagent spawned by another session."
         ));
         assert!(!starts_with_subagent_preamble("You are a subagent"));
-        assert!(!starts_with_subagent_preamble("Spawn a subagent to review this"));
+        assert!(!starts_with_subagent_preamble(
+            "Spawn a subagent to review this"
+        ));
     }
 
     #[test]
