@@ -5,7 +5,7 @@ import { AgentPopover } from "./AgentPopover";
 import { ConnectScreen } from "./ConnectScreen";
 import { HealthDot } from "./HealthDot";
 import { LiveAgents } from "./LiveAgents";
-import { mount } from "./test-utils";
+import { mount, text } from "./test-utils";
 import { agentKey, ago, findHealth, healthText, healthTone, type AgentHealth } from "../../lib/agent-health";
 import { liveAgentsOf, type LiveAgent } from "../../lib/live-agents";
 import type { DelegationTaskState } from "../../lib/agent-delegation";
@@ -115,19 +115,21 @@ describe("live agents of the current chat", () => {
 
   it("lists the lead first, then delegated agents and earlier segments, one entry per agent", () => {
     const list = liveAgentsOf({
-      lead: { id: "codex-acp", name: "Codex", state: "Working" },
-      tasks: [task("t1", "gemini-cli", "completed"), task("t2", "gemini-cli", "running"), task("t3", "OpenCode", "starting", { agentName: undefined, startingAgentId: "opencode" })],
+      lead: { id: "codex-acp", name: "Codex", state: "Working", detail: "gpt-5" },
+      tasks: [task("t1", "gemini-cli", "completed"), task("t2", "gemini-cli", "running", { progressText: "Reading files" }), task("t3", "OpenCode", "starting", { agentName: undefined, startingAgentId: "opencode" })],
       waiting: (entry) => entry.taskId === "t9",
       earlier: [{ id: "claude-acp", name: "Claude Agent" }, { id: "codex-acp", name: "Codex" }],
       health,
     });
     expect(list.map((entry) => [entry.name, entry.state])).toEqual([
       ["Codex", "Working"],
-      ["gemini-cli", "Working"],
-      ["opencode", "Starting"],
+      ["Gemini CLI", "Working"],
+      ["OpenCode", "Starting"],
       ["Claude Agent", "Done"],
     ]);
+    expect(list[0].detail).toBe("gpt-5");
     expect(list[1].taskId).toBe("t2");
+    expect(list[1].detail).toBe("Reading files");
     expect(list[1].health?.state).toBe("slow");
     expect(list[0].health?.state).toBe("live");
   });
@@ -143,10 +145,17 @@ describe("live agents of the current chat", () => {
     expect(list[1].health?.state).toBe("live");
   });
 
-  it("says Waiting for you while a child's permission request is open, and Done once finished", () => {
+  it("never shows a scoped package name for an unknown delegated agent", () => {
+    const list = liveAgentsOf({ lead: { name: "Codex", state: "Idle" }, tasks: [task("t1", "@agentclientprotocol/claude-agent-acp", "running")], health: [] });
+    expect(list[1].name).toBe("Claude Agent");
+  });
+
+  it("says Waiting for you while a child's permission request is open, Failed on failure and Done once finished", () => {
     const waiting = liveAgentsOf({ lead: { name: "Codex", state: "Idle" }, tasks: [task("t1", "Gemini CLI", "running")], waiting: () => true, health: [] });
     expect(waiting[1].state).toBe("Waiting for you");
-    const done = liveAgentsOf({ lead: { name: "Codex", state: "Idle" }, tasks: [task("t1", "Gemini CLI", "failed")], health: [] });
+    const failed = liveAgentsOf({ lead: { name: "Codex", state: "Idle" }, tasks: [task("t1", "Gemini CLI", "failed", { detail: "Crashed" })], health: [] });
+    expect(failed[1]).toMatchObject({ state: "Failed", detail: "Crashed" });
+    const done = liveAgentsOf({ lead: { name: "Codex", state: "Idle" }, tasks: [task("t1", "Gemini CLI", "completed")], health: [] });
     expect(done[1].state).toBe("Done");
   });
 
@@ -158,28 +167,47 @@ describe("live agents of the current chat", () => {
     expect(host.textContent).toBe("");
   });
 
-  it("shows brand, name, state and health dot per agent, and a child opens its task", () => {
+  it("is one row: label, overlapping avatars most urgent first with state badges, and a summary; a child opens its task", () => {
     const onOpen = vi.fn();
-    const agents: LiveAgent[] = liveAgentsOf({ lead: { id: "codex-acp", name: "Codex", state: "Idle" }, tasks: [task("t1", "gemini-cli", "running")], health });
+    const agents: LiveAgent[] = liveAgentsOf({ lead: { id: "codex-acp", name: "Codex", state: "Idle", detail: "gpt-5" }, tasks: [task("t1", "gemini-cli", "running")], health });
     const host = mount(() => <LiveAgents agents={agents} now={NOW} showHealth onOpen={onOpen} />);
     const strip = host.querySelector<HTMLElement>("section.sb-drawer.sb-live-agents")!;
-    expect(strip.getAttribute("aria-label")).toBe("Live agents");
-    const entries = [...strip.querySelectorAll<HTMLElement>(".sb-live-entry")];
-    expect(entries.map((entry) => entry.querySelector(".sb-live-name")?.textContent)).toEqual(["Codex", "gemini-cli"]);
-    expect(entries.map((entry) => entry.querySelector(".sb-live-state")?.textContent)).toEqual(["Idle", "Working"]);
-    expect(entries.map((entry) => entry.querySelector<HTMLElement>(".sb-health")?.dataset.tone)).toEqual(["live", "slow"]);
-    expect(entries.every((entry) => entry.querySelector(".brand-icon"))).toBe(true);
+    expect(strip.getAttribute("aria-label")).toBe("Active agents");
+    expect(strip.querySelector(".sb-live-title")?.textContent).toBe("Active agents");
+    expect(strip.querySelector(".sb-live-summary")?.textContent).toBe("1 working");
+    const avatars = [...strip.querySelectorAll<HTMLElement>(".sb-live-avatar")];
+    expect(avatars.map((entry) => entry.getAttribute("aria-label"))).toEqual(["Gemini CLI, Working. Show its task", "Codex (lead), Idle"]);
+    expect([...strip.querySelectorAll<HTMLElement>(".sb-live-avatar .sb-live-badge")].map((badge) => badge.dataset.tone)).toEqual(["working", "idle"]);
+    expect(avatars.every((entry) => entry.querySelector(".brand-icon"))).toBe(true);
+    // Each avatar is described by its card: full name, state, model or task, and the health check.
+    const tip = document.getElementById(avatars[1].getAttribute("aria-describedby")!)!;
+    expect(tip.getAttribute("role")).toBe("tooltip");
+    expect(text(tip.querySelector(".sb-live-tip-name"))).toBe("Codex Lead");
+    expect(tip.querySelector(".sb-live-tip-detail")?.textContent).toBe("gpt-5");
+    expect(tip.querySelector(".sb-live-tip-health")?.textContent).toBe("Replied OK in 1.2 s, 4 min ago");
     // The lead is not a button; the child is and opens its delegation card.
-    expect(entries[0].tagName).toBe("SPAN");
-    expect(entries[1].tagName).toBe("BUTTON");
-    (entries[1] as HTMLButtonElement).click();
+    expect(avatars[1].tagName).toBe("SPAN");
+    expect(avatars[1].tabIndex).toBe(0);
+    expect(avatars[0].tagName).toBe("BUTTON");
+    (avatars[0] as HTMLButtonElement).click();
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ taskId: "t1" }));
   });
 
-  it("drops the dots while the health check is off", () => {
+  it("folds agents past five into a +N chip that names them", () => {
+    const tasks = ["claude-acp", "gemini-cli", "opencode", "qwen-code", "cursor-agent", "copilot-cli"].map((name, index) => task(`t${index}`, name, "completed"));
+    const agents = liveAgentsOf({ lead: { id: "codex-acp", name: "Codex", state: "Working" }, tasks, health: [] });
+    const host = mount(() => <LiveAgents agents={agents} now={NOW} showHealth={false} />);
+    expect(host.querySelectorAll(".sb-live-avatar")).toHaveLength(4);
+    const more = host.querySelector<HTMLElement>(".sb-live-more")!;
+    expect(more.textContent).toBe("+3");
+    expect(more.getAttribute("aria-label")).toBe("3 more: Qwen Code, Done; Cursor Agent, Done; Copilot CLI, Done");
+    expect(host.querySelector(".sb-live-summary")?.textContent).toBe("1 working");
+  });
+
+  it("drops the health line while the health check is off", () => {
     const agents = liveAgentsOf({ lead: { id: "codex-acp", name: "Codex", state: "Idle" }, tasks: [task("t1", "gemini-cli", "running")], health });
     const host = mount(() => <LiveAgents agents={agents} now={NOW} showHealth={false} />);
     expect(host.querySelector(".sb-live-agents")).not.toBeNull();
-    expect(host.querySelector(".sb-health")).toBeNull();
+    expect(host.querySelector(".sb-live-tip-health")).toBeNull();
   });
 });

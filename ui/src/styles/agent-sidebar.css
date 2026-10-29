@@ -862,15 +862,71 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-option .sb-health, .sb-agent-name-line .sb-health { margin-left: 2px; }
 .sb-agent-name-line { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 
-/* Live agents of the current chat, stacked on the prompt box (shape from the shared stack rule in agent.css). */
-.sb-live-agents { display: flex; align-items: flex-start; gap: 10px; min-height: 30px; padding: 4px 10px; }
-.sb-live-title { flex: none; font-size: 10px; line-height: 22px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
-.sb-live-list { display: flex; flex: 1; flex-wrap: wrap; gap: 0 12px; min-width: 0; margin: 0; padding: 0; list-style: none; }
-.sb-live-agent { display: flex; min-width: 0; }
-.sb-live-entry { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; height: 22px; font-size: 11.5px; color: var(--sb-fg); }
-.sb-live-entry.sb-plain { border-radius: 5px; }
-.sb-live-entry.sb-plain:hover .sb-live-name { text-decoration: underline; text-underline-offset: 2px; }
-.sb-live-name { max-width: 110px; }
-.sb-live-state { flex: none; color: var(--sb-dim); }
-.sb-live-state[data-state="Waiting for you"] { color: var(--sb-warning); }
-.sb-live-state[data-state="Done"] { color: var(--sb-faint); }
+/*
+ * Active agents of the current chat: one fixed-height row stacked on the prompt box (shape, inset, radius and rule
+ * from the shared stack rule in agent.css). Label, overlapping brand avatars with a state badge each, and a summary.
+ */
+.sb-live-agents { --sb-live-ring: var(--sb-raised); position: relative; display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 14px; font-size: 11.5px; white-space: nowrap; }
+.sb-live-title { flex: none; color: var(--sb-dim); }
+.sb-live-stack { display: flex; align-items: center; flex: none; margin: 0; padding: 0 0 0 4px; list-style: none; }
+.sb-live-agent { position: relative; z-index: var(--sb-live-z, 0); display: flex; margin-left: -5px; }
+.sb-live-agent:hover, .sb-live-agent:focus-within { z-index: 10; }
+.sb-live-avatar, .sb-live-more { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--sb-fg); cursor: default; }
+button.sb-live-avatar { cursor: pointer; }
+.sb-live-face {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--sb-control); box-shadow: 0 0 0 2px var(--sb-live-ring);
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+.sb-live-agent[data-tone="done"] .sb-live-face .brand-icon { opacity: 0.6; }
+.sb-live-agent:hover .sb-live-face, .sb-live-agent:focus-within .sb-live-face { transform: translateY(-1px); background: var(--sb-hover); }
+.sb-live-agent:hover .sb-live-face .brand-icon, .sb-live-agent:focus-within .sb-live-face .brand-icon { opacity: 1; }
+.sb-live-avatar.sb-plain { border-radius: 50%; }
+.sb-live-avatar:focus-visible, .sb-live-more:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 2px; }
+.sb-live-more { box-sizing: border-box; width: auto; min-width: 20px; padding: 0 5px; border-radius: 10px; background: var(--sb-control); box-shadow: 0 0 0 2px var(--sb-live-ring); font-size: 10px; font-variant-numeric: tabular-nums; color: var(--sb-dim); }
+
+/* State badge on each avatar: accent working (soft pulse), muted idle, success done, warning waiting, error failed or unreachable. */
+.sb-live-badge { position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px; border-radius: 50%; background: var(--sb-faint); box-shadow: 0 0 0 1.5px var(--sb-live-ring); }
+.sb-live-badge.inline { position: static; flex: none; box-shadow: none; }
+.sb-live-badge[data-tone="idle"] { background: color-mix(in srgb, var(--sb-faint) 70%, var(--sb-live-ring)); }
+.sb-live-badge[data-tone="done"] { background: var(--sb-success); }
+.sb-live-badge[data-tone="working"], .sb-live-badge[data-tone="starting"] { background: var(--sb-accent); }
+.sb-live-badge[data-tone="starting"] { opacity: 0.7; }
+.sb-live-badge[data-tone="waiting"] { background: var(--sb-warning); }
+.sb-live-badge[data-tone="error"] { background: var(--sb-error); }
+.sb-live-badge[data-tone="working"]::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--sb-accent);
+  animation: sb-live-pulse 1.8s ease-out infinite;
+}
+@keyframes sb-live-pulse { from { opacity: 0.55; transform: scale(1); } 70%, to { opacity: 0; transform: scale(2.4); } }
+
+/* Hover or focus card: full name, state, task or model, health. */
+.sb-live-tip {
+  position: absolute; left: -6px; bottom: calc(100% + 9px); z-index: 20; display: flex; flex-direction: column; gap: 2px;
+  width: max-content; max-width: 240px; padding: 7px 9px; border: 1px solid var(--sb-border); border-radius: 8px;
+  background: var(--sb-menu); box-shadow: var(--sb-shadow); color: var(--sb-fg); font-size: 11.5px; line-height: 16px; white-space: normal;
+  opacity: 0; visibility: hidden; transform: translateY(2px); pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0s linear 0.12s;
+}
+.sb-live-agent:hover > .sb-live-tip, .sb-live-agent:focus-within > .sb-live-tip { opacity: 1; visibility: visible; transform: none; transition-delay: 0s; }
+.sb-live-tip-name { display: inline-flex; align-items: baseline; gap: 6px; color: var(--sb-strong); font-weight: 500; overflow-wrap: anywhere; }
+.sb-live-tip-role { font-size: 10.5px; font-weight: 400; color: var(--sb-dim); }
+.sb-live-tip-state { color: var(--sb-dim); }
+.sb-live-tip-detail { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--sb-fg); overflow-wrap: anywhere; }
+.sb-live-tip-health { font-size: 10.5px; color: var(--sb-dim); }
+.sb-live-tip-row { display: flex; align-items: center; gap: 6px; }
+.sb-live-tip-row .sb-live-tip-name { font-weight: 400; color: var(--sb-fg); }
+.sb-live-tip-row .sb-live-tip-state { margin-left: auto; padding-left: 10px; }
+
+/* The state words share the badge colours: muted for idle and done, tinted for what needs a look. */
+:is(.sb-live-tip-state, .sb-live-summary)[data-tone="working"] { color: var(--sb-accent-fg); }
+:is(.sb-live-tip-state, .sb-live-summary)[data-tone="waiting"] { color: var(--sb-warning); }
+:is(.sb-live-tip-state, .sb-live-summary)[data-tone="error"] { color: var(--sb-error); }
+:is(.sb-live-tip-state, .sb-live-summary)[data-tone="done"] { color: var(--sb-dim); }
+.sb-live-summary { flex: none; margin-left: auto; color: var(--sb-dim); font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-live-badge[data-tone="working"]::after { animation: none; opacity: 0; }
+  .sb-live-face, .sb-live-tip { transition: none; }
+  .sb-live-agent:hover .sb-live-face, .sb-live-agent:focus-within .sb-live-face { transform: none; }
+}
