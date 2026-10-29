@@ -1,6 +1,6 @@
 //! At most two live-provider turns in an owned temporary workspace.
-//! Usage: cargo run --release -p span-acp --example provider_turn_smoke -- INSTALLED_MANIFEST
-//! Requires an advertised Sonnet 4.5 model and existing provider authentication.
+//! Usage: cargo run --release -p span-acp --example provider_turn_smoke -- INSTALLED_MANIFEST [--allow-current-sonnet]
+//! Prefers advertised Sonnet 4.5; an explicitly allowed fallback must be the current Sonnet.
 //! Never reads authentication files or prints protocol, credentials or account details.
 use serde_json::Value;
 use span_acp::{AgentEvent, AgentService, ConfigOption, InstalledAgent, ToolLocation};
@@ -17,30 +17,60 @@ const REJECTED: &str = "hello rejected\n";
 const ACCEPTED: &str = "hello span\n";
 type Result<T> = std::result::Result<T, String>;
 
-fn sonnet_45(options: &[ConfigOption]) -> Option<(String, String)> {
+struct SelectedModel {
+    config_id: String,
+    value: String,
+    name: String,
+    preferred_45: bool,
+}
+
+fn preferred_sonnet(options: &[ConfigOption], allow_current: bool) -> Option<SelectedModel> {
     let model = options
         .iter()
         .find(|option| option.category.as_deref() == Some("model"))?;
-    let matches = |value: &str| {
+    let normalized = |value: &str| {
         value
             .chars()
             .filter(char::is_ascii_alphanumeric)
             .flat_map(char::to_lowercase)
             .collect::<String>()
-            .contains("sonnet45")
     };
-    let choices = model.groups.iter().flat_map(|group| group.choices.iter());
-    let preferred = choices
-        .clone()
-        .find(|choice| {
-            choice.value == model.current_value && (matches(&choice.value) || matches(&choice.name))
+    let choices: Vec<_> = model
+        .groups
+        .iter()
+        .flat_map(|group| &group.choices)
+        .filter(|choice| {
+            let value = normalized(&choice.value);
+            let name = normalized(&choice.name);
+            (value.contains("sonnet") || name.contains("sonnet"))
+                && !value.contains("opus")
+                && !name.contains("opus")
         })
+        .collect();
+    let is_45 = |choice: &span_acp::ConfigChoice| {
+        normalized(&choice.value).contains("sonnet45")
+            || normalized(&choice.name).contains("sonnet45")
+    };
+    let choice = choices
+        .iter()
+        .copied()
+        .find(|choice| is_45(choice))
         .or_else(|| {
-            choices
-                .clone()
-                .find(|choice| matches(&choice.value) || matches(&choice.name))
+            if allow_current {
+                choices
+                    .iter()
+                    .copied()
+                    .find(|choice| choice.value == model.current_value)
+            } else {
+                None
+            }
         })?;
-    Some((model.id.clone(), preferred.value.clone()))
+    Some(SelectedModel {
+        config_id: model.id.clone(),
+        value: choice.value.clone(),
+        name: choice.name.clone(),
+        preferred_45: is_45(choice),
+    })
 }
 
 fn same_file(value: &str, target: &Path) -> bool {
@@ -161,6 +191,7 @@ async fn exercise(
     events: &mut mpsc::UnboundedReceiver<AgentEvent>,
     workspace: &Arc<Mutex<CoreWorkspace>>,
     path: &Path,
+    allow_current_sonnet: bool,
 ) -> Result<()> {
     let session = service.new_session().await.map_err(|_| {
         "Provider did not open the isolated session using its existing authentication"
@@ -204,12 +235,14 @@ async fn exercise(
             }
         }
     }
-    let (id, value) = sonnet_45(&options)
-        .ok_or("Provider did not advertise Sonnet 4.5; no model turn was sent")?;
+    let selected = preferred_sonnet(&options, allow_current_sonnet)
+        .ok_or("Provider did not advertise the permitted Sonnet choice; no model turn was sent")?;
+    let id = selected.config_id;
+    let value = selected.value;
     service
         .set_config(session.clone(), id.clone(), value.clone())
         .await
-        .map_err(|_| "Provider did not apply the requested Sonnet 4.5 model")?;
+        .map_err(|_| "Provider did not apply the requested Sonnet model")?;
     let mut confirmed = false;
     while let Ok(event) = events.try_recv() {
         if let AgentEvent::Config {
@@ -230,11 +263,17 @@ async fn exercise(
     }
     if !confirmed {
         return Err(
-            "Provider did not confirm Sonnet 4.5 in the normal approval mode; no turn was sent"
+            "Provider did not confirm the exact Sonnet choice in normal approval mode; no turn was sent"
                 .into(),
         );
     }
-    println!("Selected and confirmed advertised Sonnet 4.5 for the isolated review smoke");
+    if !selected.preferred_45 {
+        println!("Sonnet 4.5 was not advertised; the caller explicitly allowed the current Sonnet choice");
+    }
+    println!(
+        "Selected and confirmed {:?} (model value {:?}) in normal approval mode",
+        selected.name, value
+    );
     let deadline = Instant::now() + Duration::from_secs(90);
     turn(service, &session, events, workspace, path, false, deadline).await?;
     turn(service, &session, events, workspace, path, true, deadline).await?;
@@ -278,6 +317,52 @@ mod tests {
             }],
             &path
         ));
+    }
+
+    #[test]
+    fn sonnet_fallback_requires_explicit_current_choice_and_never_selects_opus() {
+        use span_acp::{ConfigChoice, ConfigGroup};
+        let choice = |value: &str, name: &str| ConfigChoice {
+            value: value.into(),
+            name: name.into(),
+            description: None,
+        };
+        let mut options = vec![ConfigOption {
+            id: "model".into(),
+            name: "Model".into(),
+            description: None,
+            category: Some("model".into()),
+            current_value: "sonnet".into(),
+            groups: vec![ConfigGroup {
+                name: String::new(),
+                choices: vec![
+                    choice("default", "Default"),
+                    choice("opus", "Opus 5.5"),
+                    choice("sonnet", "Sonnet 5.5"),
+                    choice("claude-haiku-4-5", "Haiku 4.5"),
+                ],
+            }],
+        }];
+        assert!(preferred_sonnet(&options, false).is_none());
+        let selected = preferred_sonnet(&options, true).unwrap();
+        assert_eq!(selected.value, "sonnet");
+        assert!(!selected.preferred_45);
+        options[0].current_value = "opus".into();
+        assert!(preferred_sonnet(&options, true).is_none());
+        options[0].groups[0].choices[1].name = "Sonnet 5.5".into();
+        assert!(preferred_sonnet(&options, true).is_none());
+        options[0].groups[0].choices[1].name = "Opus 5.5".into();
+        options[0].current_value = "sonnet".into();
+        options[0].groups[0].choices[2].name = "Opus 5.5".into();
+        assert!(preferred_sonnet(&options, true).is_none());
+        options[0].groups[0].choices[2].name = "Sonnet 5.5".into();
+        options[0].groups[0]
+            .choices
+            .push(choice("claude-sonnet-4-5-20250929", "Sonnet 4.5"));
+        assert_eq!(
+            preferred_sonnet(&options, false).unwrap().value,
+            "claude-sonnet-4-5-20250929"
+        );
     }
 
     struct Fixture {
@@ -347,6 +432,7 @@ mod tests {
             &mut fixture.events,
             &fixture.workspace,
             &fixture.path,
+            false,
         )
         .await;
         let shutdown = fixture.service.shutdown_and_wait().await;
@@ -354,6 +440,36 @@ mod tests {
         shutdown.unwrap();
         assert_eq!(fixture.prompts.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(std::fs::read_to_string(&fixture.path).unwrap(), ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn current_sonnet_process_peer_requires_explicit_fallback_authorization() {
+        for allowed in [false, true] {
+            let mut fixture = Fixture::start(Some("--current-sonnet")).await;
+            let result = exercise(
+                &fixture.service,
+                &mut fixture.events,
+                &fixture.workspace,
+                &fixture.path,
+                allowed,
+            )
+            .await;
+            let shutdown = fixture.service.shutdown_and_wait().await;
+            shutdown.unwrap();
+            if allowed {
+                result.unwrap();
+            } else {
+                assert!(result.is_err());
+            }
+            assert_eq!(
+                fixture.prompts.load(std::sync::atomic::Ordering::SeqCst),
+                if allowed { 2 } else { 0 }
+            );
+            assert_eq!(
+                std::fs::read_to_string(&fixture.path).unwrap(),
+                if allowed { ACCEPTED } else { ORIGINAL }
+            );
+        }
     }
 
     #[tokio::test]
@@ -365,6 +481,7 @@ mod tests {
                 &mut fixture.events,
                 &fixture.workspace,
                 &fixture.path,
+                false,
             )
             .await;
             let shutdown = fixture.service.shutdown_and_wait().await;
@@ -399,9 +516,16 @@ mod tests {
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let manifest = std::env::args()
-        .nth(1)
-        .ok_or("Installed agent manifest required")?;
+    let mut args = std::env::args().skip(1);
+    let manifest = args.next().ok_or("Installed agent manifest required")?;
+    let allow_current_sonnet = match args.next().as_deref() {
+        None => false,
+        Some("--allow-current-sonnet") => true,
+        _ => return Err("Unknown provider acceptance argument".into()),
+    };
+    if args.next().is_some() {
+        return Err("Too many provider acceptance arguments".into());
+    }
     let installed: InstalledAgent = serde_json::from_slice(&std::fs::read(manifest)?)?;
     if installed.id != "claude-acp" {
         return Err("This bounded acceptance run requires the managed Claude ACP adapter".into());
@@ -424,7 +548,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     )
     .await
     .map_err(|_| "Provider process did not initialize for the isolated smoke")?;
-    let result = exercise(&service, &mut events, &workspace, &path).await;
+    let result = exercise(
+        &service,
+        &mut events,
+        &workspace,
+        &path,
+        allow_current_sonnet,
+    )
+    .await;
     let cleanup = service.shutdown_and_wait().await;
     result?;
     cleanup?;

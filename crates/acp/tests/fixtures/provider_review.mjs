@@ -5,12 +5,13 @@ const callbacks = new Map();
 let sequence = 100;
 let cwd = '';
 let prompts = 0;
-let model = 'claude-sonnet-4-5';
+const currentSonnet = process.argv.includes('--current-sonnet');
+let model = currentSonnet ? 'sonnet' : 'claude-sonnet-4-5';
 let mode = 'default';
 const send = value => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`);
 const result = (id, value) => send({ id, result: value });
 const options = () => [
-  { id: 'model', category: 'model', type: 'select', name: 'Model', currentValue: model, options: [{ value: 'claude-sonnet-4-5', name: 'Sonnet 4.5' }] },
+  { id: 'model', category: 'model', type: 'select', name: 'Model', currentValue: model, options: [{ value: currentSonnet ? 'sonnet' : 'claude-sonnet-4-5', name: currentSonnet ? 'Sonnet 5.5' : 'Sonnet 4.5' }] },
   { id: 'mode', category: 'mode', type: 'select', name: 'Approval mode', currentValue: mode, options: [{ value: 'default', name: 'Ask before edits' }] },
 ];
 const call = (method, params) => new Promise((resolve, reject) => {
