@@ -191,3 +191,26 @@ exercised in a native window yet. Check on macOS and on Windows (WebView2):
   native drop handler (see docs/internal-dragging.md); note the result.
 - An image dragged from Finder, from a browser, and from Span's own image
   viewer attaches as an image chip.
+
+## Explorer keyboard, focus and menu (native pass)
+
+Covered by vitest in jsdom only; check in the native window on macOS and on
+Windows. JetBrains IDEs are the reference behaviour.
+
+- Click a file row, then press Cmd+D (Ctrl+D): a "name copy" sibling appears
+  and is selected. A click on a row (and on the empty tree area) must move
+  keyboard focus to the tree: WebKit does not focus a clicked button on its
+  own, which is why shortcuts used to do nothing after a mouse click.
+- The focused row shows the accent focus ring; the ring leaves when focus
+  moves to the editor.
+- F2 renames, Enter opens a file or toggles a folder, Cmd+Down (Ctrl+Down)
+  opens, ArrowRight and ArrowLeft expand and collapse, Delete or
+  Cmd+Backspace moves to Trash after the confirm dialog (or directly when
+  the `explorer.confirmDelete` setting is off), Cmd+Z undoes the last
+  Explorer operation.
+- Cmd+X dims the cut rows; Escape clears the dimming; Cmd+V into another
+  folder moves them.
+- Context menu on a file: "Reveal in Finder" (Windows: "Show in File
+  Explorer") selects the file in the file manager; "Open in Terminal" opens a
+  new shell tab whose working directory is the file's folder. On a folder,
+  "Open in Terminal" starts in that folder.
