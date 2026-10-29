@@ -92,6 +92,12 @@ impl LeadServers {
         }
     }
 
+    pub fn revoke_editor_tools_for(&self, key: &SessionKey) {
+        if let Some(server) = self.servers().get(key) {
+            server.revoke_editor_tools();
+        }
+    }
+
     fn servers(&self) -> MutexGuard<'_, HashMap<SessionKey, ToolServer>> {
         self.servers.lock().unwrap_or_else(|p| p.into_inner())
     }
