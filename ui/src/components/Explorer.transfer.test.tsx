@@ -13,7 +13,7 @@ const notices = vi.hoisted(() => [] as { message: string }[]);
 vi.mock("../stores/notifications", () => ({ notify: (input: { message: string }) => { notices.push(input); return 1; } }));
 
 import { createExplorerState } from "../lib/explorer-state";
-import { explorerDropFolder, importSummary, pastedName, sameEntries, type ExplorerTransfer } from "../lib/explorer-transfer";
+import { explorerDropFolder, importSummary, pastedName, sameEntries, type ExplorerTransfer, type ImportItems } from "../lib/explorer-transfer";
 import { Explorer } from "./Explorer";
 
 const dir = (path: string): FileEntry => ({ name: path.split("/").pop()!, path, isDir: true } as FileEntry);
@@ -31,7 +31,7 @@ function mount(transferOverrides: Partial<ExplorerTransfer> = {}) {
   const workbench = { directories, expanded, loadDirectory: async (path: string) => { setDirectories(path, tree[path] ?? []); }, toggleDirectory: async (path: string) => { setExpanded(current => new Set([...current, path])); }, refreshFiles: async () => {}, trashPath, duplicatePath, renamePath, setError, settings: () => ({}), discoveryRevision: () => 0, activePath: () => "", dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: () => 0, busy: () => false, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
   const transfer: ExplorerTransfer = {
     pathInfo: vi.fn(async (path: string) => ({ path, name: path.split("/").pop()!, isDir: false, size: 1 })),
-    importPaths: vi.fn(async (target: string, items) => report(items.map(item => `${target ? `${target}/` : ""}${item.source.split("/").pop()}`)) as never),
+    importPaths: vi.fn(async (target: string, items: ImportItems) => report(items.map(item => `${target ? `${target}/` : ""}${item.source.split("/").pop()}`)) as never),
     progress: vi.fn(async () => null), cancel: vi.fn(async () => {}),
     readClipboard: vi.fn(async () => ({ files: [], hasImage: false, hasText: false })),
     writeClipboard: vi.fn(async () => {}), pasteFile: vi.fn(async (path: string) => ({ path })),

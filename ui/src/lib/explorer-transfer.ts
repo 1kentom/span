@@ -32,7 +32,7 @@ export const desktopTransfer: ExplorerTransfer = {
   progress: () => commands.importProgress(),
   cancel: () => commands.cancelImport(),
   readClipboard: () => commands.clipboardFiles(),
-  writeClipboard: paths => commands.setClipboardFiles(paths),
+  writeClipboard: paths => commands.setClipboardFiles(paths).then(() => undefined),
   pasteFile: (path, kind) => commands.pasteClipboardFile(path, kind),
 };
 

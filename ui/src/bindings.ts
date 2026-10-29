@@ -73,7 +73,7 @@ export const commands = {
 	 *  the same rules as uploads.
 	 */
 	openFileWithSystem: (path: string) => __TAURI_INVOKE<null>("open_file_with_system", { path }),
-	/**  Shows a workspace file in Finder, Explorer or the Linux file manager. */
+	/**  Shows a workspace file or folder in Finder, Explorer or the Linux file manager. */
 	revealFile: (path: string) => __TAURI_INVOKE<null>("reveal_file", { path }),
 	/**
 	 *  The last editor showing `path` closed or was evicted: close the document in the language
@@ -118,6 +118,21 @@ export const commands = {
 	droppedPathInfo: (path: string) => __TAURI_INVOKE<DroppedPath>("dropped_path_info", { path }),
 	/**  Reads one file of the latest native drop as base64, refusing anything larger than `max_bytes`. */
 	readDroppedFile: (path: string, maxBytes: number) => __TAURI_INVOKE<string>("read_dropped_file", { path, maxBytes }),
+	/**
+	 *  Copies `items` into the workspace folder `target` ("" is the root). Each source must come from the latest
+	 *  native drop or the latest `clipboard_files` read; any other path is refused before anything is copied.
+	 */
+	importPaths: (target: string, items: ImportItem[]) => __TAURI_INVOKE<ImportReport_Serialize>("import_paths", { target, items }),
+	/**  Progress of the running import, or nothing when no import runs. */
+	importProgress: () => __TAURI_INVOKE<ImportProgress | null>("import_progress"),
+	/**  Asks the running import to stop. Items already copied stay and are listed in its report. */
+	cancelImport: () => __TAURI_INVOKE<void>("cancel_import"),
+	/**  Reads the OS clipboard. Its file paths become the only clipboard paths `import_paths` accepts. */
+	clipboardFiles: () => __TAURI_INVOKE<ClipboardContents>("clipboard_files"),
+	/**  Puts workspace files and folders on the OS clipboard as a file list. */
+	setClipboardFiles: (paths: string[]) => __TAURI_INVOKE<null>("set_clipboard_files", { paths }),
+	/**  Writes the clipboard image (as PNG) or text into a new workspace file. Never replaces an existing file. */
+	pasteClipboardFile: (path: string, kind: PastedKind) => __TAURI_INVOKE<FileEntry_Serialize>("paste_clipboard_file", { path, kind }),
 	openExternal: (url: string) => __TAURI_INVOKE<null>("open_external", { url }),
 	readImage: (path: string, expectedWorkspaceRoot: string | null) => __TAURI_INVOKE<ImageSource>("read_image", { path, expectedWorkspaceRoot }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
@@ -1262,6 +1277,13 @@ export type ClearedUploads = {
 	bytes: number,
 };
 
+/**  What the OS clipboard holds that the Explorer can paste. Files win over an image, an image over text. */
+export type ClipboardContents = {
+	files: DroppedPath[],
+	hasImage: boolean,
+	hasText: boolean,
+};
+
 export type CompletionItemDto = CompletionItemDto_Serialize | CompletionItemDto_Deserialize;
 
 export type CompletionItemDto_Deserialize = {
@@ -1352,6 +1374,15 @@ export type ConfigOption_Serialize = {
 	currentValue: string,
 	groups: ConfigGroup_Serialize[],
 };
+
+/**  What happens when an imported item's name is already taken in the destination folder. */
+export type ConflictPolicy =
+/**  Add " copy", " copy 2", ... to the new item's name. Nothing is replaced. */
+"keepBoth" |
+/**  Move the existing item to the system Trash, then put the copy in its place. */
+"replace" |
+/**  Leave the existing item and do not copy this one. */
+"skip";
 
 /**  A `usage_update` reading: tokens in the context window and its size. */
 export type ContextReading = {
@@ -2201,6 +2232,57 @@ export type ImageSource = {
 	dataUrl: string,
 };
 
+/**  One item to copy into the workspace: an absolute source path and its clash policy. */
+export type ImportItem = {
+	source: string,
+	policy: ConflictPolicy,
+};
+
+/**  Copied and total entries and bytes of a running import. */
+export type ImportProgress = {
+	entries: number,
+	totalEntries: number,
+	bytes: number,
+	totalBytes: number,
+};
+
+/**  Result of an import. Items copied before a cancellation or a failure stay and are listed in `created`. */
+export type ImportReport = ImportReport_Serialize | ImportReport_Deserialize;
+
+/**  Result of an import. Items copied before a cancellation or a failure stay and are listed in `created`. */
+export type ImportReport_Deserialize = {
+	/**  Workspace relative paths of the new top level items, replacements included. */
+	created: string[],
+	/**  Workspace relative paths whose previous item was moved to the system Trash. */
+	replaced: string[],
+	/**  Names left out by the Skip policy. */
+	skipped: string[],
+	/**  Symbolic links and special files that were not copied. */
+	skippedLinks: number,
+	entries: number,
+	bytes: number,
+	cancelled: boolean,
+	/**  Why the import stopped early, when an item failed. */
+	error?: string | null,
+};
+
+/**  Result of an import. Items copied before a cancellation or a failure stay and are listed in `created`. */
+export type ImportReport_Serialize = {
+	/**  Workspace relative paths of the new top level items, replacements included. */
+	created: string[],
+	/**  Workspace relative paths whose previous item was moved to the system Trash. */
+	replaced: string[],
+	/**  Names left out by the Skip policy. */
+	skipped: string[],
+	/**  Symbolic links and special files that were not copied. */
+	skippedLinks: number,
+	entries: number,
+	bytes: number,
+	cancelled: boolean,
+	/**  Why the import stopped early, when an item failed. */
+	error: string | null,
+};
+
 export type IncomingCallDto = IncomingCallDto_Serialize | IncomingCallDto_Deserialize;
 
 export type IncomingCallDto_Deserialize = {
@@ -2771,6 +2853,9 @@ export type ParameterInformationDto_Serialize = {
 	labelEnd: number | null,
 	documentation: string | null,
 };
+
+/**  What a new pasted file is made from. */
+export type PastedKind = "image" | "text";
 
 export type PermissionOption = {
 	optionId: string,
