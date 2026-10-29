@@ -62,3 +62,10 @@
 .editor-groups.stacked{flex-direction:column}
 /* The uploads layer replaces the project panel, so it reclaims the idle left handle and sits at the Explorer inset. */
 .workbench-main:has(.uploads-view-layer)>.panel-handle[data-panel-side="left"]:not(.collapsed){pointer-events:none;visibility:hidden}
+
+/* Use measured layout budgets at every zoom, independently of viewport media queries. */
+.workbench-main.managed-panel-layout>.explorer-panel,.workbench-main.managed-panel-layout>.assistant-panel{position:relative;top:auto;bottom:auto;left:auto;right:auto;z-index:auto;flex:none;width:var(--sidebar-width)!important;box-shadow:none}
+.workbench-main.managed-panel-layout>.panel-handle.resize-horizontal{display:flex;position:relative;top:auto;bottom:auto;left:auto;right:auto}
+.workbench-main.managed-panel-layout>.sidebar-overlay{position:absolute;top:0;bottom:0;z-index:20;outline:1px solid var(--border)}
+.workbench-main.managed-panel-layout>.explorer-panel.sidebar-overlay{left:8px}
+.workbench-main.managed-panel-layout>.assistant-panel.sidebar-overlay{right:8px}

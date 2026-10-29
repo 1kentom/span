@@ -54,9 +54,14 @@ for (const factor of [1.728, 2, 1.2 ** 5]) {
     const mainBounds = (await page.locator(".workbench-main").boundingBox())!;
     const terminalBounds = (await page.locator(".run-bottom-panel").boundingBox())!;
     expect(terminalBounds.y + terminalBounds.height).toBeLessThanOrEqual(mainBounds.y + mainBounds.height + 1);
+    const assistant = page.getByRole("button", { name: "Toggle AI Assistant panel", exact: true });
+    if (await assistant.getAttribute("aria-pressed") === "true") await assistant.click();
+    const restoreProject = page.getByRole("separator", { name: "Restore project panel", exact: true });
+    if (await restoreProject.count()) await restoreProject.click();
     const handle = page.getByRole("separator", { name: "Resize project panel", exact: true });
     const logicalWidth = await page.locator(".workbench-main").evaluate(node => node.clientWidth);
-    expect(Number(await handle.getAttribute("aria-valuemax"))).toBeCloseTo(logicalWidth * .42, 1);
+    const overlay = (await page.locator(".explorer-panel").getAttribute("class"))!.includes("sidebar-overlay");
+    expect(Number(await handle.getAttribute("aria-valuemax"))).toBeCloseTo(overlay ? logicalWidth - 32 : Math.min(logicalWidth * .42, logicalWidth - 32 - 320), 1);
     // Drag inward to stay below the responsive width cap.
     const before = Number(await handle.getAttribute("aria-valuenow"));
     const grip = handle.locator(".panel-rail-grip"); await grip.hover();
