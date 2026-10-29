@@ -1,17 +1,21 @@
-import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, ConfigOption, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
+import { batch, createComputed, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, agentPresets, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
-import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, api, isDesktop, sessionExportMarkdown, sessionMetaSetArchived, sessionMetaSetTitle } from "./client";
+import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadRowMeta } from "./session-threads";
 import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
-import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
+import { agentCatalog } from "./agent-stores/catalog";
+import { agentBackground } from "./agent-stores/background";
+import { agentLimits } from "./agent-stores/limits";
+import { agentHistory } from "./agent-stores/history";
+import { agentConnection, NO_STATES } from "./agent-stores/connection";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
-import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
+import { removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { createSavedImageStore } from "./agent-saved-images";
 import { RUN_TEXT } from "./agent-hint-text";
-import { classifyAgentError, isLimitKind, limitStatus, setAgentLimit, type AgentErrorInfo } from "./agent-errors";
+import { classifyAgentError, isLimitKind, limitStatus, type AgentErrorInfo } from "./agent-errors";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
 import { lastFinishedTool, runningTools, toolBarView } from "./agent-tool-bar";
 
@@ -37,13 +41,12 @@ import { droppedPathInfo, droppedRelative, readDroppedFile } from "./native-drop
 import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
 import { feedTurns } from "./agent-handoff";
 import { moveItem } from "./agent-queue";
-import { noteAgentUsed, readLastSession, readRecentAgents, writeLastSession } from "./last-session";
+import { noteAgentUsed, readLastSession, writeLastSession } from "./last-session";
 import { chooseRestores, readLastConfig, writeLastConfig, type SavedConfig } from "./last-config";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
 const DELEGATION_POLL_MS = 3000;
-const NO_STATES: SessionStates = { connectionId: null, sessions: [] };
 
 export type AgentPanelProps = {
   workspacePath?: string;
@@ -94,10 +97,8 @@ export type View = "session" | "history" | "connect" | "logs";
 /** The one open composer or header popover. A single value, so opening one closes any other. */
 export type Menu = "model" | "mode" | "agents" | "attach" | "actions" | "usage" | null;
 export type Queued = { id: string; text: string; message: string; attachments: PromptAttachment[]; items: Attachment[] };
-type Launch = { command: AgentCommand; name: string; id?: string };
 /** A steer waiting for its turn to end. `turn` is the turn it interrupts; a steer never outlives that turn. */
 type Steering = { entry: Queued; cancelled: boolean; turn: number };
-type Connecting = { name: string; command: string; logBase: number; failed: boolean };
 /**
  * An agent switch in the open chat. `text` is the carried context, sent once ahead of the first prompt of the session
  * named by `sessionId`; `sessionId` is set when the new session is ready.
@@ -141,29 +142,22 @@ export function createAgentController(props: AgentPanelProps) {
   const [menu, setMenu] = createSignal<Menu>(null);
   const [working, setWorking] = createSignal(false);
   const [pendingAction, setPendingAction] = createSignal("");
-  const [installed, setInstalled] = createSignal<InstalledAgent[]>([]);
-  const [registry, setRegistry] = createSignal<RegistryAgent[]>([]);
-  const [presets, setPresets] = createSignal<AgentPreset_Serialize[]>([]);
-  const [registryBusy, setRegistryBusy] = createSignal(false);
-  /** Registry ids being installed. Each install keeps its own row state, so other rows stay usable meanwhile. */
-  const [installingIds, setInstallingIds] = createSignal<string[]>([]);
-  const [installErrors, setInstallErrors] = createSignal<Record<string, string>>({});
-  /** The first install in flight, for views that show one install at a time. */
-  const installing = () => installingIds()[0];
-  const [catalogSearch, setCatalogSearch] = createSignal("");
+  const catalog = agentCatalog.use();
+  const background = agentBackground.use();
+  // Before any effect reads it, and again on every change, so the store sees the setting exactly when the panel does.
+  createComputed(() => background.setHealthOn(props.healthCheck !== false));
+  const { health } = background;
+  const { installed, registry, presets, registryBusy, installingIds, installErrors, installing, catalogSearch, setCatalogSearch, catalogRows, otherInstalled, registryName } = catalog;
   /** An installed agent waiting for the user to confirm its removal. Nothing is removed until confirmRemoval. */
   const [removal, setRemoval] = createSignal<{ entry: InstalledAgent; uninstall: boolean }>();
-  const [agentName, setAgentName] = createSignal("Select agent");
-  const [agentId, setAgentId] = createSignal<string>();
-  const [launch, setLaunch] = createSignal<Launch>();
-  const [connecting, setConnecting] = createSignal<Connecting>();
+  /** The focused agent connection (see the connection store). */
+  const connection = agentConnection.use();
+  const { agentName, setAgentName, agentId, setAgentId, launch, setLaunch, connecting, setConnecting, sessionStates, setSessionStates, connectionKey, setConnectionKey, attentionAnnouncement, setAttentionAnnouncement, runtimeOf, isLive } = connection;
   const [contextPaths, setContextPaths] = createSignal<string[]>([]);
   const [hiddenSelection, setHiddenSelection] = createSignal("");
-  const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
-  const [sessionsBusy, setSessionsBusy] = createSignal(false);
-  const [sessionsError, setSessionsError] = createSignal("");
-  /** Span's stored metadata for the workspace's sessions (ADR 0005). Empty when none is stored or it cannot be read. */
-  const [sessionMeta, setSessionMeta] = createSignal<SessionMeta[]>([]);
+  /** The agent's session list and Span's metadata index (see the history store). */
+  const sessionHistory = agentHistory.use();
+  const { sessions, setSessions, sessionsBusy, sessionsError, setSessionsError, sessionScope, sessionMeta, keepSaved } = sessionHistory;
   /** Delegated child session id to its lead session id, so a child's model is recorded on the lead as a subagent. */
   const delegatedChildren = new Map<string, string>();
   /** Accepted edit totals per session in this run, added to what the store had when counting began. */
@@ -192,13 +186,6 @@ export function createAgentController(props: AgentPanelProps) {
   const chats = createChatStore();
   const [chatVersion, setChatVersion] = createSignal(0);
   const bumpChats = () => setChatVersion((version) => version + 1);
-  /** The backend's session states for the active connection: the only source of "is this chat running". */
-  const [sessionStates, setSessionStates] = createSignal<SessionStates>(NO_STATES);
-  /** The connection chats are keyed by: the backend connection id, or a local stand-in when it could not be read. */
-  const [connectionKey, setConnectionKey] = createSignal<string>();
-  let localConnection = 0;
-  /** Read once by screen readers: a background chat newly waits for the user. Timers never change it. */
-  const [attentionAnnouncement, setAttentionAnnouncement] = createSignal("");
   /** A prompt was refused because a turn is still running: the composer explains and offers steer or queue. */
   const [busyNotice, setBusyNotice] = createSignal(false);
   /** First and latest update time of each tool call, keyed by session and tool call id. */
@@ -225,11 +212,8 @@ export function createAgentController(props: AgentPanelProps) {
    * again with another model; it is forgotten on any new prompt, chat switch, resume or connection.
    */
   const [refused, setRefused] = createSignal<{ sessionId: string; entry: Queued; itemId: number; limit?: AgentErrorInfo }>();
-  /**
-   * Models that hit a usage limit, keyed by agent id and model value, with the time the limit lifts (0 when unknown).
-   * The picker marks them so the user is not surprised twice. Cleared on the next successful turn or at the reset time.
-   */
-  const [limitedModels, setLimitedModels] = createSignal<Record<string, number>>({});
+  /** Models that hit a usage limit (see the limits store). */
+  const limits = agentLimits.use();
   /** The picker the limit card opened to resend the refused turn with: a pick there resends instead of only switching. */
   const [resendArmed, setResendArmed] = createSignal<"model" | "agents">();
   /** Session ids a prompt has gone out to, so a late options restore never races the user's own turn. */
@@ -244,15 +228,8 @@ export function createAgentController(props: AgentPanelProps) {
   const followed = new Set<string>();
   let disposed = false;
   let agentEpoch = 0;
-  /**
-   * An installed-agent read started before an install or removal finished must not overwrite that change, so reads
-   * and mutations each carry a generation and a stale snapshot is dropped.
-   */
-  let installedReadGeneration = 0;
-  let installedMutationGeneration = 0;
   let unsubscribe: (() => void) | undefined;
   let unsubscribeStates: (() => void) | undefined;
-  let unsubscribeHealth: (() => void) | undefined;
   let input: HTMLTextAreaElement | undefined;
 
   const selectionKey = createMemo(() => `${props.selectionContext?.path}:${props.selectionContext?.text}`);
@@ -310,41 +287,11 @@ export function createAgentController(props: AgentPanelProps) {
   });
   const modelOption = () => state().config.find((candidate) => candidate.category === "model");
   /** Model values of the connected agent marked "Limit reached". */
-  const limitedModelValues = createMemo<ReadonlySet<string>>(() => {
-    const agent = agentId() ?? agentName();
-    const prefix = `${agent}\n`;
-    return new Set(Object.keys(limitedModels()).filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)));
-  });
-  const limitTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  function clearLimited(key: string) {
-    clearTimeout(limitTimers.get(key));
-    limitTimers.delete(key);
-    setLimitedModels((previous) => {
-      if (!(key in previous)) return previous;
-      const next = { ...previous };
-      delete next[key];
-      return next;
-    });
-  }
+  const limitedModelValues = createMemo<ReadonlySet<string>>(() => limits.limitedValues(agentId() ?? agentName()));
   /** Marks the current model as limited until `resetAt` (or the next successful turn). */
-  function markLimited(info: AgentErrorInfo) {
-    const model = modelOption()?.currentValue;
-    const agent = agentId() ?? agentName();
-    setAgentLimit({ kind: info.kind, provider: info.provider, resetAt: info.resetAt, freeTier: info.freeTier, agentId: agent, model });
-    if (info.kind !== "quota" || !model) return;
-    const key = `${agent}\n${model}`;
-    clearTimeout(limitTimers.get(key));
-    setLimitedModels((previous) => ({ ...previous, [key]: info.resetAt ?? 0 }));
-    const wait = info.resetAt !== undefined ? info.resetAt - Date.now() : undefined;
-    // Timers beyond a day are not kept: the next successful turn clears the mark.
-    if (wait !== undefined && wait < 86_400_000) limitTimers.set(key, setTimeout(() => clearLimited(key), Math.max(0, wait)));
-  }
+  const markLimited = (info: AgentErrorInfo) => limits.markLimited(info, agentId() ?? agentName(), modelOption()?.currentValue);
   /** A turn of the open session completed: the model it ran on works again. */
-  function clearLimitAfterSuccess() {
-    const model = modelOption()?.currentValue;
-    if (model) clearLimited(`${agentId() ?? agentName()}\n${model}`);
-    setAgentLimit(undefined);
-  }
+  const clearLimitAfterSuccess = () => limits.clearAfterSuccess(agentId() ?? agentName(), modelOption()?.currentValue);
   createEffect(on(menu, (open) => { if (open !== resendArmed()) setResendArmed(undefined); }));
   const permission = createMemo(() => openPermission(feed()));
   /** Open permission requests from delegated children, oldest first. */
@@ -505,12 +452,6 @@ export function createAgentController(props: AgentPanelProps) {
     const value = (event as { sessionId?: unknown }).sessionId;
     return typeof value === "string" && value ? value : undefined;
   };
-  const runtimeOf = (sessionId: string | undefined) => (sessionId ? sessionStates().sessions.find((entry) => entry.sessionId === sessionId) : undefined);
-  /** Running, waiting or with follow-ups queued on the backend. */
-  const isLive = (sessionId: string | undefined) => {
-    const entry = runtimeOf(sessionId);
-    return Boolean(entry && (entry.state !== "idle" || entry.queued > 0));
-  };
   function noteTool(event: AgentEvent) {
     if (event.kind !== "tool") return;
     const id = `${event.sessionId}:${event.toolCallId}`;
@@ -582,7 +523,7 @@ export function createAgentController(props: AgentPanelProps) {
     } catch {
       // Without states every row shows nothing, which is never wrong.
     }
-    if (!connectionKey()) setConnectionKey(`local-${++localConnection}`);
+    if (!connectionKey()) setConnectionKey(connection.localKey());
   }
   const chatTitle = (sessionId: string) => sessions().find((entry) => entry.sessionId === sessionId)?.title || chats.get(chatKey(connectionKey() ?? "", sessionId))?.conversation.sessionTitle || "A background chat";
   /** Applies published session states. States of another connection are ignored. */
@@ -665,8 +606,8 @@ export function createAgentController(props: AgentPanelProps) {
         })
         .catch(() => undefined);
       void loadAgents().then(() => {
-        warmStart();
-        startHealth();
+        background.warmStart(props.workspacePath);
+        background.startHealth();
         return restoreLastSession();
       });
     }
@@ -684,89 +625,13 @@ export function createAgentController(props: AgentPanelProps) {
   });
   onCleanup(() => {
     disposed = true;
-    for (const timer of limitTimers.values()) clearTimeout(timer);
     unsubscribe?.();
     unsubscribeStates?.();
-    unsubscribeHealth?.();
   });
 
   const guard = (epoch: number) => () => !disposed && epoch === agentEpoch;
 
-  function beginInstalledRead() {
-    return { read: ++installedReadGeneration, mutation: installedMutationGeneration };
-  }
-  function applyInstalledSnapshot(token: ReturnType<typeof beginInstalledRead>, snapshot: InstalledAgent[]) {
-    if (disposed || token.read !== installedReadGeneration || token.mutation !== installedMutationGeneration) return false;
-    setInstalled(snapshot);
-    return true;
-  }
-  function commitInstalledMutation(change: (current: InstalledAgent[]) => InstalledAgent[]) {
-    installedMutationGeneration += 1;
-    installedReadGeneration += 1;
-    setInstalled(change(installed()));
-  }
-  function upsertInstalled(current: InstalledAgent[], incoming: InstalledAgent) {
-    const index = current.findIndex((entry) => entry.id === incoming.id);
-    if (index < 0) return [...current, incoming];
-    return current.map((entry, currentIndex) => (currentIndex === index ? incoming : entry));
-  }
-
-  async function loadAgents() {
-    if (!isDesktop || registryBusy()) return;
-    setRegistryBusy(true);
-    const installedRead = beginInstalledRead();
-    const [local, remote, preset] = await Promise.allSettled([api.agentInstalled(), api.agentRegistry(), agentPresets()]);
-    // A preset list that fails to load only hides the preset rows; the rest of the screen still works.
-    if (preset.status === "fulfilled") setPresets(preset.value);
-    if (local.status === "fulfilled") applyInstalledSnapshot(installedRead, local.value);
-    else fail({ phase: "connect", message: `Could not read installed agents: ${errorText(local.reason)}` });
-    if (remote.status === "fulfilled") setRegistry(remote.value);
-    else fail({ phase: "connect", message: `Could not load the ACP registry: ${errorText(remote.reason)}` });
-    setRegistryBusy(false);
-  }
-  /**
-   * Warm start (ADR 0009): once the panel has painted, ask the backend to start installed agents in the background, most
-   * recently used first, so a delegation or a switch does not wait. Quiet: a failed start never shows an error here.
-   */
-  function warmStart() {
-    if (!isDesktop || disposed || !props.workspacePath || !api.agentWarmStart) return;
-    const recent = readRecentAgents();
-    const run = () => {
-      if (!disposed) void api.agentWarmStart?.(recent).catch(() => undefined);
-    };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
-    else setTimeout(run, 0);
-  }
-  /**
-   * Agent health check (ADR 0010): once the panel has painted, read the latest results, which also starts the backend's
-   * periodic checks, and follow every change. Quiet: a failure leaves the dots grey.
-   */
-  function startHealth() {
-    if (!isDesktop || disposed || !api.agentHealth) return;
-    const run = () => {
-      if (!disposed && props.healthCheck !== false) void api.agentHealth?.().then(setAgentHealth).catch(() => undefined);
-    };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
-    else setTimeout(run, 0);
-    void api
-      .onAgentHealth?.(setAgentHealth)
-      .then((cleanup) => {
-        if (disposed) cleanup();
-        else unsubscribeHealth = cleanup;
-      })
-      .catch(() => undefined);
-  }
-  // Turned back on in Settings: show the current results again (the backend checks only while it is on).
-  createEffect(
-    on(
-      () => props.healthCheck !== false,
-      (enabled, before) => {
-        if (enabled && before === false && isDesktop) void api.agentHealth?.().then(setAgentHealth).catch(() => undefined);
-      },
-    ),
-  );
-  /** Health results to show: none while `agents.healthCheck` is off. */
-  const health = createMemo(() => (props.healthCheck === false ? [] : agentHealthResults()));
+  const loadAgents = () => catalog.loadAgents(fail);
   /** On app open: reconnect the agent that had the last chat in this workspace and resume that chat when the agent can. */
   async function restoreLastSession() {
     const workspace = props.workspacePath;
@@ -796,8 +661,6 @@ export function createAgentController(props: AgentPanelProps) {
       if (id && agent) writeLastSession(workspace, { agentId: agent, sessionId: id });
     }
   }
-  const registryName = (id: string) => registry().find((agent) => agent.id === id)?.name;
-
   /**
    * Starts `name` in a new session. With `switching` (the agent pickers), a chat with messages that moves to another
    * agent keeps its feed: a divider marks the switch and recent context goes out with the first prompt (issue #87).
@@ -932,34 +795,8 @@ export function createAgentController(props: AgentPanelProps) {
     const last = launch();
     if (last) void connect(last.command, last.name, last.id);
   };
-  /**
-   * Installs a registry agent. The result lands on its row even when the user connects another agent or changes view
-   * meanwhile, and a second click on the same row while it installs does nothing.
-   */
-  async function install(id: string) {
-    const entry = registry().find((agent) => agent.id === id);
-    if (!entry || installingIds().includes(id)) return;
-    setInstallingIds((previous) => [...previous, id]);
-    setInstallErrors((previous) => {
-      const next = { ...previous };
-      delete next[id];
-      return next;
-    });
-    try {
-      const added = await api.agentInstall(id);
-      if (disposed) return;
-      commitInstalledMutation((current) => upsertInstalled(current, added));
-    } catch (cause) {
-      if (disposed) return;
-      setInstallErrors((previous) => ({ ...previous, [id]: errorText(cause) }));
-      fail({ phase: "connect", message: `Could not install ${curatedAgent(id)?.name || entry.name}: ${errorText(cause)}` });
-    } finally {
-      if (!disposed) setInstallingIds((previous) => previous.filter((installingId) => installingId !== id));
-    }
-  }
-  const catalogRows = createMemo<CatalogRow[]>(() => buildAgentCatalog(registry(), installed(), catalogSearch()));
-  /** Installed adapters outside the curated list. */
-  const otherInstalled = createMemo(() => installed().filter((entry) => !curatedAgent(entry.id)));
+  /** Installs a registry agent (see the catalog store). */
+  const install = (id: string) => catalog.install(id, fail);
   /** Connects, installs or prepares the local command for one curated row. Returns the command line for a local row. */
   function pickCatalog(row: CatalogRow): string | undefined {
     if (row.installed) {
@@ -1004,12 +841,12 @@ export function createAgentController(props: AgentPanelProps) {
       }
       await removeAgent(choice.entry.id, choice.uninstall);
       if (!current()) return;
-      commitInstalledMutation((agents) => agents.filter((entry) => entry.id !== choice.entry.id));
+      catalog.commitInstalledMutation((agents) => agents.filter((entry) => entry.id !== choice.entry.id));
       setRemoval(undefined);
-      const installedRead = beginInstalledRead();
+      const installedRead = catalog.beginInstalledRead();
       try {
         const remaining = await api.agentInstalled();
-        if (current()) applyInstalledSnapshot(installedRead, remaining);
+        if (current()) catalog.applyInstalledSnapshot(installedRead, remaining);
       } catch (cause) {
         if (current()) fail({ phase: "connect", message: `Could not refresh installed agents: ${errorText(cause)}` });
       }
@@ -1457,59 +1294,21 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setPendingAction("");
     }
   }
-  /** History scope: this workspace (the agent lists sessions of the folder) or every folder the agent knows. */
-  const [sessionScope, setSessionScopeSignal] = createSignal<"workspace" | "all">("workspace");
   const setSessionScope = (scope: "workspace" | "all") => {
     if (scope === sessionScope()) return;
-    setSessionScopeSignal(scope);
+    sessionHistory.setSessionScope(scope);
     void loadSessions();
   };
   async function loadSessions() {
     if (!state().canList || sessionsBusy()) return;
-    const current = guard(agentEpoch);
-    setSessionsBusy(true);
-    setSessionsError("");
-    void loadSessionMeta();
-    try {
-      const found = sessionScope() === "all" ? await api.agentListAllSessions() : await api.agentListSessions();
-      if (current()) setSessions(found);
-    } catch (cause) {
-      if (current()) setSessionsError(errorText(cause));
-    } finally {
-      if (current()) setSessionsBusy(false);
-    }
+    await sessionHistory.loadSessions(guard(agentEpoch));
   }
-  /** Metadata only adds chips and titles to History rows, so a failed read leaves the rows as the agent lists them. */
-  async function loadSessionMeta() {
-    const current = guard(agentEpoch);
-    try {
-      const found = await sessionMetaList();
-      if (current()) setSessionMeta(found);
-    } catch {
-      if (current()) setSessionMeta([]);
-    }
-  }
-  /**
-   * Writes what Span observed about a session to the metadata store (ADR 0005) and keeps the History rows in step.
-   * The store is a convenience: a failed write (no folder open, browser preview) never disturbs the chat.
-   */
-  async function recordSessionMeta(patch: SessionMetaPatch) {
-    if (!isDesktop) return;
-    const current = guard(agentEpoch);
-    try {
-      const saved = await sessionMetaUpdate(patch);
-      if (current()) setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
-    } catch {
-      // Nothing to show: History falls back to what the agent lists.
-    }
-  }
+  /** Writes what Span observed about a session to the metadata store (see the history store). */
+  const recordSessionMeta = (patch: SessionMetaPatch) => sessionHistory.recordSessionMeta(patch, guard(agentEpoch));
   /** Stored metadata for one of the connected agent's sessions. Sessions are keyed by agent and id (ADR 0005). */
-  const sessionMetaOf = (sessionId: string) => {
-    const agent = agentId();
-    return agent ? sessionMeta().find((entry) => entry.agentId === agent && entry.sessionId === sessionId) : undefined;
-  };
+  const sessionMetaOf = (sessionId: string) => sessionHistory.metaOf(agentId(), sessionId);
   /** Every stored segment of the chat thread that holds one of the connected agent's sessions (ADR 0005, thread links). */
-  const threadFor = (sessionId: string) => threadOf(sessionMeta(), agentId(), sessionId);
+  const threadFor = (sessionId: string) => sessionHistory.threadFor(agentId(), sessionId);
   /** The lead's state in the Live agents strip, from its turn and the requests that wait for the user. */
   const leadState = (): LiveState => (permission() || elicitation() ? "Waiting for you" : running() ? "Working" : connecting() ? "Starting" : "Idle");
   /**
@@ -1542,7 +1341,6 @@ export function createAgentController(props: AgentPanelProps) {
     const id = sessionId();
     return (id ? threadRowMeta(threadFor(id)).title : undefined) ?? listedTitle(state().sessionTitle) ?? (id ? listedTitle(sessions().find((entry) => entry.sessionId === id)?.title) : undefined);
   };
-  const keepSaved = (saved: SessionMeta) => setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
   /** The store keys a thread action writes: every stored segment, and the row's own session first (it may have no metadata yet). */
   function threadKeys(id: string): { agentId: string; sessionId: string }[] {
     const agent = agentId();
@@ -2484,7 +2282,7 @@ export function createAgentController(props: AgentPanelProps) {
     sessionMeta,
     threadFor,
     health,
-    healthNow,
+    healthNow: background.healthNow,
     healthOn: () => props.healthCheck !== false,
     liveAgents,
     currentTitle,
