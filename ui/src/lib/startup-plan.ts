@@ -32,8 +32,9 @@ export function commonFolder(files: readonly StartupFile[]): string | undefined 
 
 /**
  * Decide what a startup request does. A request that only names files (the folder was derived from them)
- * never swaps an open project: files inside it open there, files outside ask first. With no project open,
- * the files' folder becomes the project and only the files are opened.
+ * never swaps the project and never opens the files' folder on its own: files inside the open project open
+ * there, and every other file (all of them when no project is open) is returned as `outside` for the caller
+ * to report, or to offer its folder only after an explicit choice.
  */
 export function planStartup(request: Request, openRoot?: string): StartupPlan {
   const root = request.workspaceRoot ?? undefined;
@@ -41,7 +42,7 @@ export function planStartup(request: Request, openRoot?: string): StartupPlan {
     const changing = !!root && (!openRoot || relativePath(root, openRoot) !== "");
     return { switchTo: changing ? root : undefined, open: request.files, outside: [] };
   }
-  if (!openRoot) return { switchTo: root, open: request.files, outside: [] };
+  if (!openRoot) return { open: [], outside: request.files };
   const open = request.files.filter(file => isInside(file.path, openRoot));
   return { open, outside: request.files.filter(file => !isInside(file.path, openRoot)) };
 }

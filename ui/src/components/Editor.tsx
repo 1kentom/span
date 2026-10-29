@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { Annotation, Compartment, EditorState, Prec, StateEffect, StateField, Text, Transaction, type ChangeSet, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection, crosshairCursor, type DecorationSet } from "@codemirror/view";
+import { Decoration, EditorView, WidgetType, tooltips, drawSelection, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, rectangularSelection, crosshairCursor, type DecorationSet } from "@codemirror/view";
 import { bracketMatching, defaultHighlightStyle, foldGutter, foldKeymap, foldService, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from "@codemirror/commands";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
@@ -377,6 +377,8 @@ export default function Editor(props: EditorProps) {
 
   function extensions(): Extension[] {
     return [
+      // Tooltips may only use the editor itself. The default is the whole window, which puts a tall hover under the tab bar.
+      tooltips({ tooltipSpace: view => { const box = view.scrollDOM.getBoundingClientRect(); return { top: box.top, left: box.left, bottom: box.bottom, right: box.right }; } }),
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), activeLineLayer(), drawSelection(), selectionPointer(), lineSelection(), indentationSupport(),
       javaRun.of(javaRunExtensions()),
       props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),

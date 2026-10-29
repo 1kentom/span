@@ -1,0 +1,14 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Neutral glyph for a language without a vendored logo. Original SVG bytes and geometry are preserved.",
+  "processing": "SVG XML inspected for active content and external references. Application renders the artwork with a currentColor alpha mask through the Icon wrapper.",
+  "rights": "Copied from the user-provided local icon library at the user’s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "language-unknown.svg",
+      "source": "programming/iconsax-code-5edbf7e4973e-.svg",
+      "sourceSha256": "d21b4e60775696168ccbcfc40e5884db022e24f3689893ced32dc744d5731433",
+      "assetSha256": "d21b4e60775696168ccbcfc40e5884db022e24f3689893ced32dc744d5731433"
+    }
+  ]
+}

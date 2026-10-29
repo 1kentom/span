@@ -589,6 +589,18 @@ describe("native startup and asset boundaries", () => {
     expect(client.getSession).not.toHaveBeenCalled();
   });
 
+  it("restores the saved project for a dropped or forwarded file and never opens the file's folder", async () => {
+    client.takeStartupRequests.mockResolvedValue([{ workspaceRoot: "/elsewhere", files: [{ path: "/elsewhere/notes.md", line: null, column: null }], impliedRoot: true }]);
+    client.getSession.mockResolvedValue({ workspaceRoot: "/workspace", groups: [{ paths: [], activePath: null }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: true }, markdownViews: {}, splitVertical: false } satisfies SessionState);
+    const workbench = testWorkbench();
+    const seen: unknown[] = [];
+    await workbench.initialize(async request => { seen.push(request); });
+    expect(workbench.workspace()?.root).toBe("/workspace");
+    expect(client.openWorkspace).not.toHaveBeenCalledWith("/elsewhere", expect.anything());
+    expect(client.openWorkspace).not.toHaveBeenCalledWith("/elsewhere");
+    expect(seen).toHaveLength(1);
+  });
+
   it("opens binary images without requesting a UTF-8 editor buffer", async () => {
     const workbench = await setup(); const calls = client.openBuffer.mock.calls.length;
     await workbench.openFile("assets/image.png");

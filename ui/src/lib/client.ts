@@ -464,9 +464,9 @@ export const api = {
     if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) throw new Error('Only http, https and mailto links can open externally.');
     window.open(parsed.href, '_blank', 'noopener,noreferrer');
   },
-  async readImage(path: string): Promise<ImageSource> {
+  async readImage(path: string, expectedWorkspaceRoot?: string): Promise<ImageSource> {
     if (!isDesktop) { const image = previewAssetImage(path); if (image) return image; nativeRequired('Loading workspace images'); }
-    return commands.readImage(path);
+    return commands.readImage(path, expectedWorkspaceRoot ?? null);
   },
   /** Writes an attachment into the workspace without overwriting. Returns the workspace-relative path. */
   async saveAttachment(dir: string, fileName: string, dataBase64: string): Promise<SavedAttachment> {

@@ -100,8 +100,11 @@ export const commands = {
 	writeClipboard: (text: string) => __TAURI_INVOKE<null>("write_clipboard", { text }),
 	takeStartupRequests: () => __TAURI_INVOKE<StartupRequest_Serialize[]>("take_startup_requests"),
 	enqueueDroppedPaths: (paths: string[], cwd: string | null) => __TAURI_INVOKE<null>("enqueue_dropped_paths", { paths, cwd }),
+	droppedPathInfo: (path: string) => __TAURI_INVOKE<DroppedPath>("dropped_path_info", { path }),
+	/**  Reads one file of the latest native drop as base64, refusing anything larger than `max_bytes`. */
+	readDroppedFile: (path: string, maxBytes: number) => __TAURI_INVOKE<string>("read_dropped_file", { path, maxBytes }),
 	openExternal: (url: string) => __TAURI_INVOKE<null>("open_external", { url }),
-	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
+	readImage: (path: string, expectedWorkspaceRoot: string | null) => __TAURI_INVOKE<ImageSource>("read_image", { path, expectedWorkspaceRoot }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
 	syntax: (path: string) => __TAURI_INVOKE<SyntaxSnapshot>("syntax", { path }),
 	/**
@@ -1556,6 +1559,15 @@ export type DiagnosticDto_Deserialize = {
 	range: RangeDto,
 	source?: string | null,
 	code?: string | null,
+	/**
+	 * The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+	 * dims it, and the problems list counts it as a warning, as IntelliJ does.
+	 */
+	unnecessary?: boolean,
+	/**
+	 * The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`).
+	 */
+	deprecated?: boolean,
 };
 
 export type DiagnosticDto_Serialize = {
@@ -1564,6 +1576,15 @@ export type DiagnosticDto_Serialize = {
 	range: RangeDto,
 	source: string | null,
 	code: string | null,
+	/**
+	 * The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+	 * dims it, and the problems list counts it as a warning, as IntelliJ does.
+	 */
+	unnecessary: boolean,
+	/**
+	 * The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`).
+	 */
+	deprecated: boolean,
 };
 
 export type DiagnosticSeverityDto = "error" | "warning" | "information" | "hint";
@@ -1602,6 +1623,13 @@ export type DocumentHighlightDto = {
 };
 
 export type DocumentHighlightKindDto = "text" | "read" | "write";
+
+export type DroppedPath = {
+	path: string,
+	name: string,
+	isDir: boolean,
+	size: number,
+};
 
 export type EditProposal = {
 	id: string,

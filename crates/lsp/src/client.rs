@@ -1040,6 +1040,10 @@ pub fn client_capabilities() -> ClientCapabilities {
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
                 related_information: Some(true),
                 version_support: Some(true),
+                // Without this, servers leave out or mislabel unused and deprecated code.
+                tag_support: Some(TagSupport {
+                    value_set: vec![DiagnosticTag::UNNECESSARY, DiagnosticTag::DEPRECATED],
+                }),
                 ..Default::default()
             }),
             ..Default::default()

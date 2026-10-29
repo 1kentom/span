@@ -523,30 +523,89 @@ pub struct ImageSource {
 pub async fn read_image(
     state: State<'_, DesktopState>,
     path: String,
+    expected_workspace_root: Option<String>,
 ) -> Result<ImageSource, String> {
-    let workspace = current_workspace(state.inner())?;
+    // Existing preview callers keep their invocation-time workspace when no expected root is supplied.
+    let captured = if expected_workspace_root.is_none() {
+        Some(current_workspace(state.inner())?)
+    } else {
+        None
+    };
+    let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        use base64::Engine;
-        let image = workspace
-            .lock()
-            .map_err(|_| "Workspace state is unavailable".to_owned())?
-            .read_image(&path, 8 * 1024 * 1024)
-            .map_err(|error| error.to_string())?;
-        Ok(ImageSource {
-            data_url: format!(
-                "data:{};base64,{}",
-                image.mime,
-                base64::engine::general_purpose::STANDARD.encode(image.data)
-            ),
-            mime: image.mime,
-        })
+        if let Some(workspace) = captured {
+            let workspace = workspace
+                .lock()
+                .map_err(|_| "Workspace state is unavailable".to_owned())?;
+            return image_source(&workspace, &path, None);
+        }
+        read_workspace_image(&state, &path, expected_workspace_root.as_deref())
     })
     .await
     .map_err(|error| format!("Read image task failed: {error}"))?
 }
 
+fn read_workspace_image(
+    state: &DesktopState,
+    path: &str,
+    expected_workspace_root: Option<&str>,
+) -> Result<ImageSource, String> {
+    // Hold the selector through the read: a queued request cannot use a previous workspace handle.
+    let selected = state
+        .workspace
+        .lock()
+        .map_err(|_| "Workspace state is unavailable".to_owned())?;
+    let workspace = selected
+        .as_ref()
+        .ok_or_else(|| "Open a folder first".to_owned())?;
+    let workspace = workspace
+        .lock()
+        .map_err(|_| "Workspace state is unavailable".to_owned())?;
+    image_source(&workspace, path, expected_workspace_root)
+}
+
+fn image_source(
+    workspace: &span_core::CoreWorkspace,
+    path: &str,
+    expected_workspace_root: Option<&str>,
+) -> Result<ImageSource, String> {
+    use base64::Engine;
+    let image = match expected_workspace_root {
+        Some(expected) => workspace.read_agent_image(path, expected),
+        None => workspace.read_image(path, 8 * 1024 * 1024),
+    }
+    .map_err(|error| error.to_string())?;
+    Ok(ImageSource {
+        data_url: format!(
+            "data:{};base64,{}",
+            image.mime,
+            base64::engine::general_purpose::STANDARD.encode(image.data)
+        ),
+        mime: image.mime,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn generated_image_read_checks_the_workspace_selected_when_the_worker_runs() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        let old_workspace = span_core::CoreWorkspace::open(old.path()).unwrap();
+        let expected = old_workspace.workspace().root;
+        let state = crate::DesktopState::default();
+        *state.workspace.lock().unwrap() =
+            Some(std::sync::Arc::new(std::sync::Mutex::new(old_workspace)));
+        // A queued worker must inspect the current selector, not a previously captured CoreWorkspace.
+        *state.workspace.lock().unwrap() = Some(std::sync::Arc::new(std::sync::Mutex::new(
+            span_core::CoreWorkspace::open(new.path()).unwrap(),
+        )));
+        let error = super::read_workspace_image(&state, "missing.png", Some(&expected))
+            .err()
+            .unwrap();
+        assert!(error.contains("workspace changed"));
+    }
+
     fn dirty_workspace(formatter: Vec<String>) -> (tempfile::TempDir, crate::DesktopState, u64) {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(

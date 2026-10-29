@@ -64,6 +64,7 @@ async function fixture(page: Page) {
           if (command === "run_configurations") return { workspaceRoot: root, configurations: [], detected: [] };
           if (command === "run_context") return { workspaceRoot: root, workspaceEpoch: 1, runs: [] };
           if (command === "list_directory") return args.path ? [{ path: "src/file.ts", name: "file.ts", isDir: false }] : [{ path: "src", name: "src", isDir: true }];
+          if (command === "check_external_files") return { workspaceRoot: root, revision: 0, directoriesChanged: false, states: [] };
           if (command === "file_index_status") return { workspaceRoot: root, generation: 1, status: "ready", scannedEntries: 1, indexedFiles: 1, errorCount: 0, lastError: null, watcherReady: true, watcherError: null };
           if (command === "query_file") return { workspaceRoot: root, generation: 1, requestId: 1, results: [{ path: "src/file.ts", score: 1 }] };
           if (command === "open_buffer" || command === "peek_buffer") return { ...buffer };

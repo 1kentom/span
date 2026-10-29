@@ -1,16 +1,17 @@
 import type { DiagnosticDto_Deserialize } from "../bindings";
 
 export type ProblemSeverity = "error" | "warning";
-export interface Problem { severity: ProblemSeverity; message: string; line: number; column: number; source?: string; code?: string }
+export interface Problem { severity: ProblemSeverity; message: string; line: number; column: number; source?: string; code?: string; unused?: boolean }
 export interface ProblemSummary { errors: number; warnings: number; total: number; label: string }
 
 /** Keeps errors and warnings, in file order. Information and hints stay in the editor only. */
 export function toProblems(diagnostics: readonly DiagnosticDto_Deserialize[]): Problem[] {
   const out: Problem[] = [];
   for (const item of diagnostics) {
-    const severity = item.severity === "warning" ? "warning" : item.severity === "error" || item.severity == null ? "error" : undefined;
+    // Unused code arrives as a hint tagged Unnecessary. IntelliJ lists it with the warnings, so the badge does too.
+    const severity = item.unnecessary ? "warning" : item.severity === "warning" ? "warning" : item.severity === "error" || item.severity == null ? "error" : undefined;
     if (!severity) continue;
-    out.push({ severity, message: item.message.trim(), line: item.range.start.line + 1, column: item.range.start.character + 1, source: item.source ?? undefined, code: item.code ?? undefined });
+    out.push({ severity, message: item.message.trim(), line: item.range.start.line + 1, column: item.range.start.character + 1, source: item.source ?? undefined, code: item.code ?? undefined, unused: item.unnecessary || undefined });
   }
   return out.sort((a, b) => a.line - b.line || a.column - b.column);
 }
