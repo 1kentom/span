@@ -254,6 +254,51 @@ describe("sign-in forms and secrets", () => {
     expect(received).toHaveLength(1);
     expect(bad.querySelector("[role=alert]")?.textContent).toContain("https://");
   });
+  it("opens a Claude gateway on OpenRouter and sends only the key as a bearer header", () => {
+    const received: unknown[] = [];
+    const host = mount(() => <AuthForm kind="gateway" protocol="anthropic" methodName="Custom model gateway" onSubmit={(secret) => received.push(secret)} />);
+    expect(host.querySelector("select")).toBeNull();
+    const radios = [...host.querySelectorAll<HTMLElement>("[role=radio]")];
+    expect(radios.map((radio) => radio.querySelector(".sb-option-name")?.textContent)).toEqual(["OpenRouter", "Custom gateway"]);
+    expect(radios[0].getAttribute("aria-checked")).toBe("true");
+    expect(host.querySelector("input[type=url]")).toBeNull();
+    expect(host.querySelector("[role=note]")?.textContent).toContain("Anthropic models");
+    const key = host.querySelector<HTMLInputElement>("input[type=password]")!;
+    type(key, SECRET);
+    host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(received).toEqual([{ kind: "gateway", baseUrl: "https://openrouter.ai/api", headers: { Authorization: `Bearer ${SECRET}` } }]);
+    expect(key.value).toBe("");
+    expect(host.innerHTML).not.toContain(SECRET);
+  });
+  it("points a Codex gateway at OpenRouter's v1 API and switches to a custom gateway with the arrow keys", () => {
+    const received: unknown[] = [];
+    const host = mount(() => <AuthForm kind="gateway" protocol="openai" methodName="Custom model gateway" onSubmit={(secret) => received.push(secret)} />);
+    expect(host.textContent).toContain("https://openrouter.ai/api/v1");
+    const key = host.querySelector<HTMLInputElement>("input[type=password]")!;
+    type(key, SECRET);
+    host.querySelector<HTMLElement>("[role=radio]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    const radios = [...host.querySelectorAll<HTMLElement>("[role=radio]")];
+    expect(radios[1].getAttribute("aria-checked")).toBe("true");
+    expect(radios[1].tabIndex).toBe(0);
+    expect(host.querySelector("input[type=url]")).not.toBeNull();
+    expect(host.innerHTML).not.toContain(SECRET);
+  });
+  it("offers no preset for a Bedrock gateway", () => {
+    const host = mount(() => <AuthForm kind="gateway" protocol="bedrock" methodName="Custom model gateway" onSubmit={() => undefined} />);
+    expect(host.querySelector("[role=radiogroup]")).toBeNull();
+    expect(host.querySelector("input[type=url]")).not.toBeNull();
+  });
+  it("tells Claude's two same-named gateways apart by protocol", () => {
+    const host = mount(() => (
+      <SignIn
+        title="Sign in to Claude"
+        methods={[{ id: "gateway", name: "Custom model gateway", input: "gateway", protocol: "anthropic" }, { id: "gateway-bedrock", name: "Custom model gateway", input: "gateway", protocol: "bedrock" }]}
+        onPick={() => undefined}
+        onSubmit={() => undefined}
+      />
+    ));
+    expect([...host.querySelectorAll(".sb-method-name")].map((node) => node.textContent)).toEqual(["Custom model gateway (Anthropic)", "Custom model gateway (Bedrock)"]);
+  });
   it("shows the hint text and opens a form only for methods that take input", () => {
     const picked: string[] = [];
     const host = mount(() => (

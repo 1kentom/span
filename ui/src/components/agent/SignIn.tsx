@@ -6,6 +6,7 @@ import { AuthForm } from "./AuthForm";
 import { ModelIcon, ambiguous, shownName } from "./ModelPopover";
 import { COST_INFO, modelCost } from "../../lib/model-cost";
 import { modelTraits } from "../../lib/model-traits";
+import { methodLabel } from "../../lib/sign-in-copy";
 import type { AuthMethod, AuthSecret, Brand } from "./types";
 
 type SignInProps = Brand & {
@@ -200,13 +201,14 @@ export function SignIn(props: SignInProps) {
                   aria-expanded={method.input ? asking() === method.id : undefined}
                   onClick={() => (method.input ? setAsking(asking() === method.id ? undefined : method.id) : props.onPick(method.id))}
                 >
-                  <span class="sb-method-name">{method.name}</span>
+                  <span class="sb-method-name">{methodLabel(method, props.methods)}</span>
                   <Show when={method.description}><span class="sb-method-desc">{method.description}</span></Show>
                 </button>
                 <Show when={method.input && asking() === method.id}>
                   <AuthForm
                     kind={method.input!}
-                    methodName={method.name}
+                    methodName={methodLabel(method, props.methods)}
+                    protocol={method.protocol}
                     busy={props.busy}
                     onSubmit={(secret) => props.onSubmit?.(method.id, secret)}
                     onCancel={() => setAsking(undefined)}
