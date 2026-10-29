@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TerminalProfileKind {
+    Shell,
+    Node,
+    Python,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalProfile {
@@ -11,6 +19,7 @@ pub struct TerminalProfile {
     pub name: String,
     pub path: String,
     pub is_default: bool,
+    pub kind: TerminalProfileKind,
 }
 
 pub fn terminal_profiles() -> Vec<TerminalProfile> {
@@ -68,7 +77,46 @@ pub fn terminal_profiles() -> Vec<TerminalProfile> {
             }
         }
     }
-    profiles_from_candidates(&default, candidates)
+    let mut profiles = profiles_from_candidates(&default, candidates);
+    let mut directories = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        directories.extend(std::env::split_paths(&path).filter(|path| path.is_absolute()));
+    }
+    #[cfg(unix)]
+    directories
+        .extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map(PathBuf::from));
+    let mut seen = std::collections::HashSet::new();
+    for directory in directories {
+        #[cfg(unix)]
+        let programs = [
+            ("node", "Node REPL", TerminalProfileKind::Node),
+            ("python3", "Python REPL", TerminalProfileKind::Python),
+            ("python", "Python REPL", TerminalProfileKind::Python),
+        ];
+        #[cfg(windows)]
+        let programs = [
+            ("node.exe", "Node REPL", TerminalProfileKind::Node),
+            ("python.exe", "Python REPL", TerminalProfileKind::Python),
+            ("python3.exe", "Python REPL", TerminalProfileKind::Python),
+        ];
+        for (program, name, kind) in programs {
+            let candidate = directory.join(program);
+            if !is_executable(&candidate) || !seen.insert(name) {
+                continue;
+            }
+            let Some(path) = candidate.to_str() else {
+                continue;
+            };
+            profiles.push(TerminalProfile {
+                id: format!("repl:{path}"),
+                name: name.to_owned(),
+                path: path.to_owned(),
+                is_default: false,
+                kind,
+            });
+        }
+    }
+    profiles
 }
 
 fn profiles_from_candidates(default: &Path, candidates: Vec<PathBuf>) -> Vec<TerminalProfile> {
@@ -100,16 +148,16 @@ fn profiles_from_candidates(default: &Path, candidates: Vec<PathBuf>) -> Vec<Ter
             name: name.to_owned(),
             path: path.to_owned(),
             is_default: candidate == default,
+            kind: TerminalProfileKind::Shell,
         });
     }
     profiles
 }
 
-pub(crate) fn profile_program(id: &str) -> Result<PathBuf, TerminalError> {
+pub(crate) fn selected_profile(id: &str) -> Result<TerminalProfile, TerminalError> {
     terminal_profiles()
         .into_iter()
         .find(|profile| profile.id == id)
-        .map(|profile| PathBuf::from(profile.path))
         .ok_or_else(|| {
             TerminalError::Operation(
                 "The selected shell is no longer available. Choose an installed terminal profile."
@@ -193,18 +241,15 @@ mod tests {
 
     #[test]
     fn profile_ids_must_match_a_discovered_executable() {
-        assert!(profile_program("/bin/sh -c arbitrary").is_err());
-        assert!(profile_program("shell:./bash").is_err());
-        assert!(profile_program("shell:/missing-shell").is_err());
+        assert!(selected_profile("/bin/sh -c arbitrary").is_err());
+        assert!(selected_profile("shell:./bash").is_err());
+        assert!(selected_profile("shell:/missing-shell").is_err());
         let profiles = terminal_profiles();
         assert!(profiles
             .iter()
             .all(|profile| is_executable(Path::new(&profile.path))));
         if let Some(profile) = profiles.first() {
-            assert_eq!(
-                profile_program(&profile.id).unwrap(),
-                PathBuf::from(&profile.path)
-            );
+            assert_eq!(selected_profile(&profile.id).unwrap().path, profile.path);
         }
     }
 }

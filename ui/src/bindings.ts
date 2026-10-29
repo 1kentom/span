@@ -2948,7 +2948,10 @@ export type TerminalProfile = {
 	name: string,
 	path: string,
 	isDefault: boolean,
+	kind: TerminalProfileKind,
 };
+
+export type TerminalProfileKind = "shell" | "node" | "python";
 
 /**  Offsets are UTF-16 code units in the pre-transaction document, as in CodeMirror. */
 export type TextEdit = {

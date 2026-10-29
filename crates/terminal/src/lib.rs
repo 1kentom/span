@@ -16,8 +16,10 @@ use std::{
 use tokio::sync::mpsc;
 
 mod profiles;
-use profiles::{profile_program, shell_program};
-pub use profiles::{terminal_profiles, TerminalProfile};
+use profiles::{selected_profile, shell_program};
+#[cfg(unix)]
+mod shell_integration;
+pub use profiles::{terminal_profiles, TerminalProfile, TerminalProfileKind};
 
 const EVENT_CAPACITY: usize = 64;
 const CHUNK_BYTES: usize = 8192;
@@ -72,7 +74,13 @@ pub enum TerminalEvent {
     Error { id: String, message: String },
 }
 
+enum TerminalLaunch {
+    Interactive(TerminalProfileKind),
+    Command(TerminalCommandLanguage, String),
+}
+
 struct Resources {
+    _integration: Option<tempfile::TempDir>,
     master: Box<dyn MasterPty + Send>,
     #[cfg(windows)]
     _job: WindowsJob,
@@ -301,12 +309,21 @@ impl TerminalManager {
         rows: u16,
         profile_id: Option<&str>,
     ) -> Result<(TerminalInfo, mpsc::Receiver<TerminalEvent>), TerminalError> {
-        let shell = match profile_id {
-            Some(id) => profile_program(id)?,
-            None => shell_program(),
+        let (shell, kind) = match profile_id {
+            Some(id) => {
+                let profile = selected_profile(id)?;
+                (PathBuf::from(profile.path), profile.kind)
+            }
+            None => (shell_program(), TerminalProfileKind::Shell),
         };
-        self.create_process(cwd.as_ref(), cols, rows, shell, None)
-            .await
+        self.create_process(
+            cwd.as_ref(),
+            cols,
+            rows,
+            shell,
+            TerminalLaunch::Interactive(kind),
+        )
+        .await
     }
 
     /// Execute one explicitly requested snippet in a fresh PTY. Non-interactive
@@ -345,8 +362,14 @@ impl TerminalManager {
                     .ok_or_else(|| operation(format!("The {name} interpreter is not installed. Choose Send to review this snippet in your terminal.")))?
             }
         };
-        self.create_process(&self.workspace, cols, rows, shell, Some((language, code)))
-            .await
+        self.create_process(
+            &self.workspace,
+            cols,
+            rows,
+            shell,
+            TerminalLaunch::Command(language, code),
+        )
+        .await
     }
 
     async fn create_process(
@@ -355,7 +378,7 @@ impl TerminalManager {
         cols: u16,
         rows: u16,
         shell: PathBuf,
-        command: Option<(TerminalCommandLanguage, String)>,
+        command: TerminalLaunch,
     ) -> Result<(TerminalInfo, mpsc::Receiver<TerminalEvent>), TerminalError> {
         let cwd = self.resolve_cwd(cwd)?;
         size(cols, rows)?;
@@ -427,13 +450,15 @@ impl TerminalManager {
         let dimensions = size(cols, rows)?;
         let session = self.session(id)?;
         tokio::task::spawn_blocking(move || {
-            checked_lock(&session.resources, "terminal resources")?
-                .as_ref()
-                .ok_or(TerminalError::Unavailable)?
-                .master
-                .resize(dimensions)
-                .map_err(operation)?;
+            let resources = checked_lock(&session.resources, "terminal resources")?;
+            let resources = resources.as_ref().ok_or(TerminalError::Unavailable)?;
             let mut info = checked_lock(&session.info, "terminal session info")?;
+            // Repeated layout/appearance observers must not send duplicate
+            // SIGWINCH notifications and redraw an unchanged shell prompt.
+            if info.cols == cols && info.rows == rows {
+                return Ok(());
+            }
+            resources.master.resize(dimensions).map_err(operation)?;
             info.cols = cols;
             info.rows = rows;
             Ok(())
@@ -605,7 +630,14 @@ fn spawn(
     rows: u16,
     shell: PathBuf,
 ) -> Result<(Arc<Session>, mpsc::Receiver<TerminalEvent>), TerminalError> {
-    spawn_process(id, cwd, cols, rows, shell, None)
+    spawn_process(
+        id,
+        cwd,
+        cols,
+        rows,
+        shell,
+        TerminalLaunch::Interactive(TerminalProfileKind::Shell),
+    )
 }
 
 fn spawn_process(
@@ -614,7 +646,7 @@ fn spawn_process(
     cols: u16,
     rows: u16,
     shell: PathBuf,
-    source: Option<(TerminalCommandLanguage, String)>,
+    source: TerminalLaunch,
 ) -> Result<(Arc<Session>, mpsc::Receiver<TerminalEvent>), TerminalError> {
     let pair = native_pty_system()
         .openpty(size(cols, rows)?)
@@ -624,7 +656,11 @@ fn spawn_process(
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command.env("PATH", child_path());
-    if let Some((language, code)) = source {
+    #[cfg(unix)]
+    let mut integration = None;
+    #[cfg(windows)]
+    let integration = None;
+    if let TerminalLaunch::Command(language, code) = source {
         #[cfg(windows)]
         let is_cmd = shell
             .file_stem()
@@ -649,9 +685,21 @@ fn spawn_process(
             command.arg("-c");
             command.arg(code);
         }
-    } else {
-        #[cfg(unix)]
-        command.arg("-i");
+    } else if let TerminalLaunch::Interactive(kind) = source {
+        match kind {
+            TerminalProfileKind::Node => {
+                command.arg("--interactive");
+            }
+            TerminalProfileKind::Python => {
+                command.arg("-i");
+            }
+            TerminalProfileKind::Shell => {
+                #[cfg(unix)]
+                {
+                    integration = shell_integration::configure(&mut command, &shell)?;
+                }
+            }
+        }
     }
     // The executable, cwd, and optional source argv are passed separately.
     let mut reader = pair.master.try_clone_reader().map_err(operation)?;
@@ -685,6 +733,7 @@ fn spawn_process(
     let session = Arc::new(Session {
         info: Mutex::new(info),
         resources: Mutex::new(Some(Resources {
+            _integration: integration,
             master: pair.master,
             #[cfg(windows)]
             _job: job,
@@ -1034,6 +1083,66 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(info.shell, profile.path);
+        manager.close(&info.id).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn compact_real_zsh_prompt_has_one_redraw_per_enter_and_changed_size() {
+        let Some(profile) = terminal_profiles()
+            .into_iter()
+            .find(|profile| profile.name == "zsh")
+        else {
+            return;
+        };
+        let root = TempDir::new().unwrap();
+        let workspace = root.path().join("span-prompt-fixture");
+        std::fs::create_dir(&workspace).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q", "--initial-branch", "span-main"])
+            .arg(&workspace)
+            .status()
+            .unwrap()
+            .success());
+        let manager = TerminalManager::new(&workspace).unwrap();
+        let (info, mut rx) = manager
+            .create_with_profile(".", 80, 24, Some(&profile.id))
+            .await
+            .unwrap();
+        let initial = output_until(&mut rx, "git:(span-main)").await;
+        assert!(initial.contains("span-prompt-fixture"), "{initial}");
+        manager.write(&info.id, b"\r".to_vec()).await.unwrap();
+        let next = output_until(&mut rx, "git:(span-main)").await;
+        assert_eq!(
+            next.matches('→').count(),
+            1,
+            "Enter printed repeated managed prompts: {next}"
+        );
+        assert!(
+            !next.contains(&workspace.to_string_lossy().to_string()),
+            "Prompt printed full workspace path: {next}"
+        );
+        for _ in 0..20 {
+            manager.resize(&info.id, 80, 24).await.unwrap();
+        }
+        let mut redundant_output = Vec::new();
+        while let Ok(Some(event)) = timeout(Duration::from_millis(150), rx.recv()).await {
+            if let TerminalEvent::Output { data, .. } = event {
+                redundant_output.extend(data);
+            }
+        }
+        let redundant_output = String::from_utf8_lossy(&redundant_output);
+        assert!(
+            !redundant_output.contains('→'),
+            "Unchanged size redrew the prompt: {redundant_output}"
+        );
+        manager.resize(&info.id, 90, 30).await.unwrap();
+        let resized = output_until(&mut rx, "git:(span-main)").await;
+        assert_eq!(
+            resized.matches('→').count(),
+            1,
+            "Changed size printed repeated prompts: {resized}"
+        );
         manager.close(&info.id).await.unwrap();
     }
 
