@@ -37,6 +37,10 @@ pub(crate) fn configure(
 }
 
 fn zsh_environment(command: &mut CommandBuilder, directory: &Path, original: Option<OsString>) {
+    // A cached theme preview can paint a multiline header before the user's rc
+    // finishes and before Span can install its compact prompt. Opt out of that
+    // preview for this child process, while still loading the full user config.
+    command.env("POWERLEVEL9K_INSTANT_PROMPT", "off");
     command.env("SPAN_INTEGRATION_DIR", directory);
     command.env(
         "_SPAN_ORIGINAL_ZDOTDIR_SET",
@@ -143,6 +147,112 @@ mod tests {
         String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
     }
 
+    fn zsh_first_screen(home: &Path, workspace: &Path) -> String {
+        let shell = Path::new("/bin/zsh");
+        let mut command = CommandBuilder::new(shell);
+        let integration = configure(&mut command, shell).unwrap().unwrap();
+        zsh_environment(
+            &mut command,
+            integration.path(),
+            Some(home.as_os_str().to_owned()),
+        );
+        command.cwd(workspace);
+        command.env("HOME", home);
+        command.env("TERM", "xterm-256color");
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let (output, receiver) = std::sync::mpsc::channel();
+        let reading = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut bytes = [0; 8192];
+            while let Ok(count) = reader.read(&mut bytes) {
+                if count == 0 || output.send(bytes[..count].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut parser = vt100::Parser::new(
+            std::num::NonZeroU16::new(24).unwrap(),
+            std::num::NonZeroU16::new(100).unwrap(),
+            0,
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut ready = false;
+        while let Ok(bytes) =
+            receiver.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            parser.process(&bytes);
+            if parser.screen().contents().contains("git:(span-visible)") {
+                ready = true;
+                break;
+            }
+        }
+        while let Ok(bytes) = receiver.recv_timeout(std::time::Duration::from_millis(100)) {
+            parser.process(&bytes);
+        }
+        let screen = parser.screen().contents();
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(pair.master);
+        reading.join().unwrap();
+        assert!(ready, "zsh did not produce its compact prompt: {screen:?}");
+        screen
+    }
+
+    #[test]
+    fn zsh_cached_startup_preview_does_not_leave_a_visible_parent_path_or_clock() {
+        if !Path::new("/bin/zsh").is_file() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let workspace = home
+            .path()
+            .join("parent-path-should-not-appear")
+            .join("span-folder");
+        std::fs::create_dir_all(&workspace).unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q", "--initial-branch", "span-visible"])
+            .arg(&workspace)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(
+            home.path().join("cached-prompt.zsh"),
+            r#"# Mirrors Powerlevel10k's documented cached-preview opt-out.
+if [[ ${POWERLEVEL9K_INSTANT_PROMPT-} != off ]]; then
+  printf '%s -------- 09:42:01\n' "$PWD"
+fi
+"#,
+        )
+        .unwrap();
+        let rc = "builtin source \"$HOME/cached-prompt.zsh\"\nexport SPAN_SETTING=preserved\nalias span_alias='print alias-preserved'\nspan_completion() { compadd kept; }\nPOWERLEVEL9K_INSTANT_PROMPT=quiet\n";
+        std::fs::write(home.path().join(".zshrc"), rc).unwrap();
+        let screen = zsh_first_screen(home.path(), &workspace);
+        let lines = screen
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines,
+            ["→ span-folder git:(span-visible)"],
+            "A cached startup prefix survived on the rendered screen: {screen:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.path().join(".zshrc")).unwrap(),
+            rc
+        );
+    }
+
     #[test]
     fn zsh_preserves_custom_startup_completion_hooks_options_and_child_zdotdir() {
         if !Path::new("/bin/zsh").is_file() {
@@ -161,6 +271,7 @@ mod tests {
         std::fs::write(
             redirected.join(".zshrc"),
             r#"export SPAN_RC_MARKER=rc-loaded
+POWERLEVEL9K_INSTANT_PROMPT=quiet
 export SPAN_HISTORY_MARKER=$HISTFILE
 autoload -Uz compinit
 compinit -D
@@ -180,16 +291,17 @@ RPROMPT='clock-full-path'
             .arg("-i")
             .current_dir(home.path())
             .env("HOME", home.path())
+            .env("POWERLEVEL9K_INSTANT_PROMPT", "off")
             .env("ZDOTDIR", integration.path())
             .env("SPAN_INTEGRATION_DIR", integration.path())
             .env("_SPAN_ORIGINAL_ZDOTDIR_SET", "1")
             .env("_SPAN_ORIGINAL_ZDOTDIR", &original)
             .env("_SPAN_ORIGINAL_ZDOTDIR_EXPORTED", "1");
-        let output = run_shell(shell, "span_alias\nspan_fixture\nprintf 'SETTINGS:%s:%s:%s:%s:%s\\n' \"$SPAN_ENV_MARKER\" \"$SPAN_RC_MARKER\" \"$SPAN_USER_HOOK\" \"${_comps[span_fixture]}\" \"$options[promptbang]\"\n/bin/zsh -c 'printf \"CHILD:%s\\n\" \"$ZDOTDIR\"'\nexit\n");
+        let output = run_shell(shell, "span_alias\nspan_fixture\nprintf 'SETTINGS:%s:%s:%s:%s:%s:%s\\n' \"$SPAN_ENV_MARKER\" \"$SPAN_RC_MARKER\" \"$SPAN_USER_HOOK\" \"${_comps[span_fixture]}\" \"$options[promptbang]\" \"$POWERLEVEL9K_INSTANT_PROMPT\"\n/bin/zsh -c 'printf \"CHILD:%s\\n\" \"$ZDOTDIR\"'\nexit\n");
         for marker in [
             "ALIAS_PRESERVED",
             "FUNCTION_PRESERVED",
-            "SETTINGS:env-loaded:rc-loaded:hook-ran:_files:on",
+            "SETTINGS:env-loaded:rc-loaded:hook-ran:_files:on:quiet",
         ] {
             assert!(output.contains(marker), "Missing {marker}: {output}");
         }
