@@ -61,7 +61,7 @@ pub(crate) fn watched_batch(
     if batch.len() > MAX_INPUT {
         result.incomplete = true;
     }
-    for event in batch.iter().take(MAX_INPUT) {
+    for (event_index, event) in batch.iter().take(MAX_INPUT).enumerate() {
         let Ok(event) = event else {
             result.incomplete = true;
             continue;
@@ -98,9 +98,10 @@ pub(crate) fn watched_batch(
                     break;
                 }
                 paths_examined += 2;
-                for (path, typ) in event
+                for ((path_index, path), typ) in event
                     .paths
                     .iter()
+                    .enumerate()
                     .zip([FileChangeType::DELETED, FileChangeType::CREATED])
                 {
                     push_change(
@@ -111,7 +112,7 @@ pub(crate) fn watched_batch(
                         root,
                         path,
                         typ,
-                        rename_kinds.get(path).copied(),
+                        rename_kinds.get(&(event_index, path_index)).copied(),
                     );
                 }
                 continue;
@@ -124,7 +125,7 @@ pub(crate) fn watched_batch(
         if event.paths.is_empty() {
             result.incomplete = true;
         }
-        for path in &event.paths {
+        for (path_index, path) in event.paths.iter().enumerate() {
             if paths_examined >= MAX_INPUT {
                 result.incomplete = true;
                 break;
@@ -138,7 +139,7 @@ pub(crate) fn watched_batch(
                 root,
                 path,
                 typ,
-                hint.or_else(|| rename_kinds.get(path).copied()),
+                hint.or_else(|| rename_kinds.get(&(event_index, path_index)).copied()),
             );
         }
     }
@@ -146,71 +147,65 @@ pub(crate) fn watched_batch(
 }
 
 /// A paired rename can identify a missing source's kind from its scoped target.
-/// Split events are paired only by tracker, or by one unique untracked From/To.
+/// Split events share kind information only with an equal, nonempty tracker.
+/// Hints are keyed by event and endpoint, so unrelated paths cannot reuse them.
 fn rename_kinds(
     root: &Path,
     supplied_root: &Path,
     batch: &[notify::Result<Event>],
-) -> HashMap<PathBuf, bool> {
+) -> HashMap<(usize, usize), bool> {
+    type Endpoints<'a> = (Vec<(usize, &'a Path)>, Vec<(usize, &'a Path)>);
     let mut hints = HashMap::new();
-    let mut split = HashMap::<Option<usize>, (Vec<&Path>, Vec<&Path>)>::new();
-    for event in batch
-        .iter()
-        .take(MAX_INPUT)
-        .filter_map(|event| event.as_ref().ok())
-    {
+    let mut split = HashMap::<usize, Endpoints<'_>>::new();
+    for (index, event) in batch.iter().take(MAX_INPUT).enumerate() {
+        let Ok(event) = event else {
+            continue;
+        };
         match event.kind {
             EventKind::Modify(ModifyKind::Name(RenameMode::Both)) if event.paths.len() == 2 => {
-                infer_rename_kind(
-                    root,
-                    supplied_root,
-                    &event.paths[0],
-                    &event.paths[1],
-                    &mut hints,
-                );
+                if let Some(kind) =
+                    infer_rename_kind(root, supplied_root, &event.paths[0], &event.paths[1])
+                {
+                    hints.insert((index, 0), kind);
+                    hints.insert((index, 1), kind);
+                }
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::From)) if event.paths.len() == 1 => {
-                split
-                    .entry(event.tracker())
-                    .or_default()
-                    .0
-                    .push(&event.paths[0]);
+                if let Some(tracker) = event.tracker() {
+                    split
+                        .entry(tracker)
+                        .or_default()
+                        .0
+                        .push((index, &event.paths[0]));
+                }
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::To)) if event.paths.len() == 1 => {
-                split
-                    .entry(event.tracker())
-                    .or_default()
-                    .1
-                    .push(&event.paths[0]);
+                if let Some(tracker) = event.tracker() {
+                    split
+                        .entry(tracker)
+                        .or_default()
+                        .1
+                        .push((index, &event.paths[0]));
+                }
             }
             _ => {}
         }
     }
     for (from, to) in split.into_values() {
         if from.len() == 1 && to.len() == 1 {
-            infer_rename_kind(root, supplied_root, from[0], to[0], &mut hints);
+            if let Some(kind) = infer_rename_kind(root, supplied_root, from[0].1, to[0].1) {
+                hints.insert((from[0].0, 0), kind);
+                hints.insert((to[0].0, 0), kind);
+            }
         }
     }
     hints
 }
 
-fn infer_rename_kind(
-    root: &Path,
-    supplied_root: &Path,
-    from: &Path,
-    to: &Path,
-    hints: &mut HashMap<PathBuf, bool>,
-) {
-    let (Ok(Some(from_scoped)), Ok(Some(to_scoped))) = (
-        scoped_path(root, supplied_root, from),
-        scoped_path(root, supplied_root, to),
-    ) else {
-        return;
-    };
-    if let Some(is_dir) = from_scoped.is_dir.or(to_scoped.is_dir) {
-        hints.insert(from.to_path_buf(), is_dir);
-        hints.insert(to.to_path_buf(), is_dir);
-    }
+fn infer_rename_kind(root: &Path, supplied_root: &Path, from: &Path, to: &Path) -> Option<bool> {
+    let from = scoped_path(root, supplied_root, from).ok()??;
+    let to = scoped_path(root, supplied_root, to).ok()??;
+    from.is_dir.or(to.is_dir)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -646,8 +641,16 @@ mod tests {
                 to = to.set_tracker(tracker);
             }
             let split = watched_batch(&root, &[Ok(from), Ok(to)], false);
-            assert!(!split.incomplete);
-            assert_eq!(split.changes, expected);
+            if tracker.is_some() {
+                assert!(!split.incomplete);
+                assert_eq!(split.changes, expected);
+            } else {
+                assert!(split.incomplete);
+                assert_eq!(
+                    split.changes,
+                    vec![actual(&root, "newfile", FileChangeType::CREATED)]
+                );
+            }
         }
         let unknown = watched_batch(
             &root,
@@ -672,6 +675,45 @@ mod tests {
             explicit_file.changes,
             vec![actual(&root, "dist", FileChangeType::DELETED)]
         );
+    }
+
+    #[test]
+    fn untracked_unrelated_from_to_events_never_share_file_or_directory_kind() {
+        let temp = root();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join(".gitignore"), "dist/\n").unwrap();
+        for source_is_directory in [true, false] {
+            let destination = if source_is_directory {
+                fs::create_dir(root.join("dist")).unwrap();
+                fs::remove_dir(root.join("dist")).unwrap();
+                fs::write(root.join("created-file"), "unrelated file").unwrap();
+                "created-file"
+            } else {
+                fs::write(root.join("dist"), "removed regular file").unwrap();
+                fs::remove_file(root.join("dist")).unwrap();
+                fs::create_dir(root.join("created-directory")).unwrap();
+                "created-directory"
+            };
+            let result = watched_batch(
+                &root,
+                &[
+                    event(
+                        EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                        &[Path::new("dist")],
+                    ),
+                    event(
+                        EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                        &[Path::new(destination)],
+                    ),
+                ],
+                false,
+            );
+            assert!(result.incomplete);
+            assert_eq!(
+                result.changes,
+                vec![actual(&root, destination, FileChangeType::CREATED)]
+            );
+        }
     }
 
     #[test]
