@@ -6,6 +6,57 @@
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
+/// Fixture identity follows filesystem URI decoding. Windows servers may return
+/// `c%3A` or `c:` for the `C:` drive sent by the client. Do not fold filename
+/// case: that would hide distinct documents on case-sensitive filesystems.
+pub fn document_uri_key(uri: &lsp_types::Uri) -> String {
+    let Ok(url) = url::Url::parse(uri.as_str()) else {
+        return uri.to_string();
+    };
+    let Ok(path) = url.to_file_path() else {
+        return uri.to_string();
+    };
+    let text = path.to_string_lossy();
+    let has_drive = |s: &str| {
+        let bytes = s.as_bytes();
+        bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\')
+    };
+    let text = text
+        .strip_prefix('/')
+        .filter(|rest| has_drive(rest))
+        .unwrap_or(&text);
+    if has_drive(text) {
+        format!(
+            "{}{}",
+            (text.as_bytes()[0] as char).to_ascii_uppercase(),
+            text[1..].replace('\\', "/")
+        )
+    } else {
+        text.to_owned()
+    }
+}
+
+#[test]
+fn diagnostic_identity_decodes_drive_spelling_without_folding_filenames() {
+    let key = |s: &str| document_uri_key(&s.parse().unwrap());
+    assert_eq!(
+        key("file:///C:/project/space%20name/%E6%97%A5.ts"),
+        key("file:///c%3A/project/space%20name/%E6%97%A5.ts")
+    );
+    assert_eq!(
+        key("file:///C:/project/main.rs"),
+        key("file:///c:/project/main.rs")
+    );
+    assert_ne!(key("file:///tmp/Upper.ts"), key("file:///tmp/upper.ts"));
+    assert_ne!(key("file:///C:/one/a.ts"), key("file:///C:/two/a.ts"));
+    assert_ne!(key("file:///C:/Upper.ts"), key("file:///C:/upper.ts"));
+    assert_ne!(key("file:///C:/a.ts"), key("file:///D:/a.ts"));
+    assert_ne!(key("untitled:first"), key("untitled:second"));
+}
+
 /// Python interpreter as `(program, leading args)`. Prefers `python3`, then `python`,
 /// then the Windows launcher `py -3`; the first one that actually runs wins (on
 /// Windows `python3` is often a Store stub that exists but fails).

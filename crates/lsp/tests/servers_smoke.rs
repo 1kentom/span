@@ -17,7 +17,7 @@
 
 mod common;
 
-use common::{is_alive, kill_force, process_table};
+use common::{document_uri_key, is_alive, kill_force, process_table};
 use lsp_types::*;
 use span_lsp::path_to_uri;
 use span_lsp::servers::catalog;
@@ -397,7 +397,7 @@ impl H {
                     "{:?}: no matching publishDiagnostics for {rel} ({what}) within {:?}; latest = {:?}",
                     self.id,
                     diag_limit(self.id),
-                    ev.latest.get(&self.uri(rel).to_string())
+                    ev.latest.get(&document_uri_key(&self.uri(rel)))
                 );
             }
         }
@@ -411,13 +411,14 @@ impl H {
         limit: Duration,
         pred: impl Fn(&[Diagnostic]) -> bool,
     ) -> Option<Vec<Diagnostic>> {
-        let key = self.uri(rel).to_string();
+        let key = document_uri_key(&self.uri(rel));
         let deadline = Instant::now() + limit;
         let mut ev = self.events.lock().await;
         loop {
             while let Ok(e) = ev.rx.try_recv() {
                 if let ManagerEvent::Diagnostics { params, .. } = e {
-                    ev.latest.insert(params.uri.to_string(), params.diagnostics);
+                    ev.latest
+                        .insert(document_uri_key(&params.uri), params.diagnostics);
                 }
             }
             if let Some(d) = ev.latest.get(&key) {
@@ -450,7 +451,8 @@ impl H {
             }
             match tokio::time::timeout(left, ev.rx.recv()).await {
                 Ok(Ok(ManagerEvent::Diagnostics { params, .. })) => {
-                    ev.latest.insert(params.uri.to_string(), params.diagnostics);
+                    ev.latest
+                        .insert(document_uri_key(&params.uri), params.diagnostics);
                 }
                 Ok(Ok(_)) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
                 Ok(Err(broadcast::error::RecvError::Closed)) => panic!("event channel closed"),
@@ -461,7 +463,7 @@ impl H {
 
     /// Asserts that NO diagnostics arrive for `rel` within `window`.
     async fn no_diagnostics(&self, rel: &str, window: Duration) {
-        let key = self.uri(rel).to_string();
+        let key = document_uri_key(&self.uri(rel));
         let deadline = Instant::now() + window;
         let mut ev = self.events.lock().await;
         loop {
@@ -472,7 +474,7 @@ impl H {
             if let Ok(Ok(ManagerEvent::Diagnostics { params, .. })) =
                 tokio::time::timeout(left, ev.rx.recv()).await
             {
-                if params.uri.to_string() == key {
+                if document_uri_key(&params.uri) == key {
                     assert!(
                         params.diagnostics.is_empty(),
                         "unexpected diagnostics: {:?}",
