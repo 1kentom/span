@@ -9,6 +9,7 @@ import { modelBrandFor } from "../../lib/model-brands";
 import { EffortSlider, defaultLevel, focusModelRow, modelNameOf } from "./EffortSlider";
 import { groupOptions } from "../../lib/agent-options";
 import { COST_INFO, COST_ORDER, hasCostTiers, modelCost, readFreeOnly, writeFreeOnly, type ModelCost } from "../../lib/model-cost";
+import "../../styles/agent-limit.css";
 
 type ModelPopoverProps = {
   agentName: string;
@@ -18,6 +19,10 @@ type ModelPopoverProps = {
   brand?: BrandIdentity;
   busy?: boolean;
   onSelect: (configId: string, value: string) => void;
+  /** Model values that hit a usage limit: their rows carry a "Limit reached" chip. */
+  limited?: ReadonlySet<string>;
+  /** Overrides the remembered Free models only switch for this opening (off after a free-tier limit). */
+  freeOnly?: boolean;
   /** Opens the agent popover from the provider row. Without it the row is not drawn. */
   onOpenAgents?: () => void;
   onClose: () => void;
@@ -99,7 +104,7 @@ export function ModelPopover(props: ModelPopoverProps) {
   const brand = () => props.brand ?? { name: props.agentName };
   const fastOn = () => fastSwitchOn(props.options);
   const groups = createMemo(() => groupOptions(props.options));
-  const [freeOnly, setFreeOnly] = createSignal(readFreeOnly());
+  const [freeOnly, setFreeOnly] = createSignal(props.freeOnly ?? readFreeOnly());
   /** Model rows grouped by cost tier when the list mixes free and other models. Free-only keeps the current model visible. */
   const tiersOf = (option: ConfigOptionView): { cost?: ModelCost; values: string[] }[] => {
     if (option.category !== "model" || !hasCostTiers(option.choices)) return [{ values: option.choices.map((choice) => choice.value) }];
@@ -172,6 +177,7 @@ export function ModelPopover(props: ModelPopoverProps) {
                                       <span class="sb-option-name" title={choice().name}>{shownName(choice())}</span>
                                       <Show when={ambiguous(option().choices, choice())}><span class="sb-provider-tag">{choice().value.split("/")[0]}</span></Show>
                                       <Show when={chipTrait(traits(), choice().name)}>{(trait) => <TraitChip trait={trait()} />}</Show>
+                                      <Show when={option().category === "model" && props.limited?.has(choiceValue)}><span class="sb-limit-chip">Limit reached</span></Show>
                                     </span>
                                     <Show when={choice().description}><span class="sb-sub wrap">{choice().description}</span></Show>
                                   </span>

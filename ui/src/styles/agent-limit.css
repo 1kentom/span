@@ -1,0 +1,19 @@
+/* Limit card (usage limit, rate limit, overloaded provider). Kept apart from agent-sidebar.css, which other work edits. */
+.sb-limit { gap: 10px; }
+.sb-limit .sb-limit-free { color: var(--sb-fg); }
+.sb-limit-actions { padding: 0 12px; }
+.sb-limit-actions > .sb-btn .icon { color: currentColor; opacity: 0.8; }
+.sb-limit-agent .sb-limit-note {
+  padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 16px; font-weight: 400;
+  background: color-mix(in srgb, var(--sb-warning) 16%, transparent); color: var(--sb-dim);
+}
+.sb-limit-host { color: var(--sb-dim); font-weight: 400; font-size: 11px; }
+.sb-limit-quiet { display: flex; align-items: center; gap: 2px; padding: 0 6px; }
+.sb-limit-raw {
+  margin: 0 12px; padding: 7px 9px; border-radius: 6px; background: var(--sb-field);
+  color: var(--sb-dim); font-size: 11px; line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.sb-limit-chip {
+  flex: none; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 16px; white-space: nowrap;
+  background: color-mix(in srgb, var(--sb-warning) 16%, transparent); color: color-mix(in srgb, var(--sb-warning) 70%, var(--sb-fg));
+}
