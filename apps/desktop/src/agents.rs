@@ -165,6 +165,11 @@ pub fn health(app: &tauri::AppHandle, state: &DesktopState) -> HealthMonitor {
                 HealthPolicy::default(),
                 enabled,
             );
+            // Health session ids are remembered across runs, so listings
+            // keep hiding them and the cleanup can delete them later.
+            if let Ok(directory) = app.path().app_data_dir() {
+                monitor.set_ledger(directory.join("agent-health-sessions.json"));
+            }
             let handle = app.clone();
             monitor.set_sink(Some(Arc::new(move |agents| {
                 crate::events::emit(&handle, &AgentHealthChanged { agents });
@@ -174,8 +179,8 @@ pub fn health(app: &tauri::AppHandle, state: &DesktopState) -> HealthMonitor {
         .clone()
 }
 
-/// App exit: stop checking and close hidden check sessions where the agent
-/// supports it, bounded to a few seconds.
+/// App exit: stop checking and delete (else close) the hidden check
+/// sessions where the agent supports it, bounded to a few seconds.
 pub fn stop_health(state: &DesktopState) {
     let monitor = state
         .health

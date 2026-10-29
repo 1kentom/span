@@ -55,10 +55,27 @@ pub async fn session_meta_list(state: State<'_, DesktopState>) -> Result<Vec<Ses
         };
         SessionMetaStore::for_workspace(&root)
             .and_then(|store| store.list())
+            .map(without_health_sessions)
             .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("Session history task failed: {error}"))?
+}
+
+/// Span's own health check sessions (ADR 0010) never get metadata entries.
+fn refuse_health_session(session_id: &str) -> Result<(), String> {
+    if span_acp::is_hidden_session(session_id, None) {
+        return Err("Health check sessions have no history".into());
+    }
+    Ok(())
+}
+
+/// Drops entries of health check sessions an earlier version may have stored.
+fn without_health_sessions(metas: Vec<SessionMeta>) -> Vec<SessionMeta> {
+    metas
+        .into_iter()
+        .filter(|meta| !span_acp::is_hidden_session(&meta.session_id, None))
+        .collect()
 }
 
 /// Merges `patch` into its session (created when missing) and returns the result.
@@ -68,6 +85,7 @@ pub async fn session_meta_update(
     state: State<'_, DesktopState>,
     patch: SessionMetaPatch,
 ) -> Result<SessionMeta, String> {
+    refuse_health_session(&patch.session_id)?;
     with_store(state.inner().clone(), move |store| store.upsert(patch)).await
 }
 
@@ -219,6 +237,34 @@ mod tests {
             current_value: value.into(),
             groups: vec![],
         }
+    }
+
+    #[test]
+    fn health_sessions_get_no_metadata_and_are_left_out_of_the_list() {
+        span_acp::remember_hidden_sessions(["meta-health-1".to_owned()]);
+        assert!(refuse_health_session("meta-health-1").is_err());
+        assert!(refuse_health_session("meta-user-1").is_ok());
+        let meta = |id: &str| SessionMeta {
+            agent_id: "claude".into(),
+            connection_name: "Claude".into(),
+            session_id: id.into(),
+            title_override: None,
+            archived: false,
+            first_seen_ms: 0,
+            last_active_ms: 0,
+            models: vec![],
+            agents: vec![],
+            files_changed: 0,
+            lines_added: 0,
+            lines_removed: 0,
+            stop_reason_last: None,
+            parent: None,
+            continues: None,
+            changes_tracked: false,
+        };
+        let kept = without_health_sessions(vec![meta("meta-health-1"), meta("meta-user-1")]);
+        let ids: Vec<&str> = kept.iter().map(|m| m.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["meta-user-1"]);
     }
 
     #[test]
