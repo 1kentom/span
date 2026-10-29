@@ -459,6 +459,17 @@
       },
       "additionalProperties": false,
       "properties": {
+        "startMode": {
+          "type": "object",
+          "default": {},
+          "propertyNames": {
+            "enum": ["claude", "codex", "gemini", "opencode", "generic"]
+          },
+          "additionalProperties": {
+            "enum": ["approval", "agentDefault"]
+          },
+          "description": "Per agent, the mode a session Span starts begins in. approval (the default for every agent) starts in the agent's normal approval mode, so Span's approval prompts appear even when the agent's own configuration starts in a mode such as bypassPermissions or full access, and leaves out Claude's ListAgents tool, which lists other Claude Code sessions on this machine. agentDefault keeps whatever the agent's own configuration starts in. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+        },
         "healthCheck": {
           "type": "boolean",
           "default": true,
