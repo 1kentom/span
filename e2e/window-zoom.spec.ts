@@ -69,11 +69,11 @@ for (const factor of [1.728, 2, 1.2 ** 5]) {
 
 
 test("keeps an expanded terminal above the status bar in a small window at maximum zoom", async ({ page }, testInfo) => {
-  await page.setViewportSize({ width: 1280, height: 700 }); await ready(page);
+  await page.setViewportSize({ width: 1280, height: 600 }); await ready(page);
   const divider = page.getByRole("separator", { name: "Resize terminal panel", exact: true });
   for (let index = 0; index < 8; index++) await divider.press("Shift+ArrowUp");
   await page.evaluate(async () => { const zoom = await import("/src/lib/zoom.ts"); await zoom.applyWindowZoom(1.2 ** 5); });
-  await expect.poll(async () => (await page.locator(".ide").boundingBox())!.height).toBeCloseTo(700, 0);
+  await expect.poll(async () => (await page.locator(".ide").boundingBox())!.height).toBeCloseTo(600, 0);
   const main = (await page.locator(".workbench-main").boundingBox())!;
   const terminal = (await page.locator(".run-bottom-panel").boundingBox())!;
   const editor = (await page.locator(".editor-groups").boundingBox())!;
