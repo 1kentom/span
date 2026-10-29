@@ -292,6 +292,293 @@ fn trusted_settings_buffers_reject_conflicts_stale_edits_and_general_agent_route
 }
 
 #[test]
+fn explorer_preferences_have_defaults_and_merge_by_scope() {
+    use span_core::{ExplorerSettings, SettingsScope};
+    let defaults = ExplorerSettings::default();
+    assert!(defaults.show_hidden_files);
+    assert!(!defaults.show_ignored_files);
+    assert!(defaults.compact_folders);
+    assert!(defaults.auto_reveal);
+    assert!(defaults.confirm_delete);
+
+    let directory = tempdir().unwrap();
+    let profile = tempdir().unwrap();
+    let user = profile.path().join("settings.jsonc");
+    fs::write(&user, r#"{ "explorer": { "showHiddenFiles": false, "showIgnoredFiles": true, "compactFolders": false } }"#).unwrap();
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user));
+    workspace
+        .update_settings_jsonc(
+            r#"{ "explorer": { "showIgnoredFiles": false, "autoReveal": false } }"#,
+        )
+        .unwrap();
+    let effective = workspace.get_settings().unwrap().explorer;
+    assert!(!effective.show_hidden_files);
+    assert!(!effective.show_ignored_files);
+    assert!(!effective.compact_folders);
+    assert!(!effective.auto_reveal);
+    assert!(effective.confirm_delete);
+    assert!(
+        workspace
+            .get_settings_for_scope(SettingsScope::User)
+            .unwrap()
+            .explorer
+            .show_ignored_files
+    );
+}
+
+#[test]
+fn explorer_dotted_patches_reset_one_leaf_and_preserve_siblings_and_false() {
+    use span_core::SettingsScope;
+    let directory = tempdir().unwrap();
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(None);
+    let raw = "{ // preserve root comment\n  \"explorer\": { \"showHiddenFiles\": false, \"confirmDelete\": false, \"futureSetting\": {\"keep\": true} },\n  \"extension.keep\": true\n}\n";
+    let settings_path = directory.path().join(".span/settings.jsonc");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    fs::write(&settings_path, raw).unwrap();
+    workspace
+        .update_setting(
+            SettingsScope::Workspace,
+            "explorer.showIgnoredFiles",
+            Some("true"),
+        )
+        .unwrap();
+    let saved = workspace.get_settings_jsonc().unwrap();
+    assert!(saved.contains("preserve root comment"));
+    assert!(saved.contains("\"extension.keep\": true"));
+    let effective = workspace.get_settings().unwrap();
+    assert!(!effective.explorer.show_hidden_files);
+    assert!(effective.explorer.show_ignored_files);
+    workspace
+        .update_setting(SettingsScope::Workspace, "explorer.showIgnoredFiles", None)
+        .unwrap();
+    let saved = workspace.get_settings_jsonc().unwrap();
+    assert!(saved.contains("\"showHiddenFiles\": false"));
+    assert!(saved.contains("\"confirmDelete\": false"));
+    assert!(saved.contains("\"futureSetting\""));
+    let effective = workspace.get_settings().unwrap();
+    assert!(!effective.explorer.show_hidden_files);
+    assert!(!effective.explorer.confirm_delete);
+}
+
+#[test]
+fn explorer_patch_updates_and_resets_existing_flat_alias() {
+    use span_core::SettingsScope;
+    let directory = tempdir().unwrap();
+    let profile = tempdir().unwrap();
+    let user = profile.path().join("settings.jsonc");
+    fs::write(&user, r#"{ "explorer": { "compactFolders": false } }"#).unwrap();
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user));
+    let raw = "{ // keep flat settings comment\n  \"explorer.compactFolders\": false,\n  \"extension.keep\": true\n}\n";
+    workspace.update_settings_jsonc(raw).unwrap();
+
+    workspace
+        .update_setting(
+            SettingsScope::Workspace,
+            "explorer.compactFolders",
+            Some("true"),
+        )
+        .unwrap();
+    assert!(workspace.get_settings().unwrap().explorer.compact_folders);
+    let updated = workspace.get_settings_jsonc().unwrap();
+    assert!(updated.contains("\"explorer.compactFolders\": true"));
+    assert!(updated.contains("keep flat settings comment"));
+    assert!(updated.contains("\"extension.keep\": true"));
+
+    workspace
+        .update_setting(SettingsScope::Workspace, "explorer.compactFolders", None)
+        .unwrap();
+    assert!(!workspace.get_settings().unwrap().explorer.compact_folders);
+    let reset = workspace.get_settings_jsonc().unwrap();
+    assert!(!reset.contains("explorer.compactFolders"));
+    assert!(reset.contains("\"extension.keep\": true"));
+}
+
+#[test]
+fn explorer_patch_updates_and_resets_both_flat_and_nested_spellings() {
+    use span_core::SettingsScope;
+    let directory = tempdir().unwrap();
+    let profile = tempdir().unwrap();
+    let user = profile.path().join("settings.jsonc");
+    fs::write(&user, r#"{ "explorer": { "compactFolders": false } }"#).unwrap();
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user));
+    let raw = "{ // retain comment\n  \"explorer.compactFolders\": false,\n  \"explorer\": { \"compactFolders\": true, \"showHiddenFiles\": false, \"future\": 7 }\n}\n";
+    let settings_path = directory.path().join(".span/settings.jsonc");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    fs::write(&settings_path, raw).unwrap();
+    workspace
+        .update_setting(
+            SettingsScope::Workspace,
+            "explorer.compactFolders",
+            Some("true"),
+        )
+        .unwrap();
+    assert!(workspace.get_settings().unwrap().explorer.compact_folders);
+    let updated = workspace.get_settings_jsonc().unwrap();
+    assert!(updated.contains("\"explorer.compactFolders\": true"));
+    assert!(updated.contains("\"compactFolders\": true"));
+
+    workspace
+        .update_setting(SettingsScope::Workspace, "explorer.compactFolders", None)
+        .unwrap();
+    assert!(!workspace.get_settings().unwrap().explorer.compact_folders);
+    let reset = workspace.get_settings_jsonc().unwrap();
+    assert!(!reset.contains("explorer.compactFolders"));
+    assert!(!reset.contains("compactFolders"));
+    assert!(reset.contains("retain comment"));
+    assert!(reset.contains("\"showHiddenFiles\": false"));
+    assert!(reset.contains("\"future\": 7"));
+}
+
+#[test]
+fn explorer_settings_reject_invalid_types_and_new_unknown_nested_keys() {
+    let directory = tempdir().unwrap();
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(None);
+    for invalid in [
+        r#"{ "explorer": { "showHiddenFiles": "yes" } }"#,
+        r#"{ "explorer": { "showIgnoredFiles": 1 } }"#,
+        r#"{ "explorer": { "compactFolders": null } }"#,
+        r#"{ "explorer": { "typoOption": true } }"#,
+    ] {
+        assert!(
+            workspace.update_settings_jsonc(invalid).is_err(),
+            "accepted {invalid}"
+        );
+    }
+}
+
+#[test]
+fn explorer_legacy_preferences_import_only_unconfigured_values_once() {
+    use span_core::{ExplorerLegacyPreferences, SettingsScope};
+    let directory = tempdir().unwrap();
+    let profile = tempdir().unwrap();
+    let user = profile.path().join("settings.jsonc");
+    fs::write(
+        &user,
+        "{ // keep this comment\n  \"explorer\": { \"confirmDelete\": false, \"futureOption\": 9 }\n}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(directory.path().join(".span")).unwrap();
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        r#"{ "explorer.compactFolders": true }"#,
+    )
+    .unwrap();
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    let legacy = ExplorerLegacyPreferences {
+        compact_folders: Some(false),
+        auto_reveal: Some(false),
+        confirm_delete: Some(true),
+    };
+
+    let migrated = workspace
+        .migrate_explorer_preferences(legacy.clone())
+        .unwrap();
+    let settings = migrated.settings;
+    assert!(settings.explorer.compact_folders);
+    assert!(!settings.explorer.auto_reveal);
+    assert!(!settings.explorer.confirm_delete);
+    assert_eq!(
+        migrated.resolved_legacy_keys,
+        vec!["autoReveal".to_owned(), "confirmDelete".to_owned()]
+    );
+    let saved = fs::read_to_string(&user).unwrap();
+    assert!(saved.contains("keep this comment"));
+    assert!(saved.contains("\"confirmDelete\": false"));
+    assert!(saved.contains("\"futureOption\": 9"));
+    assert!(saved.contains("\"autoReveal\": false"));
+
+    let second = workspace
+        .migrate_explorer_preferences(ExplorerLegacyPreferences {
+            compact_folders: Some(false),
+            auto_reveal: Some(true),
+            confirm_delete: Some(true),
+        })
+        .unwrap();
+    assert!(second.settings.explorer.compact_folders);
+    assert!(!second.settings.explorer.auto_reveal);
+    assert!(!second.settings.explorer.confirm_delete);
+    assert_eq!(
+        second.resolved_legacy_keys,
+        vec!["autoReveal".to_owned(), "confirmDelete".to_owned()]
+    );
+    assert!(
+        !workspace
+            .get_settings_for_scope(SettingsScope::User)
+            .unwrap()
+            .explorer
+            .auto_reveal
+    );
+}
+
+#[test]
+fn explorer_legacy_migration_keeps_malformed_settings_untouched() {
+    use span_core::ExplorerLegacyPreferences;
+    let directory = tempdir().unwrap();
+    let profile = tempdir().unwrap();
+    let user = profile.path().join("settings.jsonc");
+    let malformed = "{ // unfinished settings\n  \"explorer\": {\n";
+    fs::write(&user, malformed).unwrap();
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(workspace
+        .migrate_explorer_preferences(ExplorerLegacyPreferences {
+            compact_folders: Some(false),
+            auto_reveal: Some(false),
+            confirm_delete: Some(false),
+        })
+        .is_err());
+    assert_eq!(fs::read_to_string(user).unwrap(), malformed);
+}
+
+#[test]
+fn explorer_legacy_migration_refuses_to_write_over_a_dirty_settings_buffer() {
+    use span_core::{ExplorerLegacyPreferences, SettingsScope};
+    let directory = tempdir().unwrap();
+    let profile = tempdir().unwrap();
+    let user = profile.path().join("settings.jsonc");
+    let saved = "{ \"theme\": \"Light\" }\n";
+    fs::write(&user, saved).unwrap();
+    let mut workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+
+    let opened = workspace.open_settings_buffer(SettingsScope::User).unwrap();
+    workspace
+        .edit_settings_buffer(
+            SettingsScope::User,
+            opened.revision,
+            vec![TextEdit {
+                from: 0,
+                to: opened.text.encode_utf16().count() as u32,
+                insert: "{ \"explorer\": { \"autoReveal\": false } }\n".into(),
+            }],
+        )
+        .unwrap();
+
+    assert!(workspace
+        .migrate_explorer_preferences(ExplorerLegacyPreferences {
+            compact_folders: Some(false),
+            auto_reveal: Some(true),
+            confirm_delete: Some(false),
+        })
+        .is_err());
+    assert_eq!(fs::read_to_string(user).unwrap(), saved);
+}
+
+#[test]
 fn settings_only_context_supports_user_preferences_without_any_filesystem_escape() {
     use span_core::SettingsScope;
     let profile = tempdir().unwrap();

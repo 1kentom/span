@@ -55,7 +55,8 @@ pub use session_meta::{
     SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS, SESSION_META_SCHEMA_VERSION,
 };
 pub use settings::{
-    AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, RunToolsSettings,
+    AgentSettings, AutoSaveMode, DelegationSettings, ExplorerLegacyPreferences,
+    ExplorerPreferenceMigration, ExplorerSettings, LanguageServerSettings, RunToolsSettings,
     Settings, SettingsScope, StartMode, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
     SYNTAX_THEMES, SYNTAX_TOKEN_IDS,
 };

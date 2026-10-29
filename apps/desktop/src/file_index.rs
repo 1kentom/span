@@ -4,8 +4,8 @@ use notify::{
 };
 use serde::{Deserialize, Serialize};
 use span_file_index::{
-    FileEvent, FileIndex, IndexError, IndexSnapshot, QueryResults, ScanStatus, SearchResult,
-    WorkspaceHandle,
+    FileEvent, FileIndex, IndexError, IndexSnapshot, QueryResults, ScanStatus, ScanVisibility,
+    SearchResult, WorkspaceHandle,
 };
 use specta::Type;
 use std::{
@@ -91,7 +91,17 @@ struct WatchUpdates {
 impl FileIndexRuntime {
     /// Prepare the scoped watcher first, then activate an isolated index
     /// generation and launch its background scan without waiting for traversal.
+    #[cfg(test)]
     pub async fn activate(&self, root: PathBuf) -> Result<(), String> {
+        self.activate_with_visibility(root, ScanVisibility::default())
+            .await
+    }
+
+    pub async fn activate_with_visibility(
+        &self,
+        root: PathBuf,
+        visibility: ScanVisibility,
+    ) -> Result<(), String> {
         let prepared = tokio::task::spawn_blocking(move || prepare_watcher(root))
             .await
             .map_err(|error| format!("Watcher setup task failed: {error}"))??;
@@ -142,6 +152,12 @@ impl FileIndexRuntime {
                 return Err(error);
             }
         };
+        if let Err(error) = self.inner.index.set_visibility(&handle, visibility) {
+            drop(handle_sender);
+            let _ = self.inner.index.close_workspace(&handle);
+            let _ = worker.join();
+            return Err(index_error(error));
+        }
         if handle_sender.send(handle.clone()).is_err() {
             let _ = self.inner.index.close_workspace(&handle);
             let _ = worker.join();
@@ -232,6 +248,28 @@ impl FileIndexRuntime {
             return Err("File query was superseded by a workspace change".to_owned());
         }
         Ok(query_dto(handle.root(), result))
+    }
+
+    pub fn configure_visibility(
+        &self,
+        expected_root: &Path,
+        visibility: ScanVisibility,
+    ) -> Result<(), String> {
+        let handle = self
+            .current_handle()?
+            .ok_or_else(|| "Open a folder before finding files".to_owned())?;
+        if !same_path(handle.root(), expected_root) {
+            return Err("File index workspace is changing. Retry shortly.".to_owned());
+        }
+        if self
+            .inner
+            .index
+            .set_visibility(&handle, visibility)
+            .map_err(index_error)?
+        {
+            self.inner.index.start_scan(&handle).map_err(index_error)?;
+        }
+        Ok(())
     }
 
     pub fn reconcile(&self, expected_root: &Path) -> Result<FileIndexStatus, String> {
@@ -662,6 +700,27 @@ fn search_dto(result: SearchResult) -> FileIndexMatch {
     }
 }
 
+async fn refresh_visibility(
+    state: &crate::DesktopState,
+    expected_root: &Path,
+) -> Result<(), String> {
+    let root = expected_root.to_owned();
+    let runtime = state.file_index.clone();
+    // Read and apply under the same workspace lock as settings mutations.
+    // Overlapping status/query calls cannot reapply an older captured policy.
+    crate::with_workspace(state.clone(), move |workspace| {
+        if Path::new(&workspace.workspace().root) != root {
+            return Err(span_core::CoreError::InvalidEdit(
+                "File index workspace is changing. Retry shortly.".to_owned(),
+            ));
+        }
+        runtime
+            .configure_visibility(&root, workspace.scan_visibility())
+            .map_err(span_core::CoreError::Search)
+    })
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn file_index_status(
@@ -676,6 +735,7 @@ pub async fn file_index_status(
     let Some(expected_root) = expected_root else {
         return Ok(None);
     };
+    refresh_visibility(&state, &expected_root).await?;
     state.file_index.status(&expected_root)
 }
 
@@ -693,6 +753,7 @@ pub async fn query_file(
         .map_err(|_| "Workspace state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "Open a folder before finding files".to_owned())?;
+    refresh_visibility(&state, &expected_root).await?;
     state.file_index.query(&expected_root, query, limit).await
 }
 
@@ -708,6 +769,7 @@ pub async fn reconcile_file_index(
         .map_err(|_| "Workspace state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "Open a folder before reconciling its file index".to_owned())?;
+    refresh_visibility(&state, &expected_root).await?;
     state.file_index.reconcile(&expected_root)
 }
 
@@ -721,6 +783,37 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, text).unwrap();
         path
+    }
+
+    #[tokio::test]
+    async fn visibility_change_keeps_the_watcher_and_workspace_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        write(&root, ".gitignore", "ignored/\n");
+        write(&root, ".hidden.rs", "hidden");
+        write(&root, "ignored/old.rs", "old");
+        let runtime = FileIndexRuntime::default();
+        runtime.activate(root.clone()).await.unwrap();
+        wait_until_ready(&runtime, &root).await;
+        let handle = runtime.current_handle().unwrap().unwrap();
+        let policy = ScanVisibility {
+            show_hidden_files: false,
+            show_ignored_files: true,
+        };
+        runtime.configure_visibility(&root, policy).unwrap();
+        wait_until_ready(&runtime, &root).await;
+        assert_eq!(runtime.current_handle().unwrap().unwrap(), handle);
+        assert!(runtime.status(&root).unwrap().unwrap().watcher_ready);
+        assert!(runtime
+            .query(&root, "hidden", 100)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        wait_for_path(&runtime, &root, "old", "ignored/old.rs").await;
+        write(&root, "ignored/from-watcher.rs", "created");
+        wait_for_path(&runtime, &root, "from-watcher", "ignored/from-watcher.rs").await;
+        runtime.shutdown();
     }
 
     async fn wait_for_path(runtime: &FileIndexRuntime, root: &Path, query: &str, path: &str) {

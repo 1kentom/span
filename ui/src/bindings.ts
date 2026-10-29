@@ -42,8 +42,8 @@ export const commands = {
 	terminalList: () => __TAURI_INVOKE<TerminalInfo_Serialize[]>("terminal_list"),
 	terminalScrollback: (id: string) => __TAURI_INVOKE<number[]>("terminal_scrollback", { id }),
 	terminalAcknowledge: (id: string, sequence: number) => __TAURI_INVOKE<null>("terminal_acknowledge", { id, sequence }),
-	listDirectory: (path: string) => __TAURI_INVOKE<FileEntry[]>("list_directory", { path }),
-	listFiles: () => __TAURI_INVOKE<FileEntry[]>("list_files"),
+	listDirectory: (path: string) => __TAURI_INVOKE<FileEntry_Serialize[]>("list_directory", { path }),
+	listFiles: () => __TAURI_INVOKE<FileEntry_Serialize[]>("list_files"),
 	fileIndexStatus: () => __TAURI_INVOKE<FileIndexStatus_Serialize | null>("file_index_status"),
 	checkExternalFiles: (checks: ExternalFileCheck[], expectedWorkspaceRoot: string, sinceRevision: number | null) => __TAURI_INVOKE<ExternalFilesUpdate_Serialize>("check_external_files", { checks, expectedWorkspaceRoot, sinceRevision }),
 	resolveExternalFile: (path: string, expectedRevision: number, reviewedDiskToken: string, resolution: ExternalFileResolution, expectedWorkspaceRoot: string) => __TAURI_INVOKE<BufferSnapshot>("resolve_external_file", { path, expectedRevision, reviewedDiskToken, resolution, expectedWorkspaceRoot }),
@@ -51,9 +51,9 @@ export const commands = {
 	queryFile: (query: string, limit: number) => __TAURI_INVOKE<FileIndexQueryResponse>("query_file", { query, limit }),
 	reconcileFileIndex: () => __TAURI_INVOKE<FileIndexStatus_Serialize>("reconcile_file_index"),
 	newFile: (path: string) => __TAURI_INVOKE<BufferSnapshot>("new_file", { path }),
-	newDirectory: (path: string) => __TAURI_INVOKE<FileEntry>("new_directory", { path }),
-	renamePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry>("rename_path", { from, to }),
-	duplicatePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry>("duplicate_path", { from, to }),
+	newDirectory: (path: string) => __TAURI_INVOKE<FileEntry_Serialize>("new_directory", { path }),
+	renamePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry_Serialize>("rename_path", { from, to }),
+	duplicatePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry_Serialize>("duplicate_path", { from, to }),
 	trashPath: (path: string) => __TAURI_INVOKE<string[]>("trash_path", { path }),
 	openBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("open_buffer", { path }),
 	/**
@@ -76,6 +76,7 @@ export const commands = {
 	cancelSearch: (id: string) => __TAURI_INVOKE<null>("cancel_search", { id }),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
 	getSettingsForScope: (scope: SettingsScope) => __TAURI_INVOKE<Settings_Serialize>("get_settings_for_scope", { scope }),
+	migrateExplorerPreferences: (expectedWorkspaceRoot: string, legacy: ExplorerLegacyPreferences_Deserialize) => __TAURI_INVOKE<ExplorerPreferenceMigration_Serialize>("migrate_explorer_preferences", { expectedWorkspaceRoot, legacy }),
 	openSettingsBuffer: (scope: SettingsScope) => __TAURI_INVOKE<BufferSnapshot>("open_settings_buffer", { scope }),
 	editSettingsBuffer: (scope: SettingsScope, expectedRevision: number, changes: TextEdit[]) => __TAURI_INVOKE<BufferRevision>("edit_settings_buffer", { scope, expectedRevision, changes }),
 	saveSettingsBuffer: (scope: SettingsScope, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("save_settings_buffer", { scope, expectedRevision }),
@@ -1560,13 +1561,11 @@ export type DiagnosticDto_Deserialize = {
 	source?: string | null,
 	code?: string | null,
 	/**
-	 * The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
-	 * dims it, and the problems list counts it as a warning, as IntelliJ does.
+	 *  The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+	 *  dims it, and the problems list counts it as a warning, as IntelliJ does.
 	 */
 	unnecessary?: boolean,
-	/**
-	 * The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`).
-	 */
+	/**  The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`). */
 	deprecated?: boolean,
 };
 
@@ -1577,13 +1576,11 @@ export type DiagnosticDto_Serialize = {
 	source: string | null,
 	code: string | null,
 	/**
-	 * The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
-	 * dims it, and the problems list counts it as a warning, as IntelliJ does.
+	 *  The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+	 *  dims it, and the problems list counts it as a warning, as IntelliJ does.
 	 */
 	unnecessary: boolean,
-	/**
-	 * The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`).
-	 */
+	/**  The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`). */
 	deprecated: boolean,
 };
 
@@ -1636,6 +1633,71 @@ export type EditProposal = {
 	path: string,
 	baseRevision: number,
 	hunks: ProposalHunk[],
+};
+
+/**  Settings stored by the earlier local-storage based Explorer preferences. */
+export type ExplorerLegacyPreferences = ExplorerLegacyPreferences_Serialize | ExplorerLegacyPreferences_Deserialize;
+
+/**  Settings stored by the earlier local-storage based Explorer preferences. */
+export type ExplorerLegacyPreferences_Deserialize = {
+	compactFolders?: boolean | null,
+	autoReveal?: boolean | null,
+	confirmDelete?: boolean | null,
+};
+
+/**  Settings stored by the earlier local-storage based Explorer preferences. */
+export type ExplorerLegacyPreferences_Serialize = {
+	compactFolders: boolean | null,
+	autoReveal: boolean | null,
+	confirmDelete: boolean | null,
+};
+
+/**  Result of reconciling legacy Explorer values with the current settings scopes. */
+export type ExplorerPreferenceMigration = ExplorerPreferenceMigration_Serialize | ExplorerPreferenceMigration_Deserialize;
+
+/**  Result of reconciling legacy Explorer values with the current settings scopes. */
+export type ExplorerPreferenceMigration_Deserialize = {
+	settings: Settings_Deserialize,
+	/**  Legacy leaf names whose values were imported or already configured by the user. */
+	resolvedLegacyKeys: string[],
+};
+
+/**  Result of reconciling legacy Explorer values with the current settings scopes. */
+export type ExplorerPreferenceMigration_Serialize = {
+	settings: Settings_Serialize,
+	/**  Legacy leaf names whose values were imported or already configured by the user. */
+	resolvedLegacyKeys: string[],
+};
+
+/**  `explorer.*`: file tree visibility and navigation preferences. */
+export type ExplorerSettings = ExplorerSettings_Serialize | ExplorerSettings_Deserialize;
+
+/**  `explorer.*`: file tree visibility and navigation preferences. */
+export type ExplorerSettings_Deserialize = {
+	/**  Keep dotfiles and other hidden files visible, matching the current Explorer behavior. */
+	showHiddenFiles?: boolean,
+	/**  Include files excluded by ignore rules in the Explorer. */
+	showIgnoredFiles?: boolean,
+	/**  Render a chain of single-child folders as one compact row. */
+	compactFolders?: boolean,
+	/**  Reveal the active file in the Explorer when it is outside the visible selection. */
+	autoReveal?: boolean,
+	/**  Ask before deleting a file or folder. */
+	confirmDelete?: boolean,
+};
+
+/**  `explorer.*`: file tree visibility and navigation preferences. */
+export type ExplorerSettings_Serialize = {
+	/**  Keep dotfiles and other hidden files visible, matching the current Explorer behavior. */
+	showHiddenFiles: boolean,
+	/**  Include files excluded by ignore rules in the Explorer. */
+	showIgnoredFiles: boolean,
+	/**  Render a chain of single-child folders as one compact row. */
+	compactFolders: boolean,
+	/**  Reveal the active file in the Explorer when it is outside the visible selection. */
+	autoReveal: boolean,
+	/**  Ask before deleting a file or folder. */
+	confirmDelete: boolean,
 };
 
 export type ExternalDiskSnapshot = {
@@ -1704,10 +1766,22 @@ export type FileEditsDto = {
 	edits: TextEditDto[],
 };
 
-export type FileEntry = {
+export type FileEntry = FileEntry_Serialize | FileEntry_Deserialize;
+
+export type FileEntry_Deserialize = {
 	path: string,
 	name: string,
 	isDir: boolean,
+	ignored?: boolean,
+	backgroundExcluded?: boolean,
+};
+
+export type FileEntry_Serialize = {
+	path: string,
+	name: string,
+	isDir: boolean,
+	ignored?: boolean,
+	backgroundExcluded?: boolean,
 };
 
 export type FileIndexMatch = {
@@ -3284,6 +3358,8 @@ export type Settings_Deserialize = {
 	agents?: AgentSettings_Deserialize,
 	/**  Update checks. Optional in TypeScript like `agents`. */
 	updates?: UpdateSettings_Deserialize,
+	/**  Explorer preferences. Optional in TypeScript like `agents`. */
+	explorer?: ExplorerSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -3320,6 +3396,8 @@ export type Settings_Serialize = {
 	agents?: AgentSettings_Serialize,
 	/**  Update checks. Optional in TypeScript like `agents`. */
 	updates?: UpdateSettings_Serialize,
+	/**  Explorer preferences. Optional in TypeScript like `agents`. */
+	explorer?: ExplorerSettings_Serialize,
 };
 
 export type SignatureHelpDto = SignatureHelpDto_Serialize | SignatureHelpDto_Deserialize;

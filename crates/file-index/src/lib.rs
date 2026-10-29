@@ -14,7 +14,6 @@ use std::{
     },
 };
 
-use ignore::WalkBuilder;
 use nucleo_matcher::{
     pattern::{CaseMatching, Normalization, Pattern},
     Config, Matcher, Utf32Str,
@@ -22,6 +21,9 @@ use nucleo_matcher::{
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+mod visibility;
+pub use visibility::{background_excluded, unignored_children, ScanPurpose, ScanVisibility};
 
 const MAX_RESULTS: usize = 100;
 const PROGRESS_INTERVAL: u64 = 128;
@@ -140,6 +142,7 @@ struct State {
     indexed_progress: usize,
     error_count: u64,
     last_error: Option<String>,
+    visibility: ScanVisibility,
 }
 
 impl FileIndex {
@@ -197,9 +200,55 @@ impl FileIndex {
             indexed_progress: 0,
             error_count: 0,
             last_error: None,
+            visibility: ScanVisibility::default(),
         });
 
         Ok(WorkspaceHandle { generation, root })
+    }
+
+    /// Change discovery without replacing the watcher/workspace handle. Old
+    /// scans and query snapshots cannot publish entries from the former policy.
+    pub fn set_visibility(
+        &self,
+        workspace: &WorkspaceHandle,
+        visibility: ScanVisibility,
+    ) -> Result<bool, IndexError> {
+        let _lifecycle = self
+            .inner
+            .lifecycle_gate
+            .lock()
+            .map_err(|_| IndexError::Poisoned)?;
+        let mut guard = self.inner.state.write().map_err(|_| IndexError::Poisoned)?;
+        let state = active_state_mut(&mut guard, workspace)?;
+        if state.visibility == visibility {
+            return Ok(false);
+        }
+        if let Some((_, token)) = self
+            .inner
+            .active_scan
+            .lock()
+            .map_err(|_| IndexError::Poisoned)?
+            .take()
+        {
+            token.cancel();
+        }
+        self.inner
+            .active_query_id
+            .fetch_add(1, AtomicOrdering::AcqRel);
+        state.visibility = visibility;
+        state.active_scan_id = self
+            .inner
+            .next_scan_id
+            .fetch_add(1, AtomicOrdering::Relaxed)
+            + 1;
+        state.files = Arc::new(BTreeMap::new());
+        state.scan_overlay.clear();
+        state.status = ScanStatus::Idle;
+        state.scanned_entries = 0;
+        state.indexed_progress = 0;
+        state.error_count = 0;
+        state.last_error = None;
+        Ok(true)
     }
 
     /// Begin a cancellable background scan. The returned join handle is
@@ -381,16 +430,18 @@ impl FileIndex {
         if query.len() > 256 {
             return Err(IndexError::QueryTooLong);
         }
-        let (files, generation) = {
+        let (files, generation, request_id) = {
             let guard = self.inner.state.read().map_err(|_| IndexError::Poisoned)?;
             let state = active_state(&guard, workspace)?;
-            (Arc::clone(&state.files), state.generation)
+            // Allocate the request while holding the snapshot read lock so a
+            // visibility change cannot occur between those two operations.
+            let request_id = self
+                .inner
+                .active_query_id
+                .fetch_add(1, AtomicOrdering::AcqRel)
+                + 1;
+            (Arc::clone(&state.files), state.generation, request_id)
         };
-        let request_id = self
-            .inner
-            .active_query_id
-            .fetch_add(1, AtomicOrdering::AcqRel)
-            + 1;
         let limit = limit.min(MAX_RESULTS);
         let active_query_id = Arc::clone(&self.inner);
         let results = tokio::task::spawn_blocking(move || {
@@ -426,9 +477,11 @@ impl FileIndex {
         let Some(file) = canonical_file(workspace, path)? else {
             return Ok(());
         };
-        let should_index = visible_event_file(workspace, &file.absolute_path);
         let mut guard = self.inner.state.write().map_err(|_| IndexError::Poisoned)?;
         let state = active_state_mut(&mut guard, workspace)?;
+        let should_index = state
+            .visibility
+            .visible_background_file(&workspace.root, &file.absolute_path);
         if should_index {
             Arc::make_mut(&mut state.files).insert(file.relative_path.clone(), file.clone());
         } else {
@@ -450,13 +503,13 @@ impl FileIndex {
     ) -> Result<(), IndexError> {
         let old_relative = lexical_relative(&workspace.root, from)?;
         let new_file = canonical_file(workspace, to)?;
-        let new_file = match new_file {
-            Some(file) if visible_event_file(workspace, &file.absolute_path) => Some(file),
-            _ => None,
-        };
-
         let mut guard = self.inner.state.write().map_err(|_| IndexError::Poisoned)?;
         let state = active_state_mut(&mut guard, workspace)?;
+        let new_file = new_file.filter(|file| {
+            state
+                .visibility
+                .visible_background_file(&workspace.root, &file.absolute_path)
+        });
         let files = Arc::make_mut(&mut state.files);
         files.remove(&old_relative);
         if let Some(file) = &new_file {
@@ -489,13 +542,15 @@ impl FileIndex {
         let mut visited = 0_u64;
         let mut error_count = 0_u64;
         let mut last_error = None;
-        let walker = WalkBuilder::new(&workspace.root)
-            .hidden(false)
-            .git_ignore(true)
-            .git_exclude(true)
-            .require_git(false)
-            .follow_links(false)
-            .filter_entry(visible_index_entry)
+        let visibility = match self.inner.state.read() {
+            Ok(guard) => match active_state(&guard, workspace) {
+                Ok(state) => state.visibility,
+                Err(_) => return,
+            },
+            Err(_) => return,
+        };
+        let walker = visibility
+            .walker(&workspace.root, ScanPurpose::Background)
             .build();
 
         for item in walker {
@@ -648,69 +703,6 @@ fn canonical_file(
         return Err(IndexError::NotFile);
     }
     Ok(Some(file_from_metadata(workspace, canonical, metadata)?))
-}
-
-fn visible_event_file(workspace: &WorkspaceHandle, canonical_file: &Path) -> bool {
-    let Some(parent) = canonical_file.parent() else {
-        return false;
-    };
-    if !parent.starts_with(&workspace.root) {
-        return false;
-    }
-    let Ok(relative) = canonical_file.strip_prefix(&workspace.root) else {
-        return false;
-    };
-    let components = relative.components().collect::<Vec<_>>();
-    if components
-        .iter()
-        .any(|component| component.as_os_str() == ".git")
-    {
-        return false;
-    }
-    if components
-        .iter()
-        .take(components.len().saturating_sub(1))
-        .any(|component| component.as_os_str() == "node_modules")
-    {
-        return false;
-    }
-    let Ok(relative_parent) = parent.strip_prefix(&workspace.root) else {
-        return false;
-    };
-    let max_depth = relative_parent.components().count() + 1;
-    let filter_file = canonical_file.to_path_buf();
-    let filter_parent = parent.to_path_buf();
-    let walker = WalkBuilder::new(&workspace.root)
-        .hidden(false)
-        .git_ignore(true)
-        .git_exclude(true)
-        .require_git(false)
-        .follow_links(false)
-        .max_depth(Some(max_depth))
-        .filter_entry(move |entry| {
-            entry.depth() == 0
-                || entry.path() == filter_file
-                || filter_parent.starts_with(entry.path())
-        })
-        .build();
-    walker.into_iter().any(|entry| {
-        entry
-            .ok()
-            .is_some_and(|entry| entry.path() == canonical_file)
-    })
-}
-
-fn visible_index_entry(entry: &ignore::DirEntry) -> bool {
-    if entry.depth() == 0 {
-        return true;
-    }
-    if entry.file_name() == ".git" {
-        return false;
-    }
-    !(entry.file_name() == "node_modules"
-        && entry
-            .file_type()
-            .is_some_and(|kind| kind.is_dir() || kind.is_symlink()))
 }
 
 fn metadata_file(root: &Path, canonical: &Path) -> Result<IndexedFile, IndexError> {

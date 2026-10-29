@@ -2,7 +2,6 @@ use crate::{CoreError, CoreWorkspace, Result};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{sinks::UTF8, SearcherBuilder};
-use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::sync::{
@@ -51,10 +50,21 @@ impl CancellationToken {
 /// Immutable search view. Rope clones share storage until an editor transaction changes it.
 pub struct WorkspaceSearch {
     pub(crate) workspace: CoreWorkspace,
+    pub(crate) visibility: span_file_index::ScanVisibility,
 }
 impl WorkspaceSearch {
     pub fn search(&self, query: SearchQuery) -> Result<Vec<SearchMatch>> {
-        self.workspace.search(query)
+        let mut matches = Vec::new();
+        self.workspace.search_stream_with_visibility(
+            query,
+            &CancellationToken::default(),
+            |found| {
+                matches.push(found);
+                true
+            },
+            self.visibility,
+        )?;
+        Ok(matches)
     }
     pub fn search_stream(
         &self,
@@ -62,7 +72,8 @@ impl WorkspaceSearch {
         cancellation: &CancellationToken,
         on_match: impl FnMut(SearchMatch) -> bool,
     ) -> Result<u32> {
-        self.workspace.search_stream(query, cancellation, on_match)
+        self.workspace
+            .search_stream_with_visibility(query, cancellation, on_match, self.visibility)
     }
 }
 
@@ -82,7 +93,17 @@ impl CoreWorkspace {
         &self,
         query: SearchQuery,
         cancellation: &CancellationToken,
+        on_match: impl FnMut(SearchMatch) -> bool,
+    ) -> Result<u32> {
+        self.search_stream_with_visibility(query, cancellation, on_match, self.scan_visibility())
+    }
+
+    fn search_stream_with_visibility(
+        &self,
+        query: SearchQuery,
+        cancellation: &CancellationToken,
         mut on_match: impl FnMut(SearchMatch) -> bool,
+        visibility: span_file_index::ScanVisibility,
     ) -> Result<u32> {
         if query.text.is_empty() || query.max_results == 0 {
             return Ok(0);
@@ -93,13 +114,8 @@ impl CoreWorkspace {
             .build(&query.text)
             .map_err(|e| CoreError::Search(e.to_string()))?;
         let root = self.scan_directory(&self.root)?;
-        let walker = WalkBuilder::new(&root)
-            .hidden(false)
-            .require_git(false)
-            .git_ignore(true)
-            .git_exclude(true)
-            .follow_links(false)
-            .filter_entry(crate::workspace::visible_scan_entry)
+        let walker = visibility
+            .walker(&root, span_file_index::ScanPurpose::Background)
             .build();
         let paths = walker.filter_map(|entry| match entry {
             Ok(entry) if entry.file_type().is_some_and(|kind| kind.is_file()) => {

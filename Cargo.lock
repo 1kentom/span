@@ -4604,6 +4604,7 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "span-file-index",
  "span-syntax",
  "specta",
  "tempfile",

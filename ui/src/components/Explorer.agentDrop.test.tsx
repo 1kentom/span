@@ -5,7 +5,7 @@ import { createStore } from "solid-js/store";
 import { render } from "solid-js/web";
 import { createExplorerState } from "../lib/explorer-state";
 import { Explorer } from "./Explorer";
-import type { FileEntry } from "../bindings";
+import type { FileEntry, Settings_Serialize as Settings } from "../bindings";
 
 // Fixture: Explorer rows use pointer gestures (no HTML drag), so the agent panel is a pointer drop target.
 const dir = (path: string): FileEntry => ({ name: path.split("/").pop()!, path, isDir: true } as FileEntry);
@@ -21,7 +21,8 @@ function mount() {
   const [directories] = createStore<Record<string, FileEntry[]>>({ "": [dir("src"), file("README.md")] });
   const [expanded] = createSignal<Set<string>>(new Set([""]));
   const [generation] = createSignal(0);
-  const workbench = { directories, expanded, loadDirectory: async () => {}, toggleDirectory: async () => {}, activePath: () => "", dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, busy: () => false, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
+  const settings = () => ({ explorer: { showHiddenFiles: true, showIgnoredFiles: false, compactFolders: true, autoReveal: true, confirmDelete: true } } as unknown as Settings);
+  const workbench = { directories, expanded, settings, discoveryRevision: () => 0, loadDirectory: async () => {}, toggleDirectory: async () => {}, activePath: () => "", dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, busy: () => false, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
   const root = document.createElement("div"); document.body.append(root);
   const state = createExplorerState(workbench as never);
   const onAgentDrop = vi.fn(); const onAgentPreview = vi.fn(); const onEditorDrop = vi.fn();

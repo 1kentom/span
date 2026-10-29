@@ -4,7 +4,7 @@ import { ChangeSet } from "@codemirror/state";
 import type { BufferSnapshot, FileIndexStatus, TextEdit, SessionState_Serialize as SessionState, Settings_Serialize as Settings } from "../bindings";
 
 const client = vi.hoisted(() => ({
-  openWorkspace: vi.fn(), checkExternalFiles: vi.fn(), resolveExternalFile: vi.fn(), abandonExternalFile: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
+  migrateExplorerPreferences: vi.fn(), openWorkspace: vi.fn(), checkExternalFiles: vi.fn(), resolveExternalFile: vi.fn(), abandonExternalFile: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
   openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
@@ -16,7 +16,7 @@ let server: Map<string, BufferSnapshot>;
 const preferences: Settings = { theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] } };
 const roots: (() => void)[] = [];
 function testWorkbench() { return createRoot(dispose => { roots.push(dispose); return createWorkbench(); }); }
-afterEach(() => { for (const dispose of roots.splice(0)) dispose(); });
+afterEach(() => { for (const dispose of roots.splice(0)) dispose(); vi.unstubAllGlobals(); });
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
@@ -980,6 +980,54 @@ describe("read-only Git workspace tabs", () => {
   });
 });
 
+
+describe("Explorer discovery preference refresh", () => {
+  function legacyStorage() {
+    const values = new Map([["span.explorer.compactFolders", "false"], ["span.explorer.autoReveal", "false"]]);
+    vi.stubGlobal("window", { innerWidth: 1440, innerHeight: 900, localStorage: { getItem: (key: string) => values.get(key) ?? null, removeItem: (key: string) => values.delete(key) } });
+    return values;
+  }
+  it("clears only migrated legacy leaves after the backend validates both scopes", async () => {
+    const values = legacyStorage();
+    client.migrateExplorerPreferences.mockResolvedValue({ settings: preferences, resolvedLegacyKeys: ["compactFolders"] });
+    await setup();
+    expect(client.migrateExplorerPreferences).toHaveBeenCalledWith("/workspace", { compactFolders: false, autoReveal: false, confirmDelete: null });
+    expect(values.has("span.explorer.compactFolders")).toBe(false);
+    expect(values.get("span.explorer.autoReveal")).toBe("false");
+  });
+  it("retains legacy preferences and keeps the workspace available if migration fails", async () => {
+    const values = legacyStorage();
+    client.migrateExplorerPreferences.mockRejectedValue(new Error("Invalid settings"));
+    const workbench = await setup();
+    expect(workbench.workspace()?.root).toBe("/workspace");
+    expect(values.size).toBe(2);
+  });
+
+  it("invalidates pending tree and file-finder replies when visibility changes", async () => {
+    const workbench = await setup();
+    const oldDirectory = deferred<{ path: string; name: string; isDir: boolean }[]>();
+    const oldQuery = deferred<{ workspaceRoot: string; generation: number; requestId: number; results: { path: string; score: number }[] }>();
+    client.listDirectory.mockImplementationOnce(() => oldDirectory.promise).mockResolvedValue([{ path: "src/visible.ts", name: "visible.ts", isDir: false }]);
+    client.queryFile.mockReturnValueOnce(oldQuery.promise);
+    const expanding = workbench.toggleDirectory("src");
+    const finding = workbench.queryFiles("hidden");
+    client.getSettings.mockResolvedValue({ ...preferences, explorer: { showHiddenFiles: false, showIgnoredFiles: false, compactFolders: true, autoReveal: true, confirmDelete: true } });
+    await workbench.updateSettingKey("explorer.showHiddenFiles", false);
+    oldDirectory.resolve([{ path: "src/.hidden.ts", name: ".hidden.ts", isDir: false }]);
+    oldQuery.resolve({ workspaceRoot: "/workspace", generation: 1, requestId: 1, results: [{ path: "src/.hidden.ts", score: 1 }] });
+    await expanding;
+    expect(await finding).toEqual([]);
+    expect(workbench.directories.src.map(entry => entry.path)).toEqual(["src/visible.ts"]);
+    expect(workbench.files().some(entry => entry.path === "src/.hidden.ts")).toBe(false);
+  });
+
+  it("does not feed lazily opened dependency rows into the file finder fallback", async () => {
+    const workbench = await setup();
+    client.listDirectory.mockResolvedValue([{ path: "node_modules/pkg/index.js", name: "index.js", isDir: false, ignored: true, backgroundExcluded: true }]);
+    await workbench.loadDirectory("node_modules/pkg");
+    expect(workbench.files().some(entry => entry.path.startsWith("node_modules/"))).toBe(false);
+  });
+});
 
 describe("external file synchronization", () => {
   it("reloads a clean buffer after a watcher change without saving over the new disk content", async () => {

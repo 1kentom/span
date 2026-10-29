@@ -1,5 +1,6 @@
 /* Explorer selection, inline editor, drag feedback and the New popup. Values follow the design reference, colours come from app tokens. */
 .tree-row.sel{background:var(--sel)}
+.tree-name-muted{opacity:.58}
 .tree-row.cut{opacity:.5}
 .tree-row:focus-visible{box-shadow:inset 0 0 0 1px var(--accent);outline:none}
 .tree-row.droptgt{background:var(--hover);box-shadow:inset 0 0 0 1px var(--accent)}

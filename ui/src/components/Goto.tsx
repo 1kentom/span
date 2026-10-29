@@ -17,7 +17,7 @@ export type GotoProps = {
   handlers?: ActionHandlers; bindings?: ResolvedKeybindings;
   onPreview?: (path: string) => Promise<string>;
   onQueryFiles?: (query: string) => Promise<FileEntry[]>;
-  indexStatus?: FileIndexStatus | null; indexError?: string; workspaceGeneration?: number;
+  indexStatus?: FileIndexStatus | null; indexError?: string; workspaceGeneration?: number; discoveryRevision?: number;
   onSearch?: (query: string) => Promise<SearchMatch[]>;
   /** Symbol quick pick: `@` file symbols, `@:` grouped by kind, `#` workspace symbols. */
   symbols?: SymbolSource; initialQuery?: string;
@@ -41,7 +41,7 @@ export function Goto(props: GotoProps) {
   const [preview, setPreview] = createSignal(""); const [previewState, setPreviewState] = createSignal("");
   const [highlighted, setHighlighted] = createSignal<{ from: number; to: number; class: string }[]>([]);
   let previewGeneration = 0; let searchGeneration = 0; let highlightGeneration = 0; let fileGeneration = 0;
-  const [remoteFiles, setRemoteFiles] = createSignal<{ root?: string; workspaceGeneration?: number; filter: string; files: FileEntry[] }>();
+  const [remoteFiles, setRemoteFiles] = createSignal<{ root?: string; workspaceGeneration?: number; discoveryRevision?: number; filter: string; files: FileEntry[] }>();
   const [findingFiles, setFindingFiles] = createSignal(false);
   const [fileError, setFileError] = createSignal("");
   const [fileRefresh, setFileRefresh] = createSignal(0);
@@ -77,7 +77,7 @@ export function Goto(props: GotoProps) {
   });
   const knownFiles = createMemo(() => {
     const remote = remoteFiles();
-    return remote && remote.root === props.workspace?.root && remote.workspaceGeneration === props.workspaceGeneration ? [...props.files, ...remote.files] : props.files;
+    return remote && remote.root === props.workspace?.root && remote.workspaceGeneration === props.workspaceGeneration && remote.discoveryRevision === props.discoveryRevision ? [...props.files, ...remote.files] : props.files;
   });
   const fileQuery = createMemo(() => parseFileQuery(query(), knownFiles(), props.workspace?.root));
   const fileFilter = createMemo(() => fileQuery().filter);
@@ -92,7 +92,7 @@ export function Goto(props: GotoProps) {
     if (parsed.invalidPosition) return [];
     if (!props.onQueryFiles) return fileResults(props.files, query(), props.recentPaths, props.workspace?.root);
     const response = remoteFiles();
-    const ranked = response && response.root === props.workspace?.root && response?.workspaceGeneration === props.workspaceGeneration && response?.filter === parsed.filter ? response.files : [];
+    const ranked = response && response.root === props.workspace?.root && response?.workspaceGeneration === props.workspaceGeneration && response.discoveryRevision === props.discoveryRevision && response?.filter === parsed.filter ? response.files : [];
     const recent = !parsed.filter.trim() ? (props.recentPaths || []).map(path => ({ path, name: fileName(path), isDir: false })) : [];
     // Preserve backend fuzzy ranking. Applying the local substring filter would lose matches.
     const visible = fileResults(knownFiles(), query(), props.recentPaths, props.workspace?.root);
@@ -132,7 +132,7 @@ export function Goto(props: GotoProps) {
   });
   createEffect(() => {
     const term = fileFilter(); const active = mode() === "Goto" && !symbolMode();
-    const root = props.workspace?.root; const workspaceGeneration = props.workspaceGeneration;
+    const root = props.workspace?.root; const workspaceGeneration = props.workspaceGeneration; const discoveryRevision = props.discoveryRevision;
     // Status refreshes requery a still-open picker as scan batches and watcher events arrive.
     fileRefresh();
     const request = ++fileGeneration;
@@ -141,9 +141,9 @@ export function Goto(props: GotoProps) {
     setFindingFiles(true);
     const timer = setTimeout(() => {
       void props.onQueryFiles!(term).then(files => {
-        if (request !== fileGeneration || root !== props.workspace?.root || workspaceGeneration !== props.workspaceGeneration) return;
+        if (request !== fileGeneration || root !== props.workspace?.root || workspaceGeneration !== props.workspaceGeneration || discoveryRevision !== props.discoveryRevision) return;
         const id = current()?.id;
-        setRemoteFiles({ root, workspaceGeneration, filter: term, files });
+        setRemoteFiles({ root, workspaceGeneration, discoveryRevision, filter: term, files });
         setSelected(Math.max(0, results().findIndex(item => item.id === id)));
       }).catch(error => { if (request === fileGeneration) setFileError(String(error)); })
         .finally(() => { if (request === fileGeneration) setFindingFiles(false); });
@@ -152,7 +152,7 @@ export function Goto(props: GotoProps) {
   });
   createEffect(() => {
     const term = query().trim(); const active = mode() === "Text Search"; const request = ++searchGeneration;
-    props.workspace?.root; props.workspaceGeneration;
+    props.workspace?.root; props.workspaceGeneration; props.discoveryRevision;
     setMatches([]); setSearchError(""); setSearching(false);
     if (!active || !term || !props.onSearch) return;
     setSearching(true);

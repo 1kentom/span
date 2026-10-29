@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parse } from 'jsonc-parser';
 import { createPreviewSettings } from './preview-settings';
 
 describe('browser scoped settings fixture', () => {
@@ -122,5 +123,47 @@ describe('browser settings fixture nested keys', () => {
     const fixture = createPreviewSettings();
     expect(() => fixture.update('user', 'editor.syntaxColors.dark.keyword', '"red"')).toThrow();
     expect(() => fixture.update('user', 'editor.syntaxColors.dark.nonsense', '"#fff"')).toThrow();
+  });
+});
+
+describe('browser Explorer settings fixture', () => {
+  it('uses schema defaults and merges partial nested leaves across scopes', () => {
+    const fixture = createPreviewSettings();
+    expect(fixture.get().explorer).toEqual({ showHiddenFiles: true, showIgnoredFiles: false, compactFolders: true, autoReveal: true, confirmDelete: true });
+    fixture.updateJsonc('user', '{"explorer":{"showHiddenFiles":false,"compactFolders":false}}');
+    fixture.updateJsonc('workspace', '{"explorer":{"showIgnoredFiles":true}}');
+    expect(fixture.get().explorer).toEqual({ showHiddenFiles: false, showIgnoredFiles: true, compactFolders: false, autoReveal: true, confirmDelete: true });
+    expect(fixture.get('user').explorer).toMatchObject({ showHiddenFiles: false, showIgnoredFiles: false, compactFolders: false });
+    expect(fixture.keys('user')).toEqual(['explorer.showHiddenFiles', 'explorer.compactFolders']);
+    expect(fixture.keys('workspace')).toEqual(['explorer.showIgnoredFiles']);
+  });
+
+  it('accepts flat Explorer aliases, validates leaves and rejects unknown nested leaves', () => {
+    const fixture = createPreviewSettings();
+    fixture.updateJsonc('user', '{"explorer.showHiddenFiles":false,"explorer":{"confirmDelete":false}}');
+    expect(fixture.get('user').explorer).toMatchObject({ showHiddenFiles: false, confirmDelete: false });
+    expect(fixture.keys('user')).toEqual(['explorer.showHiddenFiles', 'explorer.confirmDelete']);
+    expect(() => fixture.updateJsonc('workspace', '{"explorer":{"showIgnoredFiles":"yes"}}')).toThrow('invalid type');
+    expect(() => fixture.updateJsonc('workspace', '{"explorer":{"unexpected":true}}')).toThrow('not a supported setting');
+    expect(() => fixture.updateJsonc('workspace', '{"explorer.showIgnoredFiles":1}')).toThrow('invalid type');
+  });
+
+  it('updates an existing nested or flat spelling and reset removes both aliases', () => {
+    const fixture = createPreviewSettings();
+    fixture.updateJsonc('user', '// keep nested spelling\n{"explorer":{"showHiddenFiles":false,"showIgnoredFiles":true}}');
+    fixture.update('user', 'explorer.showHiddenFiles', 'true');
+    expect(fixture.raw('user')).toContain('"explorer"');
+    expect(fixture.raw('user')).not.toContain('explorer.showHiddenFiles');
+    expect(fixture.raw('user')).toContain('// keep nested spelling');
+    expect(parse(fixture.raw('user'))).toEqual({ explorer: { showHiddenFiles: true, showIgnoredFiles: true } });
+
+    fixture.updateJsonc('workspace', '{"explorer.showHiddenFiles":false,"explorer":{"showHiddenFiles":true}}');
+    fixture.update('workspace', 'explorer.showHiddenFiles', 'false');
+    expect(parse(fixture.raw('workspace'))).toEqual({ 'explorer.showHiddenFiles': false, explorer: { showHiddenFiles: false } });
+    expect(fixture.get().explorer?.showHiddenFiles).toBe(false);
+    fixture.update('workspace', 'explorer.showHiddenFiles', null);
+    expect(parse(fixture.raw('workspace'))).toEqual({});
+    expect(fixture.get().explorer?.showHiddenFiles).toBe(true);
+    expect(fixture.keys('workspace')).toEqual([]);
   });
 });

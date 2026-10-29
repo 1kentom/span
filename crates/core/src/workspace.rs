@@ -3,7 +3,6 @@ use crate::{
     io_error, BufferRevision, BufferSnapshot, CoreError, EditProposal, ProposalHunk, Result,
     Settings, TextEdit,
 };
-use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
@@ -27,6 +26,12 @@ pub struct FileEntry {
     pub path: String,
     pub name: String,
     pub is_dir: bool,
+    #[serde(default)]
+    #[specta(optional)]
+    pub ignored: bool,
+    #[serde(default)]
+    #[specta(optional)]
+    pub background_excluded: bool,
 }
 
 /// Place behind the desktop's mutex. No disk or text state belongs in the renderer.
@@ -91,6 +96,7 @@ impl CoreWorkspace {
     /// Cheap immutable rope snapshots let workers scan without holding the editor mutex.
     pub fn search_snapshot(&self) -> crate::search::WorkspaceSearch {
         crate::search::WorkspaceSearch {
+            visibility: self.scan_visibility(),
             workspace: Self {
                 root: self.root.clone(),
                 buffers: self.buffers.clone(),
@@ -160,6 +166,14 @@ impl CoreWorkspace {
             .map_err(|_| CoreError::OutsideWorkspace(path.display().to_string()))
     }
 
+    pub fn scan_visibility(&self) -> span_file_index::ScanVisibility {
+        let explorer = self.get_settings().unwrap_or_default().explorer;
+        span_file_index::ScanVisibility {
+            show_hidden_files: explorer.show_hidden_files,
+            show_ignored_files: explorer.show_ignored_files,
+        }
+    }
+
     pub fn list_directory(&self, path: &str) -> Result<Vec<FileEntry>> {
         let directory = self.resolve(path)?;
         self.walk(&directory, Some(1))
@@ -202,16 +216,26 @@ impl CoreWorkspace {
     fn walk(&self, root: &Path, depth: Option<usize>) -> Result<Vec<FileEntry>> {
         let root = self.scan_directory(root)?;
         let mut entries = Vec::new();
-        // require_git(false) applies .gitignore in folders without a .git directory too.
-        let walker = WalkBuilder::new(&root)
-            .hidden(false)
-            .git_ignore(true)
-            .git_exclude(true)
-            .require_git(false)
-            .follow_links(false)
-            .max_depth(depth)
-            .filter_entry(visible_scan_entry)
-            .build();
+        let visibility = self.scan_visibility();
+        let purpose = if depth == Some(1) {
+            span_file_index::ScanPurpose::Explorer
+        } else {
+            span_file_index::ScanPurpose::Background
+        };
+        if !visibility.visible_path(&self.root, &root, purpose) {
+            return Ok(entries);
+        }
+        let background_excluded_root = depth == Some(1)
+            && !visibility.visible_path(
+                &self.root,
+                &root,
+                span_file_index::ScanPurpose::Background,
+            );
+        let unignored = (depth == Some(1) && visibility.show_ignored_files)
+            .then(|| span_file_index::unignored_children(&self.root, &root));
+        let mut builder = visibility.walker(&root, purpose);
+        builder.max_depth(depth);
+        let walker = builder.build();
         for entry in walker {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -234,6 +258,17 @@ impl CoreWorkspace {
                 path: self.relative(entry.path())?,
                 name: entry.file_name().to_string_lossy().into_owned(),
                 is_dir,
+                ignored: unignored
+                    .as_ref()
+                    .is_some_and(|paths| !paths.contains(entry.path())),
+                background_excluded: background_excluded_root
+                    || span_file_index::background_excluded(
+                        entry.path(),
+                        is_dir,
+                        unignored
+                            .as_ref()
+                            .is_some_and(|paths| !paths.contains(entry.path())),
+                    ),
             });
         }
         entries.sort_by(|a, b| {
@@ -700,14 +735,26 @@ impl CoreWorkspace {
         }
     }
 
+    pub(crate) fn has_dirty_settings_buffer(&self) -> bool {
+        self.settings_buffers
+            .values()
+            .any(|buffer| buffer.revision != buffer.saved_revision)
+    }
+
     pub fn get_settings_keys_for_scope(&self, scope: crate::SettingsScope) -> Result<Vec<String>> {
-        let raw = crate::settings::parse(&self.get_settings_jsonc_for_scope(scope)?)?;
+        let text = self.get_settings_jsonc_for_scope(scope)?;
+        let raw = crate::settings::parse(&text)?;
         let mut keys: Vec<_> = raw
             .as_object()
             .expect("settings object")
             .keys()
             .filter_map(|key| crate::settings::canonical_key(key))
             .collect();
+        keys.extend(
+            crate::settings::explicit_explorer_preferences(&text)?
+                .iter()
+                .map(|key| format!("explorer.{key}")),
+        );
         keys.sort();
         keys.dedup();
         Ok(keys)
@@ -865,20 +912,6 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&temp);
     }
     result
-}
-
-/// Dependency directories are excluded by default, while a regular file with that name remains visible.
-pub(crate) fn visible_scan_entry(entry: &ignore::DirEntry) -> bool {
-    if entry.depth() == 0 {
-        return true;
-    }
-    if entry.file_name() == ".git" {
-        return false;
-    }
-    !(entry.file_name() == "node_modules"
-        && entry
-            .file_type()
-            .is_some_and(|kind| kind.is_dir() || kind.is_symlink()))
 }
 
 #[cfg(test)]
