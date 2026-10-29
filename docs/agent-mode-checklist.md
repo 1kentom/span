@@ -51,6 +51,12 @@ Mostly invisible; check that nothing regressed.
   switch agent with the divider, History, rename, archive, export.
 - A delegated child's card and permission still appear in the lead's chat.
 - Health dots and the live agents strip still update.
+- Two chats on one agent (thread store, part 2b): leave one running with a
+  queued message and a half typed draft, start a new chat, then go back
+  through History. The running chat's output kept arriving, and its queue
+  and draft are intact; the new chat never showed its output.
+- A permission request in the background chat raises the attention count
+  only, and its dock appears after switching to that chat.
 
 ## Phase 3: page shell
 

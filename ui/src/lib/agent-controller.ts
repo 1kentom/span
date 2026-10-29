@@ -1,5 +1,5 @@
-import { batch, createComputed, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates } from "../bindings";
+import { batch, createComputed, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, SessionKey, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
 import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, api, isDesktop, sessionExportMarkdown, sessionMetaSetArchived, sessionMetaSetTitle } from "./client";
@@ -12,7 +12,7 @@ import { agentHistory } from "./agent-stores/history";
 import { agentConnection, NO_STATES } from "./agent-stores/connection";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { removalBlockReason, type CatalogRow } from "./acp-catalog";
-import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
+import { CHAT_LIMIT, attentionSessions, busyState, delegationMetaPatch, evictions, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation } from "./agent-chats";
 import { createSavedImageStore } from "./agent-saved-images";
 import { RUN_TEXT } from "./agent-hint-text";
 import { classifyAgentError, isLimitKind, limitStatus, type AgentErrorInfo } from "./agent-errors";
@@ -44,7 +44,10 @@ import { moveItem } from "./agent-queue";
 import { noteAgentUsed, readLastSession, writeLastSession } from "./last-session";
 import { chooseRestores, readLastConfig, writeLastConfig, type SavedConfig } from "./last-config";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
-import type { Handoff, Queued, Rewind, Steering } from "./agent-threads/thread-state";
+import { initialThreadState, sameKey, type Handoff, type Queued, type Rewind, type ThreadState } from "./agent-threads/thread-state";
+import { createThreadRegistry } from "./agent-threads/threads";
+import type { Thread, ThreadEvents } from "./agent-threads/thread";
+import { sessionKeyId } from "./agent-stores/live-sessions";
 import { editQueuedEntry, mergeQueued } from "./agent-threads/thread-queue";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
@@ -109,11 +112,46 @@ const causeText = (error: unknown) => (error && typeof error === "object" && !(e
 const utf8 = new TextEncoder();
 let queueCounter = 0;
 
+/** The key of the open chat before it has a session, or before its connection is known. */
+const NO_KEY: SessionKey = { connectionId: "", sessionId: "" };
+const transientKey = (key: SessionKey) => !key.connectionId || !key.sessionId;
+/**
+ * The sidebar's threads hear nothing on their own: the controller follows the focused connection's channel (connect,
+ * resume and sign-in are still unkeyed) and routes each event to the thread of its key, see `receive`. The keyed
+ * stream (live-sessions.ts) would deliver the same events a second time. ADR 0011, "Phase 2 status".
+ */
+const SIDEBAR_EVENTS: ThreadEvents = { onSession: () => () => undefined, onConnection: () => () => undefined };
+
 /** Agent session state and actions for the sidebar. The panel component only renders what this returns. */
 export function createAgentController(props: AgentPanelProps) {
-  const [state, setState] = createSignal<AgentState>(initialAgentState(isDesktop));
-  const update = (change: (current: AgentState) => AgentState) => setState(change);
-  const patch = (values: Partial<AgentState>) => setState((current) => ({ ...current, ...values }));
+  /**
+   * Every chat this sidebar holds is a thread keyed by `SessionKey` (agent-threads/), and the open chat is the focused
+   * thread: its conversation, composer, queue, steer, requests, rewind and scroll state live there, not in signals of
+   * this controller. Switching chats focuses another thread, nothing is copied. The focused thread also carries the
+   * connection's own fields (status, agent, logs, sign-in) in its `AgentState`, and they move with the focus.
+   */
+  const threads = createThreadRegistry({ events: SIDEBAR_EVENTS, pollDelegation: false });
+  /** Puts `value` in the thread for `key`, replacing what it held. */
+  function place(key: SessionKey, value: ThreadState): Thread {
+    const thread = threads.open(key);
+    thread.update(() => ({ ...value, key: thread.key }));
+    return thread;
+  }
+  const blankThread = (conversation: AgentState): ThreadState => ({ ...initialThreadState(NO_KEY), conversation });
+  const [focused, setFocused] = createSignal<Thread>(place(NO_KEY, blankThread(initialAgentState(isDesktop))));
+  const threadState = createMemo(() => focused().state());
+  const state = createMemo(() => threadState().conversation);
+  /** Changes the open chat's thread. Never tracks: an effect that writes must not rerun on a chat switch. */
+  const updateThread = (change: (current: ThreadState) => ThreadState) => untrack(focused).update(change);
+  const update = (change: (current: AgentState) => AgentState) => updateThread((current) => ({ ...current, conversation: change(current.conversation) }));
+  const patch = (values: Partial<AgentState>) => update((current) => ({ ...current, ...values }));
+  /** One field of the open chat's thread, as a signal pair. */
+  function threadField<K extends keyof ThreadState>(name: K) {
+    const get = createMemo(() => threadState()[name]);
+    const set = (value: ThreadState[K] | ((previous: ThreadState[K]) => ThreadState[K])) =>
+      updateThread((current) => ({ ...current, [name]: typeof value === "function" ? (value as (previous: ThreadState[K]) => ThreadState[K])(current[name]) : value }));
+    return [get, set] as const;
+  }
   const feed = createMemo(() => state().feed);
   const sessionId = createMemo(() => state().sessionId);
   const savedImages = createSavedImageStore((path, root) => api.readImage(path, root));
@@ -127,7 +165,7 @@ export function createAgentController(props: AgentPanelProps) {
   onCleanup(() => savedImages.dispose());
   const running = createMemo(() => state().running);
 
-  const [prompt, setPrompt] = createSignal("");
+  const [prompt, setPrompt] = threadField("draft");
   createEffect(on(() => props.incomingPrompt?.id, () => { const incoming = props.incomingPrompt; if (incoming?.text) { setView("session"); setPrompt(current => (current.trim() ? `${current}\n\n${incoming.text}` : incoming.text)); } }, { defer: true }));
   const [view, setView] = createSignal<View>("session");
   const [menu, setMenu] = createSignal<Menu>(null);
@@ -144,6 +182,30 @@ export function createAgentController(props: AgentPanelProps) {
   /** The focused agent connection (see the connection store). */
   const connection = agentConnection.use();
   const { agentName, setAgentName, agentId, setAgentId, launch, setLaunch, connecting, setConnecting, sessionStates, setSessionStates, connectionKey, setConnectionKey, attentionAnnouncement, setAttentionAnnouncement, runtimeOf, isLive } = connection;
+  /** Where the open chat's thread went when it moved to a new key, so a late result finds the chat it belongs to. */
+  const movedTo = new WeakMap<Thread, Thread>();
+  const followMoves = (thread: Thread) => {
+    let current = thread;
+    for (let next = movedTo.get(current); next; next = movedTo.get(current)) current = next;
+    return current;
+  };
+  /** The open chat's key: its session on the current connection, or a transient key before either is known. */
+  const openKey = createMemo<SessionKey>(() => {
+    const id = state().sessionId;
+    return id ? { connectionId: connectionKey() ?? "", sessionId: id } : NO_KEY;
+  }, NO_KEY, { equals: sameKey });
+  // The open chat got its session, lost it, or learned its connection (connect, sign-in, a new chat): its thread moves
+  // to the new key with everything in it. A chat switch focuses the target thread first, so nothing moves then.
+  createComputed(on(openKey, (key) => untrack(() => {
+    const left = focused();
+    if (sameKey(left.key, key)) return;
+    const value = left.state();
+    threads.close(key);
+    const next = place(key, value);
+    movedTo.set(left, next);
+    setFocused(next);
+    threads.close(left.key);
+  })));
   const [contextPaths, setContextPaths] = createSignal<string[]>([]);
   const [hiddenSelection, setHiddenSelection] = createSignal("");
   /** The agent's session list and Span's metadata index (see the history store). */
@@ -153,56 +215,52 @@ export function createAgentController(props: AgentPanelProps) {
   const delegatedChildren = new Map<string, string>();
   /** Accepted edit totals per session in this run, added to what the store had when counting began. */
   const changeTotals = new Map<string, { paths: Set<string>; add: number; del: number; base: { files: number; add: number; del: number } }>();
-  const [queue, setQueue] = createSignal<Queued[]>([]);
+  const [queue, setQueue] = threadField("queue");
   /**
    * True when the queue must not drain on its own: the last turn ended with an error, the connection dropped, or a
    * reconnect or chat switch happened since the messages were queued. The user sends it with Send queued.
    */
-  const [queueHeld, setQueueHeld] = createSignal(false);
-  const [attachments, setAttachments] = createSignal<Attachment[]>([]);
+  const [queueHeld, setQueueHeld] = threadField("queueHeld");
+  const [attachments, setAttachments] = threadField("attachments");
   const [viewing, setViewing] = createSignal<string>();
   const [online, setOnline] = createSignal(typeof navigator === "undefined" ? true : navigator.onLine !== false);
   const [bannerDismissed, setBannerDismissed] = createSignal(false);
-  const [pinned, setPinned] = createSignal(true);
+  const [pinned, setPinned] = threadField("pinned");
   /** Follow the agent: open files from tool call locations. Kept in memory only, so it resets on reload. */
   const [following, setFollowing] = createSignal(false);
   /** Name of the file the UI just opened for the user. `equals: false` restarts the toast for the same name. */
   const [toast, setToast] = createSignal<string | undefined>(undefined, { equals: false });
   /** A click that could not open its path (outside the workspace), with the reason. Cleared by the note. */
   const [openRefusal, setOpenRefusal] = createSignal<{ path: string; reason: string } | undefined>(undefined, { equals: false });
-  const [turnStart, setTurnStart] = createSignal(0);
+  const [turnStart, setTurnStart] = threadField("turnStart");
   const [clock, setClock] = createSignal(Date.now());
-  const [form, setForm] = createSignal<{ requestId: string; index: number; values: Record<string, string | number | boolean>; error?: string }>();
-  /** Every chat Span holds besides the open one, with its own feed, queue, draft and scroll (see agent-chats.ts). */
-  const chats = createChatStore();
-  const [chatVersion, setChatVersion] = createSignal(0);
-  const bumpChats = () => setChatVersion((version) => version + 1);
+  /** Elicitation form progress. The thread starts it at the first field when a new request arrives. */
+  const [form, setForm] = threadField("form");
+  /** Every chat Span holds besides the open one: live threads in the background (see agent-chats.ts). */
+  const backgroundThreads = () => threads.list().filter((thread) => thread !== focused());
+  const threadOf = (connection: string | undefined, sessionId: string | undefined) => (connection && sessionId ? threads.get({ connectionId: connection, sessionId }) : undefined);
   /** A prompt was refused because a turn is still running: the composer explains and offers steer or queue. */
-  const [busyNotice, setBusyNotice] = createSignal(false);
+  const [busyNotice, setBusyNotice] = threadField("busyNotice");
   /** First and latest update time of each tool call, keyed by session and tool call id. */
   const toolTimes = new Map<string, { start: number; last: number }>();
   /** agent_prompt calls still waiting for their turn to end. */
-  let promptsInFlight = 0;
   let history: string[] = [];
   let historyIndex = -1;
-  let priority: string | undefined;
   /** The queued message picked with Send now, until it goes out (or is dropped). The panel shows a spinner on it. */
-  const [queueSending, setQueueSending] = createSignal<string>();
+  const [queueSending, setQueueSending] = threadField("queueSending");
   /** Feed ids of the open chat's user messages that went out through Send now, so the feed can tag them. Feed ids
    * restart per chat, so the flag lives on the feed item and travels with its chat. */
   const sentNowIds = createMemo<ReadonlySet<number>>(() => new Set(state().feed.flatMap((item) => (item.kind === "user" && item.sentNow ? [item.id] : []))));
-  const pick = (id: string | undefined) => {
-    priority = id;
-    setQueueSending(id);
-  };
-  let steering: Steering | undefined;
+  const pick = (id: string | undefined) => setQueueSending(id);
+  /** A steer waiting for its turn to end, in the open chat. */
+  const [steering, setSteering] = threadField("steering");
   /** The agent switch waiting for its new session or for its first prompt. Cleared once the context is sent. */
-  let handoff: Handoff | undefined;
+  const [handoff, setHandoff] = threadField("handoff");
   /**
    * The turn the provider refused for a missing sign-in, in the session it was sent to. Only this turn can be sent
    * again with another model; it is forgotten on any new prompt, chat switch, resume or connection.
    */
-  const [refused, setRefused] = createSignal<{ sessionId: string; entry: Queued; itemId: number; limit?: AgentErrorInfo }>();
+  const [refused, setRefused] = threadField("refused");
   /** Models that hit a usage limit (see the limits store). */
   const limits = agentLimits.use();
   /** The picker the limit card opened to resend the refused turn with: a pick there resends instead of only switching. */
@@ -213,9 +271,9 @@ export function createAgentController(props: AgentPanelProps) {
   let configEdits = 0;
   /** The options restore in flight. A send waits for it, and a user change goes out after it. */
   const [restoring, setRestoring] = createSignal<Promise<void>>();
-  const [rewindPick, setRewind] = createSignal<Rewind>();
-  /** Counts dispatched turns, so a steer can tell its own turn from a later one. */
-  let turnCounter = 0;
+  const [rewindPick, setRewind] = threadField("rewind");
+  /** Counts dispatched turns of the open chat, so a steer can tell its own turn from a later one. */
+  const turnCounter = () => untrack(threadState).turn;
   const followed = new Set<string>();
   let disposed = false;
   let agentEpoch = 0;
@@ -320,7 +378,6 @@ export function createAgentController(props: AgentPanelProps) {
 
   createEffect(on(proposals, (list) => props.onProposalsChange?.(list)));
   createEffect(on(() => Boolean(pendingAction()), (busy) => props.onReviewBusyChange?.(busy)));
-  createEffect(on(() => elicitation()?.requestId, (requestId) => setForm(requestId ? { requestId, index: 0, values: {} } : undefined)));
   /** True while the app reopens the last chat, so the fresh session it connects with is not remembered over it. */
   let restoringLast = false;
   createEffect(() => {
@@ -384,9 +441,9 @@ export function createAgentController(props: AgentPanelProps) {
    * front of the queue, and the steer is forgotten so it can never fire after some later, unrelated turn.
    */
   function releaseSteer() {
-    const pending = steering;
+    const pending = steering();
     if (!pending) return;
-    steering = undefined;
+    setSteering(undefined);
     const { entry } = pending;
     if (!prompt().trim() && !attachments().length) {
       setPrompt(entry.text);
@@ -405,7 +462,7 @@ export function createAgentController(props: AgentPanelProps) {
         if (previous && path === previous[0] && generation === previous[1]) return;
         agentEpoch += 1;
         batch(() => {
-          setState(initialAgentState(isDesktop));
+          update(() => initialAgentState(isDesktop));
           setAgentName("Select agent");
           setAgentId(undefined);
           setRemoval(undefined);
@@ -418,8 +475,8 @@ export function createAgentController(props: AgentPanelProps) {
           setAttachments([]);
           setViewing(undefined);
           // A different workspace: messages composed for the old one are dropped, not carried over.
-          steering = undefined;
-          handoff = undefined;
+          setSteering(undefined);
+          setHandoff(undefined);
           setRefused(undefined);
           setQueue([]);
           setQueueHeld(false);
@@ -433,8 +490,7 @@ export function createAgentController(props: AgentPanelProps) {
 
   /** Chats of a connection that ended, or of another workspace, are gone. The open chat's own fields stay as they are. */
   function forgetChats() {
-    chats.clear();
-    bumpChats();
+    for (const thread of untrack(backgroundThreads)) threads.close(thread.key);
     toolTimes.clear();
     setSessionStates(NO_STATES);
     setAttentionAnnouncement("");
@@ -456,18 +512,15 @@ export function createAgentController(props: AgentPanelProps) {
     const target = sessionOf(event);
     const connection = connectionKey();
     noteTool(event);
-    const backgroundKey = target && connection && target !== session ? chatKey(connection, target) : undefined;
-    const background = backgroundKey ? chats.get(backgroundKey) : undefined;
-    if (backgroundKey && background) {
-      // A chat in the background keeps working: its events update its own snapshot, never the open chat.
-      chats.set(backgroundKey, reduceBackground(background, event));
-      bumpChats();
+    const background = target && target !== session ? threadOf(connection, target) : undefined;
+    if (background && background !== untrack(focused)) {
+      // A chat in the background keeps working: its events update its own thread, never the open chat.
+      background.update((chat) => reduceBackground(chat, event));
       return;
     }
     if (event.kind === "elicitationResolved") {
-      for (const key of chats.keys()) {
-        const chat = chats.get(key)!;
-        if (chat.conversation.elicitations.some((pending) => pending.requestId === event.requestId)) chats.set(key, reduceBackground(chat, event));
+      for (const thread of untrack(backgroundThreads)) {
+        if (thread.state().conversation.elicitations.some((pending) => pending.requestId === event.requestId)) thread.update((chat) => reduceBackground(chat, event));
       }
     }
     update((current) => reduceAgentEvent(current, event));
@@ -516,41 +569,30 @@ export function createAgentController(props: AgentPanelProps) {
     }
     if (!connectionKey()) setConnectionKey(connection.localKey());
   }
-  const chatTitle = (sessionId: string) => sessions().find((entry) => entry.sessionId === sessionId)?.title || chats.get(chatKey(connectionKey() ?? "", sessionId))?.conversation.sessionTitle || "A background chat";
+  const chatTitle = (sessionId: string) => sessions().find((entry) => entry.sessionId === sessionId)?.title || threadOf(connectionKey(), sessionId)?.state().conversation.sessionTitle || "A background chat";
   /** Applies published session states. States of another connection are ignored. */
   function receiveStates(states: SessionStates) {
     if (!states.connectionId) return;
     const key = connectionKey();
     if (key !== states.connectionId) {
       // A local stand-in key is replaced only while nothing is stored under it.
-      if (!(connected() && (!key || (key.startsWith("local-") && chats.size() === 0)))) return;
+      if (!(connected() && (!key || (key.startsWith("local-") && untrack(backgroundThreads).length === 0)))) return;
       setConnectionKey(states.connectionId);
     }
-    const open = state().sessionId;
-    const fresh = newAttention(sessionStates(), states, open);
+    const openId = state().sessionId;
+    const fresh = newAttention(sessionStates(), states, openId);
     setSessionStates(states);
     if (fresh.length) setAttentionAnnouncement(`${chatTitle(fresh[0].sessionId)} is ${(fresh[0].state === "waitingForAnswer" ? RUN_TEXT.answer : RUN_TEXT.approval).toLowerCase()}`);
-    // A background chat whose turn ended while away is idle, whatever its snapshot last said.
-    let changed = false;
+    // A background chat whose turn ended while away is idle, whatever it last showed. The open chat follows the
+    // backend: running when a turn runs that this view did not start (a chat reopened while busy), idle when nothing
+    // this view sent is still in flight. Both are the thread's own rule (thread-events.ts `applyRuntime`).
+    const open = untrack(focused);
     for (const entry of states.sessions) {
-      const chatId = chatKey(states.connectionId, entry.sessionId);
-      const chat = chats.get(chatId);
-      if (chat && entry.state === "idle" && chat.conversation.running) {
-        chats.set(chatId, { ...chat, conversation: { ...chat.conversation, running: false, stopRequested: false } });
-        changed = true;
-      }
+      const thread = threadOf(states.connectionId, entry.sessionId);
+      if (thread && thread !== open) thread.applyRuntime(entry, { focused: false, working: false });
     }
-    if (changed) bumpChats();
-    // The open chat follows the backend: running when a turn runs that this view did not start (a chat reopened while
-    // busy), idle when nothing this view sent is still in flight.
-    const mine = states.sessions.find((entry) => entry.sessionId === open);
-    if (!mine || working()) return;
-    if (mine.state !== "idle" && !running()) {
-      patch({ running: true, status: "busy", statusMessage: "Agent is working" });
-      setTurnStart(mine.startedAtMs ?? Date.now());
-    } else if (mine.state === "idle" && mine.queued === 0 && running() && promptsInFlight === 0 && !steering) {
-      patch({ running: false, stopRequested: false, status: "ready" });
-    }
+    const mine = states.sessions.find((entry) => entry.sessionId === openId);
+    open.applyRuntime(mine, { focused: true, working: working() });
   }
 
   /** The finished event carries the reason; the status command adds the detail text. A failure here leaves the card as the events made it. */
@@ -668,9 +710,9 @@ export function createAgentController(props: AgentPanelProps) {
     const leaving = sessionId();
     const leavingAgent = agentId();
     const link = carry && leaving && leavingAgent ? { agentId: leavingAgent, sessionId: leaving, name: agentLabel(), title: currentTitle() } : undefined;
-    handoff = carry ? { from: agentLabel(), to: name, text: buildHandoff(state().feed, { from: agentLabel(), root: cwd }), link } : undefined;
+    setHandoff(carry ? { from: agentLabel(), to: name, text: buildHandoff(state().feed, { from: agentLabel(), root: cwd }), link } : undefined);
     // The backend keeps the old connection until the new one is up (issue #87), so a failed switch can go back to it.
-    const left = hadSession ? { name: agentName(), id: agentId(), launch: launch(), key: connectionKey(), states: sessionStates(), conversation: state(), chats: chats.keys().map((key) => [key, chats.get(key)!] as const) } : undefined;
+    const left = hadSession ? { name: agentName(), id: agentId(), launch: launch(), key: connectionKey(), states: sessionStates(), conversation: state(), chats: untrack(backgroundThreads).map((thread) => thread.state()) } : undefined;
     setRefused(undefined);
     batch(() => {
       setWorking(true);
@@ -720,7 +762,7 @@ export function createAgentController(props: AgentPanelProps) {
       }
     } catch (cause) {
       if (!current()) return;
-      handoff = undefined;
+      setHandoff(undefined);
       if (left && (await keptConnection(left.key))) {
         if (!current()) return;
         // The old agent is still connected: back to its chat as it was, with the error card over it.
@@ -730,10 +772,9 @@ export function createAgentController(props: AgentPanelProps) {
           setAgentId(left.id);
           setLaunch(left.launch);
           setConnectionKey(left.key);
-          for (const [key, chat] of left.chats) chats.set(key, chat);
-          bumpChats();
+          for (const chat of left.chats) place(chat.key, chat);
           setSessionStates(left.states);
-          setState({ ...left.conversation, failure: { phase: "connect", message: errorText(cause), log: state().stderr } });
+          update(() => ({ ...left.conversation, failure: { phase: "connect", message: errorText(cause), log: state().stderr } }));
         });
         void refreshSessionStates();
         return;
@@ -758,11 +799,11 @@ export function createAgentController(props: AgentPanelProps) {
   }
   /** The switched-to session is ready: mark the switch in the feed and arm the carried context for its first prompt. */
   function finishHandoff(id: string) {
-    const pending = handoff;
+    const pending = handoff();
     if (!pending || pending.sessionId) return;
     update((previous) => addFeedItem(previous, { kind: "handoff", from: pending.from, to: pending.to, carried: Boolean(pending.text) }));
     if (pending.link) linkThread(id, pending.link);
-    handoff = pending.text ? { ...pending, sessionId: id } : undefined;
+    setHandoff(pending.text ? { ...pending, sessionId: id } : undefined);
   }
   const connectInstalled = (id: string) => {
     const entry = installed().find((agent) => agent.id === id);
@@ -854,7 +895,7 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       await api.agentDisconnect();
       if (!current()) return;
-      handoff = undefined;
+      setHandoff(undefined);
       setRefused(undefined);
       update((previous) => addFeedItem({ ...previous, sessionId: undefined, auth: undefined, running: false, status: "disconnected", statusMessage: "No agent connected" }, { kind: "note", text: "Agent disconnected" }));
       setConnecting(undefined);
@@ -991,15 +1032,19 @@ export function createAgentController(props: AgentPanelProps) {
   async function dispatch(entry: Queued, options: { steered?: boolean; sentNow?: boolean } = {}) {
     const current = guard(agentEpoch);
     // A steer still waiting here belongs to an earlier turn; it must not fire after this one.
-    if (steering && !options.steered) releaseSteer();
-    const turn = ++turnCounter;
+    if (steering() && !options.steered) releaseSteer();
+    const turn = turnCounter() + 1;
+    // The thread this prompt goes to: its prompts in flight settle there even when the user switches chats meanwhile.
+    const owner = untrack(focused);
+    updateThread((current) => ({ ...current, turn }));
     setBusyNotice(false);
     setRefused(undefined);
     const promptSession = state().sessionId;
     if (promptSession) prompted.add(promptSession);
     // The first prompt after an agent switch carries the context, exactly once. Slash commands go out unchanged.
-    const carried = handoff?.text && handoff.sessionId && handoff.sessionId === state().sessionId && !entry.message.trimStart().startsWith("/") ? handoff : undefined;
-    if (carried) handoff = undefined;
+    const waiting = handoff();
+    const carried = waiting?.text && waiting.sessionId && waiting.sessionId === state().sessionId && !entry.message.trimStart().startsWith("/") ? waiting : undefined;
+    if (carried) setHandoff(undefined);
     const message = carried ? withHandoff(carried.text!, entry.message) : entry.message;
     update((previous) =>
       addFeedItem(
@@ -1022,7 +1067,7 @@ export function createAgentController(props: AgentPanelProps) {
     setTurnStart(Date.now());
     setView("session");
     followLatest();
-    promptsInFlight += 1;
+    followMoves(owner).update((current) => ({ ...current, promptsInFlight: current.promptsInFlight + 1 }));
     try {
       await api.agentPrompt(message, entry.attachments);
       if (turnMeta) void recordSessionMeta(turnMeta);
@@ -1031,14 +1076,14 @@ export function createAgentController(props: AgentPanelProps) {
       if (!current()) return;
       if (isBusyPromptError(cause)) {
         // Nothing was sent, so the carried context waits for the next prompt.
-        if (carried && !handoff) handoff = carried;
+        if (carried && !handoff()) setHandoff(carried);
         // The session still runs a turn (for example one started before this chat was reopened). Nothing was sent:
         // show it as running, give the text back and offer steer or queue instead of an error card.
         const known = busyState(cause);
         update((previous) => ({ ...previous, running: true, stopRequested: false, status: "busy", statusMessage: "Agent is working", feed: previous.feed.filter((item) => item.id !== itemId) }));
         if (known?.startedAtMs) setTurnStart(known.startedAtMs);
         setBusyNotice(true);
-        if (steering?.turn === turn) {
+        if (steering()?.turn === turn) {
           releaseSteer();
           return;
         }
@@ -1060,25 +1105,25 @@ export function createAgentController(props: AgentPanelProps) {
       if ((state().auth || limit) && promptSession && promptSession === state().sessionId) {
         // Refused for a missing sign-in or a limit: the carried context waits for the resend and the card may send
         // this exact turn again with another model or agent.
-        if (carried && !handoff) handoff = carried;
-        if (turn === turnCounter) setRefused({ sessionId: promptSession, entry, itemId, ...(limit ? { limit } : {}) });
+        if (carried && !handoff()) setHandoff(carried);
+        if (turn === turnCounter()) setRefused({ sessionId: promptSession, entry, itemId, ...(limit ? { limit } : {}) });
       }
       if (limit) markLimited(limit);
-      if (steering?.turn === turn) {
+      if (steering()?.turn === turn) {
         // This turn was being steered: the user wants the steer, not this turn's text, back.
         releaseSteer();
         return;
       }
-      if (turn !== turnCounter) return;
+      if (turn !== turnCounter()) return;
       if (!prompt()) setPrompt(entry.text);
       if (!attachments().length && entry.items.length) setAttachments(entry.items);
     } finally {
-      promptsInFlight -= 1;
+      followMoves(owner).update((current) => ({ ...current, promptsInFlight: current.promptsInFlight - 1 }));
     }
   }
   /** Sends plain prompt text, for Continue, agent slash commands and Compact. */
   const sendText = (text: string) => {
-    if (!connected() || running() || steering) return;
+    if (!connected() || running() || steering()) return;
     void dispatch({ id: `q-${++queueCounter}`, text, message: text, attachments: [], items: [] });
   };
   /** Enter while idle, and Tab or the send button while a turn runs: sends now, or queues behind the running turn. */
@@ -1123,7 +1168,7 @@ export function createAgentController(props: AgentPanelProps) {
       if (running()) setBusyNotice(false);
       if (mode === "steer" && running() && online()) void startSteer(entry);
       // A steer waiting for its cancel to resolve goes first, so anything sent meanwhile queues behind it.
-      else if (running() || !online() || steering) setQueue((previous) => [...previous, entry]);
+      else if (running() || !online() || steering()) setQueue((previous) => [...previous, entry]);
       else void dispatch(entry);
     } catch (cause) {
       if (current()) fail({ phase: "prompt", message: `Prompt failed: ${errorText(cause)}` });
@@ -1133,45 +1178,47 @@ export function createAgentController(props: AgentPanelProps) {
   }
   async function startSteer(entry: Queued) {
     const current = guard(agentEpoch);
-    if (steering) {
+    if (steering()) {
       // A steer is already waiting for its turn to end, so this one waits behind it.
       setQueue((previous) => [...previous, entry]);
       return;
     }
-    const pending: Steering = { entry, cancelled: false, turn: turnCounter };
-    steering = pending;
+    const pending: NonNullable<ThreadState["steering"]> = { entry, cancelled: false, turn: turnCounter() };
+    setSteering(pending);
     patch({ stopRequested: true, statusMessage: "Steering the agent" });
     try {
       await api.agentCancel();
     } catch (cause) {
       // Released meanwhile (the turn errored or the connection dropped): the entry already went back to the user.
-      if (!current() || steering !== pending) return;
-      steering = undefined;
+      if (!current() || steering() !== pending) return;
+      setSteering(undefined);
       setQueue((previous) => [entry, ...previous]);
       patch({ stopRequested: false, statusMessage: "Agent is working", failure: { phase: "prompt", message: `Could not cancel the turn, so the message was queued: ${errorText(cause)}` } });
       return;
     }
-    if (!current() || steering !== pending) return;
+    if (!current() || steering() !== pending) return;
     pending.cancelled = true;
     flushSteer();
   }
   /** Sends the steer message once the cancel resolved and the cancelled turn ended. Called from both sides. */
   function flushSteer() {
-    if (!steering?.cancelled || running()) return;
-    if (steering.turn !== turnCounter) {
+    const waiting = steering();
+    if (!waiting?.cancelled || running()) return;
+    if (waiting.turn !== turnCounter()) {
       // Another turn ran since this steer started, so its moment has passed.
       releaseSteer();
       return;
     }
-    const { entry } = steering;
-    steering = undefined;
+    const { entry } = waiting;
+    setSteering(undefined);
     void dispatch(entry, { steered: true });
   }
   /** Queued follow-ups go out together once the agent finishes, unless one was picked with Send now. */
   function drainQueue(options: { force?: boolean } = {}) {
     const waiting = queue();
-    if (!waiting.length || running() || !connected() || !online() || steering) return;
+    if (!waiting.length || running() || !connected() || !online() || steering()) return;
     // A held queue goes out only on the user's word: Send queued, or Send now on one message (which sets `priority`).
+    const priority = queueSending();
     if (queueHeld() && !options.force && !priority) return;
     const chosen = priority ? waiting.find((entry) => entry.id === priority) : undefined;
     pick(undefined);
@@ -1433,71 +1480,77 @@ export function createAgentController(props: AgentPanelProps) {
     if (changed) totals.paths.add(proposal.path);
     void recordSessionMeta({ agentId: agent, sessionId: session, filesChanged: totals.base.files + totals.paths.size, linesAdded: totals.base.add + totals.add, linesRemoved: totals.base.del + totals.del });
   }
-  /** The open chat as a snapshot: its conversation, draft, attachments, queue and where it was scrolled. */
-  function snapshotOpen(): ChatSnapshot {
-    return {
-      conversation: state(),
-      draft: prompt(),
-      attachments: attachments(),
-      queue: queue(),
-      queueHeld: queueHeld(),
-      pinned: pinned(),
-      scrollTop: scrollers.content?.scrollTop,
-      turnStart: turnStart(),
-      touchedAt: Date.now(),
-    };
-  }
-  /** Puts the open chat in the background store, so leaving it never resets it. */
+  /** Puts the open chat in the background: its thread stays live in the registry and keeps receiving its events. */
   function stashOpenChat() {
-    const id = state().sessionId;
-    const connection = connectionKey();
     // A steer waiting on this chat's turn goes back to its composer text or queue first.
     releaseSteer();
-    if (!id || !connection) return;
-    chats.set(chatKey(connection, id), toBackground(snapshotOpen()));
-    chats.prune((key) => {
-      const sessionId = key.slice(key.indexOf("\u0000") + 1);
-      return isLive(sessionId);
-    });
-    bumpChats();
-  }
-  /** Shows a chat: the stored snapshot when there is one, otherwise an empty view. */
-  function showChat(sessionId: string | undefined, chat: ChatSnapshot | undefined, full: boolean) {
-    // A Send now picked in the chat being left belongs to it: it must not lock this chat's queue order or release its hold.
+    // A Send now picked here waits for this chat's turn boundary, which the chat leaves: it must not lock the order.
     pick(undefined);
-    if (chat && full) update((live) => ({ ...withConversation(live, chat.conversation), sessionId }));
-    else update((live) => ({ ...resetConversation(live), sessionId, failure: undefined }));
-    setPrompt(chat?.draft ?? "");
-    setAttachments(chat?.attachments ?? []);
-    setQueue(chat?.queue ?? []);
-    setQueueHeld(Boolean(chat?.queueHeld));
-    setPinned(full ? (chat?.pinned ?? true) : true);
-    setTurnStart(full && chat ? chat.turnStart : 0);
-    const top = full && chat && !chat.pinned ? chat.scrollTop : undefined;
-    if (top !== undefined) requestAnimationFrame(() => scrollers.content?.scrollTo({ top }));
+    if (!state().sessionId || !connectionKey()) return;
+    updateThread((chat) => toBackground({ ...chat, scrollTop: scrollers.content?.scrollTop, touchedAt: Date.now() }));
+  }
+  /** Shows another chat by focusing its thread. The chat left stays in the background, unless it is transient or `discard`. */
+  function focusThread(next: Thread, options: { discard?: boolean } = {}) {
+    const left = untrack(focused);
+    if (left === next) return;
+    setFocused(next);
+    if (options.discard || transientKey(left.key)) threads.close(left.key);
+  }
+  /** Background chats beyond `CHAT_LIMIT` are closed, oldest idle first; a chat still working never is. */
+  function pruneChats() {
+    const held = new Map(untrack(backgroundThreads).map((thread) => [sessionKeyId(thread.key), thread] as const));
+    const gone = evictions([...held].map(([id, thread]) => [id, thread.state()] as const), CHAT_LIMIT, (id) => isLive(held.get(id)!.key.sessionId));
+    for (const id of gone) threads.close(held.get(id)!.key);
   }
   /**
-   * Opens another chat. The chat being left goes to the background store and keeps receiving its events. A chat Span
-   * holds that is still working comes back exactly as it was; an idle one is replayed by the agent (session/load), so
-   * only its draft and queue come from the store; a chat Span never held shows only what loads.
+   * Shows the chat of `target` (a new chat without one): a thread Span holds comes back exactly as it was when `live`,
+   * otherwise only its draft and queue are kept and the agent replays the rest; a chat Span never held starts empty.
+   * Returns the shown thread and what it held before.
+   */
+  function showChat(target: string | undefined, live: boolean, options: { discard?: boolean } = {}) {
+    const fields = state();
+    const left = untrack(focused);
+    const connection = connectionKey();
+    const key: SessionKey = target ? { connectionId: connection ?? "", sessionId: target } : NO_KEY;
+    const held = threads.get(key);
+    const stored = held && held !== left ? held.state() : undefined;
+    const thread = held ?? threads.open(key);
+    focusThread(thread, options);
+    const full = Boolean(stored && live);
+    thread.update((chat) => ({
+      ...(stored ? chat : { ...blankThread(chat.conversation), key: chat.key }),
+      conversation: full ? { ...withConversation(fields, chat.conversation), sessionId: target } : { ...resetConversation(fields), sessionId: target, failure: undefined },
+      pinned: full ? chat.pinned : true,
+      turnStart: full ? chat.turnStart : 0,
+      queueSending: undefined,
+      touchedAt: Date.now(),
+    }));
+    const top = full && stored && !stored.pinned ? stored.scrollTop : undefined;
+    if (top !== undefined) requestAnimationFrame(() => scrollers.content?.scrollTo({ top }));
+    return { thread, stored };
+  }
+  /**
+   * Opens another chat. The chat being left stays a live thread in the background and keeps receiving its events. A
+   * chat Span holds that is still working comes back exactly as it was; an idle one is replayed by the agent
+   * (session/load), so only its draft and queue come from its thread; a chat Span never held shows only what loads.
    */
   async function switchChat(start: () => Promise<string>, failure: string, options: { keepView?: boolean; target?: string; discardOpen?: boolean; fresh?: boolean } = {}) {
     const current = guard(++agentEpoch);
     setMenu(null);
     setWorking(true);
+    const left = untrack(focused);
     const previousId = state().sessionId;
     setRefused(undefined);
     if (options.discardOpen) releaseSteer();
     else stashOpenChat();
     followed.clear();
     setBusyNotice(false);
-    const connection = connectionKey();
     const target = options.target;
-    const targetKey = target && connection ? chatKey(connection, target) : undefined;
-    const stored = targetKey ? chats.get(targetKey) : undefined;
     const live = isLive(target);
-    if (targetKey) chats.delete(targetKey);
-    showChat(target, stored, Boolean(stored && live));
+    const shown = showChat(target, live, { discard: options.discardOpen });
+    setRefused(undefined);
+    setBusyNotice(false);
+    pruneChats();
     try {
       const id = await start();
       if (!current()) return;
@@ -1508,18 +1561,23 @@ export function createAgentController(props: AgentPanelProps) {
       if (busy && mine?.startedAtMs) setTurnStart(mine.startedAtMs);
       if (!options.keepView) {
         setView("session");
-        if (!stored || !live || stored.pinned) followLatest();
+        if (!shown.stored || !live || shown.stored.pinned) followLatest();
         focusPrompt();
       }
     } catch (cause) {
       if (!current()) return;
-      // Nothing changed on the backend: put the target back and reopen the chat that was open.
-      if (targetKey && stored) chats.set(targetKey, stored);
-      const backKey = previousId && connection ? chatKey(connection, previousId) : undefined;
-      const back = backKey ? chats.get(backKey) : undefined;
-      if (backKey) chats.delete(backKey);
-      showChat(previousId, back, Boolean(back));
-      bumpChats();
+      // Nothing changed on the backend: the target goes back to what it held and the chat that was open comes back.
+      const fields = state();
+      const target = untrack(focused);
+      if (shown.stored) target.update(() => shown.stored!);
+      if (threads.get(left.key) === left) {
+        focusThread(left);
+        left.update((chat) => ({ ...chat, conversation: { ...withConversation(fields, chat.conversation), sessionId: previousId } }));
+        if (!left.state().pinned && left.state().scrollTop !== undefined) requestAnimationFrame(() => scrollers.content?.scrollTo({ top: left.state().scrollTop }));
+      } else {
+        showChat(previousId, false);
+      }
+      if (!shown.stored && target !== untrack(focused) && threads.get(target.key) === target) threads.close(target.key);
       patch({ sessionId: previousId, failure: { phase: "session", message: `${failure}: ${errorText(cause)}` } });
     } finally {
       if (current()) setWorking(false);
@@ -1548,8 +1606,8 @@ export function createAgentController(props: AgentPanelProps) {
     }
     if (!current()) return;
     setSessions((previous) => previous.filter((session) => session.sessionId !== id));
-    const connection = connectionKey();
-    if (connection && chats.delete(chatKey(connection, id))) bumpChats();
+    const gone = threadOf(connectionKey(), id);
+    if (gone && gone !== untrack(focused)) threads.close(gone.key);
     if (active) {
       await switchChat(() => api.agentNewSession(), "Could not start a new chat", { keepView: true, discardOpen: true, fresh: true });
       // The desktop already cleared the active session, so a failed restart must not keep pointing at it.
@@ -1681,7 +1739,7 @@ export function createAgentController(props: AgentPanelProps) {
       nextId: previous.nextId + 1,
       feed: [...carryFeed(earlier), { id: previous.nextId + 1, kind: "branch", mode, carried: Boolean(text) }, ...previous.feed],
     }));
-    handoff = text ? { from, to: from, text, sessionId: id, note: BRANCH_CONTEXT_NOTE } : undefined;
+    setHandoff(text ? { from, to: from, text, sessionId: id, note: BRANCH_CONTEXT_NOTE } : undefined);
     if (draft) {
       setPrompt(draft.text);
       setAttachments(draft.items);
@@ -2031,19 +2089,17 @@ export function createAgentController(props: AgentPanelProps) {
 
   /** Earlier chats this window holds (other than the open one) that have something to export. */
   const earlierChats = createMemo(() => {
-    chatVersion();
     const open = state().sessionId;
-    return chats.keys().flatMap((key) => {
-      const sessionId = key.slice(key.indexOf("\u0000") + 1);
-      const chat = chats.get(key);
-      if (!chat || sessionId === open) return [];
-      const turns = feedTurns(chat.conversation.feed).length;
-      return turns ? [{ key, sessionId, title: chatTitle(sessionId), turns }] : [];
+    return backgroundThreads().flatMap((thread) => {
+      const { sessionId } = thread.key;
+      if (transientKey(thread.key) || sessionId === open) return [];
+      const turns = feedTurns(thread.state().conversation.feed).length;
+      return turns ? [{ key: sessionKeyId(thread.key), sessionId, title: chatTitle(sessionId), turns }] : [];
     });
   });
   /** Earlier session: attaches that chat as a Markdown transcript built here, with absolute paths redacted. */
   function attachSession(key: string) {
-    const chat = chats.get(key);
+    const chat = backgroundThreads().find((thread) => sessionKeyId(thread.key) === key)?.state();
     const entry = earlierChats().find((item) => item.key === key);
     if (!chat || !entry) {
       intake.reject([{ name: "Earlier session", reason: "That chat is no longer held in this window." }]);
@@ -2170,7 +2226,10 @@ export function createAgentController(props: AgentPanelProps) {
     turnElapsed,
     runningStep,
     toolBar,
-    chatCount: () => (chatVersion(), chats.size()),
+    chatCount: () => backgroundThreads().length,
+    /** The open chat's thread, and the keys of every thread held. For tests and diagnostics; components read the fields above. */
+    focusedThread: focused,
+    threadKeys: () => threads.list().map((thread) => thread.key),
     feed,
     savedImage: savedImages.get,
     connected,
