@@ -2547,3 +2547,351 @@ async fn background_connections_forward_only_child_requests_until_promoted() {
         "{replayed:?}"
     );
 }
+
+// Thread clutter (ADR 0003, amendment of 2026-10-29). Each test uses its own
+// agent name: the record of delegated children is process wide.
+
+impl Harness {
+    /// Prompt `text` in `key` and return the first text the agent answers.
+    async fn ask(&mut self, key: &SessionKey, text: &str) -> String {
+        let manager = self.manager.clone();
+        let target = key.clone();
+        let prompt = text.to_owned();
+        let turn = tokio::spawn(async move { manager.prompt(&target, prompt, vec![]).await });
+        let event = self
+            .next(|e| {
+                e.connection_id == key.connection_id
+                    && e.session_id.as_deref() == Some(key.session_id.as_str())
+                    && matches!(e.event, AgentEvent::Text { .. })
+            })
+            .await;
+        turn.await.unwrap().expect("turn");
+        let AgentEvent::Text { text, .. } = event.event else {
+            unreachable!()
+        };
+        text
+    }
+}
+
+#[tokio::test]
+async fn messages_to_one_delegation_reuse_its_single_child_session() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h.connect(&["--name=clutter-once"]).await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+    let started = client
+        .tool(
+            "delegate",
+            json!({"agent": "clutter-once", "task": "reply:first"}),
+        )
+        .await;
+    let child = structured(&started)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task = structured(&started)["taskId"].as_str().unwrap().to_owned();
+    client.until_finished(&task).await;
+    // N follow-ups: every one is a turn of the same child, never a new session.
+    for n in 0..4 {
+        let sent = client
+            .tool(
+                "message",
+                json!({"sessionId": child, "text": format!("reply:follow-up {n}")}),
+            )
+            .await;
+        assert_eq!(structured(&sent)["sessionId"], child.as_str());
+        let task = structured(&sent)["taskId"].as_str().unwrap().to_owned();
+        let result = client.until_finished(&task).await;
+        assert_eq!(structured(&result)["status"], "completed");
+    }
+    let counted = client
+        .tool("message", json!({"sessionId": child, "text": "created"}))
+        .await;
+    let task = structured(&counted)["taskId"].as_str().unwrap().to_owned();
+    let result = client.until_finished(&task).await;
+    let summary = result["content"][0]["text"].as_str().unwrap();
+    assert_eq!(
+        summary.trim().lines().last(),
+        Some("1"),
+        "one session/new for 5 prompts: {summary}"
+    );
+    assert!(span_acp::is_delegated_session(&child));
+    assert_eq!(server.tasks().len(), 6);
+    assert!(h.manager.session(&SessionKey::new(worker, child)).is_some());
+}
+
+#[tokio::test]
+async fn a_lead_cannot_start_more_distinct_delegations_than_the_cap() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h.connect(&["--name=clutter-cap"]).await;
+    let policy = ToolPolicy {
+        max_delegations: 2,
+        ..scaled()
+    };
+    let (_lead, server) = h.lead(&lead_connection, policy).await;
+    let mut client = Client::new(&server);
+    let mut children = Vec::new();
+    for _ in 0..2 {
+        let started = client
+            .tool(
+                "delegate",
+                json!({"agent": "clutter-cap", "task": "reply:ok"}),
+            )
+            .await;
+        assert_eq!(started["isError"], false, "{started}");
+        children.push(
+            structured(&started)["sessionId"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let refused = client
+        .tool(
+            "delegate",
+            json!({"agent": "clutter-cap", "task": "reply:again"}),
+        )
+        .await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(structured(&refused)["reason"], "budget_exceeded");
+    let detail = structured(&refused)["detail"].as_str().unwrap();
+    assert!(detail.contains("already started 2 delegations"), "{detail}");
+    assert!(detail.contains("message"), "{detail}");
+    // No third child exists, and an existing child still takes follow-ups.
+    let delegated: Vec<_> = h
+        .manager
+        .sessions()
+        .into_iter()
+        .filter(|s| s.key.connection_id == worker)
+        .collect();
+    assert_eq!(delegated.len(), 2);
+    let sent = client
+        .tool(
+            "message",
+            json!({"sessionId": children[0], "text": "reply:still here"}),
+        )
+        .await;
+    assert_eq!(sent["isError"], false, "{sent}");
+}
+
+#[tokio::test]
+async fn children_leave_history_and_are_deleted_once_when_their_lead_ends() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h
+        .connect(&["--name=clutter-end", "--delete", "--list", "--keep-closed"])
+        .await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+    let started = client
+        .tool(
+            "delegate",
+            json!({"agent": "clutter-end", "task": "reply:done"}),
+        )
+        .await;
+    let child = structured(&started)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task = structured(&started)["taskId"].as_str().unwrap().to_owned();
+    client.until_finished(&task).await;
+
+    // A user chat on the same agent is listed; the child never is.
+    let chat = h
+        .manager
+        .open_session(&worker, None, SessionOrigin::User)
+        .await
+        .unwrap();
+    h.ask(&chat, "reply:hello").await;
+    let service = h.manager.service(&worker).unwrap();
+    let listed: Vec<String> = service
+        .list_sessions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.session_id)
+        .collect();
+    assert!(listed.contains(&chat.session_id), "{listed:?}");
+    assert!(!listed.contains(&child), "{listed:?}");
+    assert_eq!(h.ask(&chat, "ended").await, "[]");
+
+    // The lead ends (its agent cannot close sessions, so its process is
+    // disconnected): its finished child is deleted, exactly once.
+    h.manager.disconnect(&lead_connection).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !span_acp::ended_delegated_sessions("clutter-end").contains(&child) {
+        assert!(
+            Instant::now() < deadline,
+            "child never ended: open {:?}, server running {}",
+            span_acp::open_delegated_sessions("clutter-end"),
+            server.running()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!server.running());
+    let again = span_acp::end_delegated_session(
+        &h.manager,
+        &worker,
+        "clutter-end",
+        &child,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(again, span_acp::Ended::AlreadyEnded);
+    // Never a user chat, even when asked directly.
+    let refused = span_acp::end_delegated_session(
+        &h.manager,
+        &worker,
+        "clutter-end",
+        &chat.session_id,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(refused, span_acp::Ended::NotRecorded);
+    let ended: Vec<String> = serde_json::from_str(&h.ask(&chat, "ended").await).unwrap();
+    assert_eq!(ended, vec![child.clone()]);
+    // Still hidden from History although the agent keeps listing it.
+    let listed: Vec<String> = service
+        .list_sessions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.session_id)
+        .collect();
+    assert!(!listed.contains(&child), "{listed:?}");
+}
+
+#[tokio::test]
+async fn leftovers_of_an_earlier_run_are_ended_by_recorded_id_only() {
+    let mut h = harness();
+    let worker = h
+        .connect(&[
+            "--name=clutter-sweep",
+            "--delete",
+            "--list",
+            "--keep-closed",
+        ])
+        .await;
+    // Recorded by an earlier run of Span and never ended.
+    span_acp::record_delegated_session("clutter-sweep", "old-child-1");
+    span_acp::record_delegated_session("clutter-sweep", "old-child-2");
+    let chat = h
+        .manager
+        .open_session(&worker, None, SessionOrigin::User)
+        .await
+        .unwrap();
+    let swept = span_acp::sweep_delegated_sessions(
+        &h.manager,
+        &worker,
+        "clutter-sweep",
+        20,
+        Duration::from_millis(5),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(swept, 2);
+    // Once per agent per process.
+    let again = span_acp::sweep_delegated_sessions(
+        &h.manager,
+        &worker,
+        "clutter-sweep",
+        20,
+        Duration::from_millis(5),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(again, 0);
+    let ended: Vec<String> = serde_json::from_str(&h.ask(&chat, "ended").await).unwrap();
+    assert_eq!(
+        ended,
+        vec!["old-child-1".to_owned(), "old-child-2".to_owned()]
+    );
+    assert!(span_acp::open_delegated_sessions("clutter-sweep").is_empty());
+}
+
+#[tokio::test]
+async fn an_idle_child_is_ended_and_a_late_message_is_refused_clearly() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h.connect(&["--name=clutter-idle", "--delete"]).await;
+    // Five policy seconds of 10 ms: the child may sit idle for 50 ms.
+    let policy = ToolPolicy {
+        child_idle_seconds: 5,
+        ..scaled()
+    };
+    let (_lead, server) = h.lead(&lead_connection, policy).await;
+    let mut client = Client::new(&server);
+    let started = client
+        .tool(
+            "delegate",
+            json!({"agent": "clutter-idle", "task": "reply:done"}),
+        )
+        .await;
+    let child = structured(&started)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task = structured(&started)["taskId"].as_str().unwrap().to_owned();
+    client.until_finished(&task).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !span_acp::ended_delegated_sessions("clutter-idle").contains(&child) {
+        assert!(Instant::now() < deadline, "idle child never ended");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(h
+        .manager
+        .session(&SessionKey::new(worker, child.clone()))
+        .is_none());
+    let late = client
+        .tool(
+            "message",
+            json!({"sessionId": child, "text": "reply:too late"}),
+        )
+        .await;
+    assert_eq!(late["isError"], true, "{late}");
+    assert_eq!(structured(&late)["reason"], "agent_unavailable");
+    let detail = structured(&late)["detail"].as_str().unwrap();
+    assert!(detail.contains("closed after sitting idle"), "{detail}");
+    assert!(detail.contains("delegate again"), "{detail}");
+}
+
+#[tokio::test]
+async fn a_lead_runs_at_most_the_concurrent_cap_of_delegated_tasks() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    h.connect(&["--name=clutter-busy"]).await;
+    let policy = ToolPolicy {
+        max_concurrent: 1,
+        ..scaled()
+    };
+    let (_lead, server) = h.lead(&lead_connection, policy).await;
+    let mut client = Client::new(&server);
+    let first = client
+        .tool(
+            "delegate",
+            json!({"agent": "clutter-busy", "task": "work:20:10"}),
+        )
+        .await;
+    assert_eq!(first["isError"], false, "{first}");
+    let refused = client
+        .tool(
+            "delegate",
+            json!({"agent": "clutter-busy", "task": "reply:second"}),
+        )
+        .await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(structured(&refused)["reason"], "budget_exceeded");
+    let detail = structured(&refused)["detail"].as_str().unwrap();
+    assert!(detail.contains("1 delegated tasks running"), "{detail}");
+    let task = structured(&first)["taskId"].as_str().unwrap().to_owned();
+    client.until_finished(&task).await;
+    let after = client
+        .tool(
+            "delegate",
+            json!({"agent": "clutter-busy", "task": "reply:now"}),
+        )
+        .await;
+    assert_eq!(after["isError"], false, "{after}");
+}

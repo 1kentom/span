@@ -262,6 +262,16 @@ credentials.
 
 Not implemented yet (phase 1 of ADR 0011).
 
+## Amendment (2026-10-29): delegated children are not History rows
+
+A delegated child session (ADR 0003, amendment of the same date) belongs to
+its lead's thread. `session_meta_list` leaves out the metadata of every
+child id Span recorded (`span_acp::is_delegated_session`), as it already did
+for health check sessions. An entry stored with a `parent` link
+(`patches_for_delegation`) is kept in the list, so the link stays available,
+but `visibleThreadRows` in `ui/src/lib/session-threads.ts` never shows it as
+a row of its own. The store format is unchanged.
+
 ## Amendment (2026-10-29): usage counters
 
 ADR 0012 adds an optional `usage` field to each session: token and cost

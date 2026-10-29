@@ -218,6 +218,12 @@ pub(crate) trait Quirks: Send + Sync {
     fn approval_session_meta(&self) -> Option<Value> {
         None
     }
+    /// `_meta` for the `session/new` of a session Span opens for itself (a
+    /// delegated child, the health check) that should stay out of the
+    /// agent's own resume list. `None` when the agent has no such option.
+    fn ephemeral_session_meta(&self) -> Option<Value> {
+        None
+    }
 }
 
 /// MCP transports the agent advertised in `initialize`.
@@ -388,6 +394,9 @@ impl Adapter {
     }
 
     /// `_meta` for `session/new` under the approval start mode.
+    pub(crate) fn ephemeral_session_meta(&self) -> Option<Value> {
+        self.quirks.ephemeral_session_meta()
+    }
     pub(crate) fn approval_session_meta(&self) -> Option<Value> {
         self.quirks.approval_session_meta()
     }
