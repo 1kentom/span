@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
       agentResumeSession: vi.fn(async (id: string) => id),
       agentDisconnect: vi.fn(async () => undefined),
       agentListSessions: vi.fn(async (): Promise<unknown[]> => []),
+      agentCloseSession: vi.fn(async () => undefined),
     },
     agentPresets: vi.fn(async (): Promise<unknown[]> => []),
   };
@@ -38,6 +39,7 @@ beforeEach(() => {
     return "fresh";
   });
   mocks.api.agentResumeSession.mockClear();
+  mocks.api.agentCloseSession.mockClear();
   mocks.api.agentListSessions.mockReset();
   mocks.api.agentInstalled.mockResolvedValue([{ id: "codex", version: "1", launch: { command: "codex", args: ["acp"], env: {} } }]);
 });
@@ -60,6 +62,32 @@ describe("reopening the last chat on app start", () => {
     await open();
     expect(mocks.api.agentConnect).toHaveBeenCalledTimes(1);
     expect(mocks.api.agentResumeSession).toHaveBeenCalledWith("old");
+  });
+
+  it("closes the session the connect opened once the chat is resumed, where the agent can close", async () => {
+    mocks.api.agentConnect.mockImplementation(async () => {
+      mocks.emit({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features: { ...features, canCloseSessions: true }, authMethods: [] }, { kind: "session", sessionId: "fresh" } as AgentEvent);
+      return "fresh";
+    });
+    writeLastSession("/w", { agentId: "codex", sessionId: "old" });
+    mocks.api.agentListSessions.mockResolvedValue([summary("old")]);
+    const a = await open();
+    await tick();
+    expect(a.state().sessionId).toBe("old");
+    expect(mocks.api.agentCloseSession).toHaveBeenCalledTimes(1);
+    expect(mocks.api.agentCloseSession).toHaveBeenCalledWith("fresh");
+  });
+
+  it("never closes anything when the agent cannot close sessions or the resume did not happen", async () => {
+    writeLastSession("/w", { agentId: "codex", sessionId: "old" });
+    mocks.api.agentListSessions.mockResolvedValue([summary("old")]);
+    await open();
+    await tick();
+    expect(mocks.api.agentCloseSession).not.toHaveBeenCalled();
+    mocks.api.agentListSessions.mockResolvedValue([summary("other")]);
+    await open();
+    await tick();
+    expect(mocks.api.agentCloseSession).not.toHaveBeenCalled();
   });
 
   it("skips a chat the agent no longer lists, without an error", async () => {

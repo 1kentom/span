@@ -35,10 +35,24 @@ enum Listing {
     Health,
 }
 
+/// What a new session is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opened {
+    /// The user's chat: the user's start mode applies.
+    User,
+    /// A delegated child: always the approval start mode, whatever the
+    /// user's start mode for this agent, so a child never runs looser than
+    /// its lead could (ADR 0003, amendment of 2026-10-29). Kept out of the
+    /// agent's own history where the agent allows it.
+    Child,
+    /// A hidden Span session (see [`AgentService::new_hidden_session`]),
+    /// kept out of the agent's own history where the agent allows it.
+    Hidden,
+}
+
 enum Command {
-    /// MCP servers, and whether the session is a hidden Span session (see
-    /// [`AgentService::new_hidden_session`]).
-    NewSession(Vec<Value>, bool, Reply<String>),
+    /// MCP servers and what the session is for.
+    NewSession(Vec<Value>, Opened, Reply<String>),
     Prompt(String, Vec<ContentBlock>, Reply<()>),
     Authenticate(String, Option<Meta>, Reply<()>),
     Cancel(String),
@@ -413,7 +427,21 @@ impl AgentService {
     pub async fn new_session_with(&self, mcp_servers: Vec<Value>) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(mcp_servers, false, tx))
+            .send(Command::NewSession(mcp_servers, Opened::User, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Create a delegated child session (no MCP servers). It always starts
+    /// in the approval start mode, so its permission requests reach the user
+    /// even when the user let this agent keep its own (looser) default for
+    /// chats. Where the agent has an option for it (Claude:
+    /// `persistSession: false`), the child is not saved to the agent's own
+    /// history, so it never shows in the agent's resume list (ADR 0003,
+    /// amendment of 2026-10-29).
+    pub async fn new_child_session(&self) -> Result<String, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::NewSession(Vec::new(), Opened::Child, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -426,7 +454,7 @@ impl AgentService {
     pub async fn new_hidden_session(&self) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(Vec::new(), true, tx))
+            .send(Command::NewSession(Vec::new(), Opened::Hidden, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -1122,13 +1150,17 @@ async fn run(
                     },
                 };
                 match command {
-                    Command::NewSession(servers, hidden, reply) => {
+                    Command::NewSession(servers, opened, reply) => {
+                        let hidden = opened == Opened::Hidden;
+                        let ephemeral = opened != Opened::User;
                         // The start mode is read from the user's settings only. If it
-                        // cannot be read the session starts in the approval mode.
-                        let approval = workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
+                        // cannot be read the session starts in the approval mode. A
+                        // delegated child always does: no permission laundering.
+                        let approval = opened == Opened::Child || workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
                         let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
-                        if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { params["_meta"] = meta; }
+                        if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { merge_meta(&mut params, meta); }
+                        if let Some(meta) = adapter.ephemeral_session_meta().filter(|_| ephemeral) { merge_meta(&mut params, meta); }
                         let result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)).await;
                         let result = match result {
                             Ok(result) => result,
@@ -1273,8 +1305,8 @@ async fn run(
                             let result = if listing == Listing::Health {
                                 list_all_sessions(&list_cx, None, health).await
                             } else {
-                                // Health sessions are dropped page by page, so they never use up the cap.
-                                list_all_sessions(&list_cx, folder, move |summary| !health(summary)).await.map(|found| {
+                                // Health sessions and delegated children (ADR 0003) are dropped page by page, so they never use up the cap.
+                                list_all_sessions(&list_cx, folder, move |summary| !health(summary) && !crate::delegated::is_delegated_session(&summary.session_id)).await.map(|found| {
                                     let mut kept = hide_deleted(&list_state, &list_emit, found);
                                     kept.truncate(LIST_MAX_SESSIONS);
                                     kept
@@ -1955,11 +1987,46 @@ fn enum_string<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
+/// Merge `meta` into the request's `_meta`, object by object, so two
+/// adapter options (the approval mode's and an ephemeral session's) both
+/// reach the agent.
+fn merge_meta(params: &mut Value, meta: Value) {
+    fn merge(into: &mut Value, from: Value) {
+        match (into, from) {
+            (Value::Object(into), Value::Object(from)) => {
+                for (key, value) in from {
+                    merge(into.entry(key).or_insert(Value::Null), value);
+                }
+            }
+            (into, from) => *into = from,
+        }
+    }
+    merge(&mut params["_meta"], meta);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SECRET: &str = "s3cr3t-token-value";
+
+    #[test]
+    fn a_child_session_meta_keeps_the_approval_options_and_adds_persist_session() {
+        let mut params = json!({"cwd": "/w", "mcpServers": []});
+        merge_meta(
+            &mut params,
+            json!({"claudeCode": {"options": {"disallowedTools": ["ListAgents"]}}}),
+        );
+        merge_meta(
+            &mut params,
+            json!({"claudeCode": {"options": {"persistSession": false}}}),
+        );
+        assert_eq!(
+            params["_meta"],
+            json!({"claudeCode": {"options": {"disallowedTools": ["ListAgents"], "persistSession": false}}})
+        );
+        assert_eq!(params["cwd"], "/w");
+    }
 
     #[tokio::test]
     async fn completed_prompt_leaves_the_process_client_idle() {

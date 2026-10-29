@@ -53,6 +53,26 @@ pub struct ToolPolicy {
     /// Length of one policy second. One real second in production; tests
     /// shorten it to run a minutes long child in seconds.
     pub second: Duration,
+    /// Distinct delegations (child sessions) one lead session may start.
+    /// Follow-ups through `message` reuse a child and do not count. Default 8.
+    pub max_delegations: usize,
+    /// Children of one lead with a running or queued task at once. A new
+    /// delegation beyond it is refused; `message` to an existing child is
+    /// not. Default 4.
+    pub max_concurrent: usize,
+    /// Prompts all children of one lead may run together (delegations plus
+    /// every `message`). Default 60.
+    pub max_lead_turns: u32,
+    /// Measured tokens all children of one lead may spend together, where
+    /// the agents report usage. Default none.
+    pub max_lead_tokens: Option<u64>,
+    /// Policy seconds a child may sit idle after its task before Span ends
+    /// its session; a later `message` is then refused. Default 600.
+    pub child_idle_seconds: u64,
+    /// Pause between two child sessions Span ends (deletes or closes) after
+    /// their lead is gone, and between leftovers of an earlier run. Default
+    /// 500 ms.
+    pub end_gap: Duration,
 }
 
 impl Default for ToolPolicy {
@@ -65,6 +85,12 @@ impl Default for ToolPolicy {
             image_preview_bytes: 256 * 1024,
             launch_timeout_seconds: 25,
             second: Duration::from_secs(1),
+            max_delegations: 8,
+            max_concurrent: 4,
+            max_lead_turns: 60,
+            max_lead_tokens: None,
+            child_idle_seconds: 600,
+            end_gap: Duration::from_millis(500),
         }
     }
 }

@@ -3,6 +3,7 @@
 mod adapter;
 mod background;
 mod compatibility;
+mod delegated;
 mod health;
 mod launch;
 mod managed;
@@ -16,6 +17,10 @@ mod types;
 pub mod update;
 pub use adapter::agent_presets;
 pub use background::{BackgroundAgents, BackgroundState, Ensured, LaunchFn, LaunchFuture};
+pub use delegated::{
+    end_delegated_session, ended_delegated_sessions, is_delegated_session, open_delegated_sessions,
+    record_delegated_session, set_delegated_ledger, sweep_delegated_sessions, Ended,
+};
 pub use health::{
     AgentHealth, HealthEnabled, HealthMonitor, HealthPolicy, HealthSink, HealthState, HealthTarget,
     HealthTargets, HEALTH_CHECK_INTERVAL, HEALTH_PROMPT, HEALTH_TITLE_PREFIX,

@@ -70,11 +70,17 @@ fn refuse_health_session(session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Drops entries of health check sessions an earlier version may have stored.
+/// Drops entries of health check sessions an earlier version may have
+/// stored, and of recorded delegated children (ADR 0003): a child is shown
+/// inside its lead's thread, never as a History row of its own. An entry
+/// with a `parent` link is kept here; the UI leaves it out of History rows.
 fn without_health_sessions(metas: Vec<SessionMeta>) -> Vec<SessionMeta> {
     metas
         .into_iter()
-        .filter(|meta| !span_acp::is_hidden_session(&meta.session_id, None))
+        .filter(|meta| {
+            !span_acp::is_hidden_session(&meta.session_id, None)
+                && !span_acp::is_delegated_session(&meta.session_id)
+        })
         .collect()
 }
 
@@ -263,9 +269,18 @@ mod tests {
             changes_tracked: false,
             usage: None,
         };
-        let kept = without_health_sessions(vec![meta("meta-health-1"), meta("meta-user-1")]);
+        span_acp::record_delegated_session("meta-worker", "meta-child-1");
+        let kept = without_health_sessions(vec![
+            meta("meta-health-1"),
+            meta("meta-user-1"),
+            meta("meta-child-1"),
+        ]);
         let ids: Vec<&str> = kept.iter().map(|m| m.session_id.as_str()).collect();
-        assert_eq!(ids, vec!["meta-user-1"]);
+        assert_eq!(
+            ids,
+            vec!["meta-user-1"],
+            "health and delegated child left out"
+        );
     }
 
     #[test]

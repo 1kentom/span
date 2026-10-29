@@ -1226,6 +1226,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 lsp.use_trust_store(Arc::new(store));
             }
             app.manage(lsp);
+            agents::load_delegated_ledger(app.handle());
             agents::watch_session_states(app.handle());
             agents::watch_keyed_events(app.handle());
             menu::install(app.handle())?;
@@ -1265,6 +1266,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let state = app.state::<DesktopState>();
             // Before the processes end: close hidden check sessions where the agent can.
             agents::stop_health(&state);
+            // And delegated children the leads still hold (ADR 0003).
+            agents::end_delegated(&state);
             state.run_approvals.cancel_all();
             if let Err(error) = tauri::async_runtime::block_on(state.runs.shutdown()) {
                 eprintln!("Could not stop run processes: {error}");
