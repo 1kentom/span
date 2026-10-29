@@ -9,6 +9,7 @@ import { agentCatalog } from "./agent-stores/catalog";
 import { agentBackground } from "./agent-stores/background";
 import { agentLimits } from "./agent-stores/limits";
 import { agentHistory } from "./agent-stores/history";
+import { agentConnection, NO_STATES } from "./agent-stores/connection";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
@@ -46,7 +47,6 @@ import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
 const DELEGATION_POLL_MS = 3000;
-const NO_STATES: SessionStates = { connectionId: null, sessions: [] };
 
 export type AgentPanelProps = {
   workspacePath?: string;
@@ -97,10 +97,8 @@ export type View = "session" | "history" | "connect" | "logs";
 /** The one open composer or header popover. A single value, so opening one closes any other. */
 export type Menu = "model" | "mode" | "agents" | "attach" | "actions" | "usage" | null;
 export type Queued = { id: string; text: string; message: string; attachments: PromptAttachment[]; items: Attachment[] };
-type Launch = { command: AgentCommand; name: string; id?: string };
 /** A steer waiting for its turn to end. `turn` is the turn it interrupts; a steer never outlives that turn. */
 type Steering = { entry: Queued; cancelled: boolean; turn: number };
-type Connecting = { name: string; command: string; logBase: number; failed: boolean };
 /**
  * An agent switch in the open chat. `text` is the carried context, sent once ahead of the first prompt of the session
  * named by `sessionId`; `sessionId` is set when the new session is ready.
@@ -152,10 +150,9 @@ export function createAgentController(props: AgentPanelProps) {
   const { installed, registry, presets, registryBusy, installingIds, installErrors, installing, catalogSearch, setCatalogSearch, catalogRows, otherInstalled, registryName } = catalog;
   /** An installed agent waiting for the user to confirm its removal. Nothing is removed until confirmRemoval. */
   const [removal, setRemoval] = createSignal<{ entry: InstalledAgent; uninstall: boolean }>();
-  const [agentName, setAgentName] = createSignal("Select agent");
-  const [agentId, setAgentId] = createSignal<string>();
-  const [launch, setLaunch] = createSignal<Launch>();
-  const [connecting, setConnecting] = createSignal<Connecting>();
+  /** The focused agent connection (see the connection store). */
+  const connection = agentConnection.use();
+  const { agentName, setAgentName, agentId, setAgentId, launch, setLaunch, connecting, setConnecting, sessionStates, setSessionStates, connectionKey, setConnectionKey, attentionAnnouncement, setAttentionAnnouncement, runtimeOf, isLive } = connection;
   const [contextPaths, setContextPaths] = createSignal<string[]>([]);
   const [hiddenSelection, setHiddenSelection] = createSignal("");
   /** The agent's session list and Span's metadata index (see the history store). */
@@ -189,13 +186,6 @@ export function createAgentController(props: AgentPanelProps) {
   const chats = createChatStore();
   const [chatVersion, setChatVersion] = createSignal(0);
   const bumpChats = () => setChatVersion((version) => version + 1);
-  /** The backend's session states for the active connection: the only source of "is this chat running". */
-  const [sessionStates, setSessionStates] = createSignal<SessionStates>(NO_STATES);
-  /** The connection chats are keyed by: the backend connection id, or a local stand-in when it could not be read. */
-  const [connectionKey, setConnectionKey] = createSignal<string>();
-  let localConnection = 0;
-  /** Read once by screen readers: a background chat newly waits for the user. Timers never change it. */
-  const [attentionAnnouncement, setAttentionAnnouncement] = createSignal("");
   /** A prompt was refused because a turn is still running: the composer explains and offers steer or queue. */
   const [busyNotice, setBusyNotice] = createSignal(false);
   /** First and latest update time of each tool call, keyed by session and tool call id. */
@@ -462,12 +452,6 @@ export function createAgentController(props: AgentPanelProps) {
     const value = (event as { sessionId?: unknown }).sessionId;
     return typeof value === "string" && value ? value : undefined;
   };
-  const runtimeOf = (sessionId: string | undefined) => (sessionId ? sessionStates().sessions.find((entry) => entry.sessionId === sessionId) : undefined);
-  /** Running, waiting or with follow-ups queued on the backend. */
-  const isLive = (sessionId: string | undefined) => {
-    const entry = runtimeOf(sessionId);
-    return Boolean(entry && (entry.state !== "idle" || entry.queued > 0));
-  };
   function noteTool(event: AgentEvent) {
     if (event.kind !== "tool") return;
     const id = `${event.sessionId}:${event.toolCallId}`;
@@ -539,7 +523,7 @@ export function createAgentController(props: AgentPanelProps) {
     } catch {
       // Without states every row shows nothing, which is never wrong.
     }
-    if (!connectionKey()) setConnectionKey(`local-${++localConnection}`);
+    if (!connectionKey()) setConnectionKey(connection.localKey());
   }
   const chatTitle = (sessionId: string) => sessions().find((entry) => entry.sessionId === sessionId)?.title || chats.get(chatKey(connectionKey() ?? "", sessionId))?.conversation.sessionTitle || "A background chat";
   /** Applies published session states. States of another connection are ignored. */
