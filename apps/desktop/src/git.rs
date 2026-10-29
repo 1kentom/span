@@ -597,12 +597,20 @@ mod tests {
             "denied status must not run a clean filter"
         );
 
-        git_enable_for(state.clone(), context)
+        let activated = git_enable_for(state.clone(), context.clone())
             .await
             .expect("explicit activation");
+        git_stage_for(
+            state.clone(),
+            context,
+            vec!["tracked.txt".into()],
+            activated.index_revision,
+        )
+        .await
+        .expect("stage after explicit activation");
         assert!(
             marker.exists(),
-            "clean filter can run after explicit activation"
+            "clean filter can run during an authorized Git operation"
         );
         cancel_workspace(&state).await.expect("retire Git service");
     }
@@ -656,14 +664,25 @@ mod tests {
             !started.exists(),
             "context discovery must not execute configured filters"
         );
+        let activated = git_enable_for(state.clone(), context.clone())
+            .await
+            .expect("explicit activation before staging");
         let operation_state = state.clone();
-        let operation = tokio::spawn(async move { git_enable_for(operation_state, context).await });
+        let operation = tokio::spawn(async move {
+            git_stage_for(
+                operation_state,
+                context,
+                vec!["tracked.txt".into()],
+                activated.index_revision,
+            )
+            .await
+        });
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
         while !started.exists() {
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "Git clean filter did not start during activation"
+                "Git clean filter did not start during staging"
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
@@ -679,7 +698,7 @@ mod tests {
         let result = operation.await.expect("join activation operation");
         assert!(
             result.is_err(),
-            "canceled activation must not publish status"
+            "canceled staging must not publish a successful result"
         );
         assert!(
             !completed.exists(),

@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn parses_branch_staged_worktree_and_untracked_records() {
-        let data = b"# branch.oid abcdef\0# branch.head main\01 M. N... 100644 100644 100644 aaaaaaaa bbbbbbbb staged.txt\0? untracked file.txt\0";
+        let data = b"# branch.oid abcdef\0# branch.head main\x001 M. N... 100644 100644 100644 aaaaaaaa bbbbbbbb staged.txt\0? untracked file.txt\0";
         let status = parse_status(data).unwrap();
         assert_eq!(status.branch.as_deref(), Some("main"));
         assert_eq!(status.head.as_deref(), Some("abcdef"));
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn parses_rename_unicode_and_embedded_newline_path() {
-        let data = "# branch.head topic\02 R. N... 100644 100644 100644 aaaaaaaa bbbbbbbb R100 新しい\nname\0old name.txt\0".as_bytes();
+        let data = "# branch.head topic\x002 R. N... 100644 100644 100644 aaaaaaaa bbbbbbbb R100 新しい\nname\0old name.txt\0".as_bytes();
         let status = parse_status(data).unwrap();
         assert_eq!(status.entries[0].path.as_deref(), Some("新しい\nname"));
         assert_eq!(status.entries[0].old_path.as_deref(), Some("old name.txt"));
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn parses_actual_git_z_headers_and_rename_path_tokens() {
         // Captured from `git status --porcelain=v2 -z --branch --untracked-files=all --ignore-submodules=none --renames`.
-        let data = b"# branch.oid c7c2405fd3ec4c5591f63bbdfa4acb036c0acb0b\0# branch.head t\xc3\xb3pico\02 R. N... 100644 100644 100644 78981922613b2afb6025042ff6bd878ac1994e85 78981922613b2afb6025042ff6bd878ac1994e85 R100 new\nname\0old name\0";
+        let data = b"# branch.oid c7c2405fd3ec4c5591f63bbdfa4acb036c0acb0b\0# branch.head t\xc3\xb3pico\x002 R. N... 100644 100644 100644 78981922613b2afb6025042ff6bd878ac1994e85 78981922613b2afb6025042ff6bd878ac1994e85 R100 new\nname\0old name\0";
         let status = parse_status(data).unwrap();
         assert_eq!(status.branch.as_deref(), Some("tópico"));
         assert_eq!(

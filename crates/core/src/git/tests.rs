@@ -424,15 +424,12 @@ async fn history_pages_are_anchored_and_linked_worktree_has_its_own_identity() {
         .enable(&linked_repo.id, token())
         .await
         .expect("enable linked worktree session");
-    assert!(
-        linked
-            .history(&linked_repo.id, GitHistoryQuery::default(), token())
-            .await
-            .expect("linked history")
-            .commits
-            .len()
-            > 0
-    );
+    assert!(!linked
+        .history(&linked_repo.id, GitHistoryQuery::default(), token())
+        .await
+        .expect("linked history")
+        .commits
+        .is_empty());
 }
 
 #[tokio::test]

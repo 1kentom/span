@@ -94,19 +94,19 @@ mod tests {
 
     #[test]
     fn rejects_bad_hash_timestamp_and_truncated_record() {
-        assert!(parse_history(b"not-a-hash\0\0A\0a@b\01\0subject\0body\0").is_err());
+        assert!(parse_history(b"not-a-hash\0\0A\0a@b\x001\0subject\0body\0").is_err());
         let id = "d".repeat(40);
         assert!(
             parse_history(format!("{id}\0\0A\0a@b\0nope\0subject\0body\0").as_bytes()).is_err()
         );
-        assert!(parse_history(format!("{id}\0\0A\0a@b\01\0subject\0").as_bytes()).is_err());
+        assert!(parse_history(format!("{id}\0\0A\0a@b\x001\0subject\0").as_bytes()).is_err());
     }
 
     #[test]
     fn rejects_oversized_body() {
         let id = "e".repeat(40);
-        let mut bytes = format!("{id}\0\0A\0a@b\01\0subject\0").into_bytes();
-        bytes.extend(std::iter::repeat(b'x').take(64 * 1024 + 1));
+        let mut bytes = format!("{id}\0\0A\0a@b\x001\0subject\0").into_bytes();
+        bytes.extend(std::iter::repeat_n(b'x', 64 * 1024 + 1));
         bytes.push(0);
         assert!(parse_history(&bytes).is_err());
     }
