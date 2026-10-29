@@ -148,6 +148,17 @@ export const commands = {
 	usageSessions: (range: UsageRange_Deserialize) => __TAURI_INVOKE<SessionUsageRow_Serialize[]>("usage_sessions", { range }),
 	/**  The price table in use, with the user's overrides first. */
 	usagePrices: () => __TAURI_INVOKE<PriceTable_Serialize>("usage_prices"),
+	/**
+	 *  Starts a background scan of the local logs when the user turned the
+	 *  importer on and no scan is running. Returns at once; poll
+	 *  `usage_import_status` for progress.
+	 */
+	usageImportScan: () => __TAURI_INVOKE<UsageImportStatus_Serialize>("usage_import_scan"),
+	/**
+	 *  The importer's state: whether it is on, a running scan's progress, and the
+	 *  last scan's outcome.
+	 */
+	usageImportStatus: () => __TAURI_INVOKE<UsageImportStatus_Serialize>("usage_import_status"),
 	agentRegistry: () => __TAURI_INVOKE<RegistryAgent_Serialize[]>("agent_registry"),
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
@@ -964,6 +975,12 @@ export type AgentUsageSettings_Deserialize = {
 	 *  bundled price table.
 	 */
 	prices?: { [key in string]: PriceOverride_Deserialize },
+	/**
+	 *  `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
+	 *  local usage logs (read only, counters only) so the Usage page also
+	 *  shows sessions run outside Span. Off by default.
+	 */
+	importLocalLogs?: boolean,
 };
 
 /**  `agents.usage.*` settings (ADR 0012). */
@@ -974,18 +991,28 @@ export type AgentUsageSettings_Serialize = {
 	 *  bundled price table.
 	 */
 	prices?: { [key in string]: PriceOverride_Serialize },
+	/**
+	 *  `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
+	 *  local usage logs (read only, counters only) so the Usage page also
+	 *  shows sessions run outside Span. Off by default.
+	 */
+	importLocalLogs?: boolean,
 };
 
 export type AgentUsage_Deserialize = {
 	agentId: string,
 	name: string,
 	totals: UsageTotals_Deserialize,
+	/**  Read from the agent's local logs rather than tracked by Span. */
+	imported: boolean,
 };
 
 export type AgentUsage_Serialize = {
 	agentId: string,
 	name: string,
 	totals: UsageTotals_Serialize,
+	/**  Read from the agent's local logs rather than tracked by Span. */
+	imported: boolean,
 };
 
 /**  One agent that took part in a session, for example a delegated child. */
@@ -3137,6 +3164,25 @@ export type SavedAttachment = {
 	renamed: boolean,
 };
 
+/**  Progress and outcome of a scan. */
+export type ScanReport = {
+	/**  Log files found (within the caps). */
+	filesTotal: number,
+	/**  Files handled so far. */
+	filesDone: number,
+	/**  Files that had new bytes to read. */
+	filesRead: number,
+	bytesRead: number,
+	/**  Usage entries counted in this scan. */
+	entries: number,
+	/**  Entries left out as duplicates. */
+	duplicates: number,
+	/**  Files skipped for a cap or a read error. */
+	skipped: number,
+	/**  True when a cap stopped the file listing early. */
+	truncated: boolean,
+};
+
 export type SearchMatch = {
 	path: string,
 	line: number,
@@ -3603,6 +3649,8 @@ export type SessionUsageRow = SessionUsageRow_Serialize | SessionUsageRow_Deseri
 
 /**  One session's usage in the range. */
 export type SessionUsageRow_Deserialize = {
+	/**  Read from the agent's local logs rather than tracked by Span. */
+	imported: boolean,
 	agentId: string,
 	agentName: string,
 	sessionId: string,
@@ -3618,6 +3666,8 @@ export type SessionUsageRow_Deserialize = {
 
 /**  One session's usage in the range. */
 export type SessionUsageRow_Serialize = {
+	/**  Read from the agent's local logs rather than tracked by Span. */
+	imported: boolean,
 	agentId: string,
 	agentName: string,
 	sessionId: string,
@@ -4387,6 +4437,33 @@ export type UsageCost = {
 	complete: boolean,
 };
 
+/**  The local log importer's state for the Usage page. */
+export type UsageImportStatus = UsageImportStatus_Serialize | UsageImportStatus_Deserialize;
+
+/**  The local log importer's state for the Usage page. */
+export type UsageImportStatus_Deserialize = {
+	/**  `agents.usage.importLocalLogs` in the user settings. */
+	enabled: boolean,
+	running: boolean,
+	/**  The running or last scan. */
+	report?: ScanReport | null,
+	/**  Unix milliseconds of the last finished scan. */
+	scannedMs?: number | null,
+	error?: string | null,
+};
+
+/**  The local log importer's state for the Usage page. */
+export type UsageImportStatus_Serialize = {
+	/**  `agents.usage.importLocalLogs` in the user settings. */
+	enabled: boolean,
+	running: boolean,
+	/**  The running or last scan. */
+	report: ScanReport | null,
+	/**  Unix milliseconds of the last finished scan. */
+	scannedMs: number | null,
+	error: string | null,
+};
+
 /**
  *  What a finished turn reported, merged into the session's usage (ADR
  *  0012). Token counts are one turn's and are added; `costTotal` is the
@@ -4448,6 +4525,12 @@ export type UsageRange = UsageRange_Serialize | UsageRange_Deserialize;
 export type UsageRange_Deserialize = {
 	from?: string | null,
 	to?: string | null,
+	/**
+	 *  Minutes east of UTC of the viewer's time zone, used to place imported
+	 *  usage (kept per UTC hour) on local days. Absent: UTC.
+	 */
+	utcOffsetMinutes?: number | null,
+	source?: UsageSource | null,
 };
 
 /**
@@ -4457,6 +4540,12 @@ export type UsageRange_Deserialize = {
 export type UsageRange_Serialize = {
 	from?: string | null,
 	to?: string | null,
+	/**
+	 *  Minutes east of UTC of the viewer's time zone, used to place imported
+	 *  usage (kept per UTC hour) on local days. Absent: UTC.
+	 */
+	utcOffsetMinutes?: number | null,
+	source?: UsageSource | null,
 };
 
 /**  Usage reported for a delegation. Every field is only set when reported. */
@@ -4481,6 +4570,12 @@ export type UsageReport_Serialize = {
 	currency: string | null,
 	elapsedSeconds: number,
 };
+
+/**
+ *  Which usage a range covers (ADR 0012): what Span tracked over ACP, what
+ *  the opt-in importers read from agents' local logs, or both.
+ */
+export type UsageSource = "all" | "tracked" | "imported";
 
 export type UsageSummary = UsageSummary_Serialize | UsageSummary_Deserialize;
 

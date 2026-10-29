@@ -19,12 +19,23 @@ export function localDay(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-/** The inclusive local day range for a range key, ending today. "All" is open on both ends. */
-export function rangeFor(key: RangeKey, now: Date = new Date()): UsageRange {
+export type SourceKey = "all" | "tracked" | "imported";
+export const SOURCES: readonly { key: SourceKey; label: string }[] = [
+  { key: "all", label: "All sources" },
+  { key: "tracked", label: "Tracked by Span" },
+  { key: "imported", label: "Imported from local logs" },
+];
+
+/**
+ * The inclusive local day range for a range key, ending today ("All" is open on both ends), with the viewer's UTC
+ * offset so imported usage lands on local days, and the source filter.
+ */
+export function rangeFor(key: RangeKey, now: Date = new Date(), source: SourceKey = "all"): UsageRange {
+  const base: UsageRange = { utcOffsetMinutes: -now.getTimezoneOffset(), ...(source !== "all" ? { source } : {}) };
   const days = RANGES.find((range) => range.key === key)?.days;
-  if (!days) return {};
+  if (!days) return base;
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
-  return { from: localDay(start), to: localDay(now) };
+  return { ...base, from: localDay(start), to: localDay(now) };
 }
 
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0);
@@ -170,12 +181,12 @@ function csvField(value: string | number): string {
 
 /** One row per session in the range. Costs are left empty when unknown, never written as 0. */
 export function usageCsv(rows: readonly SessionUsageRow[]): string {
-  const header = ["agent", "agent_id", "session_id", "title", "first_seen", "last_active", "models", "turns", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "cost_usd_estimate", "cost_complete", "cost_reported_usd"];
+  const header = ["source", "agent", "agent_id", "session_id", "title", "first_seen", "last_active", "models", "turns", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "cost_usd_estimate", "cost_complete", "cost_reported_usd"];
   const iso = (ms: number) => (ms > 0 ? new Date(ms).toISOString() : "");
   const lines = rows.map((row) => {
     const t = row.totals.tokens;
     const cost = row.totals.cost;
-    return [row.agentName, row.agentId, row.sessionId, row.title ?? "", iso(row.firstSeenMs), iso(row.lastActiveMs), row.models.join(" "), row.totals.turns, t.input, t.output, t.cacheRead, t.cacheWrite, t.thought, t.total, cost.known ? money(cost.usd).toFixed(6) : "", cost.known ? String(cost.complete) : "", money(cost.reportedUsd) > 0 ? money(cost.reportedUsd).toFixed(6) : ""].map(csvField).join(",");
+    return [row.imported ? "imported" : "tracked", row.agentName, row.agentId, row.sessionId, row.title ?? "", iso(row.firstSeenMs), iso(row.lastActiveMs), row.models.join(" "), row.totals.turns, t.input, t.output, t.cacheRead, t.cacheWrite, t.thought, t.total, cost.known ? money(cost.usd).toFixed(6) : "", cost.known ? String(cost.complete) : "", money(cost.reportedUsd) > 0 ? money(cost.reportedUsd).toFixed(6) : ""].map(csvField).join(",");
   });
   return `${[header.join(","), ...lines].join("\n")}\n`;
 }

@@ -198,7 +198,7 @@ impl UsageBucket {
             total: self.total,
         }
     }
-    fn add(&mut self, other: &UsageBucket) {
+    pub(crate) fn add(&mut self, other: &UsageBucket) {
         let mut tokens = self.tokens();
         tokens.add(&other.tokens());
         self.input = tokens.input;
