@@ -9,6 +9,8 @@ serde.workspace = true
 serde_json.workspace = true
 specta = { workspace = true, features = ["serde_json"] }
 thiserror.workspace = true
+# The ACP SDK already uses this crate; AtomicWaker handles registration races.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # `net` is already compiled into the workspace through reqwest; declared for the span-agents server.
 tokio = { workspace = true, features = ["net"] }
 agent-client-protocol = { version = "=3.5.0", features = ["process"] }

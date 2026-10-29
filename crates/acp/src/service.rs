@@ -1004,7 +1004,7 @@ async fn run(
                 else { responder.respond_with_internal_error("User rejected or cancelled the proposed editor edit") }
             })
         }, agent_client_protocol::on_receive_request!())
-        .connect_with(agent, async move |cx: ConnectionTo<Agent>| {
+        .connect_with(crate::process::Process(agent), async move |cx: ConnectionTo<Agent>| {
             let initialized = tokio::time::timeout(std::time::Duration::from_secs(40), cx.send_request(InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
                 ClientCapabilities::new().fs(FileSystemCapabilities::new().read_text_file(true).write_text_file(true)).terminal(false)
                     .session(ClientSessionCapabilities::new().notices(NoticeCapabilities::new()).compaction(CompactionCapabilities::new()))

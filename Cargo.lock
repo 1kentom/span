@@ -4569,6 +4569,7 @@ name = "span-acp"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "futures-util",
  "getrandom 0.4.3",
  "reqwest 0.12.28",
  "serde",
@@ -4597,8 +4598,8 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
- "specta",
  "span-syntax",
+ "specta",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

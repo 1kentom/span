@@ -8,6 +8,7 @@ mod launch;
 mod managed;
 mod manager;
 mod npm_bin;
+mod process;
 mod registry;
 mod service;
 pub mod tools;
