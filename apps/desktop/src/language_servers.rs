@@ -53,6 +53,9 @@ const SYNC_WAIT: Duration = Duration::from_secs(5);
 /// Upper bound for one queued manager call, so a stuck server cannot stall the queue.
 const OP_TIMEOUT: Duration = Duration::from_secs(20);
 const VERSION_HISTORY: usize = 64;
+const MAX_PENDING_WATCH_EVENTS: usize = 1024;
+const MAX_WATCH_DELIVERIES: usize = 32;
+const MAX_WATCH_TARGETS: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Events
@@ -233,6 +236,9 @@ enum Op {
     Save {
         d: DocRef,
     },
+    WatchedFiles {
+        generation: u64,
+    },
     Reset {
         keys: Vec<(ServerId, PathBuf)>,
     },
@@ -252,6 +258,19 @@ struct Queued {
     op: Op,
 }
 
+struct WatchedDelivery {
+    changes: Vec<lsp::FileEvent>,
+    targets: Vec<(ServerId, PathBuf, u64)>,
+}
+
+struct PendingWatchedFiles {
+    generation: u64,
+    deliveries: Vec<WatchedDelivery>,
+    events: usize,
+    incomplete: bool,
+    warning_targets: HashMap<ServerId, u64>,
+}
+
 #[derive(Default)]
 struct Shared {
     root: Option<PathBuf>,
@@ -260,6 +279,7 @@ struct Shared {
     settings: LspSettings,
     docs: HashMap<PathBuf, Doc>,
     next_seq: u64,
+    watched_files: Option<PendingWatchedFiles>,
     gates: HashMap<ServerId, Gate>,
     installed: HashSet<ServerId>,
     runtime_ok: HashSet<ServerId>,
@@ -469,6 +489,67 @@ impl LanguageServers {
         seq
     }
 
+    /// Queue only for starting or ready instances that existed when the native event arrived.
+    /// Registration matching belongs to each client, not the Explorer visibility policy.
+    pub(crate) fn watched_files_changed(&self, batch: crate::watched_paths::WatchedBatch) {
+        if !batch.incomplete && batch.changes.is_empty() {
+            return;
+        }
+        let mut st = lock(&self.state);
+        if st.root.as_ref() != Some(&paths::normalize_path(&batch.root)) {
+            return;
+        }
+        let mut targets = Vec::with_capacity(MAX_WATCH_TARGETS);
+        let mut warning_targets = HashMap::new();
+        let mut targets_overflowed = false;
+        for ((server, root), state) in &st.states {
+            if !matches!(
+                state,
+                LanguageServerStateDto::Starting | LanguageServerStateDto::Ready
+            ) {
+                continue;
+            }
+            let epoch = Self::epoch(&st, *server);
+            warning_targets.insert(*server, epoch);
+            if targets.len() < MAX_WATCH_TARGETS {
+                targets.push((*server, root.clone(), epoch));
+            } else {
+                targets_overflowed = true;
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        let generation = st.generation;
+        let needs_queue = st.watched_files.is_none();
+        let pending = st.watched_files.get_or_insert_with(|| PendingWatchedFiles {
+            generation,
+            deliveries: Vec::new(),
+            events: 0,
+            incomplete: false,
+            warning_targets: HashMap::new(),
+        });
+        pending.warning_targets.extend(warning_targets);
+        pending.incomplete |= batch.incomplete || targets_overflowed;
+        if pending.deliveries.len() >= MAX_WATCH_DELIVERIES {
+            pending.incomplete = true;
+        } else {
+            let mut changes = batch.changes;
+            let remaining = MAX_PENDING_WATCH_EVENTS.saturating_sub(pending.events);
+            if changes.len() > remaining {
+                pending.incomplete = true;
+                changes.truncate(remaining);
+            }
+            pending.events += changes.len();
+            pending
+                .deliveries
+                .push(WatchedDelivery { changes, targets });
+        }
+        if needs_queue {
+            self.push(&mut st, Op::WatchedFiles { generation });
+        }
+    }
+
     fn epoch(st: &Shared, server: ServerId) -> u64 {
         st.epochs.get(&server).copied().unwrap_or(0)
     }
@@ -504,6 +585,7 @@ impl LanguageServers {
         }
         st.generation += 1;
         st.docs.clear();
+        st.watched_files = None;
         st.versions.clear();
         st.states.clear();
         st.last_error.clear();
@@ -791,6 +873,10 @@ impl LanguageServers {
         let mut synced: HashMap<PathBuf, u64> = HashMap::new();
         while let Some(queued) = rx.recv().await {
             let seq = queued.seq;
+            let watched_generation = match &queued.op {
+                Op::WatchedFiles { generation } => Some(*generation),
+                _ => None,
+            };
             let server = match &queued.op {
                 Op::Open { d, .. } | Op::Change { d, .. } | Op::Close { d } | Op::Save { d } => {
                     Some(d.server)
@@ -798,7 +884,7 @@ impl LanguageServers {
                 Op::Stop { server } | Op::Resume { server } | Op::Restart { server } => {
                     Some(*server)
                 }
-                Op::Reset { .. } => None,
+                Op::Reset { .. } | Op::WatchedFiles { .. } => None,
             };
             if tokio::time::timeout(OP_TIMEOUT, self.handle(queued, &mut synced))
                 .await
@@ -806,6 +892,23 @@ impl LanguageServers {
             {
                 if let Some(server) = server {
                     self.report(server, None, "a language server operation timed out".into());
+                }
+                if let Some(generation) = watched_generation {
+                    let targets: Vec<_> = {
+                        let st = lock(&self.state);
+                        if st.generation == generation {
+                            st.states
+                                .iter()
+                                .filter(|(_, state)| **state == LanguageServerStateDto::Ready)
+                                .map(|((server, _), _)| *server)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        }
+                    };
+                    for server in targets {
+                        self.report(server, None, "Filesystem notification delivery timed out. Restart this language server to refresh its workspace state.".into());
+                    }
                 }
             }
             self.processed.send_replace(seq);
@@ -853,6 +956,72 @@ impl LanguageServers {
                 // A notification only: failures here are not worth a visible error, the
                 // next edit resynchronises the document anyway.
                 let _ = self.manager.save_document(d.server, &d.root, &d.abs).await;
+            }
+            Op::WatchedFiles { generation } => {
+                let pending = {
+                    let mut st = lock(&self.state);
+                    if st.generation != generation {
+                        return;
+                    }
+                    st.watched_files
+                        .take()
+                        .filter(|pending| pending.generation == generation)
+                };
+                let Some(pending) = pending else {
+                    return;
+                };
+                if pending.incomplete {
+                    for (server, epoch) in pending.warning_targets {
+                        let current = {
+                            let st = lock(&self.state);
+                            st.generation == generation && Self::epoch(&st, server) == epoch
+                        };
+                        if current {
+                            self.report(server, None, "Some filesystem notifications were lost or exceeded delivery limits. Restart this language server to refresh its workspace state.".into());
+                        }
+                    }
+                }
+                for delivery in pending.deliveries {
+                    for (server, root, epoch) in delivery.targets {
+                        let current = {
+                            let st = lock(&self.state);
+                            st.generation == generation
+                                && Self::epoch(&st, server) == epoch
+                                && matches!(
+                                    st.states.get(&(server, root.clone())),
+                                    Some(
+                                        LanguageServerStateDto::Starting
+                                            | LanguageServerStateDto::Ready
+                                    )
+                                )
+                        };
+                        if !current {
+                            continue;
+                        }
+                        if !delivery.changes.is_empty() {
+                            if let Err(error) =
+                                self.manager.wait_ready(server, &root, SYNC_WAIT).await
+                            {
+                                self.report(server, None, format!("Filesystem notifications could not be delivered to this starting language server: {error}. Restart the server to refresh its workspace state."));
+                                continue;
+                            }
+                            {
+                                let st = lock(&self.state);
+                                if st.generation != generation || Self::epoch(&st, server) != epoch
+                                {
+                                    continue;
+                                }
+                            }
+                            if let Err(error) = self
+                                .manager
+                                .notify_watched_files(server, &root, delivery.changes.clone())
+                                .await
+                            {
+                                self.report(server, None, error.to_string());
+                            }
+                        }
+                    }
+                }
             }
             Op::Reset { keys } => {
                 for (server, root) in keys {

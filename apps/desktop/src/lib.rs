@@ -25,6 +25,7 @@ pub mod session_meta;
 mod startup;
 mod terminals;
 mod uploads;
+mod watched_paths;
 mod window;
 
 /// The authoritative workspace is only accessed by blocking workers.
@@ -162,6 +163,12 @@ async fn open_workspace(
     })
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
+    let watcher_lsp = Arc::clone(lsp.inner());
+    state
+        .file_index
+        .set_file_change_sink(Arc::new(move |batch| {
+            watcher_lsp.watched_files_changed(batch);
+        }));
     state
         .file_index
         .activate(PathBuf::from(&result.root))

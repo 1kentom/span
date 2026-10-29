@@ -75,6 +75,7 @@ struct RuntimeInner {
     current: Mutex<Option<WatchSession>>,
     watcher_error: Arc<Mutex<Option<String>>>,
     change_revision: Arc<AtomicU64>,
+    file_change_sink: Arc<Mutex<Option<FileChangeSink>>>,
 }
 
 struct WatchSession {
@@ -83,12 +84,21 @@ struct WatchSession {
     watcher: Option<RecommendedWatcher>,
     worker: Option<JoinHandle<()>>,
 }
+type FileChangeSink = Arc<dyn Fn(crate::watched_paths::WatchedBatch) + Send + Sync>;
+
 struct WatchUpdates {
     error: Arc<Mutex<Option<String>>>,
     revision: Arc<AtomicU64>,
+    file_change_sink: Arc<Mutex<Option<FileChangeSink>>>,
 }
 
 impl FileIndexRuntime {
+    pub(crate) fn set_file_change_sink(&self, sink: FileChangeSink) {
+        if let Ok(mut current) = self.inner.file_change_sink.lock() {
+            *current = Some(sink);
+        }
+    }
+
     /// Prepare the scoped watcher first, then activate an isolated index
     /// generation and launch its background scan without waiting for traversal.
     pub async fn activate(&self, root: PathBuf) -> Result<(), String> {
@@ -106,6 +116,7 @@ impl FileIndexRuntime {
         let worker_overflow = Arc::clone(&overflow);
         let watcher_error = Arc::clone(&self.inner.watcher_error);
         let change_revision = Arc::clone(&self.inner.change_revision);
+        let file_change_sink = Arc::clone(&self.inner.file_change_sink);
         let index = self.inner.index.clone();
         let worker_root = root.clone();
         let worker = thread::Builder::new()
@@ -124,6 +135,7 @@ impl FileIndexRuntime {
                     WatchUpdates {
                         error: watcher_error,
                         revision: change_revision,
+                        file_change_sink,
                     },
                 )
             })
@@ -341,6 +353,7 @@ fn watch_loop(
     let WatchUpdates {
         error: watcher_error,
         revision: change_revision,
+        file_change_sink,
     } = updates;
     while !stop.load(Ordering::Acquire) {
         let first = match receiver.recv_timeout(Duration::from_millis(100)) {
@@ -376,6 +389,18 @@ fn watch_loop(
             })
         {
             change_revision.fetch_add(1, Ordering::AcqRel);
+        }
+        // A retired watcher must not deliver events to a reopened workspace,
+        // including a new generation at the same path.
+        if index.snapshot(&handle).is_err() {
+            return;
+        }
+        let sink = file_change_sink.lock().ok().and_then(|sink| sink.clone());
+        if let Some(sink) = sink {
+            let mapped = crate::watched_paths::watched_batch(&root, &batch, force_rescan);
+            if mapped.incomplete || !mapped.changes.is_empty() {
+                sink(mapped);
+            }
         }
         let rescan = force_rescan || process_batch(&index, &handle, &root, batch);
         if rescan {
@@ -969,6 +994,7 @@ mod tests {
                 WatchUpdates {
                     error: worker_error,
                     revision: Arc::new(AtomicU64::new(0)),
+                    file_change_sink: Arc::default(),
                 },
             )
         });
