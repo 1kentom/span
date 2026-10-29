@@ -25,6 +25,7 @@ mod tools;
 mod transcript_export;
 mod uploads;
 pub mod usage;
+pub mod usage_import;
 pub mod version;
 mod workspace;
 

@@ -1079,6 +1079,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             usage::usage_summary,
             usage::usage_sessions,
             usage::usage_prices,
+            usage::usage_import_scan,
+            usage::usage_import_status,
             agents::agent_registry,
             agents::agent_installed,
             agents::agent_install,
