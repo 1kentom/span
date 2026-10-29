@@ -109,8 +109,8 @@ impl LanguageServerSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum AutoSaveMode {
-    #[default]
     Off,
+    #[default]
     AfterDelay,
     OnFocusChange,
     OnWindowChange,
@@ -245,7 +245,7 @@ impl Default for Settings {
             collapse_panels_on_drag: true,
             markdown_preview_default: true,
             format_on_save: false,
-            auto_save: AutoSaveMode::Off,
+            auto_save: AutoSaveMode::AfterDelay,
             auto_save_delay: 1000,
             tab_limit_enabled: true,
             tab_limit: 10,

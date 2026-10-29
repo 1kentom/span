@@ -40,7 +40,7 @@ export function createWorkbench() {
     for (const path of recentPaths()) known.set(path, { path, name: fileName(path), isDir: false });
     return [...known.values()];
   });
-  const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] } });
+  const [settings, setSettings] = createSignal<Settings>({ theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "afterDelay", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] } });
   const [settingsScope, setSettingsScope] = createSignal<SettingsScope>("workspace");
   const [scopeSettings, setScopeSettings] = createSignal<Settings>(settings());
   const [configuredSettingsKeys, setConfiguredSettingsKeys] = createSignal<string[]>([]);
@@ -424,7 +424,8 @@ export function createWorkbench() {
     try {
       await flush(path);
       const base = accepted.get(path);
-      if (!base || failed().has(path)) return false;
+      if (!base) return false;
+      if (failed().has(path)) { report(new Error(`${path} could not be saved because an earlier edit failed to sync. Close the file and discard changes to reload it from disk.`)); return false; }
       const documentAtSave = documents()[path]?.document;
       const editCounterAtSave = editCounters()[path] || 0;
       const scope = settingsBufferScope(path);

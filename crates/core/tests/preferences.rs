@@ -362,7 +362,7 @@ fn expanded_settings_validate_jsonc_roundtrip_and_shortcut_conflicts() {
         .unwrap()
         .with_user_settings(None);
     let settings = Settings::default();
-    assert_eq!(settings.auto_save, span_core::AutoSaveMode::Off);
+    assert_eq!(settings.auto_save, span_core::AutoSaveMode::AfterDelay);
     assert_eq!(settings.auto_save_delay, 1000);
     assert!(settings.markdown_preview_default);
     assert_eq!(settings.ui_font_family, "Inter");
