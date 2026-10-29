@@ -10,6 +10,7 @@ serde_json = { workspace = true, features = ["preserve_order", "arbitrary_precis
 specta.workspace = true
 thiserror.workspace = true
 ropey.workspace = true
+span-syntax.workspace = true
 tokio.workspace = true
 ignore = "0.4"
 grep-regex = "0.1"

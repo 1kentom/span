@@ -94,20 +94,30 @@ export function createRunWorkbench(options: { generation: () => number; root: ()
   const save = (value: RunConfiguration) => mutation("save", root => transport.saveRunConfiguration(value, root));
   const duplicate = (id: string) => mutation("duplicate", root => transport.duplicateRunConfiguration(id, root));
   const remove = (id: string) => mutation("delete", root => transport.deleteRunConfiguration(id, root));
-  async function launch(restart = false) {
+  async function launch(restart = false, configurationId?: string) {
     if (operation()) return;
     const token = epoch;
     try {
       assertReady(token);
-      const configuration = selectedConfiguration(); const prior = selectedRun();
+      const configuration = configurationId ? [...catalog().configurations, ...catalog().detected.map(task => task.configuration)].find(value => value.id === configurationId) : selectedConfiguration(); const prior = selectedRun();
       if (restart && !prior) throw new Error("Select an existing run to restart.");
       if (!restart && !configuration) throw new Error("Select a run configuration first.");
       if (!restart && running()) throw new Error("Stop the current run before starting another configuration.");
+      if (configurationId) selectConfiguration(configurationId);
       setOperation(restart ? "restart" : "start"); setError(""); if (!restart) setSelectedRunId(undefined); options.onReveal();
       const result = restart ? await transport.restartRun(prior!.id, events(token)) : await transport.startRun(configuration!, options.root()!, events(token));
       if (live(token)) { updateRun(result); if (runs().some(run => run.id === result.id)) setSelectedRunId(result.id); }
     } catch (cause) { report(cause, token); }
     finally { if (live(token)) setOperation(undefined); }
+  }
+  async function launchJava(path: string, sourceReady: () => boolean = () => true) {
+    const token = epoch;
+    await reload();
+    if (!live(token)) return;
+    if (!sourceReady()) throw new Error("The Java source changed while preparing Run. Save and review it before running again.");
+    const task = catalog().detected.find(value => value.source === path && value.configuration.id.startsWith("detected:java-main:"));
+    if (!task) throw new Error("No supported standalone Java main target is available. Save a valid conventional main method in the first top-level class and check your JDK. For project builds, review a project run configuration with its classpath and main class.");
+    await launch(false, task.configuration.id);
   }
   async function stop() {
     const run = selectedRun(); const token = epoch; if (!run || !active(run) || operation()) return;
@@ -156,6 +166,6 @@ export function createRunWorkbench(options: { generation: () => number; root: ()
     }
   }));
   onCleanup(() => { disposed = true; epoch++; });
-  return { catalog, runs, selectedId, setSelectedId: selectConfiguration, selectedRunId, selectedRun, selectedConfiguration, selectRun, outputs, loading: () => loading() || contextLoading(), operation, error, setError, running, reload, retry: async () => { setError(""); await Promise.all([reload(), retryContext()]); }, save, duplicate, remove, launch, stop, clearOutput: () => { const id = selectedRunId(); if (id) setOutputs(previous => ({ ...previous, [id]: { chunks: [], trimmed: false } })); } };
+  return { catalog, runs, selectedId, setSelectedId: selectConfiguration, selectedRunId, selectedRun, selectedConfiguration, selectRun, outputs, loading: () => loading() || contextLoading(), operation, error, setError, running, reload, retry: async () => { setError(""); await Promise.all([reload(), retryContext()]); }, save, duplicate, remove, launch, launchJava, stop, clearOutput: () => { const id = selectedRunId(); if (id) setOutputs(previous => ({ ...previous, [id]: { chunks: [], trimmed: false } })); } };
 }
 export type RunWorkbench = ReturnType<typeof createRunWorkbench>;

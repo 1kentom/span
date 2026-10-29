@@ -32,6 +32,20 @@ struct KnownTool {
 
 const TOOLS: &[KnownTool] = &[
     KnownTool {
+        id: "java",
+        name: "Java",
+        program: "java",
+        kind: "Runtime",
+        argument: "-version",
+    },
+    KnownTool {
+        id: "javac",
+        name: "Java compiler",
+        program: "javac",
+        kind: "Compiler",
+        argument: "-version",
+    },
+    KnownTool {
         id: "git",
         name: "Git",
         program: "git",
@@ -152,7 +166,7 @@ const TOOLS: &[KnownTool] = &[
     },
 ];
 
-/// Called only by an explicit Tools page load or refresh. At most four probes run at once.
+/// Requested by Tools refresh or the Java gutter capability check. At most four probes run at once.
 pub fn list_tools() -> Vec<ToolInfo> {
     thread::scope(|scope| {
         let workers: Vec<_> = (0..4)
