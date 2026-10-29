@@ -184,52 +184,149 @@ const props = (overrides: Partial<LimitCardProps> = {}): LimitCardProps => ({
 });
 const buttons = (host: HTMLElement) => [...host.querySelectorAll("button")];
 const button = (host: HTMLElement, label: string) => buttons(host).find((entry) => text(entry)?.startsWith(label))!;
+/** The visible row: buttons outside any open menu. */
+const rowButtons = (host: HTMLElement) => [...host.querySelectorAll<HTMLButtonElement>(".sb-limit-actions > button, .sb-limit-actions > .sb-limit-menu-wrap > button")];
+/** Menu item labels, without their chips. */
+const menuItems = (host: HTMLElement, name: string) => [...host.querySelectorAll(`[data-menu="${name}"] [role=menuitem] .sb-menu-label`)].map((label) => text(label));
+const openMore = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("[data-menu-trigger=more]")!.click();
+const openModels = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("[data-menu-trigger=models]")!.click();
 
 describe("LimitCard", () => {
-  it("shows the free-tier limit with its actions and keeps the raw text under Details", () => {
+  it("leads with one quiet action on the neutral card, in a single row of at most three controls", () => {
     const p = props();
     const host = mount(() => <LimitCard {...p} />);
     const card = host.querySelector("[role=alert]")!;
-    expect(card.classList.contains("warn")).toBe(true);
-    expect(text(card.querySelector(".sb-card-title"))).toBe("OpenCode free usage limit reached");
-    expect(text(card)).toContain("Free models still listed: Grok Code Free.");
+    // Neutral surface: no tinted warn or error card classes, the tone is the icon only.
+    expect(card.classList.contains("warn")).toBe(false);
+    expect(card.classList.contains("alert")).toBe(false);
+    expect(card.querySelector(".sb-glyph.warn")).not.toBeNull();
+    expect(text(card.querySelector(".sb-limit-title"))).toBe("OpenCode free usage limit reached");
+    expect(card.getAttribute("aria-labelledby")).toBe(card.querySelector(".sb-limit-title")!.id);
+    expect(text(card.querySelector(".sb-limit-body"))).toBe("This model's free usage is used up.");
+    expect(text(card)).not.toContain("Free models still listed");
     expect(text(card)).not.toContain("Internal error");
-    expect(text(button(host, "Continue with Codex"))).toBe("Continue with Codex");
-    expect(text(button(host, "Continue with Gemini"))).toContain("Signed out");
+    expect(text(card)).not.toContain("opencode/");
+    // One lead, one secondary, one overflow: nothing else in the row, and no wrapping classes.
+    expect(rowButtons(host).map((entry) => entry.getAttribute("aria-label") ?? text(entry))).toEqual(["Continue with Codex", "Try another model", "More actions"]);
+    expect(host.querySelectorAll(".sb-limit-lead")).toHaveLength(1);
+    expect(host.querySelector(".sb-btn.primary")).toBeNull();
+    expect(host.querySelector(".sb-actions")).toBeNull();
     button(host, "Continue with Codex").click();
     expect(p.onSwitchAgent).toHaveBeenCalledWith("codex-acp");
-    button(host, "Use Grok Code Free").click();
-    expect(p.onUseModel).toHaveBeenCalledWith("opencode/grok-code-free");
-    button(host, "Try another model").click();
-    expect(p.onTryModel).toHaveBeenCalled();
+    expect(button(host, "Retry")).toBeUndefined();
+  });
+
+  it("keeps the other agents, the plan link, the log, Details and Dismiss in the overflow menu", async () => {
+    const p = props();
+    const host = mount(() => <LimitCard {...p} />);
+    const more = host.querySelector<HTMLButtonElement>("[data-menu-trigger=more]")!;
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    openMore(host);
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    expect(host.querySelector("[data-menu=more]")!.getAttribute("role")).toBe("menu");
+    expect(text(host.querySelector("[data-menu=more] .sb-limit-note"))).toBe("Signed out");
+    expect(menuItems(host, "more")).toEqual(["Continue with Gemini", "More agents", "Open OpenCode Go", "Show ACP log", "Details", "Dismiss"]);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(host.querySelector("[data-menu=more] [role=menuitem]"));
+    const link = button(host, "Open OpenCode Go");
+    expect(link.getAttribute("title")).toBe("https://opencode.ai/go");
+    expect(link.querySelector(".icon")).not.toBeNull();
+    link.click();
+    expect(p.onOpenLink).toHaveBeenCalledWith("https://opencode.ai/go");
+    expect(host.querySelector("[data-menu=more]")).toBeNull();
+
+    openMore(host);
+    button(host, "Continue with Gemini").click();
+    expect(p.onSwitchAgent).toHaveBeenCalledWith("gemini");
+    openMore(host);
     button(host, "More agents").click();
     expect(p.onMoreAgents).toHaveBeenCalled();
-    button(host, "Open OpenCode Go").click();
-    expect(p.onOpenLink).toHaveBeenCalledWith("https://opencode.ai/go");
-    expect(button(host, "Retry")).toBeUndefined();
+    openMore(host);
+    button(host, "Show ACP log").click();
+    expect(p.onShowLog).toHaveBeenCalled();
+
+    openMore(host);
     const details = button(host, "Details");
     expect(details.getAttribute("aria-expanded")).toBe("false");
     details.click();
     expect(text(host.querySelector(".sb-limit-raw"))).toBe(OPENCODE_FREE);
+    openMore(host);
+    expect(button(host, "Hide details").getAttribute("aria-expanded")).toBe("true");
     button(host, "Dismiss").click();
     expect(p.onDismiss).toHaveBeenCalled();
-    expect(button(host, "Show ACP log")).toBeDefined();
   });
 
-  it("counts down a rate limit and enables Retry when the wait is over", async () => {
+  it("closes a menu with Escape and returns focus to its trigger", async () => {
+    const host = mount(() => <LimitCard {...props()} />);
+    openMore(host);
+    await Promise.resolve();
+    const menu = host.querySelector("[data-menu=more]")!;
+    menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(menu.querySelectorAll("[role=menuitem]")[1]);
+    menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(host.querySelector("[data-menu=more]")).toBeNull();
+    expect(document.activeElement).toBe(host.querySelector("[data-menu-trigger=more]"));
+  });
+
+  it("lists the free models with clean names and cost chips under Try another model", () => {
+    const p = props({ freeModels: [{ value: "opencode/beam-free", name: "opencode/Beam Free" }, { value: "opencode/grok-code-free", name: "Grok Code Free" }] });
+    const host = mount(() => <LimitCard {...p} />);
+    const trigger = host.querySelector<HTMLButtonElement>("[data-menu-trigger=models]")!;
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    openModels(host);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(menuItems(host, "models")).toEqual(["Beam Free", "Grok Code Free", "All models"]);
+    expect([...host.querySelectorAll("[data-menu=models] .sb-limit-cost")].map((chip) => text(chip))).toEqual(["Free", "Free"]);
+    // Opening one menu closes the other.
+    openMore(host);
+    expect(host.querySelector("[data-menu=models]")).toBeNull();
+    openModels(host);
+    button(host, "Beam Free").click();
+    expect(p.onUseModel).toHaveBeenCalledWith("opencode/beam-free");
+    openModels(host);
+    button(host, "All models").click();
+    expect(p.onTryModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the full model picker directly when no free model can take the turn", () => {
+    const p = props({ freeModels: [] });
+    const host = mount(() => <LimitCard {...p} />);
+    const trigger = button(host, "Try another model");
+    expect(trigger.getAttribute("aria-haspopup")).toBe("dialog");
+    trigger.click();
+    expect(p.onTryModel).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("[data-menu=models]")).toBeNull();
+  });
+
+  it("uses short agent names and no lead when every other agent needs attention", () => {
+    const host = mount(() => <LimitCard {...props({ alternatives: [{ id: "claude-acp", name: "Claude Agent", readiness: "signedOut", note: "Signed out" }] })} />);
+    expect(host.querySelector(".sb-limit-lead")).toBeNull();
+    expect(rowButtons(host).map((entry) => entry.getAttribute("aria-label") ?? text(entry))).toEqual(["Try another model", "More actions"]);
+    openMore(host);
+    expect(menuItems(host, "more")[0]).toBe("Continue with Claude");
+    expect(text(host.querySelector("[data-menu=more] .sb-limit-note"))).toBe("Signed out");
+  });
+
+  it("counts down a rate limit on the Retry lead and enables it when the wait is over", async () => {
     vi.useFakeTimers();
     try {
       const start = Date.now();
-      const p = props({ info: classifyAgentError({ message: "Rate limit reached. Please try again in 2s." }, start), freeModels: [], alternatives: [] });
+      const p = props({ info: classifyAgentError({ message: "Rate limit reached. Please try again in 2s." }, start), freeModels: [], alternatives: [{ id: "codex-acp", name: "Codex", readiness: "live" }] });
       const host = mount(() => <LimitCard {...p} />);
-      expect(text(host.querySelector(".sb-card-title"))).toBe("Rate limited, try again in 2s");
+      // The Retry button carries the countdown, so the title does not repeat it.
+      expect(text(host.querySelector(".sb-limit-title"))).toBe("Rate limited");
       const retry = () => button(host, "Retry");
+      expect(retry().classList.contains("sb-limit-lead")).toBe(true);
       expect(retry().disabled).toBe(true);
+      expect(text(retry())).toBe("Retry in 2s");
       expect(retry().getAttribute("aria-label")).toBe("Retry available in 2s");
-      expect(text(button(host, "Switch agent"))).toBe("Switch agent");
+      // Retry replaces the agent as the lead; the agent moves into the overflow menu.
+      expect(button(host, "Continue with Codex")).toBeUndefined();
+      openMore(host);
+      expect(menuItems(host, "more")).toContain("Continue with Codex");
       await vi.advanceTimersByTimeAsync(2100);
       expect(retry().disabled).toBe(false);
-      expect(text(host.querySelector(".sb-card-title"))).toBe("Rate limited");
+      expect(retry().getAttribute("aria-label")).toBe("Retry");
       retry().click();
       expect(p.onRetry).toHaveBeenCalledTimes(1);
     } finally {
@@ -237,11 +334,19 @@ describe("LimitCard", () => {
     }
   });
 
+  it("names Switch agent in the menu when no other agent is installed", () => {
+    const host = mount(() => <LimitCard {...props({ alternatives: [], info: classifyAgentError({ message: "Overloaded" }) })} />);
+    openMore(host);
+    expect(menuItems(host, "more")[0]).toBe("Switch agent");
+  });
+
   it("offers no resend actions when the turn cannot be sent again", () => {
-    const host = mount(() => <LimitCard {...props({ canResend: false, info: classifyAgentError({ message: "Overloaded" }) })} />);
-    expect(text(host.querySelector(".sb-card-title"))).toBe("Provider overloaded");
+    const p = props({ canResend: false, info: classifyAgentError({ message: "Overloaded" }) });
+    const host = mount(() => <LimitCard {...p} />);
+    expect(text(host.querySelector(".sb-limit-title"))).toBe("Provider overloaded");
     expect(button(host, "Retry")).toBeUndefined();
-    expect(button(host, "Use Grok Code Free")).toBeUndefined();
+    // No free model resend: Try another model goes straight to the picker.
+    expect(button(host, "Try another model").getAttribute("aria-haspopup")).toBe("dialog");
   });
 });
 
