@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { BrandIcon } from "../BrandIcon";
-import { Icon } from "../Icon";
+import { Icon, MenuIcon } from "../Icon";
 import { DiffView } from "./WorkGroup";
 import { ENTER_KEY, KeyGlyph } from "./KeyGlyph";
 import type { Brand, PermissionChoice, PermissionDetails, QuestionAnswer, QuestionOption } from "./types";
@@ -8,6 +8,7 @@ import { dockKey } from "./util";
 import { DOCK_TAB_HINT } from "../../lib/agent-dock-focus";
 import { URL_COPY, parseUrlRequest } from "../../lib/agent-url-request";
 import { permissionScope, sortPermissionOptions } from "../../lib/agent-feed";
+import type { RewindFile } from "../../lib/agent-rewind";
 
 /**
  * Registers a key handler for one dock while `active` is true. It only sees keys pressed with focus inside the dock
@@ -382,5 +383,99 @@ export function ActivityBar(props: { label: string; elapsed?: string; hint?: str
       </span>
       <Show when={props.hint}><span class="sb-sub nowrap">{props.hint}</span></Show>
     </div>
+  );
+}
+
+type RewindDockProps = DockFocusProps & {
+  /** Edit puts an earlier message in the composer; restore only offers the file actions. */
+  mode: "edit" | "restore";
+  files: RewindFile[];
+  /** Why sending cannot start a new session yet, shown in edit mode. */
+  blockReason?: string;
+  busy?: boolean;
+  onReview: (path: string) => void;
+  /** Rejects pending proposals: the given ids, or every pending one listed when omitted. */
+  onRevert: (ids?: string[]) => void;
+  onKeep: () => void;
+  onCancel: () => void;
+};
+
+const fileCount = (count: number) => (count === 1 ? "1 file" : `${count} files`);
+const splitPath = (label: string) => {
+  const cut = label.lastIndexOf("/");
+  return { name: label.slice(cut + 1), dir: cut > 0 ? label.slice(0, cut) : "" };
+};
+
+/**
+ * The files changed since a user message, above the composer. Revert only rejects edits that still wait for review,
+ * through the normal proposal review; an edit already applied is listed with Review and never offered as undoable.
+ */
+export function RewindDock(props: RewindDockProps) {
+  let dock: HTMLElement | undefined;
+  const focus = useDockFocus(() => dock, props);
+  const pending = createMemo(() => props.files.flatMap((file) => file.pending));
+  const applied = createMemo(() => props.files.some((file) => file.applied));
+  const title = () => (props.mode === "edit" ? "Editing an earlier message" : pending().length ? "Revert files to this message?" : "Files changed since this message");
+  const summary = () => {
+    if (!props.files.length) return "No files changed since this message.";
+    const parts = [`${fileCount(props.files.length)} changed since this message.`];
+    if (pending().length) parts.push("Revert rejects the edits still waiting for review, so those files stay as they were.");
+    if (applied()) parts.push("Edits already applied cannot be undone here; review them in the editor.");
+    return parts.join(" ");
+  };
+  useDockKeys(
+    () => dock,
+    () => true,
+    (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        props.onCancel();
+      } else if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement) && pending().length && !props.busy) {
+        event.preventDefault();
+        props.onRevert();
+      }
+    },
+  );
+  return (
+    <section ref={dock} tabIndex={-1} class="sb-dock sb-rewind-dock" role="group" aria-label={title()} on:focusin={focus.focusin} on:focusout={focus.focusout}>
+      <div class="sb-dock-head">
+        <MenuIcon name="reset" size={13} class="sb-accent" />
+        <span class="sb-dock-title">{title()}</span>
+      </div>
+      <Show when={props.mode === "edit"}>
+        <div class="sb-body">Sending starts a new session from this message, because ACP cannot rewind the current one. The turns before it go along as context, and this chat is left as it was.</div>
+      </Show>
+      <div class="sb-body">{summary()}</div>
+      <Show when={props.files.length}>
+        <ul class="sb-changes sb-rewind-files">
+          <For each={props.files}>
+            {(file) => (
+              <li class="sb-change sb-rewind-file">
+                <span class="sb-change-name">{splitPath(file.label).name}</span>
+                <span class="sb-sub sb-ellipsis sb-flex">{splitPath(file.label).dir}</span>
+                <span class="sb-sub nowrap">{file.pending.length ? (file.applied ? "partly applied, rest waiting for review" : "waiting for review") : "applied, cannot be undone here"}</span>
+                <span class="sb-change-actions">
+                  <button class="sb-btn ghost" aria-label={`Review ${file.label}`} onClick={() => props.onReview(file.path)}>Review</button>
+                  <Show when={file.pending.length}>
+                    <button class="sb-btn ghost" aria-label={`Revert ${file.label}`} disabled={props.busy} onClick={() => props.onRevert(file.pending)}>Revert</button>
+                  </Show>
+                </span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+      <Show when={props.mode === "edit" && props.blockReason}>
+        <p class="sb-dock-error" role="status">{props.blockReason}</p>
+      </Show>
+      <TabHint show={!focus.focused()} />
+      <div class="sb-actions">
+        <Show when={pending().length}>
+          <button class="sb-btn primary" disabled={props.busy} onClick={() => props.onRevert()}>Revert files<kbd class="sb-hotkey" aria-hidden="true"><KeyGlyph value={ENTER_KEY} size={11} /></kbd></button>
+          <button class="sb-btn" disabled={props.busy} onClick={props.onKeep}>Keep files</button>
+        </Show>
+        <button class="sb-btn" onClick={props.onCancel}>{props.mode === "edit" ? "Cancel edit" : "Close"}</button>
+      </div>
+    </section>
   );
 }

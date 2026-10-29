@@ -13,6 +13,7 @@ import type {
   SlashCommand,
 } from "../bindings";
 import type { Attachment } from "./attachments";
+import type { BranchMode } from "./agent-rewind";
 import { hintText, PERMISSION_BYPASS_NOTICE } from "./agent-hint-text";
 import { parseUrlRequest, type UrlRecord } from "./agent-url-request";
 import { isFinished, knownDelegation, mergeTask, type ChildRequest, type DelegationNote, type DelegationTaskState } from "./agent-delegation";
@@ -23,11 +24,13 @@ export type PermissionEvent = Extract<AgentEvent, { kind: "permission" }>;
 export type ElicitationEvent = Extract<AgentEvent, { kind: "elicitation" }>;
 
 export type FeedItem =
-  | { id: number; kind: "user"; text: string; attachments?: Attachment[]; /** Sent by interrupting the running turn. */ steered?: boolean; /** Sent with Send now from the queue. */ sentNow?: boolean; /** Carried context sent ahead of this message after an agent switch, shown as a card. */ context?: string }
+  | { id: number; kind: "user"; text: string; attachments?: Attachment[]; /** Sent by interrupting the running turn. */ steered?: boolean; /** Sent with Send now from the queue. */ sentNow?: boolean; /** Carried context sent ahead of this message after an agent switch, shown as a card. */ context?: string; /** Where the carried context came from, shown on the card. */ contextNote?: string }
   | { id: number; kind: "text" | "thought"; text: string; /** The agent's id for this message, when it sent one. */ messageId?: string }
   | { id: number; kind: "note"; text: string }
   /** Divider after the open chat switched agent: the feed above came from the previous agent's session. */
   | { id: number; kind: "handoff"; from: string; to: string; carried: boolean }
+  /** Divider where a new session started from an earlier message (edit, resend or fork): the feed above is carried. */
+  | { id: number; kind: "branch"; mode: BranchMode; carried: boolean }
   | ({ id: number; kind: "signin" } & UrlRecord)
   | { id: number; kind: "notice"; severity: string; title: string; description?: string; /** Set for a notice the agent later clears. */ noticeId?: string; hint?: AgentHint }
   | { id: number; kind: "compaction"; compactionId: string; status: string; summary: string; error?: string }
@@ -448,6 +451,26 @@ function reduceDelegation(state: AgentState, event: DelegationEvent): AgentState
       if (otherLead(event.lead) || event.requestKind !== "permission") return state;
       const request = { taskId: event.taskId ?? null, child: event.child, agentName: event.agentName, sessionId: event.sessionId, requestId: event.requestId };
       return { ...state, childRequests: [...state.childRequests.filter((item) => item.requestId !== event.requestId), request].slice(-STRAY_LIMIT) };
+    }
+    case "starting": {
+      // No prompt: the user turned delegation on. The card makes the start visible.
+      if (otherLead(event.lead)) return state;
+      const placeholder = { taskId: `starting:${event.agentId}:${state.nextId}`, child: { connectionId: "", sessionId: "" }, agentName: event.agentId, status: "starting" as const, startingAgentId: event.agentId };
+      return addFeedItem(state, { kind: "delegation", task: placeholder });
+    }
+    case "startFinished": {
+      if (otherLead(event.lead)) return state;
+      const index = state.feed.findIndex((item) => item.kind === "delegation" && item.task.status === "starting" && item.task.startingAgentId === event.agentId);
+      if (event.reason) {
+        if (index < 0) return state;
+        const reason = event.reason;
+        const detail = event.detail ?? undefined;
+        return { ...state, feed: state.feed.map((item, at): FeedItem => (at === index && item.kind === "delegation" ? { ...item, task: { ...item.task, status: "failed", rawStatus: "failed", reason, detail } } : item)) };
+      }
+      const cleared = index < 0 ? state : { ...state, feed: state.feed.filter((_, at) => at !== index) };
+      if (!event.launched) return cleared;
+      const leadName = state.delegation.attached?.agentName || state.agent?.title || state.agent?.name || "the lead";
+      return addFeedItem(cleared, { kind: "note", text: `Started ${event.agentName || event.agentId} for ${leadName}` });
     }
     case "delegated":
     case "taskFinished": {

@@ -60,7 +60,7 @@ describe("delegation reducer", () => {
 
   it("tracks attached, unavailable and detached, and stops running cards when the lead detaches", () => {
     const attached = apply([delegation({ kind: "attached", lead, agentName: "Claude" }), delegation({ kind: "delegated", lead, child, taskId: "t1", agentName: "Codex" })]);
-    expect(delegationLine(attached.delegation, attached.sessionId)).toEqual({ tone: "on", text: "Delegation on" });
+    expect(delegationLine(attached.delegation, attached.sessionId)).toBeUndefined();
     const detached = apply([delegation({ kind: "detached", lead })], attached);
     expect(delegationLine(detached.delegation, detached.sessionId)).toBeUndefined();
     expect(cards(detached)[0]).toMatchObject({ status: "cancelled", detail: "The lead session ended" });

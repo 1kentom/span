@@ -70,15 +70,15 @@ describe("attach menu wiring", () => {
   it("offers only items with a real handler, and gives the reason for disabled ones", async () => {
     const { host } = await composer();
     openMenu(host);
-    expect(items(host).map(label)).toEqual(["Upload files", "Add image", "Current file", "Selection"]);
+    // Paste screenshot and Earlier session have real handlers now (#91); Folder still needs the desktop folder picker.
+    expect(items(host).map(label)).toEqual(["Upload files", "Add image", "Paste screenshot", "Current file", "Selection", "Earlier session"]);
     const byName = Object.fromEntries(items(host).map((item) => [label(item), item]));
     expect(byName["Current file"].getAttribute("aria-disabled")).toBe("true");
     expect(byName["Current file"].textContent).toContain("No file is open");
     expect(byName["Selection"].textContent).toContain("Nothing is selected");
     expect(byName["Upload files"].getAttribute("aria-disabled")).toBeNull();
-    expect(host.textContent).not.toContain("Paste screenshot");
+    expect(byName["Earlier session"].textContent).toContain("No earlier chat open");
     expect(host.textContent).not.toContain("Folder");
-    expect(host.textContent).not.toContain("Earlier session");
   });
 
   it("enables Current file and Selection from the editor state and disables images the agent cannot read", async () => {
@@ -156,23 +156,23 @@ describe("history delete confirm", () => {
     const onClose = vi.fn();
     const host = mount(() => <HistoryList {...base} rows={rows} onDelete={onDelete} onClose={onClose} />);
     host.querySelector<HTMLButtonElement>("[aria-label='Actions for Chat A']")!.click();
-    expect([...host.querySelectorAll("[role=menuitem]")].map((item) => text(item))).toEqual(["Close session", "Delete"]);
+    expect([...host.querySelectorAll("[role=menuitem] .sb-menu-label")].map((item) => text(item))).toEqual(["Close session", "Delete"]);
     host.querySelector<HTMLButtonElement>("[aria-label='Actions for Chat B']")!.click();
-    expect([...host.querySelectorAll("[role=menuitem]")].map((item) => text(item))).toEqual(["Delete"]);
-    host.querySelector<HTMLButtonElement>("[role=menuitem]")!.click();
+    expect([...host.querySelectorAll("[role=menuitem] .sb-menu-label")].map((item) => text(item))).toEqual(["Delete"]);
+    host.querySelector<HTMLButtonElement>("[role=menuitem].danger")!.click();
     expect(onDelete).not.toHaveBeenCalled();
     expect(host.querySelector(".sb-confirm")).not.toBeNull();
     key("Escape");
     expect(host.querySelector(".sb-confirm")).toBeNull();
     expect(onDelete).not.toHaveBeenCalled();
     host.querySelector<HTMLButtonElement>("[aria-label='Actions for Chat B']")!.click();
-    host.querySelector<HTMLButtonElement>("[role=menuitem]")!.click();
+    host.querySelector<HTMLButtonElement>("[role=menuitem].danger")!.click();
     host.querySelector<HTMLButtonElement>(".sb-confirm .danger")!.click();
     expect(onDelete).toHaveBeenCalledWith("b");
     expect(host.querySelector(".sb-confirm")).toBeNull();
   });
-  it("shows no menu when neither callback is supplied", () => {
-    const host = mount(() => <HistoryList {...base} rows={rows} />);
+  it("shows no menu on a locked row when no callback is supplied", () => {
+    const host = mount(() => <HistoryList {...base} rows={rows.map((row) => ({ ...row, locked: true }))} />);
     expect(host.querySelector(".row-menu")).toBeNull();
   });
 });
@@ -201,7 +201,8 @@ describe("delegation in the sidebar", () => {
   it("shows the status line when attached and the reason when the agent cannot get the tools", async () => {
     const { host } = await composer();
     mocks.emit({ kind: "delegation", event: { kind: "attached", lead, agentName: "Agent" } });
-    expect(text(host.querySelector(".agent-delegation-line"))).toBe("Delegation on");
+    expect(host.querySelector(".agent-delegation-line")).toBeNull();
+    expect(host.textContent).not.toContain("Delegation on");
     mocks.emit({ kind: "delegation", event: { kind: "detached", lead } }, { kind: "delegation", event: { kind: "unavailable", connectionId: "c1", agentName: "Agent", reason: "This agent does not offer MCP over HTTP" } });
     expect(text(host.querySelector(".agent-delegation-line"))).toBe("Delegation unavailable: This agent does not offer MCP over HTTP");
     expect(host.querySelector(".agent-delegation-line.warn")).not.toBeNull();

@@ -144,10 +144,11 @@
       "assetSha256": "92fe48525d3d54b6482ed41c0b38c7fe3e04666841dff4b3943f1b55b98ce072"
     },
     {
-      "asset": "install.svg",
-      "source": "web/iconsax-receive-cloud-3c7f35ac2dd6-.svg",
-      "sourceSha256": "ba3ddce7890541e4ad990ec7e66149152e64691e9eac806b73019f83ed5fc636",
-      "assetSha256": "ba3ddce7890541e4ad990ec7e66149152e64691e9eac806b73019f83ed5fc636"
+      "asset": "package.svg",
+      "source": "essential/iconsax-box-cafb0585f97c-.svg",
+      "sourceSha256": "260243ff98b5ddefb53d2a6fb85361f598816ce4ace67fa053c75123ceb86479",
+      "assetSha256": "260243ff98b5ddefb53d2a6fb85361f598816ce4ace67fa053c75123ceb86479",
+      "note": "Install action. Replaces the retired cloud artwork from web/iconsax-receive-cloud-3c7f35ac2dd6-.svg."
     }
   ],
   "excludedArtwork": [

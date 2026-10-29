@@ -19,7 +19,7 @@ pub fn agent_presets() -> Vec<AgentPreset> {
     vec![AgentPreset {
         id: "opencode".into(),
         name: "OpenCode".into(),
-        description: "Runs `opencode acp`. Install OpenCode and sign in with `opencode auth login` first. OpenCode writes files itself, so Span review does not gate its edits.".into(),
+        description: "Runs `opencode acp`. Sign in first with `opencode auth login`.".into(),
         launch: AgentCommand {
             command: "opencode".into(),
             args: vec!["acp".into()],

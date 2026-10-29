@@ -450,18 +450,36 @@
     },
     "agents": {
       "type": "object",
-      "default": {},
+      "default": {
+        "delegation": {
+          "enabled": true
+        },
+        "warmStart": true,
+        "healthCheck": true
+      },
       "additionalProperties": false,
       "properties": {
+        "healthCheck": {
+          "type": "boolean",
+          "default": true,
+          "description": "On by default. Every five minutes, send one tiny prompt (reply with one word) to each running agent you are not chatting with, over a hidden session, and show a health dot for it. Never starts an agent; each check uses a few tokens of that agent's model. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+        },
+        "warmStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "On by default. When a folder opens, start up to four installed agents in the background (process and initialize only, no session and no model use) so delegating to them or switching to them does not wait. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+        },
         "delegation": {
           "type": "object",
-          "default": {},
+          "default": {
+            "enabled": true
+          },
           "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean",
-              "default": false,
-              "description": "Offer the span-agents delegation tools to new sessions of agents that advertise MCP over HTTP. Delegated agents' permission requests and edits still go to you. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+              "default": true,
+              "description": "On by default. Offer the span-agents delegation tools to new sessions of agents that advertise MCP over HTTP. Delegated agents' permission requests and edits still go to you. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
             }
           }
         },

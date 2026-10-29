@@ -68,6 +68,8 @@
 .sb-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--sb-fg); }
 .sb-lede { margin: 3px 0 0; font-size: 12.5px; line-height: 19px; color: var(--sb-dim); text-wrap: pretty; }
 .sb-eyebrow { padding: 0 6px 4px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
+.sb-eyebrow-text { display: inline-flex; align-items: center; gap: 0; }
+.sb-count { display: inline-block; margin-left: 5px; padding: 0 5px; border-radius: 7px; background: var(--sb-control); color: var(--sb-dim); font-size: 9.5px; font-weight: 500; letter-spacing: 0; line-height: 14px; vertical-align: 1px; }
 .sb-eyebrow.tight { padding: 0; }
 .sb-sub { font-size: 11px; color: var(--sb-faint); }
 .sb-fine { margin: 0; font-size: 11px; line-height: 16px; color: var(--sb-faint); }
@@ -175,14 +177,34 @@
 .sb-hero .sb-lede, .sb-empty .sb-lede, .sb-signin .sb-lede { margin-top: 0; }
 .sb-empty { display: flex; flex-direction: column; gap: 14px; padding: 22px 6px 4px; }
 .sb-signin { display: flex; flex-direction: column; gap: 12px; padding: 18px 6px 6px; }
-.sb-agent-row { display: flex; flex-direction: column; gap: 6px; padding: 8px 6px; border-radius: 6px; }
-.sb-agent-row:not(.stacked), .sb-agent-line { flex-direction: row; align-items: center; gap: 10px; display: flex; }
-.sb-agent-row:not(.stacked) { padding: 8px 6px; }
+.sb-agent-row { display: flex; flex-direction: column; gap: 6px; padding: 7px 8px; border-radius: 8px; transition: background-color 0.12s ease; }
+.sb-agent-row:hover { background: var(--sb-hover); }
+.sb-agent-row:not(.stacked) { flex-direction: row; align-items: center; gap: 10px; }
+/* Brand mark, text, and one right-hand action column so buttons line up row to row. */
+.sb-agent-line { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; }
+.sb-agent-line > :is(.sb-btn, .sb-sub.nowrap) { justify-self: end; min-width: 68px; justify-content: center; text-align: center; }
+.sb-agent-line > .sb-btn { height: 24px; padding: 0 9px; border-radius: 6px; font-size: 11px; }
+.sb-agent-line > .sb-btn .icon { color: var(--sb-dim); }
 .sb-agent-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
-.sb-agent-name { font-size: 12.5px; color: var(--sb-fg); }
+.sb-agent-name { font-size: 12px; font-weight: 500; line-height: 17px; color: var(--sb-fg); }
 .sb-agent-text .sb-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-sub code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 10.5px; color: var(--sb-dim); }
 .sb-agent-row .sb-bar { margin-left: 28px; flex: none; }
-.sb-custom { border: 1px dashed var(--sb-control-border); border-radius: 7px; }
+/* An installed agent: one row with the quiet installed check, Connect, and a manage menu under it. */
+.sb-installed-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sb-installed-line > .icon { flex: none; color: var(--sb-success); }
+.sb-installed-line > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The action column cell: Connect, and on a Found row the manage menu after it. */
+.sb-row-actions { display: inline-flex; align-items: center; gap: 2px; justify-self: end; }
+.sb-row-actions > .sb-btn { min-width: 68px; height: 24px; padding: 0 9px; border-radius: 6px; font-size: 11px; justify-content: center; }
+.sb-found-manage { width: 24px; height: 24px; }
+/* Known command rows leave the manage slot empty so their Connect lines up with the Found rows above. */
+.sb-connect:has(.sb-found-manage) .sb-preset-row .sb-row-actions { padding-right: 26px; }
+/* A row that grows with a command chip or an update pill keeps its mark and actions level with the name and status lines. */
+.sb-agent-line:has(.sb-command-chip, .sb-update-pill) { align-items: start; }
+.sb-agent-line:has(.sb-command-chip, .sb-update-pill) > .brand-icon { margin-top: 8px; }
+.sb-agent-line:has(.sb-command-chip, .sb-update-pill) > .sb-row-actions { margin-top: 4px; }
+.sb-custom { border: 1px dashed var(--sb-control-border); border-radius: 8px; }
 .sb-custom-toggle { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; background: none; color: var(--sb-dim); text-align: left; cursor: pointer; }
 .sb-custom-form { display: flex; gap: 6px; padding: 0 10px 10px; }
 .sb-custom-form .sb-input { flex: 1; }
@@ -194,9 +216,10 @@
 .sb-recent:hover { background: var(--sb-hover); }
 .sb-methods { display: flex; flex-direction: column; gap: 6px; }
 .sb-method {
-  display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 9px 12px; border: 1px solid var(--sb-control-border);
-  border-radius: 7px; background: var(--sb-menu); color: var(--sb-fg); text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 9px 12px; border: 1px solid transparent;
+  border-radius: 8px; background: var(--sb-raised); color: var(--sb-fg); text-align: left; cursor: pointer;
 }
+.sb-method:hover:not(:disabled):not(.primary) { background: var(--sb-hover); }
 .sb-method.primary { background: var(--sb-accent-fill); border-color: var(--sb-accent-fill); color: var(--sb-on-accent); }
 .sb-method-name { font-size: 12.5px; font-weight: 500; }
 .sb-method-desc { font-size: 11.5px; opacity: 0.85; }
@@ -316,16 +339,46 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-seg { display: flex; gap: 4px; }
 .sb-pill { height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 5px; background: none; color: var(--sb-dim); font-size: 11.5px; white-space: nowrap; cursor: pointer; }
 .sb-pill.on { background: var(--sb-control); border-color: var(--sb-control-border); color: var(--sb-fg); }
-.sb-session { position: relative; display: flex; gap: 2px; align-items: flex-start; border-radius: 6px; }
-.sb-session:hover { background: var(--sb-hover); }
-.sb-session-main { display: flex; gap: 10px; flex: 1; min-width: 0; padding: 8px; border: 0; border-radius: 6px; background: none; color: var(--sb-fg); text-align: left; font: inherit; cursor: pointer; }
-.sb-session.locked .sb-session-main { cursor: default; opacity: 1; }
+/* History rows: avatars, body, then time and actions on the right, as in the 2c design frame. */
+.sb-history-group { display: flex; flex-direction: column; gap: 1px; }
+.sb-history .sb-eyebrow { padding: 0 8px 4px; }
+.sb-history-filters { display: flex; align-items: center; gap: 4px; }
+/* .agent-panel button and input inherit the panel font; the History controls keep the design sizes. */
+.sb-history .sb-pill { font-size: 11.5px; }
+.sb-history .sb-search input { font-size: 12px; }
+.sb-history .sb-menu-item { font-size: 12px; }
+.sb-agent-filter-wrap { position: relative; flex: none; }
+.sb-agent-filter { display: inline-flex; align-items: center; gap: 5px; }
+.sb-agent-filter .icon { color: var(--sb-faint); }
+.sb-agent-filter-wrap .sb-agent-menu { top: 28px; right: 0; }
+.sb-menu-glyph { width: 12px; flex: none; }
+.sb-history-empty { margin: 0; padding: 4px 8px; font-size: 12px; color: var(--sb-dim); }
+.sb-search input::placeholder { color: var(--sb-faint); }
+.sb-hl { border-radius: 2px; background: color-mix(in srgb, var(--sb-accent) 32%, transparent); color: var(--sb-strong); }
+.sb-session { position: relative; display: flex; gap: 10px; align-items: flex-start; padding: 8px; border-radius: 6px; cursor: pointer; }
+.sb-session:hover, .sb-session.open { background: var(--sb-hover); }
+.sb-session.locked { cursor: default; }
+.sb-avatars { display: flex; flex: none; width: 30px; padding-top: 2px; }
+.sb-avatars .brand-icon { margin-right: -5px; border-radius: 50%; background: var(--sb-surface); box-shadow: 0 0 0 2px var(--sb-surface); overflow: hidden; }
+/* The open chat's other providers after an agent switch, stacked after the connected agent's mark (design header crew). */
+.agent-crew { display: flex; flex: none; align-items: center; }
+.agent-crew .brand-icon + .brand-icon { margin-left: -4px; border-radius: 50%; background: var(--island); box-shadow: 0 0 0 2px var(--island); overflow: hidden; }
+.sb-session-body { display: flex; flex: 1; min-width: 0; }
+.sb-session-main { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--sb-fg); text-align: left; font: inherit; cursor: inherit; }
+.sb-session.locked .sb-session-main { opacity: 1; }
 .sb-session.locked .sb-session-title { color: var(--sb-dim); }
-.sb-session-brand { display: flex; flex: none; width: 24px; padding-top: 2px; }
-.sb-session-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--sb-fg); }
-.sb-session-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--sb-faint); }
-.sb-session-time { flex: none; padding-top: 1px; font-size: 11px; color: var(--sb-faint); }
-.sb-session .row-menu { margin: 8px 6px 0 0; }
+.sb-session-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; line-height: 18px; color: var(--sb-fg); }
+.sb-session .sb-chip.mono { border-color: var(--sepLine); background: var(--sb-hover); color: color-mix(in srgb, var(--sb-dim) 70%, var(--sb-fg)); }
+.sb-session-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; line-height: 16px; color: var(--sb-faint); }
+.sb-session-meta .sb-delta { font-size: 10.5px; }
+.sb-session-note { font-size: 11px; line-height: 15px; color: var(--sb-faint); }
+.sb-session-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+.sb-session-time { padding-top: 1px; font-size: 11px; line-height: 15px; color: var(--sb-faint); white-space: nowrap; }
+.sb-session .row-menu { width: 22px; height: 22px; border-radius: 4px; color: var(--sb-faint); }
+.sb-session .row-menu:hover { background: var(--sel); color: var(--sb-fg); }
+.sb-session .sb-row-menu { top: 56px; }
+.sb-menu-label { flex: 1; min-width: 0; }
+.sb-menu-key { font: 10.5px "JetBrains Mono", ui-monospace, monospace; color: var(--sb-faint); }
 .sb-tag { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 3px; background: var(--sb-accent-surface); color: var(--sb-accent-fg); font-size: 10px; flex: none; }
 .sb-menu { position: absolute; right: 8px; top: 40px; width: 190px; display: flex; flex-direction: column; padding: 4px; border: 1px solid var(--sb-control-border); border-radius: 8px; background: var(--sb-menu); box-shadow: var(--sb-shadow); z-index: 6; }
 .sb-menu-item { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border: 0; border-radius: 5px; background: none; color: var(--sb-fg); font-size: 12px; text-align: left; cursor: pointer; }
@@ -385,6 +438,8 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-dock-diff .sb-diff-body { max-height: 140px; }
 .sb-dock-input summary { cursor: pointer; font-size: 11px; color: var(--sb-dim); }
 .sb-dock-input pre { max-height: 120px; margin: 4px 0 0; padding: 6px 8px; overflow: auto; border: 1px solid var(--sb-border); border-radius: 6px; background: var(--sb-field); font-size: 11px; line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--sb-dim); }
+/* No border inside a dock card: the field background alone sets these boxes apart. */
+.sb-dock .sb-code, .sb-dock .sb-urlbox, .sb-dock .sb-dock-input pre { border: 0; background: var(--sb-field); }
 .sb-double { display: flex; align-items: center; gap: 5px; }
 .sb-internal-row { color: var(--sb-faint); }
 .sb-internal-steps { margin-left: 10px; opacity: 0.8; }
@@ -402,7 +457,11 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-header-row { display: flex; gap: 4px; align-items: center; }
 .sb-header-row .sb-input { flex: 1; min-width: 0; }
 .sb-auth-hint code, .sb-fine code { padding: 0 4px; border-radius: 3px; background: var(--sb-field); color: var(--sb-fg); font-size: 11px; }
-.sb-preset-command { margin-left: 28px; padding: 4px 8px; border: 1px solid var(--sb-border); border-radius: 5px; background: var(--sb-field); font-size: 11px; color: var(--sb-fg); overflow-wrap: anywhere; }
+/* A launch command on one line that fills the text column. No border: the field background marks it. */
+.sb-command-chip { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; height: 28px; margin-top: 5px; padding: 0 3px 0 8px; border-radius: 6px; background: var(--sb-field); box-sizing: border-box; }
+.sb-command-chip .sb-preset-command { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 28px; color: var(--sb-fg); }
+.sb-command-copy { width: 22px; height: 22px; }
+.sb-command-copy.copied { color: var(--sb-accent-fg); }
 .agent-turn-tokens { align-self: center; }
 
 /* Decision and delegated-agent cards */
@@ -431,23 +490,54 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-delegation-progress, .sb-delegation-files li { overflow-wrap: anywhere; }
 .sb-delegation-files { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
 .sb-delegation-actions { display: flex; gap: 6px; }
-.sb-delegation-hint { padding: 2px 4px 0; overflow-wrap: anywhere; }
+/* "Agents work together": a compact card with one switch. Tokens only. */
+.sb-delegation-toggle { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; border: 1px solid var(--sb-border); border-radius: 8px; background: var(--sb-raised); }
+.sb-delegation-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.sb-delegation-title { font-size: 12px; font-weight: 500; line-height: 17px; color: var(--sb-fg); }
+.sb-switch { position: relative; flex: none; width: 30px; height: 18px; margin-top: 1px; padding: 0; border: 1px solid var(--sb-control-border); border-radius: 9px; background: var(--sb-control); cursor: pointer; transition: background-color 0.15s ease, border-color 0.15s ease; }
+.sb-switch[aria-checked="true"] { border-color: var(--sb-accent-fill); background: var(--sb-accent-fill); }
+.sb-switch-thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--sb-dim); transition: transform 0.15s ease, background-color 0.15s ease; }
+.sb-switch[aria-checked="true"] .sb-switch-thumb { transform: translateX(12px); background: var(--sb-on-accent); }
+.sb-switch:disabled { opacity: 0.45; cursor: default; }
+.sb-switch:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .sb-switch, .sb-switch-thumb { transition: none; } }
 
 /* Update badges and the check row (ADR 0004). Tokens only. */
-.sb-update-badge { display: inline-block; align-self: flex-start; margin-top: 2px; padding: 0 6px; border: 1px solid var(--sb-accent-fg); border-radius: 4px; font-size: 10.5px; line-height: 16px; color: var(--sb-accent-fg); }
-.sb-update-check { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0 2px; }
+.sb-update-pill { display: inline-flex; align-items: center; align-self: flex-start; max-width: 100%; margin-top: 3px; height: 18px; border: 1px solid var(--sb-accent-border); border-radius: 9px; background: var(--sb-accent-surface); color: var(--sb-accent-fg); overflow: hidden; }
+.sb-update-badge { display: inline-flex; align-items: center; gap: 4px; min-width: 0; padding: 0 7px 0 5px; font-size: 10.5px; font-weight: 500; line-height: 16px; white-space: nowrap; }
+.sb-update-badge > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.sb-update-badge .icon { flex: none; }
+.sb-update-toggle { display: inline-grid; place-items: center; flex: none; align-self: stretch; width: 20px; padding: 0; border: 0; border-left: 1px solid var(--sb-accent-border); background: none; color: inherit; cursor: pointer; }
+.sb-update-toggle:hover { background: color-mix(in srgb, var(--sb-accent) 12%, transparent); }
+.sb-update-toggle:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: -2px; }
+.sb-update-panel { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 2px 28px; padding: 8px 10px; border: 1px solid var(--sb-border); border-radius: 8px; background: var(--sb-raised); min-width: 0; }
+.sb-update-heading { margin: 0; font-size: 10px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
+.sb-update-never { color: var(--sb-dim); }
+.sb-update-link { align-self: flex-start; font-size: 11.5px; }
+.sb-update-link:hover { text-decoration: underline; }
+.sb-command { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 3px 3px 8px; border: 1px solid var(--sb-border); border-radius: 6px; background: var(--sb-field); }
+.sb-command code { flex: 1; min-width: 0; font-size: 11px; line-height: 16px; color: var(--sb-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-copy-btn { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 20px; padding: 0 6px; border: 0; border-radius: 4px; background: none; color: var(--sb-dim); font: 500 10.5px/1 Inter, system-ui, sans-serif; cursor: pointer; }
+.sb-copy-btn:hover { background: var(--sb-hover); color: var(--sb-fg); }
+.sb-copy-btn.copied { color: var(--sb-success); }
+.sb-copy-btn:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 1px; }
+.sb-update-check { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: -6px 0 0; padding: 0 2px; }
 .sb-update-error { color: var(--sb-error); }
 
 /* Session state from the backend: running and waiting rows stand out; attention uses the warning colour. */
-.sb-session.live { background: var(--sb-accent-surface); }
-.sb-session.attention { background: var(--sb-warn-surface); }
 .sb-session-state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--sb-accent-fg); }
 .sb-session-state.idle { color: var(--sb-faint); }
 .sb-session-state.attention { color: var(--sb-warning); font-weight: 600; }
 .sb-session-state .sb-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+/* History row state badge and agent chips (design frame 2c). */
+.sb-session-state.sb-badge { align-self: flex-start; height: 18px; padding: 0 6px; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 9px; background: color-mix(in srgb, currentColor 10%, transparent); font-size: 10.5px; line-height: 16px; }
+.sb-chip.agent { height: 18px; gap: 4px; padding: 0 6px 0 4px; font-size: 10.5px; color: var(--sb-dim); }
+.sb-menu-sep { margin: 4px 2px; border-top: 1px solid var(--sb-border); }
+.sb-menu-item.danger { color: var(--sb-error); }
 
 /* Background chats waiting for the user, counted on the History button. */
 .agent-history-button { position: relative; }
+.agent-history-button.on { background: var(--sb-control); color: var(--sb-fg); }
 .agent-attention-badge { position: absolute; top: 0; right: 0; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px; background: var(--sb-warning); color: var(--sb-on-accent); font-size: 9px; font-weight: 700; line-height: 13px; text-align: center; }
 
 /* The step running now, pinned above the composer. */
@@ -470,6 +560,12 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-trait-badge { position: absolute; right: -2px; bottom: -3px; display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; background: var(--sb-accent-fill); color: var(--sb-on-accent); box-shadow: 0 0 0 1.5px var(--sb-ring); }
 /* Heavy models carry a gold star where fast models carry the accent bolt. */
 .sb-trait-badge[data-trait="frontier"] { background: var(--sb-warning); color: var(--sb-surface); }
+/* The model vendor mark leads; the agent that serves it sits bottom left as a small square badge, ringed in the row surface so it reads on any row. */
+.sb-model-icon > .brand-icon:first-child { color: var(--sb-fg); }
+.sb-model-icon > .sb-agent-badge { position: absolute; left: -2px; bottom: -3px; border-radius: 3px; background: var(--sb-ring); box-shadow: 0 0 0 1.5px var(--sb-ring); overflow: hidden; animation: sb-badge-pop 180ms cubic-bezier(0.3, 1.32, 0.52, 1) both; }
+.sb-model-icon > .sb-agent-badge img, .sb-model-icon > .sb-agent-badge .brand-mask { border-radius: 2px; }
+@keyframes sb-badge-pop { from { transform: scale(0.6); } to { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .sb-model-icon > .sb-agent-badge { animation: none; } }
 .sb-option-line { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
 .sb-trait-chip { display: inline-flex; align-items: center; gap: 3px; flex: none; padding: 0 5px; border: 1px solid var(--sb-border); border-radius: 8px; font-size: 10.5px; line-height: 15px; color: var(--sb-dim); }
 
@@ -653,6 +749,109 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-warning-more { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--sb-faint); font-size: 11px; cursor: pointer; }
 .sb-warning-more:hover { color: var(--sb-fg); }
 
-.sb-terminal-login { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin: 10px 0 2px; }
-.sb-terminal-command { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--sb-control-border); border-radius: 7px; background: var(--sb-field); }
-.sb-terminal-command code { overflow-wrap: anywhere; font-size: 12px; color: var(--sb-fg); }
+/* Terminal sign-in: one slim mono chip with a ghost copy button, then the retry. Folds under a disclosure when a model list leads. */
+.sb-terminal-login { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.sb-terminal-command { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 2px 2px 8px; border-radius: 4px; background: var(--sb-field); }
+.sb-terminal-command::before { content: "$"; flex: none; color: var(--sb-faint); font: 11.5px "JetBrains Mono", ui-monospace, monospace; }
+.sb-terminal-command code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11.5px; color: var(--sb-fg); }
+.sb-terminal-login > .sb-actions { align-items: center; }
+.sb-copied { font-size: 11px; color: var(--sb-success); }
+.sb-terminal-section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--sb-border); }
+.sb-disclosure {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 2px 4px; border: 0; border-radius: 6px;
+  background: none; color: var(--sb-dim); font: 12px/18px Inter, system-ui, sans-serif; text-align: left; cursor: pointer;
+}
+.sb-disclosure:hover { color: var(--sb-fg); }
+.sb-disclosure:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 2px; }
+.sb-terminal-panel { display: flex; flex-direction: column; gap: 8px; padding: 0 4px; }
+@media (prefers-reduced-motion: no-preference) { .sb-terminal-panel { animation: sb-row-in 120ms ease-out both; } }
+/* Restore dock: files changed since a message. Revert only rejects edits still waiting for review. */
+.sb-rewind-files { max-height: 160px; overflow-y: auto; padding: 0; }
+.sb-rewind-file { padding: 0 2px; }
+.sb-rewind-file .sb-change-actions .sb-btn.ghost { padding: 0 5px; }
+/* Model fallback on the sign-in card: the model picker's rows in a short scrolling radio list, about six rows tall. */
+.sb-model-fallback { display: flex; flex-direction: column; gap: 6px; }
+.sb-model-fallback > .sb-eyebrow { padding: 0 4px; }
+.sb-fallback-list {
+  --sb-ring: var(--sb-raised);
+  display: flex; flex-direction: column; gap: 1px; max-height: calc(6.5 * 33px + 8px); padding: 4px; overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 8px; background: var(--sb-raised); scrollbar-width: thin;
+}
+.sb-fallback-row { min-height: 32px; padding: 6px 8px; border-radius: 6px; --sb-ring: var(--sb-raised); }
+.sb-fallback-row:hover:not(:disabled) { background: var(--sb-hover); --sb-ring: var(--sb-hover); }
+.sb-fallback-row:focus-visible { outline-offset: -2px; }
+.sb-fallback-row[aria-checked="true"] { background: var(--sb-accent-surface); --sb-ring: var(--sb-accent-surface); }
+.sb-fallback-row .sb-option-line { flex-wrap: nowrap; }
+.sb-cost-chip { flex: none; padding: 0 5px; border-radius: 4px; background: var(--sb-field); color: var(--sb-dim); font-size: 10.5px; line-height: 16px; }
+.sb-cost-chip[data-cost="free"] { background: color-mix(in srgb, var(--sb-success) 14%, transparent); color: color-mix(in srgb, var(--sb-success) 75%, var(--sb-fg)); }
+.sb-radio-mark { position: relative; flex: none; width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--sb-control-border); }
+[aria-checked="true"] > .sb-radio-mark { box-shadow: inset 0 0 0 1px var(--sb-accent); }
+[aria-checked="true"] > .sb-radio-mark::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--sb-accent-fg); }
+.sb-model-fallback > .sb-actions { margin-top: 4px; }
+.sb-model-fallback > .sb-actions > .sb-btn.primary { flex: 1; justify-content: center; }
+@keyframes sb-row-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: no-preference) {
+  .sb-fallback-row { animation: sb-row-in 120ms ease-out both; animation-delay: calc(min(var(--i, 0), 12) * 20ms); }
+}
+
+.sb-free-toggle { margin-bottom: 4px; }
+.sb-tier { margin-top: 6px; }
+.sb-switch { position: relative; flex: none; width: 30px; height: 18px; border-radius: 9px; background: var(--sb-control); border: 1px solid var(--sb-control-border); }
+.sb-switch-knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--sb-dim); transition: transform 0.14s ease, background 0.14s ease; }
+[aria-checked="true"] > .sb-switch { background: var(--sb-accent-surface); border-color: var(--sb-accent); }
+[aria-checked="true"] > .sb-switch > .sb-switch-knob { transform: translateX(12px); background: var(--sb-accent-fg); }
+@media (prefers-reduced-motion: reduce) { .sb-switch-knob { transition: none; } }
+
+/* Mode popover: leading row icons and the fast mode switch */
+.sb-option-lead { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; color: var(--sb-faint); }
+.sb-option-lead.warn, .sb-option-lead.warn + .sb-option-text .sb-option-name { color: var(--sb-warning); }
+.sb-switch-row { display: flex; align-items: center; gap: 10px; padding: 7px; }
+.sb-switch-title { font-size: 12.5px; color: var(--sb-fg); }
+.sb-switch {
+  position: relative; flex: none; width: 30px; height: 18px; padding: 0; border: 1px solid var(--sb-border); border-radius: 9px;
+  background: var(--sb-hover); cursor: pointer; transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.sb-switch[aria-checked="true"] { background: var(--sb-accent-fill); border-color: var(--sb-accent-fill); }
+.sb-switch:disabled { cursor: default; opacity: 0.6; }
+.sb-switch:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 2px; }
+.sb-switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--sb-faint);
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+.sb-switch[aria-checked="true"] .sb-switch-knob { transform: translateX(12px); background: var(--sb-on-accent); }
+@media (prefers-reduced-motion: reduce) {
+  .sb-switch, .sb-switch-knob { transition: none; }
+}
+.sb-provider-tag { flex: none; padding: 0 5px; border-radius: 4px; background: var(--sb-field); color: var(--sb-faint); font-size: 10.5px; line-height: 16px; }
+.sb-refusal-host { top: 88px; width: calc(100% - 24px); max-width: 360px; }
+.sb-refusal { height: auto; min-height: 32px; padding: 6px 6px 6px 10px; white-space: normal; pointer-events: auto; align-items: center; }
+.sb-refusal-icon { color: var(--sb-warning); flex: none; }
+.sb-refusal-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.sb-refusal-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sb-dim); font-size: 11px; }
+.sb-refusal-copy { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+
+/* Agent health check dot (ADR 0010): green Live, amber Slow, red-ish Unreachable, grey Signed out or not checked. */
+.sb-health {
+  display: inline-block; width: 7px; height: 7px; flex: none; border-radius: 50%;
+  background: var(--sb-faint); opacity: 0.55;
+  transition: background-color 0.4s ease, opacity 0.4s ease;
+}
+.sb-health[data-tone="live"] { background: var(--sb-success); opacity: 1; }
+.sb-health[data-tone="slow"] { background: var(--sb-warning); opacity: 1; }
+.sb-health[data-tone="unreachable"] { background: color-mix(in srgb, var(--sb-error) 80%, var(--sb-faint)); opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .sb-health { transition: none; } }
+.sb-option .sb-health, .sb-agent-name-line .sb-health { margin-left: 2px; }
+.sb-agent-name-line { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* Live agents of the current chat, stacked on the prompt box (shape from the shared stack rule in agent.css). */
+.sb-live-agents { display: flex; align-items: flex-start; gap: 10px; min-height: 30px; padding: 4px 10px; }
+.sb-live-title { flex: none; font-size: 10px; line-height: 22px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sb-faint); }
+.sb-live-list { display: flex; flex: 1; flex-wrap: wrap; gap: 0 12px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.sb-live-agent { display: flex; min-width: 0; }
+.sb-live-entry { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; height: 22px; font-size: 11.5px; color: var(--sb-fg); }
+.sb-live-entry.sb-plain { border-radius: 5px; }
+.sb-live-entry.sb-plain:hover .sb-live-name { text-decoration: underline; text-underline-offset: 2px; }
+.sb-live-name { max-width: 110px; }
+.sb-live-state { flex: none; color: var(--sb-dim); }
+.sb-live-state[data-state="Waiting for you"] { color: var(--sb-warning); }
+.sb-live-state[data-state="Done"] { color: var(--sb-faint); }

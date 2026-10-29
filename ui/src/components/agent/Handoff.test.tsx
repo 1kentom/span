@@ -97,12 +97,14 @@ describe("switching agent in an open chat", () => {
     expect(first).toContain("Files changed:\n- src/util.ts");
     expect(first.endsWith("\n\nnow add a test")).toBe(true);
 
-    // The card shows exactly what was sent, collapsed; the bubble still shows only what the user typed.
-    const card = host.querySelector<HTMLDetailsElement>(".agent-message.user .agent-context-sent");
-    expect(card).not.toBeNull();
-    expect(card!.open).toBe(false);
-    expect(text(card!.querySelector("summary"))).toContain("Context sent");
-    expect(card!.querySelector("pre")?.textContent).toBe(first.slice(0, -"\n\nnow add a test".length));
+    // The switch reads as the two agent avatars with a chevron between, one left-aligned line, limits in the tooltip.
+    expect(divider?.querySelector(".agent-handoff-from")).not.toBeNull();
+    expect(divider?.querySelector(".agent-handoff-to")).not.toBeNull();
+    expect(text(divider?.querySelector(".agent-handoff-text"))).toBe("Switched to claude");
+    expect(divider?.getAttribute("title")).toContain("do not carry over");
+    // The carried context is sent but never drawn: the bubble shows only what the user typed.
+    expect(host.querySelector(".agent-context-sent")).toBeNull();
+    expect(host.querySelector(".agent-message.user pre")).toBeNull();
     const lastUser = a.feed().filter((item) => item.kind === "user").pop()!;
     expect(lastUser.kind === "user" && lastUser.text).toBe("now add a test");
 
@@ -113,7 +115,7 @@ describe("switching agent in an open chat", () => {
     await tick();
     expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(2);
     expect(mocks.api.agentPrompt.mock.calls[1][0]).toBe("and run it");
-    expect(host.querySelectorAll(".agent-context-sent")).toHaveLength(1);
+    expect(host.querySelector(".agent-context-sent")).toBeNull();
   });
 
   it("keeps the old feed, the draft and shows the error when the new agent fails to connect", async () => {

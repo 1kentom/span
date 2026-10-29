@@ -1,0 +1,5 @@
+/* Painted before the app bundle loads, so the first webview frame already has the theme's
+   canvas colour instead of a white or black flash. Colours match --canvas in styles/workbench.css. */
+html, body { margin: 0; height: 100%; background: #090909; color-scheme: dark; }
+html[data-theme="light"], html[data-theme="light"] body { background: #eeeff0; color-scheme: light; }
+html[data-theme="purple"], html[data-theme="purple"] body { background: #080810; color-scheme: dark; }

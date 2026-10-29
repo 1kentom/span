@@ -23,6 +23,7 @@ pub mod session_meta;
 mod startup;
 mod terminals;
 mod uploads;
+mod window;
 
 /// The authoritative workspace is only accessed by blocking workers.
 type FormatterJobs =
@@ -40,6 +41,11 @@ pub struct DesktopState {
     pub sessions: span_acp::SessionManager,
     /// span-agents servers of the user's lead sessions (ADR 0003).
     pub leads: span_acp::tools::LeadServers,
+    /// Installed agents Span started in the background (on demand for
+    /// delegation), created on first use. See `agents::background`.
+    pub background: Arc<Mutex<Option<span_acp::BackgroundAgents>>>,
+    /// The agent health check (ADR 0010), created on first use. See `agents::health`.
+    pub health: Arc<Mutex<Option<span_acp::HealthMonitor>>>,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
@@ -141,6 +147,8 @@ async fn open_workspace(
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
     agents::disconnect_and_wait(&state).await?;
+    // Background agents run in the old folder; they end with it.
+    agents::background(&state).shutdown();
     services::cancel_all_formatter_jobs(&state);
     let (result, settings, workspace) = tauri::async_runtime::spawn_blocking(move || {
         let result = workspace.workspace();
@@ -880,7 +888,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::LanguageServerError,
             language_servers::WorkspaceTrustChanged,
             startup::StartupRequestError,
-            agents::AgentSessionStatesChanged
+            agents::AgentSessionStatesChanged,
+            agents::AgentHealthChanged
         ])
         .commands(collect_commands![
             open_workspace,
@@ -972,6 +981,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_connect,
             agents::agent_new_session,
             agents::agent_list_sessions,
+            agents::agent_list_all_sessions,
             agents::agent_resume_session,
             agents::agent_close_session,
             agents::agent_delete_session,
@@ -1019,6 +1029,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_delegation_status,
             agents::agent_child_permission,
             agents::agent_cancel_task,
+            agents::agent_warm_start,
+            agents::agent_health,
             uploads::uploads_list,
             uploads::uploads_usage,
             uploads::uploads_add,
@@ -1029,7 +1041,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             uploads::uploads_save_to_workspace,
             uploads::uploads_copy_path,
             uploads::uploads_reveal,
-            uploads::uploads_open
+            uploads::uploads_open,
+            window::report_startup_timings,
+            window::show_main_window
         ])
 }
 
@@ -1049,6 +1063,7 @@ pub fn export_bindings() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    window::mark_process_start();
     let action = cli::parse_args(std::env::args().skip(1), &std::env::current_dir()?)?;
     let request = match action {
         cli::CliAction::Help => {
@@ -1087,6 +1102,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             app.manage(lsp);
             agents::watch_session_states(app.handle());
             menu::install(app.handle())?;
+            // The window starts hidden; the frontend shows it once the session has rendered (its
+            // own cap is 2s after the first render). This only catches a frontend that never
+            // reports, and leaves room for a slow first load of the development server.
+            window::show_if_still_hidden(app.handle(), std::time::Duration::from_secs(6));
+            window::log_window_created();
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
                 window.on_window_event(move |event| {
@@ -1113,6 +1133,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app.state::<DesktopState>();
+            // Before the processes end: close hidden check sessions where the agent can.
+            agents::stop_health(&state);
             state.run_approvals.cancel_all();
             if let Err(error) = tauri::async_runtime::block_on(state.runs.shutdown()) {
                 eprintln!("Could not stop run processes: {error}");
@@ -1121,6 +1143,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("Could not close interactive terminals: {error}");
             }
             let _ = agents::disconnect(&state);
+            agents::background(&state).shutdown();
             state.file_index.shutdown();
             // Bounded: a server that ignores shutdown is killed, never waited on forever.
             app.state::<language_servers::LspService>()

@@ -7,7 +7,7 @@ import '../../styles/attachments.css';
 export type AttachMenuItemId = 'upload' | 'image' | 'screenshot' | 'file' | 'selection' | 'folder' | 'session';
 
 const definitions: { id: AttachMenuItemId; label: string; icon: string; needs?: 'image' }[] = [
-  { id: 'upload', label: 'Upload files', icon: 'Paperclip2' },
+  { id: 'upload', label: 'Upload files', icon: 'ActionUpload' },
   { id: 'image', label: 'Add image', icon: 'Gallery', needs: 'image' },
   { id: 'screenshot', label: 'Paste screenshot', icon: 'Copy', needs: 'image' },
   { id: 'file', label: 'Current file', icon: 'DocumentText' },

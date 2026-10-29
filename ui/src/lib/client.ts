@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { commands, events } from '../bindings';
 import type { TerminalEvent_Deserialize as TerminalEvent, TerminalInfo } from '../bindings';
 import type { LspPort } from './lsp-client';
+import type { BootTheme, StartupTimings } from './startup';
 import { previewAssetFiles, previewAssetImage } from './preview-assets';
 import type { NavigationPort } from './lsp-navigation';
 import { createPreviewNavigationPort, previewNavigationFiles } from './navigation-preview';
@@ -13,7 +14,7 @@ import { createHubPreview } from './hub-preview';
 import type { HubPort } from './hub-port';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
-import type { PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
+import type { AgentHealth_Serialize as AgentHealth, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -191,6 +192,12 @@ export const api = {
   async pickFile(): Promise<string | null> {
     if (!isDesktop) nativeRequired('Opening files');
     const selected = await open({ directory: false, multiple: false, title: 'Open a file in span' });
+    return typeof selected === 'string' ? selected : null;
+  },
+  /** Folder picker for attaching a folder outline, starting in `defaultPath` (normally the workspace root). */
+  async pickFolder(defaultPath?: string): Promise<string | null> {
+    if (!isDesktop) nativeRequired('Picking folders');
+    const selected = await open({ directory: true, multiple: false, defaultPath, title: 'Attach a folder from this workspace' });
     return typeof selected === 'string' ? selected : null;
   },
   async openWorkspace(path?: string): Promise<Workspace | null> {
@@ -420,6 +427,13 @@ export const api = {
     if (!navigator.clipboard) throw new Error('Clipboard access is unavailable in this browser.');
     await navigator.clipboard.writeText(text);
   },
+  /** Shows the main window, which starts hidden, on the theme's canvas colour. */
+  async showMainWindow(theme: BootTheme): Promise<void> {
+    if (isDesktop) await commands.showMainWindow(theme === "light" ? "Light" : theme === "purple" ? "Purple" : "Dark");
+  },
+  async reportStartupTimings(timings: StartupTimings): Promise<void> {
+    if (isDesktop) await commands.reportStartupTimings(timings);
+  },
   async nativeWindowState(): Promise<NativeWindowState> {
     return isDesktop ? commands.nativeWindowState() : { fullscreen: false, maximized: false, hasNativeTrafficLights: false };
   },
@@ -488,6 +502,20 @@ export const api = {
     if (!isDesktop) nativeRequired('Listing installed agents');
     return commands.agentInstalled();
   },
+  /** Warm start (ADR 0009): the backend starts installed agents in the background, `recent` ids first. Resolves at once with how many it queued; 0 when `agents.warmStart` is off. */
+  async agentWarmStart(recent: string[]): Promise<number> {
+    if (!isDesktop) return 0;
+    return commands.agentWarmStart(recent);
+  },
+  /** Agent health check (ADR 0010): the latest result per running agent, empty while `agents.healthCheck` is off. The first call starts the periodic checks, so call it after the window is shown. */
+  async agentHealth(): Promise<AgentHealth[]> {
+    if (!isDesktop) return [];
+    return commands.agentHealth();
+  },
+  /** Every health result, sent whole whenever one changes. */
+  async onAgentHealth(listener: (agents: AgentHealth[]) => void): Promise<() => void> {
+    return isDesktop ? events.agentHealthChanged.listen(event => listener(event.payload.agents)) : () => undefined;
+  },
   async agentInstall(id: string): Promise<InstalledAgent> {
     if (!isDesktop) nativeRequired('Installing agents');
     return commands.agentInstall(id);
@@ -547,6 +575,11 @@ export const api = {
   async agentListSessions(): Promise<SessionSummary[]> {
     if (!isDesktop) nativeRequired('Listing earlier chats');
     return commands.agentListSessions();
+  },
+  /** Sessions from every folder the agent knows, for the History "All folders" scope. */
+  async agentListAllSessions(): Promise<SessionSummary[]> {
+    if (!isDesktop) nativeRequired('Listing earlier chats');
+    return commands.agentListAllSessions();
   },
   async agentResumeSession(sessionId: string): Promise<string> {
     if (!isDesktop) nativeRequired('Resuming a chat');

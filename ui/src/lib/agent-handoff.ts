@@ -63,16 +63,20 @@ export function feedChangedFiles(feed: readonly FeedItem[], root?: string): stri
 
 const clip = (text: string, limit: number) => (text.length > limit ? `${text.slice(0, limit).trimEnd()} [cut]` : text);
 
+/** Why the context was carried, in the header of the block, when no other reason is given. */
+export const HANDOFF_SWITCH_REASON = "Span carried it over when the user switched agents.";
+
 /**
  * The compact block sent ahead of the first prompt in the new session, or undefined when there is nothing to carry.
- * `turns` is the number of user and assistant messages kept, newest last.
+ * `turns` is the number of user and assistant messages kept, newest last. `reason` replaces the agent switch sentence
+ * in the header, for a new session started from an earlier message of the same chat.
  */
-export function buildHandoff(feed: readonly FeedItem[], options: { from: string; turns?: number; root?: string }): string | undefined {
+export function buildHandoff(feed: readonly FeedItem[], options: { from: string; turns?: number; root?: string; reason?: string }): string | undefined {
   const keep = Math.max(0, options.turns ?? HANDOFF_TURNS);
   const turns = keep ? feedTurns(feed).slice(-keep) : [];
   const files = feedChangedFiles(feed, options.root);
   if (!turns.length && !files.length) return undefined;
-  const lines = [`[Context from an earlier session with ${options.from}. Span carried it over when the user switched agents. Tool state, memory and permissions from that session are not available.]`];
+  const lines = [`[Context from an earlier session with ${options.from}. ${options.reason ?? HANDOFF_SWITCH_REASON} Tool state, memory and permissions from that session are not available.]`];
   if (turns.length) {
     lines.push("", `Recent messages (last ${turns.length}):`);
     for (const turn of turns) lines.push(`${turn.role === "user" ? "User" : "Agent"}: ${clip(turn.text, HANDOFF_MESSAGE_LIMIT)}`);

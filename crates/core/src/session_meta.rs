@@ -45,6 +45,11 @@ pub struct ModelUse {
     pub used_ms: u64,
     /// Prompt turns sent while this model was selected.
     pub turns: u32,
+    /// True when a delegated child session ran this model for the session,
+    /// shown as `model · subagent`. Kept apart from the lead's own use of the
+    /// same model.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub subagent: bool,
 }
 
 /// One agent that took part in a session, for example a delegated child.
@@ -65,6 +70,19 @@ pub struct AgentUse {
 pub struct SessionParent {
     pub agent_id: String,
     pub session_id: String,
+}
+
+/// The earlier segment of the same chat that a session continues: the
+/// session the user switched agent from (ADR 0005, thread links). `title` is
+/// the chat title shown when the switch happened, so the thread keeps its
+/// name even when the earlier agent is not connected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLink {
+    pub agent_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// What Span knows about one agent session. Sessions are keyed by
@@ -91,6 +109,20 @@ pub struct SessionMeta {
     pub lines_removed: u32,
     pub stop_reason_last: Option<String>,
     pub parent: Option<SessionParent>,
+    /// The earlier segment of the same chat, set when the user switched agent.
+    /// Following these links from the newest segment gives the whole thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<SessionLink>,
+    /// True when Span saw every file change of the session go through review,
+    /// so zero counters mean "no changes" rather than "unknown".
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub changes_tracked: bool,
+}
+
+/// Fields that default to false are left out of the file, so the new fields
+/// cost nothing for sessions that never set them (the byte cap is unchanged).
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A model use to merge into a session: merged by `name`, `turns` is added
@@ -106,6 +138,10 @@ pub struct ModelUsePatch {
     #[serde(default)]
     #[specta(optional)]
     pub turns: Option<u32>,
+    /// Records a delegated child's model (merged apart from the lead's own).
+    #[serde(default)]
+    #[specta(optional)]
+    pub subagent: Option<bool>,
 }
 
 /// A merge patch for one session. Absent fields leave the stored value as it
@@ -141,6 +177,14 @@ pub struct SessionMetaPatch {
     #[serde(default)]
     #[specta(optional)]
     pub parent: Option<SessionParent>,
+    /// Set, not merged. A link to the session itself or with an invalid id is
+    /// ignored.
+    #[serde(default)]
+    #[specta(optional)]
+    pub continues: Option<SessionLink>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub changes_tracked: Option<bool>,
 }
 
 impl SessionMetaPatch {
@@ -211,6 +255,7 @@ pub fn patch_for_turn_start(
             name: model.to_owned(),
             effort: effort.map(str::to_owned),
             turns: Some(1),
+            subagent: None,
         });
     }
     patch
@@ -229,6 +274,7 @@ pub fn patch_for_model_selected(
             name: model.to_owned(),
             effort: effort.map(str::to_owned),
             turns: Some(0),
+            subagent: None,
         });
     }
     patch
@@ -646,6 +692,8 @@ fn new_meta(agent_id: &str, session_id: &str, now: u64) -> SessionMeta {
         lines_removed: 0,
         stop_reason_last: None,
         parent: None,
+        continues: None,
+        changes_tracked: false,
     }
 }
 
@@ -659,7 +707,12 @@ fn apply_patch(meta: &mut SessionMeta, patch: &SessionMetaPatch, now: u64) {
         };
         let turns = model.turns.unwrap_or(1);
         let effort = clip_label(model.effort.as_deref());
-        match meta.models.iter_mut().find(|m| m.name == name) {
+        let subagent = model.subagent.unwrap_or(false);
+        match meta
+            .models
+            .iter_mut()
+            .find(|m| m.name == name && m.subagent == subagent)
+        {
             Some(existing) => {
                 existing.turns = existing.turns.saturating_add(turns);
                 existing.used_ms = existing.used_ms.max(now);
@@ -672,6 +725,7 @@ fn apply_patch(meta: &mut SessionMeta, patch: &SessionMetaPatch, now: u64) {
                 effort,
                 used_ms: now,
                 turns,
+                subagent,
             }),
         }
     }
@@ -727,6 +781,37 @@ fn apply_patch(meta: &mut SessionMeta, patch: &SessionMetaPatch, now: u64) {
             meta.parent = Some(parent.clone());
         }
     }
+    if let Some(link) = patch
+        .continues
+        .as_ref()
+        .and_then(|link| valid_link(meta, link))
+    {
+        meta.continues = Some(link);
+    }
+    if let Some(tracked) = patch.changes_tracked {
+        meta.changes_tracked = tracked;
+    }
+}
+
+/// A thread link `meta` may store: valid ids, not the session itself, title
+/// trimmed and clipped like a user title.
+fn valid_link(meta: &SessionMeta, link: &SessionLink) -> Option<SessionLink> {
+    if validate_id("linked agent id", &link.agent_id).is_err()
+        || validate_id("linked session id", &link.session_id).is_err()
+        || (link.agent_id == meta.agent_id && link.session_id == meta.session_id)
+    {
+        return None;
+    }
+    Some(SessionLink {
+        agent_id: link.agent_id.clone(),
+        session_id: link.session_id.clone(),
+        title: link
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| clip(t, MAX_TITLE_CHARS)),
+    })
 }
 
 /// Drops entries this store could never have written and keeps one entry per
@@ -748,6 +833,10 @@ fn sanitize_all(sessions: Vec<SessionMeta>) -> Vec<SessionMeta> {
         meta.connection_name = clip(&meta.connection_name, MAX_LABEL_CHARS);
         meta.models.truncate(MAX_MODELS);
         meta.agents.truncate(MAX_AGENTS);
+        meta.continues = meta
+            .continues
+            .take()
+            .and_then(|link| valid_link(&meta, &link));
         match out
             .iter_mut()
             .find(|s| s.agent_id == meta.agent_id && s.session_id == meta.session_id)

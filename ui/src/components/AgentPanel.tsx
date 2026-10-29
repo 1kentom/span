@@ -1,22 +1,26 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
+import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
 import { isNearBottom, relativeTime } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
 import type { AgentHint } from "../bindings";
-import { curatedAgent } from "../lib/acp-catalog";
-import { capabilityChips, classifyFailure, leaf } from "../lib/agent-view";
+import { buildAgentCatalog, curatedAgent } from "../lib/acp-catalog";
+import { capabilityChips, classifyFailure, configViews, leaf } from "../lib/agent-view";
+import { fallbackModels } from "../lib/agent-options";
+import { cleanAgentText, signInCopy } from "../lib/sign-in-copy";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
 import { Icon } from "./Icon";
-import { AttachmentViewer, DropOverlay, attachmentBlockReason } from "./attachments";
-import { AgentCatalog } from "./agent/AgentCatalog";
+import { AttachmentViewer, DropOverlay, attachmentBlockReason, type AttachmentTabView } from "./attachments";
+import type { Attachment } from "../lib/attachments";
+import { AgentCatalog, catalogPreset } from "./agent/AgentCatalog";
 import { AgentComposer } from "./agent/AgentComposer";
 import { AgentFeed } from "./agent/AgentFeed";
 import { ErrorCard, OfflineBar } from "./agent/Banners";
 import { ConnectingSteps, ReadyCard } from "./agent/ConnectFlow";
 import { ConnectScreen } from "./agent/ConnectScreen";
-import { EditorToast } from "./agent/EditorToast";
+import { EditorToast, OpenRefusal } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
 import { HistoryList } from "./agent/HistoryList";
@@ -43,7 +47,65 @@ export function AgentPanel(props: AgentPanelProps) {
   const label = () => agent()?.title || agent()?.name || a.agentName();
   const brand = () => ({ id: a.agentId() ?? agent()?.name, name: label() });
   const hasAgent = () => Boolean(a.agentId() || agent());
-  const title = () => a.state().sessionTitle || (a.connected() || a.connecting() || a.state().auth ? label() : "AI Assistant");
+  /** Other models for a refused prompt: only while this session's own turn was refused, so it can be sent again. */
+  const signInModels = createMemo(() => (a.canRetryModel() ? fallbackModels(configViews(a.state().config)) : []));
+  const signInText = () => {
+    const auth = a.state().auth;
+    const promptFailed = a.canRetryModel();
+    return signInCopy({ agent: label(), message: auth?.message ?? "", agentMessage: auth?.agentMessage, promptFailed, models: signInModels().length });
+  };
+  /**
+   * A workbench tab view of one attachment. Every field is a getter over live panel state, so the tab
+   * follows a save (the item becomes a workspace file) and drops session actions once the message is gone.
+   * The snapshot keeps the content viewable after the chat changes.
+   */
+  function attachmentTabView(snapshot: Attachment): AttachmentTabView {
+    const id = snapshot.id;
+    const inComposer = () => a.attachments().some((item) => item.id === id);
+    const message = () => a.feed().find((entry) => entry.kind === "user" && entry.attachments?.some((attachment) => attachment.id === id));
+    return {
+      get item() { return a.findAttachment(id) ?? snapshot; },
+      get blockedReason() { return inComposer() ? a.blocked().find((entry) => entry.item.id === id)?.reason ?? attachmentBlockReason(a.findAttachment(id) ?? snapshot, a.caps()) : undefined; },
+      nativeUnavailable: isDesktop ? undefined : NATIVE_UNAVAILABLE,
+      get source() {
+        if (inComposer() || !message()) return undefined;
+        const session = a.state().sessionTitle;
+        const name = hasAgent() ? label() : undefined;
+        if (!session && !name) return undefined;
+        return { agent: hasAgent() ? { id: brand().id, name: brand().name } : undefined, verb: session ? "Sent in" : "Sent to", session: session || name };
+      },
+      get onShowInSession() {
+        const target = message();
+        if (inComposer() || !target) return undefined;
+        return () => {
+          a.setPinned(false);
+          requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
+        };
+      },
+      onShowSessionList: () => {
+        a.setView("history");
+        void a.loadSessions();
+      },
+      get onRemove() { return inComposer() ? a.removeAttachment : undefined; },
+      onSaveToWorkspace: a.saveAttachment,
+      onCopyPath: (path) => api.writeClipboard(path),
+      onOpenInEditor: (attachment) => { if (attachment.path) a.openInEditor(attachment.path); },
+      loadImage: (path) => api.readImage(path),
+    };
+  }
+  createEffect(() => {
+    const open = props.onOpenAttachment;
+    a.setAttachmentOpener(open ? (item) => open(attachmentTabView(item)) : undefined);
+  });
+  const title = () => (a.view() === "history" ? "Earlier sessions" : a.currentTitle() || (a.connected() || a.connecting() || a.state().auth ? label() : "AI Assistant"));
+  /** Other providers of the open chat's thread (it switched agent), stacked after the connected agent's mark. */
+  const crew = createMemo(() => {
+    const id = a.state().sessionId;
+    const own = brand().id ?? brand().name;
+    return id ? threadRowMeta(a.threadFor(id)).agents.filter((entry) => entry.id !== own) : [];
+  });
+  /** The clock button lists sessions and, pressed while History shows, goes back to the chat. */
+  const canHistory = () => a.connected() && a.state().canList;
   const busyOverlay = () => a.connected() || a.feed().length > 0;
   const body = createMemo(() => {
     if (a.view() === "logs") return "logs";
@@ -84,19 +146,39 @@ export function AgentPanel(props: AgentPanelProps) {
     });
     return actions;
   });
-  const sessionRows = createMemo(() =>
-    a.sessions().map((session) => ({
-      id: session.sessionId,
-      brand: brand(),
-      title: session.title || "Untitled chat",
-      updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
-      inWorkspace: true,
-      current: session.sessionId === a.state().sessionId,
-      // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
-      locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
-      status: a.rowStatus(session.sessionId),
-    })),
-  );
+  /**
+   * One row per chat thread (ADR 0005, thread links): a chat that switched agent shows every provider and model it used
+   * under one title, and its earlier segment is not listed again when the continuation is listed too.
+   */
+  const sessionRows = createMemo(() => {
+    const listed = a.sessions();
+    const shown = new Set(visibleThreadRows(listed.map((session) => session.sessionId), a.sessionMeta(), a.agentId()));
+    return listed
+      .filter((session) => shown.has(session.sessionId))
+      .map((session) => {
+        const stored = threadRowMeta(a.threadFor(session.sessionId));
+        const inWorkspace = sameFolder(session.cwd, props.workspacePath);
+        return {
+          id: session.sessionId,
+          brand: brand(),
+          title: stored.title || listedTitle(session.title) || "Untitled chat",
+          // The connected agent listed the session, so it is the one agent known even without stored metadata.
+          agents: stored.agents.length ? stored.agents : hasAgent() ? [{ id: brand().id ?? brand().name, name: brand().name }] : [],
+          models: stored.models,
+          files: stored.files,
+          delta: stored.delta,
+          noChanges: stored.noChanges,
+          archived: stored.archived,
+          updatedAt: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
+          inWorkspace,
+          ...(inWorkspace ? {} : { folder: session.cwd ?? undefined }),
+          current: session.sessionId === a.state().sessionId,
+          // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
+          locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
+          status: a.rowStatus(session.sessionId),
+        };
+      });
+  });
   const recents = createMemo(() =>
     a.state().canLoad
       ? a
@@ -121,6 +203,8 @@ export function AgentPanel(props: AgentPanelProps) {
     return [...new Set(unsupportedAuth().flatMap((method) => (!covered(method) && methodHint(method) ? [methodHint(method)!] : [])))].filter((line) => line !== shown);
   };
   const unhinted = () => unsupportedAuth().filter((method) => !method.hint);
+  /** Local programs the curated list already connects through their known command, from the whole list rather than the searched one, so Known commands never repeats them. */
+  const catalogListedIds = () => buildAgentCatalog(a.registry(), a.installed()).filter((row) => catalogPreset(row, presetRows())).map((row) => row.definition.id);
   const presetRows = () => a.presets().map((preset) => ({ id: preset.id, name: preset.name, description: preset.description, command: [preset.launch.command, ...preset.launch.args].join(" ") }));
   const openHistory = () => {
     a.setView(a.view() === "history" ? "session" : "history");
@@ -156,8 +240,12 @@ export function AgentPanel(props: AgentPanelProps) {
   createEffect(() => {
     a.feed();
     a.state().logs;
-    a.view();
     a.queue();
+    // History reads from the top; it must not inherit the feed's pin to the latest message.
+    if (a.view() === "history") {
+      if (a.scrollers.content) a.scrollers.content.scrollTop = 0;
+      return;
+    }
     if (a.pinned()) a.scrollToLatest();
   });
   createEffect(() => {
@@ -185,14 +273,17 @@ export function AgentPanel(props: AgentPanelProps) {
       <p class="sb-visually-hidden" aria-live="polite" aria-atomic="true">{a.attentionAnnouncement()}</p>
       <header class="agent-header">
         <Show when={hasAgent()} fallback={<span class="agent-logo" aria-hidden="true" />}>
-          <BrandIcon id={brand().id} name={brand().name} size={15} />
+          <span class="agent-crew" title={crew().length ? [brand().name, ...crew().map((entry) => entry.name)].join(", ") : undefined}>
+            <BrandIcon id={brand().id} name={brand().name} size={15} />
+            <For each={crew()}>{(entry) => <BrandIcon id={entry.id} name={entry.name} size={15} />}</For>
+          </span>
         </Show>
         <span class="agent-title" title={title()}>
           {title()}
         </span>
         <span class="agent-dot" classList={{ ready: a.connected(), busy: a.running(), connecting: a.working(), error: Boolean(failure()) }} aria-hidden="true" />
         <span class="agent-header-spacer" />
-        <Show when={(a.view() === "history" || a.view() === "connect") && busyOverlay()}>
+        <Show when={((a.view() === "history" && !canHistory()) || a.view() === "connect") && busyOverlay()}>
           <button class="agent-icon-button" aria-label="Back to session" title="Back to session" onClick={() => a.setView("session")}>
             <Icon name="arrow-left4" size={14} />
           </button>
@@ -200,11 +291,13 @@ export function AgentPanel(props: AgentPanelProps) {
         <Show when={isDesktop && a.connected()}>
           <FollowPill following={a.following()} onToggle={a.toggleFollow} />
         </Show>
-        <Show when={a.connected() && a.state().canList && a.view() !== "history"}>
+        <Show when={canHistory()}>
           <button
             class="agent-icon-button agent-history-button"
-            aria-label={a.attentionCount() ? `Earlier sessions, ${a.attentionCount()} waiting for you` : "Earlier sessions"}
-            title={a.attentionCount() ? `${a.attentionCount()} background ${a.attentionCount() === 1 ? "chat waits" : "chats wait"} for you` : "Earlier sessions"}
+            classList={{ on: a.view() === "history" }}
+            aria-pressed={a.view() === "history"}
+            aria-label={a.view() === "history" ? "Back to session" : a.attentionCount() ? `Earlier sessions, ${a.attentionCount()} waiting for you` : "Earlier sessions"}
+            title={a.view() === "history" ? "Back to session" : a.attentionCount() ? `${a.attentionCount()} background ${a.attentionCount() === 1 ? "chat waits" : "chats wait"} for you` : "Earlier sessions"}
             onClick={openHistory}
           >
             <Icon name="Clock" size={15} />
@@ -267,7 +360,7 @@ export function AgentPanel(props: AgentPanelProps) {
       <Show when={isDesktop && !a.online() && (a.connected() || a.queue().length > 0)}>
         <OfflineBar text={a.queue().length ? "Queued messages wait until the network is back." : "Agents that need the network will fail until you reconnect."} onRetry={() => a.setOnline(navigator.onLine !== false)} />
       </Show>
-      <div class="agent-content" ref={(element) => (a.scrollers.content = element)} onScroll={(event) => a.setPinned(isNearBottom(event.currentTarget))}>
+      <div class="agent-content" ref={(element) => (a.scrollers.content = element)} onScroll={(event) => a.view() !== "history" && a.setPinned(isNearBottom(event.currentTarget))}>
         <Switch>
           <Match when={body() === "logs"}>
             <div class="agent-log-note">
@@ -286,7 +379,21 @@ export function AgentPanel(props: AgentPanelProps) {
                 {a.sessionsError()}
               </p>
             </Show>
-            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList rows={sessionRows()} query={query()} onQuery={setQuery} formatTime={(row) => relativeTime(new Date(row.updatedAt).toISOString())} onOpen={(id) => void a.resumeChat(id)} onCopyId={(id) => void api.writeClipboard(id)} onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined} onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined} />}>
+            <Show when={a.sessionsBusy() && !a.sessions().length} fallback={<HistoryList
+                  rows={sessionRows()}
+                  query={query()}
+                  onQuery={setQuery}
+                  scope={a.sessionScope()}
+                  onScope={a.setSessionScope}
+                  onOpen={(id) => void a.resumeChat(id)}
+                  onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined}
+                  onFork={a.canFork() && a.state().canLoad ? (id) => void a.forkChat(id) : undefined}
+                  onExport={a.canExport() ? (id) => void a.exportChat(id) : undefined}
+                  onCopyId={(id) => void api.writeClipboard(id)}
+                  onArchive={a.canArchive() ? (id, archived) => void a.archiveChat(id, archived) : undefined}
+                  onDelete={a.canDelete() ? (id) => void a.deleteChat(id) : undefined}
+                  onClose={a.canClose() ? (id) => void a.closeChat(id) : undefined}
+                />}>
               <p class="sb-fine agent-pad" role="status">
                 Loading chats…
               </p>
@@ -311,7 +418,6 @@ export function AgentPanel(props: AgentPanelProps) {
                 catalog={
                   <AgentCatalog
                     rows={a.catalogRows()}
-                    others={a.otherInstalled()}
                     search={a.catalogSearch()}
                     onSearch={a.setCatalogSearch}
                     installingIds={a.installingIds()}
@@ -324,16 +430,32 @@ export function AgentPanel(props: AgentPanelProps) {
                       const command = a.pickCatalog(row);
                       if (command) setCustomDraft({ command });
                     }}
-                    onRequestRemoval={props.removeAgent ? a.requestRemoval : undefined}
                     removal={a.removal()}
                     removalBlock={a.removalBlock()}
                     removalConnected={Boolean(a.state().sessionId) && a.agentId() === a.removal()?.entry.id}
                     onCancelRemoval={a.cancelRemoval}
                     onConfirmRemoval={() => void a.confirmRemoval()}
+                    presets={presetRows()}
+                    onPreset={a.connectPreset}
+                    updates={agentUpdates()}
+                    onOpenExternal={props.onOpenExternal}
+                    onCopyCommand={(command) => api.writeClipboard(command)}
                   />
                 }
                 customDraft={customDraft()}
+                listedIds={catalogListedIds()}
+                onCopyCommand={(command) => api.writeClipboard(command)}
+                onRemove={
+                  props.removeAgent
+                    ? (id, uninstall) => {
+                        const entry = a.installed().find((agent) => agent.id === id);
+                        if (entry) a.requestRemoval(entry, uninstall);
+                      }
+                    : undefined
+                }
                 found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${leaf(entry.launch.command)}` }))}
+                health={a.healthOn() ? a.health() : undefined}
+                healthNow={a.healthNow()}
                 presets={presetRows()}
                 updates={agentUpdates()}
                 checkingUpdates={agentUpdatesBusy()}
@@ -348,6 +470,9 @@ export function AgentPanel(props: AgentPanelProps) {
                 onConnect={a.connectInstalled}
                 onInstall={(id) => void a.install(id)}
                 onCustom={a.connectCustom}
+                onOpenExternal={props.onOpenExternal}
+                delegationEnabled={props.delegationEnabled}
+                onDelegationChange={props.onDelegationChange}
               />
               <Show when={a.registryBusy()}>
                 <p class="sb-fine" role="status">
@@ -368,14 +493,14 @@ export function AgentPanel(props: AgentPanelProps) {
           <Match when={body() === "signin"}>
             <div class="agent-body">
               <Show when={a.state().auth!.agentMessage}>
-                {(message) => <ErrorCard level="error" title={`${label()} reported a problem`} text={message()} actions={[]} />}
+                {(message) => <ErrorCard level="error" title={`${label()} reported a problem`} text={cleanAgentText(message())} actions={[]} />}
               </Show>
               <SignIn
                 id={brand().id}
                 name={label()}
-                title={a.state().auth!.agentMessage ? "Other sign-in options" : `Sign in to ${label()}`}
-                text={a.state().auth!.agentMessage ? undefined : a.state().auth!.message}
-                secondary={Boolean(a.state().auth!.agentMessage)}
+                title={signInText().title}
+                text={signInText().text}
+                secondary={signInText().secondary}
                 hint={hintText(a.state().auth!.hint)}
                 methods={a
                   .state()
@@ -384,6 +509,8 @@ export function AgentPanel(props: AgentPanelProps) {
                 busy={a.pendingAction() === "auth"}
                 onPick={(id) => void a.authenticate(id)}
                 onRetry={a.reconnect}
+                models={signInModels()}
+                onUseModel={(value) => void a.retryWithModel(value)}
                 onSubmit={(id, secret) => void a.authenticateWith(id, secret)}
               />
               <Show when={unsupportedAuth().length}>
@@ -495,6 +622,7 @@ export function AgentPanel(props: AgentPanelProps) {
       </Show>
       <DropOverlay visible={a.intake.dragging()} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
       <EditorToast name={a.toast()} onDismiss={a.clearToast} />
+      <OpenRefusal refusal={a.openRefusal()} onCopy={(path) => api.writeClipboard(path)} onDismiss={a.clearOpenRefusal} />
     </section>
   );
 }

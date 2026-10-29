@@ -2,9 +2,10 @@ use crate::DesktopState;
 use serde::Serialize;
 use span_acp::tools::{DelegationEventSink, DelegationStatus, ToolPolicy, ToolServerConfig};
 use span_acp::{
-    AgentCommand, AgentEvent, AgentPreset, AgentService, AuthCredential, InstalledAgent,
-    PromptAttachment, PromptError, RegistryAgent, SessionActivity, SessionKey, SessionOrigin,
-    SessionStates, PROMPT_ALREADY_RUNNING,
+    AgentCommand, AgentEvent, AgentHealth, AgentPreset, AgentService, AuthCredential,
+    BackgroundAgents, EventSink, HealthMonitor, HealthPolicy, InstalledAgent, PromptAttachment,
+    PromptError, RegistryAgent, SessionActivity, SessionKey, SessionOrigin, SessionStates,
+    PROMPT_ALREADY_RUNNING,
 };
 use span_core::{BufferSnapshot, CoreWorkspace};
 use specta::Type;
@@ -33,6 +34,64 @@ pub fn watch_session_states(app: &tauri::AppHandle) {
     }));
     // The watch lasts as long as the app: the manager lives in the app state.
     std::mem::forget(subscription);
+}
+
+/// The latest health check result of every checked agent (ADR 0010), sent
+/// whole whenever one changes.
+#[derive(Debug, Clone, Serialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHealthChanged {
+    pub agents: Vec<AgentHealth>,
+}
+
+/// The agent health check, created on first use. It checks the installed
+/// agents running in the background map (warm, on demand, or the chat's
+/// own when it is installed); it never starts one.
+pub fn health(app: &tauri::AppHandle, state: &DesktopState) -> HealthMonitor {
+    let mut guard = state.health.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .get_or_insert_with(|| {
+            let folder = state.workspace.clone();
+            // `agents.healthCheck` is user-only in core settings, so the open
+            // folder's merged settings carry the user's value. No folder, no
+            // running agents, nothing to check.
+            let enabled = Arc::new(move || {
+                folder
+                    .lock()
+                    .ok()
+                    .and_then(|open| open.clone())
+                    .and_then(|workspace| workspace.lock().ok()?.get_settings().ok())
+                    .is_some_and(|settings| settings.agents.health_check)
+            });
+            let monitor = HealthMonitor::for_background(
+                state.sessions.clone(),
+                background(state),
+                HealthPolicy::default(),
+                enabled,
+            );
+            let handle = app.clone();
+            monitor.set_sink(Some(Arc::new(move |agents| {
+                crate::events::emit(&handle, &AgentHealthChanged { agents });
+            })));
+            monitor
+        })
+        .clone()
+}
+
+/// App exit: stop checking and close hidden check sessions where the agent
+/// supports it, bounded to a few seconds.
+pub fn stop_health(state: &DesktopState) {
+    let monitor = state
+        .health
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    if let Some(monitor) = monitor {
+        tauri::async_runtime::block_on(async move {
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(3), monitor.shutdown()).await;
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -109,8 +168,8 @@ fn workspace(state: &DesktopState) -> Result<Arc<Mutex<CoreWorkspace>>, String> 
 
 /// `agents.delegation.enabled`. Core settings honour it only from the user's
 /// own settings file, never from a workspace `.span/settings.jsonc`, so a
-/// cloned repository cannot switch delegation on. Unreadable settings count
-/// as off.
+/// cloned repository cannot change it. It is on by default. Unreadable
+/// settings count as off.
 async fn delegation_enabled(workspace: Arc<Mutex<CoreWorkspace>>) -> bool {
     tauri::async_runtime::spawn_blocking(move || {
         workspace
@@ -136,22 +195,15 @@ async fn delegation_config(
     if !delegation_enabled && !run_tools_enabled {
         return Ok(None);
     }
-    // Listed for the lead only; starting another agent stays a user action.
+    // With delegation on, an installed agent the lead delegates to is
+    // started in the background; the UI shows the start on the delegation
+    // card (ADR 0003 section 8).
     let installed = if delegation_enabled {
-        match app.path().app_cache_dir() {
-            Ok(directory) => {
-                let directory = directory.join("agents");
-                tauri::async_runtime::spawn_blocking(move || {
-                    span_acp::list_installed_agents(&directory).unwrap_or_default()
-                })
-                .await
-                .unwrap_or_default()
-            }
-            Err(_) => Vec::new(),
-        }
+        installed_agents(app).await
     } else {
         Vec::new()
     };
+    let background_agents = delegation_enabled.then(|| background(state));
     let run_tools = run_tools_enabled
         .then(|| crate::run_tools::backend(app.clone(), state.clone(), workspace.clone()));
     Ok(Some(ToolServerConfig {
@@ -160,8 +212,69 @@ async fn delegation_config(
         delegation_enabled,
         run_tools,
         installed,
+        background: background_agents,
         events: Some(agent.delegation_events.clone()),
     }))
+}
+
+async fn installed_agents(app: &tauri::AppHandle) -> Vec<InstalledAgent> {
+    match app.path().app_cache_dir() {
+        Ok(directory) => {
+            let directory = directory.join("agents");
+            tauri::async_runtime::spawn_blocking(move || {
+                span_acp::list_installed_agents(&directory).unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The installed agents Span runs in the background, started through the
+/// session manager in the open folder. Created on first use.
+pub fn background(state: &DesktopState) -> BackgroundAgents {
+    let mut guard = state.background.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .get_or_insert_with(|| {
+            let folder = state.workspace.clone();
+            let sessions = state.sessions.clone();
+            BackgroundAgents::new(
+                state.sessions.clone(),
+                Arc::new(move |agent: InstalledAgent, sink: EventSink| {
+                    let (folder, sessions) = (folder.clone(), sessions.clone());
+                    Box::pin(async move {
+                        let workspace = folder
+                            .lock()
+                            .map_err(|_| "Workspace state is unavailable".to_owned())?
+                            .clone()
+                            .ok_or_else(|| "Open a folder before starting an agent".to_owned())?;
+                        let cwd = workspace
+                            .lock()
+                            .map_err(|_| "Workspace lock poisoned".to_owned())?
+                            .workspace()
+                            .root;
+                        // Same launch path as a user connect (PATH resolution in
+                        // span_acp::launch), off the async runtime's workers.
+                        tauri::async_runtime::spawn_blocking(move || {
+                            tauri::async_runtime::block_on(sessions.connect(
+                                agent.launch,
+                                cwd,
+                                workspace,
+                                Some(sink),
+                            ))
+                        })
+                        .await
+                        .map_err(|error| format!("Agent start task failed: {error}"))?
+                    })
+                }),
+            )
+        })
+        .clone()
+}
+
+fn same_command(a: &AgentCommand, b: &AgentCommand) -> bool {
+    a.command == b.command && a.args == b.args && a.env == b.env
 }
 
 /// Open a user session on the active connection. Enabled Span tools are
@@ -288,19 +401,37 @@ pub async fn agent_connect(
             let _ = channel.send(AgentEvent::Delegation { event });
         })
     };
-    let sessions = state.sessions.clone();
-    let connection = tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(sessions.connect(
-            command,
-            cwd,
-            workspace,
-            Some(Arc::new(move |event| {
-                let _ = on_event.send(event);
-            })),
-        ))
-    })
-    .await
-    .map_err(|error| format!("Agent connection task failed: {error}"))??;
+    let ui: EventSink = {
+        let channel = on_event.clone();
+        Arc::new(move |event| {
+            let _ = channel.send(event);
+        })
+    };
+    let background = background(&state);
+    // Requests of delegated children on background agents reach this chat.
+    background.set_child_sink(Some(ui.clone()));
+    let installed = installed_agents(&app)
+        .await
+        .into_iter()
+        .find(|agent| same_command(&agent.launch, &command));
+    let connection = match installed {
+        // An installed agent runs through the background map, so a warm or
+        // delegated process is reused and never started twice.
+        Some(installed) => {
+            background
+                .ensure(&installed, std::time::Duration::from_secs(60))
+                .await?;
+            background.promote(&installed.id, ui)?
+        }
+        None => {
+            let sessions = state.sessions.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                tauri::async_runtime::block_on(sessions.connect(command, cwd, workspace, Some(ui)))
+            })
+            .await
+            .map_err(|error| format!("Agent connection task failed: {error}"))??
+        }
+    };
     let service: AgentService = state
         .sessions
         .service(&connection)
@@ -344,6 +475,82 @@ pub async fn agent_connect(
     Ok(session)
 }
 
+/// Warm start (ADR 0009): start installed agents in the background so a
+/// delegation or an agent switch does not wait for the process. Process and
+/// ACP `initialize` only, no session. `recent` lists agent ids most recently
+/// used first (the UI keeps that list); the rest follow by id. At most four,
+/// one at a time and 300 ms apart, off the UI thread; returns at once. A
+/// failed start is recorded quietly and retried only on demand. Does nothing
+/// when `agents.warmStart` (user settings only) is off. Returns how many
+/// agents it queued.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_warm_start(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    recent: Vec<String>,
+) -> Result<u32, String> {
+    let state = state.inner();
+    let workspace = workspace(state)?;
+    let enabled = tauri::async_runtime::spawn_blocking(move || {
+        workspace
+            .lock()
+            .ok()
+            .and_then(|workspace| workspace.get_settings().ok())
+            .is_some_and(|settings| settings.agents.warm_start)
+    })
+    .await
+    .unwrap_or(false);
+    if !enabled {
+        return Ok(0);
+    }
+    let agents = warm_order(installed_agents(&app).await, &recent);
+    let count = agents.len().min(WARM_CAP) as u32;
+    background(state).warm(
+        agents,
+        std::time::Duration::from_millis(300),
+        WARM_CAP,
+        std::time::Duration::from_secs(45),
+    );
+    Ok(count)
+}
+
+const WARM_CAP: usize = 4;
+
+/// The latest health check result per agent (ADR 0010); empty while
+/// `agents.healthCheck` (user settings only) is off. The first call starts
+/// the periodic checks, so the UI calls it once the window is shown; changes
+/// arrive as `AgentHealthChanged`. Each check is one tiny prompt to a running
+/// agent that has not chatted for five minutes, over a hidden session that
+/// never shows in History.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_health(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<AgentHealth>, String> {
+    let monitor = health(&app, state.inner());
+    monitor.start();
+    tauri::async_runtime::spawn_blocking(move || monitor.results())
+        .await
+        .map_err(|error| format!("Agent health task failed: {error}"))
+}
+
+/// Installed agents ordered for a warm start: `recent` ids first in that
+/// order, then the others by id. One entry per id (the newest version).
+fn warm_order(mut installed: Vec<InstalledAgent>, recent: &[String]) -> Vec<InstalledAgent> {
+    installed.sort_by(|a, b| a.id.cmp(&b.id).then(b.version.cmp(&a.version)));
+    installed.dedup_by(|a, b| a.id == b.id);
+    let rank = |id: &str| {
+        recent
+            .iter()
+            .position(|r| r.eq_ignore_ascii_case(id))
+            .unwrap_or(usize::MAX)
+    };
+    installed.sort_by_key(|agent| rank(&agent.id));
+    installed
+}
+
 /// Start a fresh conversation on the connected agent process.
 #[tauri::command]
 #[specta::specta]
@@ -363,6 +570,16 @@ pub async fn agent_list_sessions(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<span_acp::SessionSummary>, String> {
     active(state.inner())?.service.list_sessions().await
+}
+
+/// Every session the connected agent lists, from any folder (the History
+/// "All folders" scope). Each summary carries the session's `cwd`.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_list_all_sessions(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<span_acp::SessionSummary>, String> {
+    active(state.inner())?.service.list_sessions_in(true).await
 }
 
 #[tauri::command]
@@ -530,9 +747,59 @@ pub async fn agent_elicitation(
     content_json: Option<String>,
 ) -> Result<(), String> {
     let agent = active(state.inner())?;
-    agent
-        .service
-        .respond_elicitation(request_id, action, content_json)
+    match agent.service.respond_elicitation(
+        request_id.clone(),
+        action.clone(),
+        content_json.clone(),
+    ) {
+        // A delegated child on a background agent asked it.
+        Err(error) if error.contains("no longer pending") => {
+            for service in other_services(state.inner(), &agent) {
+                if service
+                    .respond_elicitation(request_id.clone(), action.clone(), content_json.clone())
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+            }
+            Err(error)
+        }
+        result => result,
+    }
+}
+
+/// The services of every other open connection (background agents running
+/// delegated children). Proposal ids come from the shared workspace, so
+/// they are unique across connections.
+fn other_services(state: &DesktopState, agent: &ActiveAgent) -> Vec<AgentService> {
+    state
+        .sessions
+        .connections()
+        .into_iter()
+        .filter(|c| c.open && c.connection_id != agent.connection)
+        .filter_map(|c| state.sessions.service(&c.connection_id))
+        .collect()
+}
+
+/// Review a proposal on the active agent, else on the background agent
+/// whose delegated child proposed it.
+fn review_anywhere(
+    state: &DesktopState,
+    agent: &ActiveAgent,
+    review: impl Fn(&AgentService) -> Result<BufferSnapshot, String>,
+) -> Result<BufferSnapshot, String> {
+    match review(&agent.service) {
+        Err(error) if error.contains("no longer pending") => {
+            for service in other_services(state, agent) {
+                match review(&service) {
+                    Err(other) if other.contains("no longer pending") => continue,
+                    result => return result,
+                }
+            }
+            Err(error)
+        }
+        result => result,
+    }
 }
 
 #[tauri::command]
@@ -587,10 +854,11 @@ pub async fn agent_review(
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
     let agent = active(state.inner())?;
+    let desktop = state.inner().clone();
     let snapshot = tauri::async_runtime::spawn_blocking(move || {
-        agent
-            .service
-            .review_proposal(proposal_id, accept, expected_revision)
+        review_anywhere(&desktop, &agent, |service| {
+            service.review_proposal(proposal_id.clone(), accept, expected_revision)
+        })
     })
     .await
     .map_err(|error| format!("Review task failed: {error}"))??;
@@ -608,10 +876,15 @@ pub async fn agent_review_hunks(
     expected_revision: u64,
 ) -> Result<BufferSnapshot, String> {
     let agent = active(state.inner())?;
+    let desktop = state.inner().clone();
     let snapshot = tauri::async_runtime::spawn_blocking(move || {
-        agent
-            .service
-            .review_proposal_hunks(proposal_id, accepted_hunk_ids, expected_revision)
+        review_anywhere(&desktop, &agent, |service| {
+            service.review_proposal_hunks(
+                proposal_id.clone(),
+                accepted_hunk_ids.clone(),
+                expected_revision,
+            )
+        })
     })
     .await
     .map_err(|error| format!("Review task failed: {error}"))??;
@@ -690,6 +963,43 @@ pub async fn agent_child_permission(
 pub async fn app_update_check(app: tauri::AppHandle) -> span_acp::update::AppUpdate {
     let version = app.package_info().version.to_string();
     span_acp::update::check_app_update(&version, cfg!(debug_assertions)).await
+}
+
+#[cfg(test)]
+mod warm_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn agent(id: &str, version: &str) -> InstalledAgent {
+        InstalledAgent {
+            id: id.into(),
+            version: version.into(),
+            launch: AgentCommand {
+                command: id.into(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn warm_order_puts_recent_agents_first_once_each() {
+        let installed = vec![
+            agent("gemini", "1"),
+            agent("claude-acp", "1"),
+            agent("codex-acp", "2"),
+            agent("codex-acp", "1"),
+            agent("opencode", "1"),
+        ];
+        let ids: Vec<String> = warm_order(installed, &["codex-acp".into(), "opencode".into()])
+            .into_iter()
+            .map(|a| format!("{}@{}", a.id, a.version))
+            .collect();
+        assert_eq!(
+            ids,
+            ["codex-acp@2", "opencode@1", "claude-acp@1", "gemini@1"]
+        );
+    }
 }
 
 #[cfg(test)]

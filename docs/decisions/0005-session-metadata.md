@@ -1,7 +1,8 @@
 # 0005: Local session metadata store
 
-Status: proposed. Backend, commands, bindings and client wrappers exist and
-are unit tested. No UI calls them yet (see UNVERIFIED).
+Status: accepted. Backend, commands, bindings and client wrappers are unit
+tested, and the UI controller records metadata as section 5 describes (see
+UNVERIFIED for what has not run in the native app).
 
 ## Context
 
@@ -29,11 +30,39 @@ camelCase:
 | `titleOverride` | User title, trimmed, at most 200 characters. Null means none. |
 | `archived` | User flag. |
 | `firstSeenMs`, `lastActiveMs` | Unix milliseconds. |
-| `models` | `ModelUse { name, effort, usedMs, turns }`, at most 16 (least recently used dropped). |
+| `models` | `ModelUse { name, effort, usedMs, turns, subagent }`, at most 16 (least recently used dropped). `subagent` marks a model a delegated child ran for this session; it is merged apart from the lead's own use of the same name and shown as `name · subagent`. |
 | `agents` | `AgentUse { agentId, name, role, subagent }`, at most 32. `role` is `delegated` for span-agents children. |
 | `filesChanged`, `linesAdded`, `linesRemoved` | Session totals. |
 | `stopReasonLast` | Last ACP stop reason. |
 | `parent` | `SessionParent { agentId, sessionId }` for a delegated child. |
+| `continues` | `SessionLink { agentId, sessionId, title }`: the earlier segment of the same chat (thread link, below). |
+| `changesTracked` | True when every file change Span saw in the session went through review, so zero counters mean "no changes". |
+
+`subagent`, `continues` and `changesTracked` were added after version 1
+shipped. They default when missing and are left out of the file when false
+or null, so older files load unchanged and the byte cap still holds 2000
+sessions; the schema version stays 1.
+
+### Thread links
+
+An ACP session belongs to one agent process, so switching agent in an open
+chat (agent-handoff.ts) starts a new session. When the switch succeeds the
+controller writes `continues` on the new session, pointing at the session it
+left, with the chat title shown at that moment, and records the earlier
+session's agent name so its provider is known even if it never finished a
+turn. Following `continues` back, and finding sessions whose `continues`
+points at a segment forward, gives the thread (`ui/src/lib/session-threads.ts`,
+at most 32 segments, loops stopped). A segment is looked up by its exact key,
+else by session id when exactly one entry has it (one adapter reached through
+two catalog entries lists the same sessions).
+
+History shows one row per thread: avatars and model chips of every segment,
+counters summed, the newest user title in the thread, else the link title,
+else the agent's title (an agent title that is just the carried context
+header is ignored). A listed segment is hidden when a later segment of its
+thread is listed too. Rename and archive write every segment. Edit, resend
+and fork start new sessions as well but are separate chats, so they are not
+linked.
 
 Zero, empty and null all mean unknown; the UI must not render a field in
 that state. Sessions are keyed by `(agentId, sessionId)` because two agents
@@ -82,10 +111,12 @@ may reuse an id, so every command takes both.
 `list`, `get`, `upsert(SessionMetaPatch)`, `set_title`, `set_archived`,
 `delete`, and `prune_missing(agent_id, known)`. Merge semantics of
 `SessionMetaPatch`: absent fields keep the stored value; `models` merge by
-`name` (turns added, absent turns means 1, zero records a selection without a
+`name` and `subagent` (turns added, absent turns means 1, zero records a selection without a
 turn; `usedMs` set to now; effort replaced when given); `agents` merge by
 `agentId`; `filesChanged`, `linesAdded`, `linesRemoved`, `stopReasonLast`
-and `parent` are set, not added, so callers send session totals. A patch
+`parent`, `continues` and `changesTracked` are set, not added, so callers
+send session totals (a `continues` link to the session itself or with an
+invalid id is ignored). A patch
 creates a missing session and bumps `lastActiveMs`; `set_title` and
 `set_archived` create a missing session but do not count as activity.
 
@@ -102,6 +133,7 @@ session it can still restore, so pruning on a partial list would lose data.
 | `session_meta_set_archived(agent_id, session_id, archived)` | `commands.sessionMetaSetArchived(agentId, sessionId, archived)` | `sessionMetaSetArchived(...)` |
 | `session_meta_delete(agent_id, session_id)` | `commands.sessionMetaDelete(agentId, sessionId)` | `sessionMetaDelete(...)`, resolves `true` when removed |
 | `session_export_markdown(transcript)` | `commands.sessionExportMarkdown(transcript)` | `sessionExportMarkdown(transcript)` |
+| `agent_list_all_sessions()` (apps/desktop/src/agents.rs) | `commands.agentListAllSessions()` | `api.agentListAllSessions()` |
 
 All run on a blocking worker. They read the active workspace root, release
 the workspace lock, then do file IO, so a slow disk never holds the
@@ -125,20 +157,42 @@ The UI controller (`agent-controller.ts`) should call `sessionMetaUpdate`:
    <thought level option value or omitted>, turns: 1 }] }`.
 2. Model or effort change (`config` event or `agentSetConfig`): the same
    with `turns: 0`.
-3. Turn complete (`complete` event): `{ agentId, sessionId, stopReasonLast:
-   event.stopReason }`.
+3. Turn complete (`complete` event for the open chat): `{ agentId,
+   sessionId, stopReasonLast: event.stopReason, changesTracked }`, where
+   `changesTracked` is false when the feed holds a completed edit tool call
+   on a path with no proposal (the agent wrote the file itself, so the
+   counters miss it). A resumed session's replayed edits count as untracked.
 4. Proposal accepted (after `agentReview` or `agentReviewHunks` succeeds):
    the controller keeps per session totals (distinct paths and line counts of
-   accepted hunks) and sends `{ filesChanged, linesAdded, linesRemoved }`
-   with the new totals.
+   the accepted hunks, counted like the Rust `line_delta`) on top of the
+   stored values when counting began, and sends `{ filesChanged, linesAdded,
+   linesRemoved }`. Paths are not stored, so a file changed again after Span
+   restarts counts as another file.
 5. Delegation `delegated` event: lead gets `agents: [{ agentId: agentName,
    name: agentName, role: "delegated", subagent: false }]`; the child gets
    `parent: { agentId, sessionId: lead.sessionId }`. The child's `agentId` is
-   the delegated agent name because the event carries no catalog id.
+   the delegated agent name because the event carries no catalog id. A
+   later `config` event of the child session records its model on the lead
+   as `{ name, turns: 0, subagent: true }`.
 6. History rename, archive and remove call `sessionMetaSetTitle`,
-   `sessionMetaSetArchived` and `sessionMetaDelete`; the list merges
-   `sessionMetaList()` with `agentListSessions()` by `sessionId` for the
-   connected agent.
+   `sessionMetaSetArchived` and `sessionMetaDelete` (rename and archive for
+   every segment of the thread); the list merges `sessionMetaList()` with
+   `agentListSessions()` by `sessionId` for the connected agent. Archived
+   threads show only under the Archived filter, where the menu offers
+   Restore.
+7. Agent switch: the new session gets `continues` (thread links above).
+
+### Folder scope
+
+The store is per workspace, so it never records a folder. History's "This
+workspace" scope is `agentListSessions()` (the agent filters by the
+workspace `cwd`). "All folders" calls `agent_list_all_sessions`
+(`agentListAllSessions()`), the same `session/list` without a `cwd`
+filter; `SessionSummary` now carries the session's `cwd`. A row whose `cwd`
+is another folder is read-only in this window ("In <folder>. Open that
+folder to resume it.") and offers only Copy session ID, since resuming it
+here would run it in the wrong folder and its metadata lives in that
+folder's store.
 
 ### 6. Export as Markdown
 
@@ -151,6 +205,13 @@ backtick run inside. The workspace root becomes `.` and then the home
 directory `~`, only at path boundaries, in both separator styles for Windows
 roots. Raw tool input and output are not part of the record type, so they
 cannot be exported.
+
+History's Export as Markdown exports the open chat (another row is resumed
+first): the feed becomes a `Transcript` (carried context, permission and
+request cards are left out; accepted proposals and tool diffs become diff
+records), the command renders it, and the file is written into the
+workspace root as `<title words>.md` through `save_attachment`, which never
+overwrites, then opened in the editor.
 
 ## Consequences
 
@@ -165,9 +226,10 @@ cannot be exported.
 
 ## UNVERIFIED
 
-- No UI calls these commands yet; the controller wiring in section 5 is a
-  plan, not exercised.
-- Not run in the native app; only unit tests and the generated bindings.
+- Not run in the native app: unit tests, component tests and a browser
+  preview with a fake bridge only. In particular, whether a delegated
+  child's `config` event reaches the window's event stream, and whether
+  each agent honours `session/list` without `cwd`, were not observed.
 - Windows: canonicalisation is tested at string level only. Unverified until
   CI: `fs::canonicalize` returning `\\?\` roots that then hash like the
   plain form, `File::lock` on the lock file, `atomic_write` rename over an

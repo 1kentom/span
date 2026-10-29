@@ -757,50 +757,136 @@ fn trusted_settings_dirty_state_clears_when_manual_edits_return_to_saved_text() 
 }
 
 #[test]
-fn agent_delegation_is_off_by_default_and_honoured_only_from_user_settings() {
+fn agent_warm_start_is_on_by_default_and_honoured_only_from_user_settings() {
     let directory = tempdir().unwrap();
     let home = tempdir().unwrap();
     let user = home.path().join("settings.jsonc");
     let workspace = CoreWorkspace::open(directory.path())
         .unwrap()
         .with_user_settings(Some(user.clone()));
-    assert!(!Settings::default().agents.delegation.enabled);
-    assert!(!workspace.get_settings().unwrap().agents.delegation.enabled);
+    assert!(Settings::default().agents.warm_start);
+    assert!(workspace.get_settings().unwrap().agents.warm_start);
 
-    // A workspace file (it comes with a cloned repository) cannot switch it on.
-    let merged = workspace
-        .update_settings_jsonc("{ \"agents\": { \"delegation\": { \"enabled\": true } } }")
-        .unwrap();
-    assert!(!merged.agents.delegation.enabled);
-    assert!(!workspace.get_settings().unwrap().agents.delegation.enabled);
+    // A workspace file cannot change it either way.
+    fs::create_dir_all(directory.path().join(".span")).unwrap();
     fs::write(
         directory.path().join(".span/settings.jsonc"),
-        "{ \"agents\": { \"delegation\": { \"enabled\": true } }, \"fontSize\": 15 }",
+        "{ \"agents\": { \"warmStart\": false }, \"fontSize\": 15 }",
     )
     .unwrap();
     let read = workspace.get_settings().unwrap();
-    assert!(!read.agents.delegation.enabled);
+    assert!(read.agents.warm_start);
     assert_eq!(read.font_size, 15);
 
-    // The user's own settings file can, and a workspace false does not override it.
+    // The user's own file can turn it off; a workspace true does not turn it back on.
+    fs::write(&user, "{ \"agents\": { \"warmStart\": false } }").unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.warm_start);
     fs::write(
-        &user,
-        "{ \"agents\": { \"delegation\": { \"enabled\": true } } }",
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"warmStart\": true } }",
     )
     .unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.warm_start);
+    // Turning it off leaves delegation alone.
+    assert!(workspace.get_settings().unwrap().agents.delegation.enabled);
+
+    let legacy: Settings =
+        serde_json::from_value(serde_json::json!({ "agents": { "delegation": {} } })).unwrap();
+    assert!(legacy.agents.warm_start);
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    assert_eq!(
+        schema["properties"]["agents"]["properties"]["warmStart"]["default"],
+        true
+    );
+}
+
+#[test]
+fn agent_health_check_is_on_by_default_and_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(Settings::default().agents.health_check);
+    assert!(workspace.get_settings().unwrap().agents.health_check);
+
+    // A workspace file cannot turn it off (or back on).
+    fs::create_dir_all(directory.path().join(".span")).unwrap();
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"healthCheck\": false } }",
+    )
+    .unwrap();
+    assert!(workspace.get_settings().unwrap().agents.health_check);
+    fs::write(&user, "{ \"agents\": { \"healthCheck\": false } }").unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.health_check);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"healthCheck\": true } }",
+    )
+    .unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.health_check);
+    // Turning it off leaves warm start alone.
+    assert!(workspace.get_settings().unwrap().agents.warm_start);
+
+    let legacy: Settings =
+        serde_json::from_value(serde_json::json!({ "agents": { "warmStart": false } })).unwrap();
+    assert!(legacy.agents.health_check);
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    assert_eq!(
+        schema["properties"]["agents"]["properties"]["healthCheck"]["default"],
+        true
+    );
+}
+
+#[test]
+fn agent_delegation_is_on_by_default_and_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(Settings::default().agents.delegation.enabled);
+    assert!(workspace.get_settings().unwrap().agents.delegation.enabled);
+
+    // A workspace file (it comes with a cloned repository) cannot switch it off.
+    let merged = workspace
+        .update_settings_jsonc("{ \"agents\": { \"delegation\": { \"enabled\": false } } }")
+        .unwrap();
+    assert!(merged.agents.delegation.enabled);
     assert!(workspace.get_settings().unwrap().agents.delegation.enabled);
     fs::write(
         directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"delegation\": { \"enabled\": false } }, \"fontSize\": 15 }",
+    )
+    .unwrap();
+    let read = workspace.get_settings().unwrap();
+    assert!(read.agents.delegation.enabled);
+    assert_eq!(read.font_size, 15);
+
+    // The user's own settings file can turn it off, and a workspace true does not turn it back on.
+    fs::write(
+        &user,
         "{ \"agents\": { \"delegation\": { \"enabled\": false } } }",
     )
     .unwrap();
-    assert!(workspace.get_settings().unwrap().agents.delegation.enabled);
+    assert!(!workspace.get_settings().unwrap().agents.delegation.enabled);
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"delegation\": { \"enabled\": true } } }",
+    )
+    .unwrap();
+    assert!(!workspace.get_settings().unwrap().agents.delegation.enabled);
 
     // Typed saves go to the workspace file and leave the user-only key out.
     let mut typed = workspace.get_settings().unwrap();
-    typed.agents.delegation.enabled = false;
+    typed.agents.delegation.enabled = true;
     assert!(
-        workspace
+        !workspace
             .update_settings(typed)
             .unwrap()
             .agents
@@ -816,13 +902,16 @@ fn agent_delegation_is_off_by_default_and_honoured_only_from_user_settings() {
         .is_err());
     // A settings object without `agents` (older UI literals) keeps the default.
     let legacy: Settings = serde_json::from_value(serde_json::json!({ "fontSize": 14 })).unwrap();
-    assert!(!legacy.agents.delegation.enabled);
+    assert!(legacy.agents.delegation.enabled);
+    let empty: Settings =
+        serde_json::from_value(serde_json::json!({ "agents": { "delegation": {} } })).unwrap();
+    assert!(empty.agents.delegation.enabled);
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
     assert_eq!(
         schema["properties"]["agents"]["properties"]["delegation"]["properties"]["enabled"]
             ["default"],
-        false
+        true
     );
 }
 
@@ -896,7 +985,7 @@ fn unrelated_workspace_writes_pass_beside_user_only_keys_that_stay_ignored() {
     // A cloned repository ships every kind of user-only key in its workspace file.
     fs::write(
         &file,
-        "{\n  // cloned\n  \"agents\": { \"delegation\": { \"enabled\": true } },\n  \"updates\": { \"checkOnLaunch\": true },\n  \"languageServers\": { \"nodePath\": \"/tmp/evil\", \"runProjectCode\": true }\n}\n",
+        "{\n  // cloned\n  \"agents\": { \"delegation\": { \"enabled\": false } },\n  \"updates\": { \"checkOnLaunch\": true },\n  \"languageServers\": { \"nodePath\": \"/tmp/evil\", \"runProjectCode\": true }\n}\n",
     )
     .unwrap();
 
@@ -911,9 +1000,10 @@ fn unrelated_workspace_writes_pass_beside_user_only_keys_that_stay_ignored() {
         .unwrap();
     assert_eq!(merged.font_size, 15);
 
-    // None of the pre-existing keys turns anything on.
+    // None of the pre-existing keys changes a user-only value: delegation keeps
+    // its default (on) and nothing else is switched on.
     for settings in [merged, workspace.get_settings().unwrap()] {
-        assert!(!settings.agents.delegation.enabled);
+        assert!(settings.agents.delegation.enabled);
         assert!(!settings.updates.check_on_launch);
         assert_eq!(settings.language_servers.node_path, None);
         assert!(!settings.language_servers.run_project_code);

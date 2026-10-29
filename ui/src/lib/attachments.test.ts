@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_IMAGE_BYTES } from './asset-preview';
-import { MAX_ATTACHMENT_COUNT, MAX_FILE_BYTES, MAX_TOTAL_ATTACHMENT_BYTES, PASTE_CHIP_MIN_LINES, addAttachments, bytesToBase64, classifyFile, createFileAttachment, createPastedText, createSelection, createWorkspaceFile, dedupeKey, gateAttachments, isInWorkspace, pastedTextName, planAttachment, previewText, rejectionReason, shouldChipPastedText, type Attachment, type PromptCapabilities } from './attachments';
+import { MAX_ATTACHMENT_COUNT, MAX_FILE_BYTES, MAX_TOTAL_ATTACHMENT_BYTES, PASTE_CHIP_MIN_LINES, addAttachments, bytesToBase64, classifyFile, createFileAttachment, createPastedText, createSelection, createWorkspaceFile, createFolderAttachment, dedupeKey, folderMeta, folderOutline, gateAttachments, isInWorkspace, needsStoredLink, pastedTextName, redactPaths, planAttachment, previewText, rejectionReason, shouldChipPastedText, type Attachment, type PromptCapabilities } from './attachments';
 
 const all: PromptCapabilities = { image: true, audio: true, embeddedContext: true };
 const none: PromptCapabilities = { image: false, audio: false, embeddedContext: false };
@@ -152,5 +152,41 @@ describe('audio attachments', () => {
     const result = gateAttachments([mp3()], none);
     expect(result.send).toHaveLength(0);
     expect(result.blocked[0].reason).toBe('This agent does not accept audio.');
+  });
+});
+
+describe('uploads store links, folder outlines and redaction (#91)', () => {
+  const stored: PromptCapabilities = { ...none, storeLinks: true };
+  const bin = () => createFileAttachment({ name: 'x.bin', mime: 'application/octet-stream', bytes: bytes(4), source: 'picked' });
+  const audio = () => createFileAttachment({ name: 'a.mp3', mime: '', bytes: bytes(4), source: 'dropped' });
+  it('links content the agent cannot take when the uploads store can hold it, and only then', () => {
+    expect(planAttachment(bin(), stored)).toEqual({ mode: 'link' });
+    expect(planAttachment(png(), stored)).toEqual({ mode: 'link' });
+    expect(planAttachment(audio(), stored)).toEqual({ mode: 'link' });
+    expect(planAttachment(bin(), none).mode).toBe('refuse');
+    expect(planAttachment(png(), { ...all, storeLinks: true })).toEqual({ mode: 'image' });
+    expect(needsStoredLink(bin(), stored)).toBe(true);
+    expect(needsStoredLink(createWorkspaceFile('docs/a.pdf'), stored)).toBe(false);
+  });
+  it('bounds a folder outline, skips protected folders and lists only relative paths', async () => {
+    const tree: Record<string, { name: string; isDir: boolean }[]> = {
+      '': [{ name: 'src', isDir: true }, { name: '.git', isDir: true }, { name: 'node_modules', isDir: true }, ...Array.from({ length: 6 }, (_, i) => ({ name: `f${i}.ts`, isDir: false }))],
+      src: [{ name: 'deep.ts', isDir: false }],
+    };
+    const seen: string[] = [];
+    const small = await folderOutline('app', async path => { seen.push(path); return tree[path] ?? []; }, 5);
+    expect(small.truncated).toBe(true);
+    expect(small.text.split('\n').slice(2)).toEqual(['src/', 'f0.ts', 'f1.ts', 'f2.ts', 'f3.ts']);
+    expect(small.text).toContain('Added by Span, not an ACP content type.');
+    expect(seen).not.toContain('.git');
+    expect(seen).not.toContain('node_modules');
+    const full = await folderOutline('app', async path => tree[path] ?? []);
+    expect([full.files, full.truncated]).toEqual([7, false]);
+    expect(folderMeta(createFolderAttachment({ name: 'app', ...small, source: 'dropped' }))).toBe('4+ files');
+  });
+  it('redacts absolute paths: workspace root to ., home to ~, anything else to its last part', () => {
+    expect(redactPaths('see /w/src/a.ts and /Users/me/notes/plan.md', '/w')).toBe('see ./src/a.ts and \u2026/plan.md');
+    expect(redactPaths('open /home/kim/x/y.txt', undefined, '/home/kim')).toBe('open ~/x/y.txt');
+    expect(redactPaths('C:\\Users\\kim\\a.txt here')).toBe('\u2026/a.txt here');
   });
 });

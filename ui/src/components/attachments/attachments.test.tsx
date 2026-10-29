@@ -133,3 +133,41 @@ describe('message chips', () => {
     expect(open).toHaveBeenCalledWith(item);
   });
 });
+
+describe('pdf page count and dropped folders (#91)', () => {
+  function intakeWith(countPages?: (bytes: Uint8Array) => Promise<number | undefined>) {
+    const [items, setItems] = createSignal<Attachment[]>([]);
+    const intake = createAttachmentIntake({ items, onAdd: added => setItems(previous => [...previous, ...added]), countPages });
+    return { intake, items };
+  }
+  const pdfFile = () => new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])], 'spec.pdf', { type: 'application/pdf' });
+  it('records the page count when it can be read and leaves it out when it cannot', async () => {
+    const counted = intakeWith(async () => 8);
+    await counted.intake.addFiles([pdfFile()], 'picked');
+    expect(counted.items()[0].pages).toBe(8);
+    const failed = intakeWith(async () => { throw new Error('locked'); });
+    await failed.intake.addFiles([pdfFile()], 'picked');
+    expect(failed.items()[0].pages).toBeUndefined();
+    const none = intakeWith();
+    await none.intake.addFiles([pdfFile()], 'picked');
+    expect(none.items()[0].pages).toBeUndefined();
+  });
+  it('turns a dropped folder into a bounded outline with its file count, skipping dependency folders', async () => {
+    const dir = (name: string, children: object[]) => ({ name, isFile: false, isDirectory: true, createReader: () => { let done = false; return { readEntries: (ok: (entries: object[]) => void) => { ok(done ? [] : children); done = true; } }; } });
+    const file = (name: string) => ({ name, isFile: true, isDirectory: false });
+    const dropped = dir('styles', [file('a.css'), file('b.css'), dir('node_modules', [file('x.js')]), dir('themes', [file('dark.css')])]);
+    const loose = new File(['hello'], 'note.txt', { type: 'text/plain' });
+    const { intake, items } = intakeWith();
+    const items$ = [
+      { kind: 'file', webkitGetAsEntry: () => dropped, getAsFile: () => null },
+      { kind: 'file', webkitGetAsEntry: () => file('note.txt'), getAsFile: () => loose },
+    ];
+    intake.onDrop(event('drop', { dataTransfer: { ...transfer([loose]), items: items$ } }) as DragEvent);
+    await settle(); await settle();
+    const [folder, note] = items();
+    expect(folder).toMatchObject({ kind: 'folder', name: 'styles', source: 'dropped', folder: { files: 3, truncated: false } });
+    expect(folder.text).toContain('themes/dark.css');
+    expect(folder.text).not.toContain('node_modules');
+    expect(note.name).toBe('note.txt');
+  });
+});

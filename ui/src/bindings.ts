@@ -124,6 +124,11 @@ export const commands = {
 	/**  Start a fresh conversation on the connected agent process. */
 	agentNewSession: () => __TAURI_INVOKE<string>("agent_new_session"),
 	agentListSessions: () => __TAURI_INVOKE<SessionSummary_Serialize[]>("agent_list_sessions"),
+	/**
+	 *  Every session the connected agent lists, from any folder (the History
+	 *  "All folders" scope). Each summary carries the session's `cwd`.
+	 */
+	agentListAllSessions: () => __TAURI_INVOKE<SessionSummary_Serialize[]>("agent_list_all_sessions"),
 	agentResumeSession: (sessionId: string) => __TAURI_INVOKE<string>("agent_resume_session", { sessionId }),
 	/**
 	 *  Close a session the agent holds. Closing the active session leaves the
@@ -252,6 +257,26 @@ export const commands = {
 	 *  active chat's lead is searched first.
 	 */
 	agentCancelTask: (taskId: string) => __TAURI_INVOKE<null>("agent_cancel_task", { taskId }),
+	/**
+	 *  Warm start (ADR 0009): start installed agents in the background so a
+	 *  delegation or an agent switch does not wait for the process. Process and
+	 *  ACP `initialize` only, no session. `recent` lists agent ids most recently
+	 *  used first (the UI keeps that list); the rest follow by id. At most four,
+	 *  one at a time and 300 ms apart, off the UI thread; returns at once. A
+	 *  failed start is recorded quietly and retried only on demand. Does nothing
+	 *  when `agents.warmStart` (user settings only) is off. Returns how many
+	 *  agents it queued.
+	 */
+	agentWarmStart: (recent: string[]) => __TAURI_INVOKE<number>("agent_warm_start", { recent }),
+	/**
+	 *  The latest health check result per agent (ADR 0010); empty while
+	 *  `agents.healthCheck` (user settings only) is off. The first call starts
+	 *  the periodic checks, so the UI calls it once the window is shown; changes
+	 *  arrive as `AgentHealthChanged`. Each check is one tiny prompt to a running
+	 *  agent that has not chatted for five minutes, over a hidden session that
+	 *  never shows in History.
+	 */
+	agentHealth: () => __TAURI_INVOKE<AgentHealth_Serialize[]>("agent_health"),
 	uploadsList: () => __TAURI_INVOKE<Upload_Serialize[]>("uploads_list"),
 	uploadsUsage: () => __TAURI_INVOKE<UploadUsage>("uploads_usage"),
 	uploadsAdd: (name: string, dataBase64: string, source: UploadSource_Deserialize) => __TAURI_INVOKE<Upload_Serialize>("uploads_add", { name, dataBase64, source }),
@@ -268,10 +293,18 @@ export const commands = {
 	uploadsCopyPath: (id: string) => __TAURI_INVOKE<string>("uploads_copy_path", { id }),
 	uploadsReveal: (id: string) => __TAURI_INVOKE<null>("uploads_reveal", { id }),
 	uploadsOpen: (id: string) => __TAURI_INVOKE<null>("uploads_open", { id }),
+	/**  Logs the webview's startup marks next to the time since the process started. */
+	reportStartupTimings: (timings: StartupTimings_Deserialize) => __TAURI_INVOKE<void>("report_startup_timings", { timings }),
+	/**
+	 *  Called by the frontend once the restored session has rendered: match the native background
+	 *  to the theme (it shows during resizes and before the webview paints), then show the window.
+	 */
+	showMainWindow: (theme: Theme) => __TAURI_INVOKE<null>("show_main_window", { theme }),
 };
 
 /** Events */
 export const events = {
+	agentHealthChanged: makeEvent<AgentHealthChanged_Serialize, AgentHealthChanged_Deserialize>("agent-health-changed"),
 	agentSessionStatesChanged: makeEvent<AgentSessionStatesChanged_Serialize, AgentSessionStatesChanged_Deserialize>("agent-session-states-changed"),
 	diagnosticsPublished: makeEvent<DiagnosticsPublished_Serialize, DiagnosticsPublished_Deserialize>("diagnostics-published"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
@@ -488,6 +521,63 @@ export type AgentFeatures_Serialize = {
 	doubleApproval?: boolean,
 };
 
+/**  The latest health check result of one agent. */
+export type AgentHealth = AgentHealth_Serialize | AgentHealth_Deserialize;
+
+/**
+ *  The latest health check result of every checked agent (ADR 0010), sent
+ *  whole whenever one changes.
+ */
+export type AgentHealthChanged = AgentHealthChanged_Serialize | AgentHealthChanged_Deserialize;
+
+/**
+ *  The latest health check result of every checked agent (ADR 0010), sent
+ *  whole whenever one changes.
+ */
+export type AgentHealthChanged_Deserialize = {
+	agents: AgentHealth_Deserialize[],
+};
+
+/**
+ *  The latest health check result of every checked agent (ADR 0010), sent
+ *  whole whenever one changes.
+ */
+export type AgentHealthChanged_Serialize = {
+	agents: AgentHealth_Serialize[],
+};
+
+/**  The latest health check result of one agent. */
+export type AgentHealth_Deserialize = {
+	/**  The installed agent id, lowercase. */
+	agentId: string,
+	state: HealthState,
+	/**
+	 *  Milliseconds from sending the prompt to the first reply. `None` when
+	 *  no reply arrived.
+	 */
+	latencyMs?: number | null,
+	/**  Unix time in milliseconds when the check finished. */
+	checkedAtMs: number,
+	/**  Why the check failed, for the tooltip. `None` on success. */
+	detail?: string | null,
+};
+
+/**  The latest health check result of one agent. */
+export type AgentHealth_Serialize = {
+	/**  The installed agent id, lowercase. */
+	agentId: string,
+	state: HealthState,
+	/**
+	 *  Milliseconds from sending the prompt to the first reply. `None` when
+	 *  no reply arrived.
+	 */
+	latencyMs: number | null,
+	/**  Unix time in milliseconds when the check finished. */
+	checkedAtMs: number,
+	/**  Why the check failed, for the tooltip. `None` on success. */
+	detail: string | null,
+};
+
 /**
  *  A condition the UI words itself. The backend never sends display text for
  *  these; the suggested English is in each variant's comment.
@@ -595,12 +685,40 @@ export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 export type AgentSettings_Deserialize = {
 	delegation?: DelegationSettings_Deserialize,
 	runTools?: RunToolsSettings_Deserialize,
+	/**
+	 *  `agents.warmStart`: when a folder opens, start installed agents in
+	 *  the background (process and ACP initialize only, no session) so a
+	 *  delegation or an agent switch does not wait for the start. On by
+	 *  default. Honoured only from the user's own settings file.
+	 */
+	warmStart?: boolean,
+	/**
+	 *  `agents.healthCheck`: every five minutes, send one tiny prompt to
+	 *  each running agent Span is not chatting with, over a hidden session,
+	 *  and show whether it replied (ADR 0010). Never starts an agent. On by
+	 *  default. Honoured only from the user's own settings file.
+	 */
+	healthCheck?: boolean,
 };
 
 /**  `agents.*` settings. */
 export type AgentSettings_Serialize = {
 	delegation: DelegationSettings_Serialize,
 	runTools: RunToolsSettings_Serialize,
+	/**
+	 *  `agents.warmStart`: when a folder opens, start installed agents in
+	 *  the background (process and ACP initialize only, no session) so a
+	 *  delegation or an agent switch does not wait for the start. On by
+	 *  default. Honoured only from the user's own settings file.
+	 */
+	warmStart: boolean,
+	/**
+	 *  `agents.healthCheck`: every five minutes, send one tiny prompt to
+	 *  each running agent Span is not chatting with, over a hidden session,
+	 *  and show whether it replied (ADR 0010). Never starts an agent. On by
+	 *  default. Honoured only from the user's own settings file.
+	 */
+	healthCheck: boolean,
 };
 
 export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
@@ -1011,6 +1129,18 @@ requestKind: string } |
  */
 { kind: "detached"; lead: SessionKey } |
 /**
+ *  Span is starting an installed agent the lead delegated to. Followed
+ *  by one `StartFinished` for the same lead and agent.
+ */
+{ kind: "starting"; lead: SessionKey; agentId: string } |
+/**
+ *  The start a `Starting` announced ended. On success `connection_id`
+ *  and `agent_name` are set and `launched` says whether this delegation
+ *  started the process (false when another request had started it).
+ *  On failure `reason` is from the closed set and `detail` says why.
+ */
+{ kind: "startFinished"; lead: SessionKey; agentId: string; connectionId?: string | null; agentName?: string | null; launched: boolean; reason?: FailureReason | null; detail?: string | null } |
+/**
  *  Delegation is enabled but this connection's sessions do not get the
  *  tools, with the reason to show the user.
  */
@@ -1048,6 +1178,18 @@ requestKind: string } |
  */
 { kind: "detached"; lead: SessionKey } |
 /**
+ *  Span is starting an installed agent the lead delegated to. Followed
+ *  by one `StartFinished` for the same lead and agent.
+ */
+{ kind: "starting"; lead: SessionKey; agentId: string } |
+/**
+ *  The start a `Starting` announced ended. On success `connection_id`
+ *  and `agent_name` are set and `launched` says whether this delegation
+ *  started the process (false when another request had started it).
+ *  On failure `reason` is from the closed set and `detail` says why.
+ */
+{ kind: "startFinished"; lead: SessionKey; agentId: string; connectionId: string | null; agentName: string | null; launched: boolean; reason: FailureReason | null; detail: string | null } |
+/**
  *  Delegation is enabled but this connection's sessions do not get the
  *  tools, with the reason to show the user.
  */
@@ -1060,7 +1202,9 @@ export type DelegationSettings = DelegationSettings_Serialize | DelegationSettin
 export type DelegationSettings_Deserialize = {
 	/**
 	 *  Offer the delegation tools to new lead sessions of agents that
-	 *  advertise MCP over HTTP. Off by default.
+	 *  advertise MCP over HTTP. On by default; the user can turn it off.
+	 *  Honoured only from the user's own settings file, and the depth and
+	 *  budget limits apply either way.
 	 */
 	enabled?: boolean,
 };
@@ -1069,7 +1213,9 @@ export type DelegationSettings_Deserialize = {
 export type DelegationSettings_Serialize = {
 	/**
 	 *  Offer the delegation tools to new lead sessions of agents that
-	 *  advertise MCP over HTTP. Off by default.
+	 *  advertise MCP over HTTP. On by default; the user can turn it off.
+	 *  Honoured only from the user's own settings file, and the depth and
+	 *  budget limits apply either way.
 	 */
 	enabled: boolean,
 };
@@ -1314,10 +1460,27 @@ export type FormatWarning = {
 	message: string,
 };
 
+/**  The outcome of the latest check of one agent. */
+export type HealthState =
+/**  The agent replied within the slow threshold. */
+"live" |
+/**  The agent replied, but slower than the slow threshold. */
+"slow" |
+/**  The agent answered that it needs the user to sign in. */
+"signedOut" |
+/**
+ *  No reply: the process exited, the check timed out (twice) or the
+ *  protocol failed.
+ */
+"unreachable";
+
 export type HighlightSpan = {
 	from: number,
 	to: number,
-	/**  Tree-sitter capture name, for example `keyword` or `function.method`. */
+	/**
+	 *  Colour token id, for example `keyword` or `importPath`. Markdown keeps its
+	 *  raw capture names such as `text.title`.
+	 */
 	kind: string,
 };
 
@@ -1675,6 +1838,8 @@ export type ModelUsePatch_Deserialize = {
 	name: string,
 	effort?: string | null,
 	turns?: number | null,
+	/**  Records a delegated child's model (merged apart from the lead's own). */
+	subagent?: boolean | null,
 };
 
 /**
@@ -1686,6 +1851,8 @@ export type ModelUsePatch_Serialize = {
 	name: string,
 	effort?: string | null,
 	turns?: number | null,
+	/**  Records a delegated child's model (merged apart from the lead's own). */
+	subagent?: boolean | null,
 };
 
 /**  One model a session used. */
@@ -1698,6 +1865,12 @@ export type ModelUse_Deserialize = {
 	usedMs: number,
 	/**  Prompt turns sent while this model was selected. */
 	turns: number,
+	/**
+	 *  True when a delegated child session ran this model for the session,
+	 *  shown as `model · subagent`. Kept apart from the lead's own use of the
+	 *  same model.
+	 */
+	subagent?: boolean,
 };
 
 /**  One model a session used. */
@@ -1710,6 +1883,12 @@ export type ModelUse_Serialize = {
 	usedMs: number,
 	/**  Prompt turns sent while this model was selected. */
 	turns: number,
+	/**
+	 *  True when a delegated child session ran this model for the session,
+	 *  shown as `model · subagent`. Kept apart from the lead's own use of the
+	 *  same model.
+	 */
+	subagent?: boolean,
 };
 
 export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
@@ -2167,6 +2346,38 @@ export type SessionKey = {
 };
 
 /**
+ *  The earlier segment of the same chat that a session continues: the
+ *  session the user switched agent from (ADR 0005, thread links). `title` is
+ *  the chat title shown when the switch happened, so the thread keeps its
+ *  name even when the earlier agent is not connected.
+ */
+export type SessionLink = SessionLink_Serialize | SessionLink_Deserialize;
+
+/**
+ *  The earlier segment of the same chat that a session continues: the
+ *  session the user switched agent from (ADR 0005, thread links). `title` is
+ *  the chat title shown when the switch happened, so the thread keeps its
+ *  name even when the earlier agent is not connected.
+ */
+export type SessionLink_Deserialize = {
+	agentId: string,
+	sessionId: string,
+	title?: string | null,
+};
+
+/**
+ *  The earlier segment of the same chat that a session continues: the
+ *  session the user switched agent from (ADR 0005, thread links). `title` is
+ *  the chat title shown when the switch happened, so the thread keeps its
+ *  name even when the earlier agent is not connected.
+ */
+export type SessionLink_Serialize = {
+	agentId: string,
+	sessionId: string,
+	title: string | null,
+};
+
+/**
  *  What Span knows about one agent session. Sessions are keyed by
  *  `(agentId, sessionId)` because two agents may reuse a session id.
  */
@@ -2197,6 +2408,12 @@ export type SessionMetaPatch_Deserialize = {
 	linesRemoved?: number | null,
 	stopReasonLast?: string | null,
 	parent?: SessionParent | null,
+	/**
+	 *  Set, not merged. A link to the session itself or with an invalid id is
+	 *  ignored.
+	 */
+	continues?: SessionLink_Deserialize | null,
+	changesTracked?: boolean | null,
 };
 
 /**
@@ -2216,6 +2433,12 @@ export type SessionMetaPatch_Serialize = {
 	linesRemoved?: number | null,
 	stopReasonLast?: string | null,
 	parent?: SessionParent | null,
+	/**
+	 *  Set, not merged. A link to the session itself or with an invalid id is
+	 *  ignored.
+	 */
+	continues?: SessionLink_Serialize | null,
+	changesTracked?: boolean | null,
 };
 
 /**
@@ -2244,6 +2467,16 @@ export type SessionMeta_Deserialize = {
 	linesRemoved: number,
 	stopReasonLast?: string | null,
 	parent?: SessionParent | null,
+	/**
+	 *  The earlier segment of the same chat, set when the user switched agent.
+	 *  Following these links from the newest segment gives the whole thread.
+	 */
+	continues?: SessionLink_Deserialize | null,
+	/**
+	 *  True when Span saw every file change of the session go through review,
+	 *  so zero counters mean "no changes" rather than "unknown".
+	 */
+	changesTracked?: boolean,
 };
 
 /**
@@ -2272,6 +2505,16 @@ export type SessionMeta_Serialize = {
 	linesRemoved: number,
 	stopReasonLast: string | null,
 	parent: SessionParent | null,
+	/**
+	 *  The earlier segment of the same chat, set when the user switched agent.
+	 *  Following these links from the newest segment gives the whole thread.
+	 */
+	continues?: SessionLink_Serialize,
+	/**
+	 *  True when Span saw every file change of the session go through review,
+	 *  so zero counters mean "no changes" rather than "unknown".
+	 */
+	changesTracked?: boolean,
 };
 
 /**  Who started a session. */
@@ -2407,6 +2650,11 @@ export type SessionSummary_Deserialize = {
 	sessionId: string,
 	title?: string | null,
 	updatedAt?: string | null,
+	/**
+	 *  The folder the session belongs to, as the agent reported it. Lets the
+	 *  History scope chips tell this workspace from other folders.
+	 */
+	cwd?: string | null,
 };
 
 /**  A past conversation the agent can restore. */
@@ -2414,6 +2662,11 @@ export type SessionSummary_Serialize = {
 	sessionId: string,
 	title: string | null,
 	updatedAt: string | null,
+	/**
+	 *  The folder the session belongs to, as the agent reported it. Lets the
+	 *  History scope chips tell this workspace from other folders.
+	 */
+	cwd: string | null,
 };
 
 export type Settings = Settings_Serialize | Settings_Deserialize;
@@ -2597,6 +2850,29 @@ export type StartupRequest_Serialize = {
 
 export type StartupRequestsChanged = {
 	pending: boolean,
+};
+
+/**  Startup marks measured by the webview, in milliseconds since its navigation started. */
+export type StartupTimings = StartupTimings_Serialize | StartupTimings_Deserialize;
+
+/**  Startup marks measured by the webview, in milliseconds since its navigation started. */
+export type StartupTimings_Deserialize = {
+	firstPaintMs?: number | null,
+	entryEvaluatedMs?: number | null,
+	shellRenderedMs?: number | null,
+	sessionReadyMs?: number | null,
+	/**  `performance.timeOrigin`: when the webview navigation started, in Unix epoch milliseconds. */
+	timeOriginMs?: number | null,
+};
+
+/**  Startup marks measured by the webview, in milliseconds since its navigation started. */
+export type StartupTimings_Serialize = {
+	firstPaintMs: number | null,
+	entryEvaluatedMs: number | null,
+	shellRenderedMs: number | null,
+	sessionReadyMs: number | null,
+	/**  `performance.timeOrigin`: when the webview navigation started, in Unix epoch milliseconds. */
+	timeOriginMs: number | null,
 };
 
 export type SymbolDto = SymbolDto_Serialize | SymbolDto_Deserialize;
