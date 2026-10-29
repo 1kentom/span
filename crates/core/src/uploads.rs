@@ -67,6 +67,10 @@ pub struct UploadSource {
     pub agent_id: Option<String>,
     pub message_id: Option<String>,
     pub origin: UploadOrigin,
+    /// The chat's title when the file was recorded, so the panel can name the
+    /// session after the chat is gone. Display text only; cleaned on store.
+    #[serde(default)]
+    pub session_title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -103,6 +107,15 @@ pub struct UploadUsage {
     pub orphan_bytes: u64,
     /// Unreadable index files moved aside as `index.corrupt-*.json`.
     pub quarantined_indexes: u32,
+}
+
+/// What `UploadStore::clear` removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearedUploads {
+    /// Indexed uploads plus orphaned blobs.
+    pub files: u32,
+    pub bytes: u64,
 }
 
 /// One bounded read of an upload's bytes.
@@ -191,6 +204,27 @@ fn check_source(source: &UploadSource) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A session title as display text: control characters become spaces, the
+/// result is trimmed and cut to `MAX_SOURCE_FIELD` bytes on a character
+/// boundary. Empty becomes `None`.
+fn clean_title(title: Option<String>) -> Option<String> {
+    let title = title?;
+    let spaced: String = title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut cut = spaced.trim().to_owned();
+    if cut.len() > MAX_SOURCE_FIELD {
+        let mut end = MAX_SOURCE_FIELD;
+        while !cut.is_char_boundary(end) {
+            end -= 1;
+        }
+        cut.truncate(end);
+        cut = cut.trim_end().to_owned();
+    }
+    (!cut.is_empty()).then_some(cut)
 }
 
 fn now_ms() -> u64 {
@@ -596,9 +630,10 @@ impl UploadStore {
         &self.dir
     }
 
-    pub fn add(&self, name: &str, bytes: &[u8], source: UploadSource) -> Result<Upload> {
+    pub fn add(&self, name: &str, bytes: &[u8], mut source: UploadSource) -> Result<Upload> {
         check_name(name)?;
         check_source(&source)?;
+        source.session_title = clean_title(source.session_title.take());
         let size = bytes.len() as u64;
         if size > self.limits.max_file_bytes {
             return Err(reject(format!(
@@ -818,6 +853,65 @@ impl UploadStore {
         })
     }
 
+    /// Removes this workspace's whole store contents: every blob (orphans
+    /// included), the `open/` copies, the index and any quarantined index.
+    /// Nothing outside the store folder is touched, so workspace files and
+    /// uploads already saved into the workspace stay. The folder and its lock
+    /// file remain so the store keeps working.
+    pub fn clear(&self) -> Result<ClearedUploads> {
+        let _lock = self.lock()?;
+        let index = self.read_index()?;
+        let blobs = self.dir.join(BLOB_DIR);
+        let (mut files, mut bytes) = (0u32, 0u64);
+        if let Ok(entries) = fs::read_dir(&blobs) {
+            for entry in entries.flatten() {
+                let Ok(metadata) = entry.path().symlink_metadata() else {
+                    continue;
+                };
+                if metadata.is_file() && entry.file_name().to_string_lossy().ends_with(".bin") {
+                    files += 1;
+                    bytes += metadata.len();
+                }
+            }
+        }
+        // Indexed uploads whose blob is gone still count as cleared entries.
+        let missing = index
+            .uploads
+            .iter()
+            .filter(|u| !self.blob_path(&u.id).is_file())
+            .count() as u32;
+        files += missing;
+        self.remove_store_dir(&blobs)?;
+        fs::create_dir_all(&blobs).map_err(|e| io_error("Create uploads store", &blobs, e))?;
+        self.remove_store_dir(&self.dir.join(OPEN_DIR))?;
+        let entries =
+            fs::read_dir(&self.dir).map_err(|e| io_error("Clear uploads", &self.dir, e))?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == INDEX_FILE || name.starts_with(CORRUPT_PREFIX) {
+                let path = entry.path();
+                fs::remove_file(&path).map_err(|e| io_error("Clear uploads", &path, e))?;
+            }
+        }
+        Ok(ClearedUploads { files, bytes })
+    }
+
+    /// Removes a folder directly inside the store. A symlink is removed as a
+    /// link, never followed.
+    fn remove_store_dir(&self, folder: &Path) -> Result<()> {
+        match folder.symlink_metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io_error("Clear uploads", folder, e)),
+            Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+                fs::remove_file(folder).map_err(|e| io_error("Clear uploads", folder, e))
+            }
+            Ok(_) => {
+                self.contained(folder)?;
+                fs::remove_dir_all(folder).map_err(|e| io_error("Clear uploads", folder, e))
+            }
+        }
+    }
+
     /// A fresh copy of the upload under its display name, at
     /// `<store>/open/<id>/<name>`, for reveal and open with the system app. The blob
     /// itself is never handed out, so an external editor cannot change it. Also
@@ -916,6 +1010,10 @@ impl UploadStore {
                     && check_name(&u.name).is_ok()
                     && check_source(&u.source).is_ok()
                     && seen.insert(u.id.clone())
+            })
+            .map(|mut u| {
+                u.source.session_title = clean_title(u.source.session_title.take());
+                u
             })
             .collect();
         Index {
@@ -1099,6 +1197,7 @@ mod tests {
             agent_id: Some("claude".into()),
             message_id: None,
             origin: UploadOrigin::Sent,
+            session_title: None,
         }
     }
 
@@ -1506,6 +1605,7 @@ mod tests {
             agent_id: None,
             message_id: None,
             origin: UploadOrigin::AgentGenerated,
+            session_title: None,
         };
         let up = f.store.add("a.txt", b"x", agent.clone()).unwrap();
         assert_eq!(up.source, agent);
@@ -1778,5 +1878,139 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn clear_removes_blobs_open_copies_orphans_and_index_but_not_the_workspace() {
+        let f = fixture();
+        std::fs::write(f.workspace.path().join("keep.txt"), b"workspace file").unwrap();
+        let a = f.store.add("a.txt", b"aaaa", source()).unwrap();
+        f.store.add("b.txt", b"bb", source()).unwrap();
+        let mut workspace = CoreWorkspace::open(f.workspace.path()).unwrap();
+        let saved = f
+            .store
+            .save_to_workspace(&a.id, &mut workspace, "assets")
+            .unwrap();
+        let copy = f.store.external_copy(&a.id).unwrap();
+        assert!(copy.path.is_file());
+        let orphan = f
+            .store
+            .dir()
+            .join(BLOB_DIR)
+            .join(format!("{}.bin", "f".repeat(32)));
+        std::fs::write(&orphan, b"orphan").unwrap();
+        std::fs::write(
+            f.store.dir().join(format!("{CORRUPT_PREFIX}1-0.json")),
+            b"{",
+        )
+        .unwrap();
+
+        let cleared = f.store.clear().unwrap();
+        assert_eq!(
+            cleared,
+            ClearedUploads {
+                files: 3,
+                bytes: 4 + 2 + 6
+            }
+        );
+        assert!(f.store.list().unwrap().is_empty());
+        assert!(!orphan.exists());
+        assert!(!copy.path.exists());
+        assert!(!f.store.dir().join(OPEN_DIR).exists());
+        assert!(!f.store.dir().join(INDEX_FILE).exists());
+        let usage = f.store.usage().unwrap();
+        assert_eq!(
+            (
+                usage.count,
+                usage.total_bytes,
+                usage.orphan_blobs,
+                usage.quarantined_indexes
+            ),
+            (0, 0, 0, 0)
+        );
+        // The workspace and the copy saved into it are untouched.
+        assert_eq!(
+            std::fs::read(f.workspace.path().join("keep.txt")).unwrap(),
+            b"workspace file"
+        );
+        assert_eq!(
+            std::fs::read(f.workspace.path().join(&saved.path)).unwrap(),
+            b"aaaa"
+        );
+        // The store keeps working after a clear.
+        f.store.add("c.txt", b"c", source()).unwrap();
+        assert_eq!(f.store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn clear_on_an_empty_store_reports_nothing() {
+        let f = fixture();
+        assert_eq!(
+            f.store.clear().unwrap(),
+            ClearedUploads { files: 0, bytes: 0 }
+        );
+    }
+
+    #[test]
+    fn session_titles_are_stored_as_clean_display_text() {
+        let f = fixture();
+        let titled = UploadSource {
+            session_title: Some("  Fix the\nlogin bug\u{7}  ".into()),
+            ..source()
+        };
+        let up = f.store.add("a.txt", b"x", titled).unwrap();
+        assert_eq!(
+            up.source.session_title.as_deref(),
+            Some("Fix the login bug")
+        );
+        assert_eq!(
+            f.store
+                .get_meta(&up.id)
+                .unwrap()
+                .source
+                .session_title
+                .as_deref(),
+            Some("Fix the login bug")
+        );
+        let blank = UploadSource {
+            session_title: Some(" \t ".into()),
+            ..source()
+        };
+        assert_eq!(
+            f.store
+                .add("b.txt", b"y", blank)
+                .unwrap()
+                .source
+                .session_title,
+            None
+        );
+        let long = UploadSource {
+            session_title: Some("\u{e9}".repeat(300)),
+            ..source()
+        };
+        let title = f
+            .store
+            .add("c.txt", b"z", long)
+            .unwrap()
+            .source
+            .session_title
+            .unwrap();
+        assert!(title.len() <= MAX_SOURCE_FIELD && title.chars().all(|c| c == '\u{e9}'));
+        // Entries written before titles existed still read.
+        let raw = std::fs::read_to_string(f.store.dir().join(INDEX_FILE)).unwrap();
+        let mut index: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for upload in index["uploads"].as_array_mut().unwrap() {
+            upload["source"]
+                .as_object_mut()
+                .unwrap()
+                .remove("sessionTitle");
+        }
+        std::fs::write(f.store.dir().join(INDEX_FILE), index.to_string()).unwrap();
+        assert!(f
+            .store
+            .list()
+            .unwrap()
+            .iter()
+            .all(|u| u.source.session_title.is_none()));
     }
 }
