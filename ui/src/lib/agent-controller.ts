@@ -6,11 +6,12 @@ import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDele
 import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
 import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
 import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
-import { liveAgentsOf, type LiveState } from "./live-agents";
+import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { RUN_TEXT } from "./agent-hint-text";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
+import { lastFinishedTool, runningTools, toolBarView } from "./agent-tool-bar";
 
 import {
   addFeedItem,
@@ -1382,6 +1383,11 @@ export function createAgentController(props: AgentPanelProps) {
    * Every agent involved in the open chat: the lead, the agents it delegated to and the agents of earlier segments of
    * this thread. The strip shows only when there is more than one.
    */
+  /** The lead's current model name, for the Active agents card. Tolerates an option that lists no groups. */
+  const leadModel = () => {
+    const option = state().config.find((candidate) => candidate.category === "model");
+    return (option?.groups ?? []).flatMap((group) => group.choices ?? []).find((choice) => choice.value === option?.currentValue)?.name;
+  };
   const liveAgents = createMemo(() => {
     const current = state().sessionId;
     if (!connected() || !current) return [];
@@ -1390,15 +1396,12 @@ export function createAgentController(props: AgentPanelProps) {
       .segments.filter((segment) => !(segment.sessionId === current && (!id || segment.agentId === id)))
       .map((segment) => ({ id: segment.agentId, name: segment.connectionName || registryName(segment.agentId) || segment.agentId }));
     return liveAgentsOf({
-      lead: { id, name: (id && registryName(id)) || agentLabel(), state: leadState() },
+      lead: { id, name: (id && registryName(id)) || agentLabel(), state: leadState(), detail: leadModel() },
       tasks: state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])),
       waiting: (task) => childPermissionList().some((entry) => permissionWaitsOn(entry, task)),
       earlier,
       health: health(),
-      resolve: (name) => {
-        const entry = installed().find((agent) => agent.id.toLowerCase() === name.toLowerCase());
-        return entry ? { id: entry.id, name: registryName(entry.id) || entry.id } : undefined;
-      },
+      resolve: (name) => resolveInstalled(name, installed().map((agent) => ({ id: agent.id, name: registryName(agent.id) }))),
     });
   });
   /** The open chat's title: the thread's user title, else the title it had when it switched agent, else the agent's. */
@@ -2111,6 +2114,22 @@ export function createAgentController(props: AgentPanelProps) {
     const preview = outputPreview(tool);
     return { ...runningTitle(tool), id: tool.toolCallId, elapsed: clockText(now - (times?.start ?? (turnStart() || now))), lines: preview.lines, hidden: preview.hidden, full: preview.all, still: stillRunningText(now - (times?.last ?? now)) };
   });
+  /**
+   * The single running bar above the composer: the newest running tool (with a "+N more" count), a just-finished tool
+   * while it settles, or the phase (thinking, waiting, stopping). Every timer comes from `clock` and a recorded start.
+   */
+  const toolBar = (browser = false) =>
+    toolBarView({
+      running: running() ? runningTools(feed()) : [],
+      finished: running() ? lastFinishedTool(feed()) : undefined,
+      timesOf: (event) => toolTimes.get(`${event.sessionId}:${event.toolCallId}`),
+      now: clock(),
+      turnStart: turnStart(),
+      approval: Boolean(permission() || childPermission()),
+      answer: Boolean(elicitation()) && elicitation()?.mode !== "url",
+      browser: browser || elicitation()?.mode === "url",
+      stopping: state().stopRequested,
+    });
   /** User chats in the background that wait for an approval or an answer. */
   const attentionCount = createMemo(() => attentionSessions(sessionStates(), state().sessionId).length);
   /** A session list row's state from the backend, or undefined for a session Span does not hold. */
@@ -2131,6 +2150,7 @@ export function createAgentController(props: AgentPanelProps) {
     activity,
     turnElapsed,
     runningStep,
+    toolBar,
     chatCount: () => (chatVersion(), chats.size()),
     feed,
     connected,

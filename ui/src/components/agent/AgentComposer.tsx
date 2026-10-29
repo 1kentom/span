@@ -9,13 +9,13 @@ import { delegationLine, isFinished } from "../../lib/agent-delegation";
 import { type FeedItem, type PermissionEvent } from "../../lib/agent-session";
 import { isSlashQuery, leaf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
 import { api, isDesktop } from "../../lib/client";
-import { URL_COPY, parseUrlRequest, withBrowserWait, type UrlRequestView } from "../../lib/agent-url-request";
+import { URL_COPY, parseUrlRequest, type UrlRequestView } from "../../lib/agent-url-request";
 import { ContextHint, ContextMeter, ContextPopover, createCompaction, createStaleTracker } from "./ContextMeter";
 import { compactCommand, contextPercent, meterState, showCompactHint, type LimitNote } from "../../lib/context-usage";
 import type { DelegationTaskState } from "../../lib/agent-delegation";
 import { AgentStatusBar } from "./AgentStatusBar";
-import { ActivityBar, PermissionDock, QuestionDock, RewindDock, UrlDock, focusDock } from "./Docks";
-import { RunningStep } from "./RunningStep";
+import { PermissionDock, QuestionDock, RewindDock, UrlDock, focusDock } from "./Docks";
+import { ToolActivityBar } from "./ToolActivityBar";
 import { RUN_TEXT } from "../../lib/agent-hint-text";
 import { createPickers } from "./ComposerPickers";
 import { brandFromModelNames, brandIconFor } from "../../lib/brand-icons";
@@ -70,6 +70,8 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     const step = browserStep();
     return step && !a.elicitation() && a.connected() && a.running() && stepRecord()?.status === "opened" ? step : undefined;
   });
+  /** The single running bar: the browser wait comes from this component, everything else from the controller. */
+  const toolBar = createMemo(() => a.toolBar(Boolean(waitingStep())));
   createEffect(() => {
     if (!browserStep()) return;
     const status = stepRecord()?.status;
@@ -277,13 +279,12 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         />
       </Show>
       <Show when={a.running()}>
-        <Show when={a.runningStep()}>
-          {(step) => <RunningStep title={step().title} command={step().command} elapsed={step().elapsed} lines={step().lines} hidden={step().hidden} full={step().full} still={step().still} />}
-        </Show>
-        <ActivityBar
-          label={withBrowserWait(a.activity(), a.elicitation()?.mode === "url" || Boolean(waitingStep()))}
-          elapsed={a.turnElapsed()}
-          hint={a.state().stopRequested || a.elicitation() || waitingStep() ? undefined : "Esc to stop"}
+        <ToolActivityBar
+          view={toolBar()}
+          lines={a.runningStep()?.lines}
+          hidden={a.runningStep()?.hidden}
+          full={a.runningStep()?.full}
+          still={a.runningStep()?.still}
         />
       </Show>
       <Show when={a.rewind()}>
