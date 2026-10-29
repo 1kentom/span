@@ -685,6 +685,7 @@ export function createAgentController(props: AgentPanelProps) {
       }
       await resumeChat(last.sessionId);
       if (sessionId() !== last.sessionId) patch({ failure: undefined });
+      else if (freshAtRestore) releaseUnusedSession(freshAtRestore);
     } finally {
       restoringLast = false;
       // The chat that was open could not be reopened, so the session left is a new one and gets its options back.
@@ -693,6 +694,23 @@ export function createAgentController(props: AgentPanelProps) {
       const agent = agentId();
       if (id && agent) writeLastSession(workspace, { agentId: agent, sessionId: id });
     }
+  }
+  /**
+   * The connect before a restore opens a session that the resumed chat replaces at once. Close it (never delete) where
+   * the agent can, so it does not linger as an empty live session. Only an idle session that never ran a turn.
+   */
+  function releaseUnusedSession(id: string) {
+    const runtime = runtimeOf(id);
+    if (!canClose() || id === sessionId() || (runtime && (runtime.state !== "idle" || runtime.queued > 0))) return;
+    const gone = threadOf(connectionKey(), id);
+    if (gone && gone.state().conversation.feed.length) return;
+    void api
+      .agentCloseSession(id)
+      .then(() => {
+        const thread = threadOf(connectionKey(), id);
+        if (thread && thread !== untrack(focused)) threads.close(thread.key);
+      })
+      .catch(() => undefined);
   }
   /**
    * Starts `name` in a new session. With `switching` (the agent pickers), a chat with messages that moves to another
