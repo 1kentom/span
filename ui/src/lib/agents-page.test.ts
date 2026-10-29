@@ -16,8 +16,13 @@ import {
   railRows,
   railTime,
   readAgentMode,
+  readSideWidth,
   readWidth,
+  sidePanelDefault,
   sidePanelMax,
+  sidePanelOpenByDefault,
+  SIDE_WIDTH_KEY,
+  WIDE_WINDOW,
   writeAgentMode,
   writeStored,
   type RailInput,
@@ -96,10 +101,30 @@ describe("widths", () => {
     // A maximum below the minimum (a narrow window) still yields the minimum.
     expect(clampWidth(500, 320, 200)).toBe(320);
   });
-  it("keeps the thread at least 560px wide before the side panel gives way", () => {
-    expect(sidePanelMax(2560, 268)).toBe(SIDE_WIDTH.max);
+  it("keeps the thread at least 560px wide before the side panel gives way, and the panel at most half the window", () => {
+    expect(sidePanelMax(2560, 268)).toBe(1280);
+    expect(sidePanelMax(3440, 268)).toBe(1720);
     expect(sidePanelMax(1440, 268)).toBe(1440 - 268 - 560 - 32);
     expect(sidePanelMax(1000, 268)).toBe(SIDE_WIDTH.min);
+  });
+  it("sizes the side panel in proportion to the window until the user drags it", () => {
+    expect(sidePanelDefault(1000)).toBe(420);
+    expect(sidePanelDefault(1440)).toBe(420);
+    expect(sidePanelDefault(2560)).toBe(614);
+    expect(sidePanelDefault(3440)).toBe(760);
+    expect(readSideWidth()).toBeUndefined();
+    writeStored(SIDE_WIDTH_KEY, "540");
+    expect(readSideWidth()).toBe(540);
+    writeStored(SIDE_WIDTH_KEY, "100");
+    expect(readSideWidth()).toBe(SIDE_WIDTH.min);
+    writeStored(SIDE_WIDTH_KEY, "");
+    expect(readSideWidth()).toBeUndefined();
+  });
+  it("opens the side panel by default up to a wide window, and beyond it only when there is something to show", () => {
+    expect(sidePanelOpenByDefault(1440, false)).toBe(true);
+    expect(sidePanelOpenByDefault(WIDE_WINDOW, false)).toBe(true);
+    expect(sidePanelOpenByDefault(3440, false)).toBe(false);
+    expect(sidePanelOpenByDefault(3440, true)).toBe(true);
   });
   it("reads a stored width clamped, and the default when nothing valid is stored", () => {
     expect(readWidth("railWidth", RAIL_WIDTH)).toBe(268);

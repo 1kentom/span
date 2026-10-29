@@ -6,7 +6,7 @@ import { agentLimits } from "../../lib/agent-stores/limits";
 import { findHealth } from "../../lib/agent-health";
 import { readLastConfig } from "../../lib/last-config";
 import { friendlyAgentName } from "../../lib/live-agents";
-import { NARROW_WINDOW, RAIL_WIDTH, SIDE_WIDTH, clampWidth, currentThreadState, planLimits, railRows, readStored, readWidth, sidePanelMax, writeStored, type RailRow } from "../../lib/agents-page";
+import { NARROW_WINDOW, RAIL_WIDTH, SIDE_OPEN_KEY, SIDE_WIDTH, SIDE_WIDTH_KEY, clampWidth, currentThreadState, planLimits, railRows, readSideWidth, readStored, readWidth, sidePanelDefault, sidePanelMax, sidePanelOpenByDefault, writeStored, type RailRow } from "../../lib/agents-page";
 import { threadRowMeta } from "../../lib/session-threads";
 import { Modal } from "../Modal";
 import { NewSessionPicker, type PickerAgent } from "./NewSessionPicker";
@@ -45,8 +45,10 @@ export function AgentsPage(props: AgentsPageProps) {
   const [now, setNow] = createSignal(Date.now());
   const [railOpen, setRailOpen] = createSignal(readStored("railOpen") !== "false");
   const [railWidth, setRailWidth] = createSignal(readWidth("railWidth", RAIL_WIDTH));
-  const [sideOpen, setSideOpen] = createSignal(readStored("sideOpen") !== "false");
-  const [sideWidth, setSideWidth] = createSignal(readWidth("sideWidth", SIDE_WIDTH));
+  // The side panel's open state and width are the user's choice once made; until then they follow the window.
+  const storedOpen = readStored(SIDE_OPEN_KEY);
+  const [sideChoice, setSideChoice] = createSignal<boolean | undefined>(storedOpen === "true" ? true : storedOpen === "false" ? false : undefined);
+  const [sideWidth, setSideWidth] = createSignal<number | undefined>(readSideWidth());
   const storedTab = readStored("sideTab");
   const [sideTab, setSideTab] = createSignal<SideTab>(isSideTab(storedTab) ? storedTab : "changes");
   const [searchRequest, setSearchRequest] = createSignal(0);
@@ -59,12 +61,22 @@ export function AgentsPage(props: AgentsPageProps) {
   const railShown = () => (narrow() ? overlayOpen() : railOpen());
   const limits = agentLimits.use();
   const sideMax = () => sidePanelMax(props.windowWidth, railOpen() && !narrow() ? railWidth() : 0);
-  const shownSideWidth = () => clampWidth(sideWidth(), SIDE_WIDTH.min, sideMax());
+  const shownSideWidth = () => clampWidth(sideWidth() ?? sidePanelDefault(props.windowWidth), SIDE_WIDTH.min, sideMax());
+  /** Something for the side panel to show: proposed edits or delegated tasks (the delegates in the Agents tab). */
+  const sideHasContent = () => a.feed().some((item) => item.kind === "proposal" || item.kind === "delegation");
+  const sideOpen = () => sideChoice() ?? sidePanelOpenByDefault(props.windowWidth, sideHasContent());
+  const setSideOpen = (open: boolean) => setSideChoice(open);
 
   createEffect(() => writeStored("railOpen", String(railOpen())));
   createEffect(() => writeStored("railWidth", String(railWidth())));
-  createEffect(() => writeStored("sideOpen", String(sideOpen())));
-  createEffect(() => writeStored("sideWidth", String(sideWidth())));
+  createEffect(() => {
+    const choice = sideChoice();
+    if (choice !== undefined) writeStored(SIDE_OPEN_KEY, String(choice));
+  });
+  createEffect(() => {
+    const width = sideWidth();
+    if (width !== undefined) writeStored(SIDE_WIDTH_KEY, String(width));
+  });
   createEffect(() => writeStored("sideTab", sideTab()));
 
   onMount(() => {
@@ -260,7 +272,7 @@ export function AgentsPage(props: AgentsPageProps) {
         }
       />
       <Show when={sideOpen()}>
-        <PageGrip label="Resize side panel" side="right" value={shownSideWidth()} min={SIDE_WIDTH.min} max={sideMax()} onResize={setSideWidth} onReset={() => setSideWidth(SIDE_WIDTH.initial)} />
+        <PageGrip label="Resize side panel" side="right" value={shownSideWidth()} min={SIDE_WIDTH.min} max={sideMax()} onResize={setSideWidth} onReset={() => (setSideWidth(undefined), writeStored(SIDE_WIDTH_KEY, ""))} />
         <SidePanel agent={a} tab={sideTab()} onTab={setSideTab} onClose={() => setSideOpen(false)} onOpenFile={props.onOpenFile} onShowTask={showTask} />
       </Show>
       <Show when={renaming()}>

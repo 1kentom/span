@@ -271,6 +271,11 @@ pub struct AgentUsageSettings {
     /// bundled price table.
     #[specta(optional)]
     pub prices: BTreeMap<String, crate::usage::PriceOverride>,
+    /// `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
+    /// local usage logs (read only, counters only) so the Usage page also
+    /// shows sessions run outside Span. Off by default.
+    #[specta(optional)]
+    pub import_local_logs: bool,
 }
 
 /// How a session Span starts treats the agent's own default mode.

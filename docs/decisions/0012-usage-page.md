@@ -3,8 +3,8 @@
 Status: accepted by the owner on 2026-10-29, who delegated the individual
 decisions below and approved them as recorded. Builds on 0003 (span-agents
 budget meter), 0005 (session metadata, amended by this record) and 0011
-(agent mode). Stage A (counters and page) ships with this record; stage B
-(opt-in local log importers) is a follow-up.
+(agent mode). Stage A (counters and page) shipped with this record in
+#189; stage B (opt-in local log importers) followed in its own change.
 
 ## Context
 
@@ -121,7 +121,7 @@ UNVERIFIED for what was not confirmed.
   - Health check sessions (ADR 0010) are left out.
   - The aggregation is pure, in `crates/core/src/usage.rs`.
 
-### b. Source B: opt-in local log importers (stage B, not in this change)
+### b. Source B: opt-in local log importers (stage B)
 
 - Setting `agents.usage.importLocalLogs`, off by default, user only (dropped
   from workspace settings like the other user-only keys).
@@ -141,6 +141,30 @@ UNVERIFIED for what was not confirmed.
   "Tracked by Span", with a source filter on the page. Sessions seen by both
   are not double counted: the Span-tracked figure wins for sessions Span ran.
 - Tests use generated sample JSONL only, never real logs.
+- As built (`crates/core/src/usage_import.rs`, `apps/desktop/src/usage.rs`):
+  - Commands: `usage_import_scan` starts a background scan and returns
+    straight away; `usage_import_status` reports progress and the last
+    outcome. The page polls the status while a scan runs, then reloads.
+  - Imported usage is kept per UTC hour. The page sends its UTC offset with
+    each request (`UsageRange.utcOffsetMinutes`), so imported hours land on
+    local days. Past days use today's offset, so a daylight saving change
+    can move an hour across midnight.
+  - Imported sessions use the agent ids `claude-code-logs` and `codex-logs`.
+    `UsageRange.source` (`all`, `tracked`, `imported`) filters them, and
+    agent and session rows carry `imported`.
+  - A session id Span tracked itself is skipped in the import, so it is not
+    counted twice.
+  - The cache is `~/.config/span/usage-import/cache.json`. It holds path
+    hashes, offsets, head hashes, per-hour counters and dedupe keys.
+  - Caps:
+    - depth 6;
+    - 20,000 files;
+    - 512 MB per file;
+    - 16 MB per line.
+  - Lines still being written are left for the next scan.
+  - Settings: the toggle "Import usage from agents' local logs" sits under
+    Settings > Agents. The page offers the same switch with the same
+    explanation.
 
 ### c. Pricing
 
@@ -225,8 +249,8 @@ UNVERIFIED for what was not confirmed.
 
 ## Consequences
 
-- Usage history starts when this ships. Earlier sessions show nothing until
-  stage B imports local logs.
+- Tracked usage history starts when stage A ships. Earlier Claude Code and
+  Codex sessions appear only after the user turns on the importer.
 - Figures depend on what each agent reports:
   - An agent that sends no `PromptResponse.usage` shows turns and any
     reported cost, but "Not reported" for tokens.
@@ -254,6 +278,12 @@ UNVERIFIED for what was not confirmed.
 - The bundled prices were transcribed from the pages through a fetch tool on
   2026-10-29. Spot checks were repeated for several rows, but not every row
   was checked twice.
+- The importers were tested against generated sample lines in the documented
+  formats (ccusage and T3 Code sources), not against real logs. They were not
+  checked against compressed Codex rollouts (T3 Code #25453), which are
+  skipped because their lines do not parse. Whether Span's ACP session ids
+  equal the agents' own log session ids, which the double-count guard
+  relies on, is not verified.
 - T3 Code's refresh interval for limits, its handling of
   `account/rateLimits/updated`, and the current output of Claude Code's
   `/cost` and `/status` and Codex's `/status` were not read.

@@ -157,3 +157,14 @@ th.num .usage-sort{flex-direction:row}
 @media (forced-colors:active){
   .usage-segment,.usage-share-bar>span,.usage-legend i,.usage-tooltip i,.usage-share-labels i{forced-color-adjust:none;border:1px solid CanvasText}
 }
+/* Local log importer (ADR 0012, source B) */
+.usage-source-chip.imported{border-color:var(--tabBorder);background:var(--accentDock)}
+.usage-source-pill{padding:0 6px;border:1px solid var(--pillBd);border-radius:9px;color:var(--dim);font-size:10px;line-height:15px;font-weight:500}
+.usage-import-offer{display:flex;align-items:center;gap:12px;padding:11px 14px;border:1px dashed var(--border);border-radius:9px;background:var(--island);color:var(--dim);font-size:11px;line-height:18px}
+.usage-import-offer>.icon{color:var(--faint)}
+.usage-import-offer p{margin:0;flex:1;min-width:0}
+.usage-import-offer strong{color:var(--text);font-weight:600}
+.usage-import-status{display:flex;align-items:center;gap:12px;min-height:34px;margin-top:-6px;padding:0 4px;color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
+.usage-progress{display:block;width:160px;height:4px;border-radius:2px;background:var(--pill);overflow:hidden}
+.usage-progress i{display:block;height:100%;border-radius:2px;background:var(--accent)}
+@media (prefers-reduced-motion:no-preference){.usage-progress i{transition:width .3s ease-out}}

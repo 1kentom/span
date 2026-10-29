@@ -1021,6 +1021,16 @@ export async function usageSessions(range: import('../bindings').UsageRange_Dese
   return isDesktop ? commands.usageSessions(range) : [];
 }
 
+/** Starts a background scan of Claude Code's and Codex's local logs when `agents.usage.importLocalLogs` is on (ADR 0012). Returns at once. */
+export async function usageImportScan(): Promise<import('../bindings').UsageImportStatus_Serialize | undefined> {
+  return isDesktop ? commands.usageImportScan() : undefined;
+}
+
+/** The local log importer's state and the running scan's progress. */
+export async function usageImportStatus(): Promise<import('../bindings').UsageImportStatus_Serialize | undefined> {
+  return isDesktop ? commands.usageImportStatus() : undefined;
+}
+
 /** Merge a patch into one session's metadata: model and agent uses add up, counters and stop reason replace. Debouncing is the caller's job. */
 export async function sessionMetaUpdate(patch: import('../bindings').SessionMetaPatch_Deserialize): Promise<import('../bindings').SessionMeta_Serialize> {
   if (!isDesktop) nativeRequired('Saving session history');

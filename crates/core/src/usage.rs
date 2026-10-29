@@ -7,6 +7,7 @@
 //! model without a price contributes tokens but no cost, and a row whose
 //! usage has no price reports `known: false` rather than zero.
 use crate::session_meta::{SessionMeta, SessionUsage, UsageBucket};
+use crate::usage_import::is_imported_agent;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap};
@@ -323,9 +324,36 @@ pub struct UsageRange {
     #[serde(default)]
     #[specta(optional)]
     pub to: Option<String>,
+    /// Minutes east of UTC of the viewer's time zone, used to place imported
+    /// usage (kept per UTC hour) on local days. Absent: UTC.
+    #[serde(default)]
+    #[specta(optional)]
+    pub utc_offset_minutes: Option<i32>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub source: Option<UsageSource>,
+}
+
+/// Which usage a range covers (ADR 0012): what Span tracked over ACP, what
+/// the opt-in importers read from agents' local logs, or both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageSource {
+    #[default]
+    All,
+    Tracked,
+    Imported,
 }
 
 impl UsageRange {
+    fn includes(&self, meta: &SessionMeta) -> bool {
+        let imported = is_imported_agent(&meta.agent_id);
+        match self.source.unwrap_or_default() {
+            UsageSource::All => true,
+            UsageSource::Tracked => !imported,
+            UsageSource::Imported => imported,
+        }
+    }
     fn contains(&self, day: &str) -> bool {
         self.from.as_deref().is_none_or(|from| day >= from)
             && self.to.as_deref().is_none_or(|to| day <= to)
@@ -434,6 +462,8 @@ pub struct AgentUsage {
     pub agent_id: String,
     pub name: String,
     pub totals: UsageTotals,
+    /// Read from the agent's local logs rather than tracked by Span.
+    pub imported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
@@ -450,6 +480,8 @@ pub struct ModelUsage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionUsageRow {
+    /// Read from the agent's local logs rather than tracked by Span.
+    pub imported: bool,
     pub agent_id: String,
     pub agent_name: String,
     pub session_id: String,
@@ -545,7 +577,7 @@ pub fn summarize(
     let mut agents: HashMap<String, AgentUsage> = HashMap::new();
     let mut models: HashMap<String, ModelUsage> = HashMap::new();
     let mut tracked = 0u32;
-    for meta in sessions {
+    for meta in sessions.iter().filter(|meta| range.includes(meta)) {
         if !has_usage(&meta.usage) {
             continue;
         }
@@ -570,6 +602,7 @@ pub fn summarize(
                     agent_id: meta.agent_id.clone(),
                     name: agent_name(meta),
                     totals: UsageTotals::default(),
+                    imported: is_imported_agent(&meta.agent_id),
                 });
             agent.totals.add_bucket(bucket, &cost);
             if !agent_counted {
@@ -671,6 +704,7 @@ pub fn session_rows(
 ) -> Vec<SessionUsageRow> {
     let mut rows: Vec<SessionUsageRow> = sessions
         .iter()
+        .filter(|meta| range.includes(meta))
         .filter_map(|meta| {
             let usage = meta.usage.as_ref()?;
             let mut totals = UsageTotals::default();
@@ -686,6 +720,7 @@ pub fn session_rows(
             }
             totals.sessions = 1;
             Some(SessionUsageRow {
+                imported: is_imported_agent(&meta.agent_id),
                 agent_id: meta.agent_id.clone(),
                 agent_name: agent_name(meta),
                 session_id: meta.session_id.clone(),
@@ -726,6 +761,11 @@ pub fn parse_day(day: &str) -> Option<(i64, u32, u32)> {
     (1..=days_in_month)
         .contains(&date)
         .then_some((year, month, date))
+}
+
+/// Days since 1970-01-01 of a calendar date.
+pub fn days_since_epoch(year: i64, month: u32, day: u32) -> i64 {
+    days_from_civil(year, month, day)
 }
 
 /// Days since 1970-01-01 (Howard Hinnant's `days_from_civil`).
@@ -1090,6 +1130,7 @@ mod tests {
         let range = UsageRange {
             from: Some("2026-10-26".into()),
             to: Some("2026-10-29".into()),
+            ..UsageRange::default()
         };
         let summary = summarize(&sessions, &range, &table);
         assert_eq!(summary.days.len(), 4);
@@ -1125,6 +1166,7 @@ mod tests {
         let today = UsageRange {
             from: Some("2026-10-29".into()),
             to: Some("2026-10-29".into()),
+            ..UsageRange::default()
         };
         let summary = summarize(&sessions, &today, &table);
         assert_eq!(summary.totals.sessions, 2);

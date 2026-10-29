@@ -1138,12 +1138,21 @@ fn agent_usage_prices_are_honoured_only_from_user_settings() {
         .unwrap()
         .with_user_settings(Some(user.clone()));
     assert!(Settings::default().agents.usage.prices.is_empty());
+    assert!(!Settings::default().agents.usage.import_local_logs);
     fs::create_dir_all(directory.path().join(".span")).unwrap();
     fs::write(
         directory.path().join(".span/settings.jsonc"),
-        "{ \"agents\": { \"usage\": { \"prices\": { \"gpt-5.5\": { \"input\": 0, \"output\": 0 } } } } }",
+        "{ \"agents\": { \"usage\": { \"importLocalLogs\": true, \"prices\": { \"gpt-5.5\": { \"input\": 0, \"output\": 0 } } } } }",
     )
     .unwrap();
+    assert!(
+        !workspace
+            .get_settings()
+            .unwrap()
+            .agents
+            .usage
+            .import_local_logs
+    );
     assert!(workspace
         .get_settings()
         .unwrap()

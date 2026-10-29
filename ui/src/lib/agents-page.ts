@@ -9,9 +9,15 @@ import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows, type Thread 
 
 export type AgentMode = "editor" | "agents";
 
-/** Rail and side panel bounds from the design: the rail 200 to 420 (268 default), the side panel 320 to 720 (420). */
+/**
+ * Rail and side panel bounds. The rail is 200 to 420 (268 default) and only grows when the user drags it. The side
+ * panel is at least 320 and at most half the window; until the user drags it, its width follows the window
+ * (24 percent, from 420 to 760, the same as `--ap-side-default` in agents-page.css).
+ */
 export const RAIL_WIDTH = { min: 200, max: 420, initial: 268 } as const;
-export const SIDE_WIDTH = { min: 320, max: 720, initial: 420 } as const;
+export const SIDE_WIDTH = { min: 320, initial: 420, wideMax: 760, share: 0.24, windowShare: 0.5 } as const;
+/** From this window width the side panel opens by default only when it has something to show. */
+export const WIDE_WINDOW = 2200;
 /** The thread keeps at least this much width before the side panel gives way. */
 export const THREAD_MIN = 560;
 /** Below this window width the rail would leave the thread too little room (PR 2 turns it into an overlay). */
@@ -72,9 +78,31 @@ export function readWidth(key: string, bounds: { min: number; max: number; initi
   const raw = Number(readStored(key));
   return raw > 0 ? clampWidth(raw, bounds.min, bounds.max) : bounds.initial;
 }
-/** The widest the side panel may be in a window: it never squeezes the thread under `THREAD_MIN`. */
+/** The widest the side panel may be in a window: half the window, and never squeezing the thread under `THREAD_MIN`. */
 export function sidePanelMax(windowWidth: number, railWidth: number): number {
-  return clampWidth(windowWidth - railWidth - THREAD_MIN - 32, SIDE_WIDTH.min, SIDE_WIDTH.max);
+  return clampWidth(Math.min(windowWidth * SIDE_WIDTH.windowShare, windowWidth - railWidth - THREAD_MIN - 32), SIDE_WIDTH.min, Number.POSITIVE_INFINITY);
+}
+/** The side panel width before the user resizes it: proportional to the window, 420 to 760. */
+export function sidePanelDefault(windowWidth: number): number {
+  return clampWidth(windowWidth * SIDE_WIDTH.share, SIDE_WIDTH.initial, SIDE_WIDTH.wideMax);
+}
+/**
+ * Storage keys written only by a user action. The earlier `sideWidth` and `sideOpen` keys were written on every
+ * mount, so they cannot tell a choice from the old default and are no longer read.
+ */
+export const SIDE_WIDTH_KEY = "sideWidthChosen";
+export const SIDE_OPEN_KEY = "sideOpenChosen";
+/** The side panel width the user dragged to, or undefined while it follows the window. */
+export function readSideWidth(): number | undefined {
+  const raw = Number(readStored(SIDE_WIDTH_KEY));
+  return raw > 0 && Number.isFinite(raw) ? Math.max(SIDE_WIDTH.min, Math.round(raw)) : undefined;
+}
+/**
+ * Whether the side panel shows when the user has not chosen. Up to `WIDE_WINDOW` it is open, as before; on a wider
+ * window it opens only when there is something to show (proposed edits, delegated agents).
+ */
+export function sidePanelOpenByDefault(windowWidth: number, hasContent: boolean): boolean {
+  return windowWidth <= WIDE_WINDOW || hasContent;
 }
 
 /** A rail row's state. "needs" waits for the user (approval, answer, sign-in), "failed" stopped on an error. */
