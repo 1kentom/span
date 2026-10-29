@@ -20,6 +20,8 @@ pub struct AgentService {
     state: Arc<Mutex<Bridge>>,
     workspace: Arc<Mutex<CoreWorkspace>>,
     completion: watch::Receiver<bool>,
+    #[cfg(test)]
+    runtime_polls: Arc<std::sync::atomic::AtomicU64>,
 }
 
 enum Command {
@@ -296,6 +298,10 @@ impl AgentService {
         let (completion_tx, completion_rx) = watch::channel(false);
         let shared = state.clone();
         let service_workspace = workspace.clone();
+        #[cfg(test)]
+        let runtime_polls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(test)]
+        let observed_polls = runtime_polls.clone();
         std::thread::Builder::new()
             .name("span-acp".into())
             .spawn(move || {
@@ -304,7 +310,7 @@ impl AgentService {
                     .build();
                 match runtime {
                     Ok(runtime) => runtime.block_on(async move {
-                        let result = run(
+                        let connection = run(
                             config,
                             original,
                             cwd,
@@ -313,8 +319,17 @@ impl AgentService {
                             emit.clone(),
                             rx,
                             ready_tx,
-                        )
-                        .await;
+                        );
+                        #[cfg(test)]
+                        let connection = {
+                            use std::future::Future;
+                            let mut connection = Box::pin(connection);
+                            std::future::poll_fn(move |cx| {
+                                observed_polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.as_mut().poll(cx)
+                            })
+                        };
+                        let result = connection.await;
                         cancel_pending(&shared, &workspace, &emit, None);
                         if let Err(error) = result {
                             emit(AgentEvent::Error {
@@ -344,6 +359,8 @@ impl AgentService {
             state,
             workspace: service_workspace,
             completion: completion_rx,
+            #[cfg(test)]
+            runtime_polls,
         })
     }
 
@@ -1880,6 +1897,50 @@ mod tests {
     use super::*;
 
     const SECRET: &str = "s3cr3t-token-value";
+
+    #[tokio::test]
+    async fn completed_prompt_leaves_the_process_client_idle() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Arc::new(Mutex::new(
+            CoreWorkspace::open(directory.path())
+                .unwrap()
+                .with_user_settings(None),
+        ));
+        let service = AgentService::start(
+            AgentCommand {
+                command: "node".into(),
+                args: vec![format!(
+                    "{}/tests/fixtures/agent.mjs",
+                    env!("CARGO_MANIFEST_DIR")
+                )],
+                env: Default::default(),
+            },
+            directory.path().to_string_lossy().into_owned(),
+            workspace,
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+        let session = service.new_session().await.unwrap();
+        service
+            .prompt(session, "echo".into(), vec![])
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let before = service
+            .runtime_polls
+            .load(std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let polls = service
+            .runtime_polls
+            .load(std::sync::atomic::Ordering::Relaxed)
+            - before;
+        service.shutdown_and_wait().await.unwrap();
+        assert!(
+            polls < 100,
+            "Idle ACP connection was polled {polls} times in 200 ms"
+        );
+    }
 
     /// Claude Code and Codex offer their gateway methods only when the client
     /// sets `clientCapabilities.auth._meta.gateway` to true.
