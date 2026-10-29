@@ -78,6 +78,29 @@ describe("live sessions store", () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("delivers connection level events only to listeners of that connection, never to session listeners", async () => {
+    mocks.live.mockResolvedValue([]);
+    const { store, dispose } = held();
+    const emit = await started(store);
+    const one: string[] = [];
+    const two: string[] = [];
+    const session = vi.fn();
+    const stopOne = store.onConnection("c1", (event) => one.push(event.event.kind));
+    store.onConnection("c2", (event) => two.push(event.event.kind));
+    store.onSession(key("c1", "s1"), session);
+    emit({ connectionId: "c1", agentName: "A", key: null, event: { kind: "status" } } as never);
+    emit({ connectionId: "c2", agentName: "B", key: null, event: { kind: "log" } } as never);
+    expect(one).toEqual(["status"]);
+    expect(two).toEqual(["log"]);
+    expect(session).not.toHaveBeenCalled();
+    expect(store.listenedConnections()).toBe(2);
+    stopOne();
+    emit({ connectionId: "c1", agentName: "A", key: null, event: { kind: "ready" } } as never);
+    expect(one).toEqual(["status"]);
+    expect(store.listenedConnections()).toBe(1);
+    dispose();
+  });
+
   it("reads the live list on start and again, coalesced, after events that change it", async () => {
     vi.useFakeTimers();
     const entry = { key: key("c1", "s1"), state: "running" };

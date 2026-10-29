@@ -1,5 +1,5 @@
 import { batch, createComputed, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates } from "../bindings";
+import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
 import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, api, isDesktop, sessionExportMarkdown, sessionMetaSetArchived, sessionMetaSetTitle } from "./client";
@@ -44,6 +44,8 @@ import { moveItem } from "./agent-queue";
 import { noteAgentUsed, readLastSession, writeLastSession } from "./last-session";
 import { chooseRestores, readLastConfig, writeLastConfig, type SavedConfig } from "./last-config";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
+import type { Handoff, Queued, Rewind, Steering } from "./agent-threads/thread-state";
+import { editQueuedEntry, mergeQueued } from "./agent-threads/thread-queue";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
 const DELEGATION_POLL_MS = 3000;
@@ -96,19 +98,8 @@ export const OUTSIDE_WORKSPACE = "Outside this workspace, so it cannot be opened
 export type View = "session" | "history" | "connect" | "logs";
 /** The one open composer or header popover. A single value, so opening one closes any other. */
 export type Menu = "model" | "mode" | "agents" | "attach" | "actions" | "usage" | null;
-export type Queued = { id: string; text: string; message: string; attachments: PromptAttachment[]; items: Attachment[] };
-/** A steer waiting for its turn to end. `turn` is the turn it interrupts; a steer never outlives that turn. */
-type Steering = { entry: Queued; cancelled: boolean; turn: number };
-/**
- * An agent switch in the open chat. `text` is the carried context, sent once ahead of the first prompt of the session
- * named by `sessionId`; `sessionId` is set when the new session is ready.
- */
-type Handoff = { from: string; to: string; text?: string; sessionId?: string; /** Shown on the context card instead of the switch note. */ note?: string; /** The session the chat leaves, linked from the new one so History shows one thread. */ link?: { agentId: string; sessionId: string; name: string; title?: string } };
-/**
- * A user message picked with Edit or Restore. Edit puts its text in the composer (the previous draft is kept in
- * `draft`) and the next send starts a new session from there; both show the files changed since that message.
- */
-export type Rewind = { itemId: number; sessionId?: string; mode: "edit" | "restore"; draft: string };
+/** A queued message and a rewind pick are thread state (agent-threads/thread-state.ts). */
+export type { Queued, Rewind };
 
 export const ATTACH_UNAVAILABLE = "Attachments need the span desktop app, which sends them to a connected agent.";
 export const NATIVE_UNAVAILABLE = "Browser preview cannot write to or open workspace files.";
@@ -1193,13 +1184,7 @@ export function createAgentController(props: AgentPanelProps) {
     }
     setQueue([]);
     setQueueHeld(false);
-    void dispatch({
-      id: `q-${++queueCounter}`,
-      text: waiting.map((entry) => entry.text).join("\n\n"),
-      message: waiting.map((entry) => entry.message).join("\n\n"),
-      attachments: waiting.flatMap((entry) => entry.attachments),
-      items: waiting.flatMap((entry) => entry.items),
-    });
+    void dispatch(mergeQueued(waiting, `q-${++queueCounter}`));
   }
   function sendQueuedNow(id: string) {
     if (running()) {
@@ -1213,15 +1198,7 @@ export function createAgentController(props: AgentPanelProps) {
   /** Send queued: the user's explicit go-ahead for a held queue. */
   const sendQueued = () => drainQueue({ force: true });
   /** Replaces the typed part of a queued message. Text added to an attachment-only message gets a blank line before the attachments. */
-  const editQueued = (id: string, text: string) =>
-    setQueue((previous) =>
-      previous.map((entry) => {
-        if (entry.id !== id) return entry;
-        const rest = entry.message.slice(entry.text.length);
-        const joiner = !entry.text && rest && !rest.startsWith("\n") ? "\n\n" : "";
-        return { ...entry, text, message: `${text}${joiner}${rest}` };
-      }),
-    );
+  const editQueued = (id: string, text: string) => setQueue((previous) => previous.map((entry) => (entry.id === id ? editQueuedEntry(entry, text) : entry)));
   /** Moves a queued message to another position. Ignored while one is being sent, so the order cannot shift under it. */
   const reorderQueue = (from: number, to: number) => {
     if (queueSending()) return;
