@@ -12,7 +12,7 @@ use notify::{
 };
 use span_lsp::lsp_types::{FileChangeType, FileEvent};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::{self, Read},
     path::{Component, Path, PathBuf},
@@ -56,7 +56,7 @@ pub(crate) fn watched_batch(
     result.root = canonical_root.clone();
     let mut policy = IgnorePolicy::new(&canonical_root);
     let rename_kinds = rename_kinds(&canonical_root, root, batch);
-    let mut seen = HashSet::new();
+    let mut seen = HashMap::new();
     let mut paths_examined = 0;
     if batch.len() > MAX_INPUT {
         result.incomplete = true;
@@ -212,7 +212,7 @@ fn infer_rename_kind(root: &Path, supplied_root: &Path, from: &Path, to: &Path) 
 fn push_change(
     result: &mut WatchedBatch,
     policy: &mut IgnorePolicy<'_>,
-    seen: &mut HashSet<FileEvent>,
+    seen: &mut HashMap<PathBuf, (FileChangeType, bool)>,
     root: &Path,
     supplied_root: &Path,
     raw_path: &Path,
@@ -227,6 +227,9 @@ fn push_change(
             return;
         }
     };
+    // Track every scoped transition, including filtered ones, so a later
+    // recreate is not mistaken for a duplicate of an earlier create.
+    let previous = seen.insert(path.path.clone(), (typ, false));
     let is_dir = path.is_dir.or(directory_hint);
     match policy.visible_kind(&path.path, is_dir) {
         Ok(true) => {}
@@ -241,14 +244,15 @@ fn push_change(
         return;
     };
     let event = FileEvent::new(uri, typ);
-    if seen.contains(&event) {
+    if previous == Some((typ, true)) {
+        seen.insert(path.path, (typ, true));
         return;
     }
     if result.changes.len() >= MAX_CHANGES {
         result.incomplete = true;
         return;
     }
-    seen.insert(event.clone());
+    seen.insert(path.path, (typ, true));
     result.changes.push(event);
 }
 
@@ -609,6 +613,45 @@ mod tests {
                 actual(&root, "new.java", FileChangeType::DELETED),
             ]
         );
+    }
+
+    #[test]
+    fn repeated_events_preserve_recreate_and_redelete_transitions() {
+        let temp = root();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join("cycle.json"), "{}").unwrap();
+        for kinds in [
+            [
+                FileChangeType::CREATED,
+                FileChangeType::DELETED,
+                FileChangeType::CREATED,
+            ],
+            [
+                FileChangeType::DELETED,
+                FileChangeType::CREATED,
+                FileChangeType::DELETED,
+            ],
+        ] {
+            let mut batch = Vec::new();
+            for kind in kinds {
+                let native = if kind == FileChangeType::CREATED {
+                    EventKind::Create(CreateKind::File)
+                } else {
+                    EventKind::Remove(RemoveKind::File)
+                };
+                batch.push(event(native, &[Path::new("cycle.json")]));
+                batch.push(event(native, &[Path::new("cycle.json")]));
+            }
+            let result = watched_batch(&root, &batch, false);
+            assert!(!result.incomplete);
+            assert_eq!(
+                result.changes,
+                kinds
+                    .into_iter()
+                    .map(|kind| actual(&root, "cycle.json", kind))
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

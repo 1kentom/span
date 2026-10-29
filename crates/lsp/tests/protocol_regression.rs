@@ -1008,6 +1008,7 @@ async fn watched_files_register_filter_kinds_normalize_and_unregister_on_wire() 
         created.clone(),
         normalized,
         file_event(&src.join("A.java"), FileChangeType::DELETED),
+        created.clone(),
         file_event(&root.join("outside.java"), FileChangeType::CREATED),
         file_event(&src.join("notes.txt"), FileChangeType::CREATED),
         file_event(
@@ -1032,6 +1033,7 @@ async fn watched_files_register_filter_kinds_normalize_and_unregister_on_wire() 
     let mut expected = vec![
         created.clone(),
         file_event(&src.join("B.java"), FileChangeType::CHANGED),
+        created.clone(),
         classpath,
         gradle,
         nested,
@@ -1184,5 +1186,40 @@ async fn watched_file_globs_respect_segments_ranges_questions_and_zero_kind() {
     let messages = watched_messages(&s.log);
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["params"]["changes"], json!([matched]));
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn watched_files_preserve_recreate_and_redelete_transitions_on_wire() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("project");
+    let s = watched_server(&root, json!([
+        {"method":"client/registerCapability", "params":{"registrations":[
+            {"id":"cycles", "method":"workspace/didChangeWatchedFiles", "registerOptions":{"watchers":[{"globPattern":"**/*.json"}]}}
+        ]}}
+    ])).await;
+    let client = std::sync::Arc::new(s.client);
+    watch_operation(&client, 1).await;
+    let path = root.join("cycle.json");
+    let kinds = [
+        FileChangeType::CREATED,
+        FileChangeType::DELETED,
+        FileChangeType::CREATED,
+        FileChangeType::DELETED,
+    ];
+    let mut events = Vec::new();
+    for kind in kinds {
+        events.push(file_event(&path, kind));
+        events.push(file_event(&path, kind));
+    }
+    client.did_change_watched_files(events).await.unwrap();
+    hover_within(&client, 5).await.unwrap();
+    let messages = watched_messages(&s.log);
+    assert_eq!(messages.len(), 1);
+    let expected: Vec<_> = kinds
+        .into_iter()
+        .map(|kind| file_event(&path, kind))
+        .collect();
+    assert_eq!(messages[0]["params"]["changes"], json!(expected));
     client.shutdown().await.unwrap();
 }

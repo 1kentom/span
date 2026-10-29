@@ -157,7 +157,7 @@ impl WatchedFiles {
     }
 
     pub(crate) fn filter(&self, changes: Vec<FileEvent>) -> Vec<FileEvent> {
-        let mut seen = HashSet::new();
+        let mut seen = HashMap::new();
         changes
             .into_iter()
             .filter_map(|mut event| {
@@ -171,6 +171,8 @@ impl WatchedFiles {
                 if !self.roots.iter().any(|root| path.starts_with(root)) {
                     return None;
                 }
+                // A masked transition must still separate two observable creates.
+                let repeated = seen.insert(path.clone(), event.typ) == Some(event.typ);
                 let matches = self.registrations.values().flatten().any(|rule| {
                     if !rule.kind.contains(kind) {
                         return false;
@@ -186,11 +188,11 @@ impl WatchedFiles {
                         }),
                     }
                 });
-                if !matches {
+                if !matches || repeated {
                     return None;
                 }
                 event.uri = crate::path_to_uri(&path).ok()?;
-                seen.insert(event.clone()).then_some(event)
+                Some(event)
             })
             .collect()
     }
