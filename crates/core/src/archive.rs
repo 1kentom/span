@@ -189,6 +189,14 @@ impl ZipBundle {
         options: ArchiveExtractOptions,
     ) -> Result<ArchivePlan> {
         check_workspace_root(workspace, expected_root)?;
+        if options.paths.as_ref().is_some_and(|paths| {
+            paths.len() > MAX_ARCHIVE_ENTRIES
+                || paths.iter().any(|path| path.len() > MAX_ARCHIVE_PATH_BYTES)
+        }) {
+            return Err(archive_error(
+                "selection exceeds the path count or path length limit",
+            ));
+        }
         let entries = self.inspect()?;
         let selected_roots: Option<HashSet<&str>> = options.paths.as_ref().map(|paths| {
             paths
@@ -387,6 +395,7 @@ impl ZipBundle {
             let mut source = match archive.by_index(index) {
                 Ok(file) if !file.encrypted() => file,
                 Ok(_) => {
+                    drop(target);
                     if let Err(error) = parent.remove_file(&file_name) {
                         result.error =
                             Some(format!("Remove incomplete encrypted entry {path}: {error}"));
@@ -396,6 +405,7 @@ impl ZipBundle {
                     continue;
                 }
                 Err(error) => {
+                    drop(target);
                     let cleanup = parent
                         .remove_file(&file_name)
                         .err()
@@ -911,6 +921,24 @@ mod tests {
 
         assert_eq!(listing.entries[0].path.len(), MAX_ARCHIVE_PATH_BYTES);
         assert!(listing.entries[0].unsafe_reason.is_some());
+    }
+
+    #[test]
+    fn planning_rejects_oversized_selection_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        let workspace = CoreWorkspace::open(&workspace_path).unwrap();
+        let expected_root = workspace.workspace().root;
+        let bundle = ZipBundle::new(Arc::new(stored_zip("hello.txt", b"hello"))).unwrap();
+        let options = ArchiveExtractOptions {
+            paths: Some(vec!["x".repeat(MAX_ARCHIVE_PATH_BYTES + 1)]),
+            keep_structure: true,
+            skip_hidden: false,
+        };
+
+        assert!(bundle.plan(&workspace, &expected_root, options).is_err());
+        assert_eq!(fs::read_dir(&workspace_path).unwrap().count(), 0);
     }
 
     #[cfg(unix)]
