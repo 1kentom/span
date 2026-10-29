@@ -1,0 +1,106 @@
+{
+  "quirk": "OpenCode 2.x lists its own subagent sessions beside the user's chats with no parent field: the parent's stream names them (_meta[\"opencode/child-session\"] id and parentID on projected child updates, rawOutput.metadata.sessionID on the subagent tool result, tool kind think), and a replay whose first user message starts with the subagent preamble marks that session. The listing marks those, plus the exact untitled child title and the 1.x \" (@agent subagent)\" title; near-miss titles and messages stay ordinary chats.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "Draw a BMW M2"
+    },
+    {
+      "do": "listSessions",
+      "expectSessions": [
+        "ses_np_parent",
+        "ses_np_bmw",
+        "ses_np_review",
+        "ses_np_untitled",
+        "ses_np_v1",
+        "ses_np_old",
+        "ses_np_chat1",
+        "ses_np_chat2",
+        "ses_np_chat3",
+        "ses_np_not_a_child"
+      ],
+      "expectNative": [
+        [
+          "ses_np_bmw",
+          "ses_np_parent"
+        ],
+        [
+          "ses_np_review",
+          "ses_np_parent"
+        ],
+        [
+          "ses_np_untitled",
+          null
+        ],
+        [
+          "ses_np_v1",
+          null
+        ]
+      ]
+    },
+    {
+      "do": "load",
+      "session": "ses_np_old"
+    },
+    {
+      "do": "load",
+      "session": "ses_np_chat1"
+    },
+    {
+      "do": "listSessions",
+      "expectSessions": [
+        "ses_np_parent",
+        "ses_np_bmw",
+        "ses_np_review",
+        "ses_np_untitled",
+        "ses_np_v1",
+        "ses_np_old",
+        "ses_np_chat1",
+        "ses_np_chat2",
+        "ses_np_chat3",
+        "ses_np_not_a_child"
+      ],
+      "expectNative": [
+        [
+          "ses_np_bmw",
+          "ses_np_parent"
+        ],
+        [
+          "ses_np_review",
+          "ses_np_parent"
+        ],
+        [
+          "ses_np_untitled",
+          null
+        ],
+        [
+          "ses_np_v1",
+          null
+        ],
+        [
+          "ses_np_old",
+          null
+        ]
+      ]
+    }
+  ],
+  "events": [
+    {
+      "kind": "_step",
+      "do": "listSessions",
+      "ok": true
+    },
+    {
+      "kind": "user",
+      "text": "You are a subagent spawned by another session.\nResearch the old API and summarise it"
+    },
+    {
+      "kind": "_step",
+      "do": "listSessions",
+      "ok": true
+    }
+  ]
+}

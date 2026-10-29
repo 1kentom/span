@@ -201,6 +201,9 @@ pub fn stop_health(state: &DesktopState) {
 pub fn load_delegated_ledger(app: &tauri::AppHandle) {
     if let Ok(directory) = app.path().app_data_dir() {
         span_acp::set_delegated_ledger(directory.join("agent-delegated-sessions.json"));
+        // Native subagent session ids (ADR 0005, amendment of 2026-10-29):
+        // ids and parent ids only, so History keeps nesting them after a restart.
+        span_acp::set_native_subagent_ledger(directory.join("agent-native-subagents.json"));
     }
 }
 

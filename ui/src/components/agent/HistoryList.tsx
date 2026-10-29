@@ -98,6 +98,15 @@ type HistoryListProps = {
   onDelete?: (id: string) => void;
   /** Close appears only when supplied, and only on the current session. */
   onClose?: (id: string) => void;
+  /** Opens a native subagent session read-only, from its parent row's Subagents disclosure. */
+  onOpenSubagent?: (id: string) => void;
+  /**
+   * The History preference "Show subagent sessions". The pill appears only when `onShowSubagents` is given and the
+   * agent listed native subagent sessions (`subagentCount`).
+   */
+  showSubagents?: boolean;
+  onShowSubagents?: (show: boolean) => void;
+  subagentCount?: number;
 };
 
 /** Opens a row's menu from the keyboard: the context menu key or Shift+F10, as for a native context menu. */
@@ -112,6 +121,18 @@ export function HistoryList(props: HistoryListProps) {
   const [agentFilter, setAgentFilter] = createSignal<string>();
   const [agentMenu, setAgentMenu] = createSignal(false);
   const [showArchived, setShowArchived] = createSignal(false);
+  /** Rows whose Subagents disclosure is open. */
+  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set());
+  const toggleSubagents = (id: string) =>
+    setExpanded((open) => {
+      const next = new Set(open);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const canToggleSubagents = () => Boolean(props.onShowSubagents && ((props.subagentCount ?? 0) > 0 || props.showSubagents));
+  /** Native subagent sessions belong to the agent: Span never offers to delete them. */
+  const deletable = (row: SessionRow) => Boolean(props.onDelete && !row.subagent);
   const hasArchived = createMemo(() => props.rows.some((row) => row.archived));
   const inScope = createMemo(() => props.rows.filter((row) => (!props.onScope || props.scope === "all" || row.inWorkspace) && Boolean(row.archived) === showArchived()));
   /** The agents present in the rows, in order of first appearance among the newest rows. */
@@ -140,7 +161,7 @@ export function HistoryList(props: HistoryListProps) {
   let menuReturn: HTMLElement | undefined;
   /** A row from another folder belongs to that folder's store and agent cwd: only its id can be copied here. */
   const here = (row: SessionRow) => !row.folder;
-  const hasMenu = (row: SessionRow) => Boolean(props.onCopyId || (here(row) && (props.onRename || props.onFork || props.onExport || props.onArchive || props.onDelete || (props.onClose && row.current))));
+  const hasMenu = (row: SessionRow) => Boolean(props.onCopyId || (here(row) && (props.onRename || props.onFork || props.onExport || props.onArchive || deletable(row) || (props.onClose && row.current))));
   const openMenu = (row: SessionRow, from?: HTMLElement) => {
     if (!hasMenu(row)) return;
     menuReturn = from;
@@ -169,7 +190,7 @@ export function HistoryList(props: HistoryListProps) {
     } else if (event.key === "F2" && props.onRename && here(row)) {
       event.preventDefault();
       startRename(row);
-    } else if ((event.key === "Backspace" || event.key === "Delete") && props.onDelete && here(row)) {
+    } else if ((event.key === "Backspace" || event.key === "Delete") && deletable(row) && here(row)) {
       event.preventDefault();
       setConfirming(row.id);
     }
@@ -179,7 +200,7 @@ export function HistoryList(props: HistoryListProps) {
   onCleanup(() => clearTimeout(pendingOpen));
   const openFromRow = (row: SessionRow, event: MouseEvent) => {
     if (row.locked || !here(row) || renaming() === row.id || confirming() === row.id) return;
-    if (event.target instanceof Element && event.target.closest(".row-menu, .sb-menu, .sb-confirm, input")) return;
+    if (event.target instanceof Element && event.target.closest(".row-menu, .sb-menu, .sb-confirm, .sb-subagents, input")) return;
     clearTimeout(pendingOpen);
     // A mouse click on the title waits a moment, so a double click there renames instead of opening the chat.
     if (event.detail >= 1 && props.onRename && event.target instanceof Element && event.target.closest(".sb-session-title")) {
@@ -206,7 +227,7 @@ export function HistoryList(props: HistoryListProps) {
           <Icon name="SearchNormal1" size={13} />
           <input type="search" aria-label="Search sessions" placeholder="Search sessions" value={props.query} onInput={(event) => props.onQuery(event.currentTarget.value)} />
         </label>
-        <Show when={props.onScope || agentsPresent().length > 1 || hasArchived() || showArchived()}>
+        <Show when={props.onScope || agentsPresent().length > 1 || hasArchived() || showArchived() || canToggleSubagents()}>
           <div class="sb-history-filters">
             <Show when={props.onScope}>
               <div class="sb-seg" role="group" aria-label="Session scope">
@@ -220,6 +241,17 @@ export function HistoryList(props: HistoryListProps) {
               </div>
             </Show>
             <span class="sb-flex" />
+            <Show when={canToggleSubagents()}>
+              <button
+                class="sb-pill"
+                classList={{ on: Boolean(props.showSubagents) }}
+                aria-pressed={Boolean(props.showSubagents)}
+                title={props.showSubagents ? "Hide subagent sessions" : "Show subagent sessions"}
+                onClick={() => props.onShowSubagents?.(!props.showSubagents)}
+              >
+                Subagents
+              </button>
+            </Show>
             <Show when={hasArchived() || showArchived()}>
               <button class="sb-pill" classList={{ on: showArchived() }} aria-pressed={showArchived()} title={showArchived() ? "Show current sessions" : "Show archived sessions"} onClick={() => setShowArchived(!showArchived())}>
                 Archived
@@ -300,6 +332,9 @@ export function HistoryList(props: HistoryListProps) {
                               <Show when={row.current}>
                                 <span class="sb-tag">Current</span>
                               </Show>
+                              <Show when={row.subagent}>
+                                <span class="sb-tag">Subagent</span>
+                              </Show>
                             </span>
                             <Show when={showsState(row) && row.status}>
                               {(status) => (
@@ -358,6 +393,35 @@ export function HistoryList(props: HistoryListProps) {
                             }
                           }}
                         />
+                      </Show>
+                      <Show when={props.onOpenSubagent && here(row) && row.subagents?.length ? row.subagents : undefined}>
+                        {(children) => (
+                          <div class="sb-subagents">
+                            <button
+                              class="sb-subagents-toggle"
+                              aria-expanded={expanded().has(row.id)}
+                              aria-label={`Subagents of ${row.title} (${children().length})`}
+                              onClick={() => toggleSubagents(row.id)}
+                            >
+                              <Icon name={expanded().has(row.id) ? "arrow-down4" : "arrow-right4"} size={9} />
+                              <span>Subagents ({children().length})</span>
+                            </button>
+                            <Show when={expanded().has(row.id)}>
+                              <ul class="sb-subagents-list" aria-label={`Subagents of ${row.title}`}>
+                                <For each={children()}>
+                                  {(child) => (
+                                    <li>
+                                      <button class="sb-subagent" title="Opens read-only" onClick={() => props.onOpenSubagent?.(child.id)}>
+                                        <span class="sb-ellipsis">{child.title}</span>
+                                        <span class="sb-tag">Subagent</span>
+                                      </button>
+                                    </li>
+                                  )}
+                                </For>
+                              </ul>
+                            </Show>
+                          </div>
+                        )}
                       </Show>
                     </span>
                     <span class="sb-session-side">
@@ -418,7 +482,7 @@ export function HistoryList(props: HistoryListProps) {
                             <span class="sb-menu-label">Copy session ID</span>
                           </button>
                         </Show>
-                        <Show when={here(row) && ((props.onClose && row.current) || props.onArchive || props.onDelete)}>
+                        <Show when={here(row) && ((props.onClose && row.current) || props.onArchive || deletable(row))}>
                           <Show when={props.onRename || props.onFork || props.onExport || props.onCopyId}>
                             <div class="sb-menu-sep" role="separator" />
                           </Show>
@@ -434,7 +498,7 @@ export function HistoryList(props: HistoryListProps) {
                               <span class="sb-menu-label">{row.archived ? "Restore" : "Archive"}</span>
                             </button>
                           </Show>
-                          <Show when={props.onDelete}>
+                          <Show when={deletable(row)}>
                             <button class="sb-menu-item danger" role="menuitem" onClick={() => { setMenu(undefined); setConfirming(row.id); }}>
                               <Icon name="Trash" size={12} />
                               <span class="sb-menu-label">Delete</span>

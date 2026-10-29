@@ -1298,15 +1298,16 @@ async fn run(
                     Command::ListSessions(listing, reply) => {
                         if !can_list { let _ = reply.send(Err("This agent cannot list earlier sessions".into())); continue; }
                         let list_cx = cx.clone(); let list_cwd = cwd.clone(); let list_state = state.clone(); let list_emit = emit.clone();
+                        let list_adapter = state.lock().map(|bridge| bridge.adapter.clone()).unwrap_or_default();
                         cx.spawn(async move {
                             let span_own = list_state.lock().ok().and_then(|bridge| bridge.hidden.lock().ok().map(|h| h.ids.clone())).unwrap_or_default();
                             let health = move |summary: &SessionSummary| span_own.contains(&summary.session_id) || is_hidden_session(&summary.session_id, summary.title.as_deref());
                             let folder = (listing == Listing::Folder).then_some(list_cwd);
                             let result = if listing == Listing::Health {
-                                list_all_sessions(&list_cx, None, health).await
+                                list_all_sessions(&list_cx, None, health, |_, _| {}).await
                             } else {
                                 // Health sessions and delegated children (ADR 0003) are dropped page by page, so they never use up the cap.
-                                list_all_sessions(&list_cx, folder, move |summary| !health(summary) && !crate::delegated::is_delegated_session(&summary.session_id)).await.map(|found| {
+                                list_all_sessions(&list_cx, folder, move |summary| !health(summary) && !crate::delegated::is_delegated_session(&summary.session_id), move |summary, meta| list_adapter.mark_listed(summary, meta)).await.map(|found| {
                                     let mut kept = hide_deleted(&list_state, &list_emit, found);
                                     kept.truncate(LIST_MAX_SESSIONS);
                                     kept
@@ -1586,6 +1587,7 @@ async fn list_all_sessions(
     cx: &ConnectionTo<Agent>,
     cwd: Option<std::path::PathBuf>,
     keep: impl Fn(&SessionSummary) -> bool,
+    mark: impl Fn(&mut SessionSummary, Option<&Value>),
 ) -> Result<Vec<SessionSummary>, String> {
     let deadline = tokio::time::Instant::now() + LIST_BUDGET;
     let mut found: Vec<SessionSummary> = Vec::new();
@@ -1605,11 +1607,17 @@ async fn list_all_sessions(
                 found.extend(
                     page.sessions
                         .into_iter()
-                        .map(|info| SessionSummary {
-                            session_id: info.session_id.to_string(),
-                            title: info.title,
-                            updated_at: info.updated_at,
-                            cwd: Some(info.cwd.to_string_lossy().into_owned()),
+                        .map(|info| {
+                            let mut summary = SessionSummary {
+                                session_id: info.session_id.to_string(),
+                                title: info.title,
+                                updated_at: info.updated_at,
+                                cwd: Some(info.cwd.to_string_lossy().into_owned()),
+                                parent_session_id: None,
+                                native_subagent: false,
+                            };
+                            mark(&mut summary, info.meta.map(Value::Object).as_ref());
+                            summary
                         })
                         .filter(|summary| keep(summary)),
                 );

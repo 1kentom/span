@@ -134,6 +134,8 @@ pub(crate) struct SessionState {
     /// The current mode value that lets the agent run tools without asking,
     /// while the permission bypass notice is raised.
     pub bypass: Option<String>,
+    /// A user message of this session was already seen (live or replayed).
+    pub user_seen: bool,
 }
 
 /// Mode and option values under which the agent runs tools without asking,
@@ -224,6 +226,24 @@ pub(crate) trait Quirks: Send + Sync {
     fn ephemeral_session_meta(&self) -> Option<Value> {
         None
     }
+    /// A native subagent session (the agent's own subagent tool, not a Span
+    /// delegation) that this update of `session` reveals, as `(child,
+    /// parent)`. Called with the update as the agent sent it, before
+    /// [`Self::update`]. Only structured fields and exact, source verified
+    /// text count.
+    fn native_child(
+        &self,
+        _state: &mut SessionState,
+        _session: &str,
+        _update: &Value,
+    ) -> Option<(String, Option<String>)> {
+        None
+    }
+    /// Whether a `session/list` item is a native subagent session, from its
+    /// title and `_meta` alone: `Some(parent)` (the parent may be unknown).
+    fn listed_subagent(&self, _title: Option<&str>, _meta: Option<&Value>) -> Option<Option<String>> {
+        None
+    }
 }
 
 /// MCP transports the agent advertised in `initialize`.
@@ -303,6 +323,9 @@ impl Adapter {
             }
         }
         let updates = self.with(session, |state| {
+            if let Some((child, parent)) = self.quirks.native_child(state, session, &update) {
+                crate::native_subagents::record_native_subagent(&child, parent.as_deref());
+            }
             let mut updates = self.quirks.update(state, update);
             for update in &mut updates {
                 track(state, update);
@@ -391,6 +414,22 @@ impl Adapter {
                     .filter(|value| value != &option.current_value && has_choice(option, value))
                     .map(|value| (option.id.clone(), value))
             })
+    }
+
+    /// Mark a `session/list` item that is a native subagent session: one
+    /// Span recorded from the agent's own updates, or one the agent's
+    /// listing shape identifies (`meta` is the item's `_meta`). Nothing is
+    /// hidden here; History decides what to show.
+    pub(crate) fn mark_listed(&self, summary: &mut crate::SessionSummary, meta: Option<&Value>) {
+        let found = crate::native_subagents::native_subagent_parent(&summary.session_id).or_else(|| {
+            let parent = self.quirks.listed_subagent(summary.title.as_deref(), meta)?;
+            crate::native_subagents::record_native_subagent(&summary.session_id, parent.as_deref());
+            Some(parent)
+        });
+        if let Some(parent) = found {
+            summary.native_subagent = true;
+            summary.parent_session_id = parent;
+        }
     }
 
     /// `_meta` for `session/new` under the approval start mode.

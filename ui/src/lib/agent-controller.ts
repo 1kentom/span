@@ -1608,6 +1608,20 @@ export function createAgentController(props: AgentPanelProps) {
   }
   const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat", { fresh: true });
   const resumeChat = (id: string) => (id === state().sessionId ? (setView("session"), Promise.resolve()) : switchChat(() => api.agentResumeSession(id), "Could not resume that chat", { target: id }));
+  /** A native subagent session opened from its parent's Subagents disclosure or its own row. Shown read-only. */
+  const [openedSubagent, setOpenedSubagent] = createSignal<string>();
+  const openSubagent = (id: string) => {
+    setOpenedSubagent(id);
+    return resumeChat(id);
+  };
+  /**
+   * True while the open session is a native subagent session: the agent's own subagent run owns it, so the chat is
+   * read-only (no composer). It belongs to the agent and is never deleted from Span.
+   */
+  const viewingSubagent = () => {
+    const id = state().sessionId;
+    return Boolean(id && (id === openedSubagent() || sessionHistory.isSubagent(id)));
+  };
   const canClose = createMemo(() => Boolean(state().agent?.features.canCloseSessions));
   const canDelete = createMemo(() => Boolean(state().agent?.features.canDeleteSessions));
   /**
@@ -2401,6 +2415,11 @@ export function createAgentController(props: AgentPanelProps) {
     loadSessions,
     newChat,
     resumeChat,
+    openSubagent,
+    viewingSubagent,
+    subagentsFor: sessionHistory.subagentsFor,
+    subagentCount: sessionHistory.subagentCount,
+    isSubagent: sessionHistory.isSubagent,
     stop,
     answerPermission,
     cancelTask,
