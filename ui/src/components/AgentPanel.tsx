@@ -505,7 +505,7 @@ export function AgentPanel(props: AgentPanelProps) {
                 methods={a
                   .state()
                   .auth!.methods.filter((method) => method.supported || method.input)
-                  .map((method) => ({ id: method.id, name: method.name, description: method.description ?? undefined, input: method.input ?? undefined }))}
+                  .map((method) => ({ id: method.id, name: method.name, description: method.description ?? undefined, input: method.input ?? undefined, protocol: method.gatewayProtocol ?? undefined }))}
                 busy={a.pendingAction() === "auth"}
                 onPick={(id) => void a.authenticate(id)}
                 onRetry={a.reconnect}
