@@ -171,3 +171,25 @@ it("polls status without multiplying repository resource reads", async () => {
   await f.git.refresh(); await f.git.refresh();
   expect(f.transport.gitBranches).toHaveBeenCalledTimes(1); expect(f.transport.gitTags).toHaveBeenCalledTimes(1); expect(f.transport.gitRemotes).toHaveBeenCalledTimes(1);
 });
+
+it("keeps successful stash notices compact and preserves full output in collapsed details", async () => {
+  const f = fixture(); await f.git.refresh(); f.view.setSubView("stashes"); f.mount(); f.git.setMessage("Keep this commit draft");
+  const output = "On branch main\nChanges not staged for commit:\n" + "modified: file.ts\n".repeat(40);
+  f.transport.gitStash.mockResolvedValueOnce({ status, output });
+  await f.git.stash("apply", "c".repeat(40));
+  expect(f.git.notice()).toBe("Applied stash cccccccc. Stash retained.");
+  const details = f.host.querySelector<HTMLDetailsElement>(".git-output")!;
+  expect(details.open).toBe(false); expect(details.querySelector("summary")?.textContent).toBe("Git output");
+  expect(details.querySelector("pre")?.textContent).toBe(output.trim()); expect(details.querySelector("pre")?.tabIndex).toBe(0);
+  expect(f.git.message()).toBe("Keep this commit draft");
+  f.transport.gitStash.mockRejectedValueOnce(new Error("Stash apply conflicted"));
+  await f.git.stash("apply", "c".repeat(40));
+  expect(f.git.error()).toBe("Stash apply conflicted"); expect(f.git.notice()).toBe(""); expect(f.git.noticeOutput()).toBe(""); expect(f.git.message()).toBe("Keep this commit draft");
+});
+it("reports saved and empty stashes without showing Git status as the notice", async () => {
+  const f = fixture(); await f.git.refresh();
+  f.transport.gitStash.mockResolvedValueOnce({ status, output: "Saved working directory and index state On main: Span stash" });
+  await f.git.stash("save"); expect(f.git.notice()).toBe("Saved tracked changes to stash.");
+  f.transport.gitStash.mockResolvedValueOnce({ status, output: "No local changes to save\n" });
+  await f.git.stash("save"); expect(f.git.notice()).toBe("No tracked changes to stash.");
+});

@@ -3,7 +3,7 @@ import type { GitWorkbench } from "../../stores/git";
 import type { GitSubView, GitView } from "../../stores/git-view";
 import { GitRepositoryViews } from "./GitRepositoryViews";
 import { GitHistory } from "./GitHistory";
-import { GitPanel, GitRepositoryHeader } from "./GitPanel";
+import { GitOperationNotice, GitPanel, GitRepositoryHeader } from "./GitPanel";
 
 type GitSourceControlProps = {
   git: GitWorkbench; view: GitView; available: boolean;
@@ -67,7 +67,7 @@ export function GitSourceControl(props: GitSourceControlProps) {
         </div>
       </Show>
       <Show when={g.warning() && v.subView() !== "changes"}><div class="git-warning" role="status">{g.warning()}</div></Show>
-      <Show when={g.notice() && v.subView() === "history"}><div class="git-success" role="status">{g.notice()}</div></Show>
+      <Show when={v.subView() === "history"}><GitOperationNotice git={g} /></Show>
       <Show when={v.subView() === "changes"}>
         <div class="git-subview-panel" role="tabpanel" id="git-subview-panel-changes" aria-labelledby="git-subview-changes">
           <GitPanel git={g} available={props.available} embedded />

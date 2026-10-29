@@ -56,6 +56,14 @@ export function GitRepositoryHeader(props: GitPanelProps & { onRefresh?: () => v
   );
 }
 
+/** Successful operation details stay available without displacing repository controls. */
+export function GitOperationNotice(props: { git: GitWorkbench }) {
+  return <Show when={props.git.notice()}><div class="git-success" role="status">
+    {props.git.notice()}
+    <Show when={props.git.noticeOutput()}><details class="git-output"><summary><Icon name="arrow-right4" size={11} />Git output</summary><pre tabIndex={0} aria-label="Git command output">{props.git.noticeOutput()}</pre></details></Show>
+  </div></Show>;
+}
+
 function GitChangeRow(props: { git: GitWorkbench; entry: GitChange; staged: boolean }) {
   const [confirmDiscard, setConfirmDiscard] = createSignal(false);
   const entry = () => props.entry;
@@ -193,7 +201,7 @@ export function GitPanel(props: GitPanelViewProps) {
         </>}</Show>
       </div></Show>
       <Show when={g.warning()}><div class="git-warning" role="status">Commit completed with a warning: {g.warning()}</div></Show>
-      <Show when={g.notice()}><div class="git-success" role="status">{g.notice()}</div></Show>
+      <GitOperationNotice git={g} />
       <Show when={props.available && g.context() && !g.context()?.repository}>
         <div class="git-empty">
           <strong>No repository available</strong>

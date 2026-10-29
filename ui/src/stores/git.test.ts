@@ -31,6 +31,18 @@ function fixture(available = true) {
 }
 
 describe("repository-scoped Git workbench", () => {
+  it("stages the reviewed index during a background refresh and ignores its older reply", async () => {
+    const f = fixture(); await f.git.refresh();
+    const pendingStatus = deferred<GitStatus>(); f.transport.gitStatus.mockReturnValueOnce(pendingStatus.promise);
+    const polling = f.git.refresh();
+    await vi.waitFor(() => expect(f.transport.gitStatus).toHaveBeenCalledTimes(2));
+    expect(f.git.loading()).toBe(true); expect(f.git.ready()).toBe(true);
+    expect(await f.git.stage(f.git.changed())).toBe(true);
+    expect(f.transport.gitStage).toHaveBeenCalledWith(context(), ["outside/file.ts"], "index-1");
+    expect(f.git.status()?.indexRevision).toBe("index-2");
+    pendingStatus.resolve(status()); await polling;
+    expect(f.git.status()?.indexRevision).toBe("index-2"); expect(f.git.loading()).toBe(false);
+  });
   it.each(["Command git_context not found", new Error("Command git_context not found")])("explains an unavailable native Git command without clearing the commit draft (%s)", async cause => {
     const f = fixture(); f.git.setMessage("Unsent commit draft");
     f.transport.gitContext.mockRejectedValueOnce(cause);

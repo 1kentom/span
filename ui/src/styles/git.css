@@ -736,3 +736,16 @@
 }
 .git-remote-target strong { font-weight:500; flex:none; color:var(--text) }
 .git-remote-target span { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.git-output { margin-top:5px; color:var(--dim) }
+.git-output summary { display:flex; align-items:center; gap:4px; width:fit-content; cursor:pointer; font-size:11px; list-style:none }
+.git-output summary::-webkit-details-marker { display:none }
+.git-output[open]>summary .icon { transform:rotate(90deg) }
+.git-output pre {
+  max-height:160px;
+  overflow:auto;
+  margin:7px 0 0;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  font:11px/17px var(--editor-font-family,monospace)
+}
+.git-output summary:focus-visible,.git-output pre:focus-visible { outline:1px solid var(--accent); outline-offset:2px }

@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
 import type { GitWorkbench } from "../../stores/git";
 import Icon from "../Icon";
+import { GitOperationNotice } from "./GitPanel";
 
 type Resource = "branches" | "stashes" | "worktrees";
 type Props = { git: GitWorkbench; kind: Resource; active: boolean; onShowChanges?: () => void };
@@ -61,7 +62,7 @@ export function GitRepositoryViews(props: Props) {
     </form></Show>
     <Show when={items()?.length}><div class="git-resource-filter"><Icon name="SearchNormal1" size={14} /><input type="search" aria-label={`Filter ${props.kind}`} placeholder={`Filter ${props.kind}…`} value={query()} onInput={event => setQuery(event.currentTarget.value)} /></div></Show>
     <Show when={g.error()}><div class="git-error" role="alert">{g.error()}</div></Show>
-    <Show when={g.notice()}><div class="git-success" role="status">{g.notice()}</div></Show>
+    <GitOperationNotice git={g} />
     <Show when={g.resourceErrors()[props.kind]}><div class="git-error" role="alert">{g.resourceErrors()[props.kind]}<button class="git-text-action" onClick={() => void g.loadResource(props.kind)}>Try again</button></div></Show>
     <div class="git-scroll">
       <Show when={props.kind === "branches"}>
