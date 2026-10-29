@@ -249,7 +249,7 @@
 .sb-slash-desc { flex: 1; min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--sb-dim); }
 
 /* Composer docks and drawers */
-.sb-dock { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-bottom: 1px solid var(--sb-accent-border); border-radius: 8px 8px 0 0; background: var(--sb-accent-surface); animation: sb-pop 0.2s ease-out both; }
+.sb-dock { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--sb-border); border-radius: 8px 8px 0 0; background: var(--sb-raised); animation: sb-pop 0.2s ease-out both; }
 .sb-dock-meta { display: flex; align-items: center; gap: 6px; padding: 0 0 0 0; font-size: 11.5px; color: var(--sb-dim); }
 .sb-dock-prompt { font-size: 13px; font-weight: 500; line-height: 19px; color: var(--sb-strong); text-wrap: pretty; }
 .sb-dock-head { display: flex; align-items: center; gap: 8px; }
@@ -431,11 +431,9 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-dock-title.muted { color: var(--sb-dim); font-weight: 400; }
 .sb-dock.internal { background: var(--sb-raised); border-bottom-color: var(--sb-border); }
 .sb-kind { padding: 1px 6px; border: 1px solid var(--sb-control-border); border-radius: 4px; font-size: 10px; color: var(--sb-dim); }
-.sb-dock-details { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; min-width: 0; }
-.sb-dock-command { max-height: 96px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sb-dock-details { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .sb-dock-locs { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11px; }
 .sb-dock-locs li { display: flex; min-width: 0; }
-.sb-dock-diff .sb-diff-body { max-height: 140px; }
 .sb-dock-input summary { cursor: pointer; font-size: 11px; color: var(--sb-dim); }
 .sb-dock-input pre { max-height: 120px; margin: 4px 0 0; padding: 6px 8px; overflow: auto; border: 1px solid var(--sb-border); border-radius: 6px; background: var(--sb-field); font-size: 11px; line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--sb-dim); }
 /* No border inside a dock card: the field background alone sets these boxes apart. */
@@ -565,7 +563,6 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .agent-toolbar-output.full { max-height: 320px; }
 .agent-toolbar-toggle { align-self: flex-start; margin: 0 0 6px; font-size: 11px; }
 .agent-toolbar-still { margin: 0 0 6px; color: var(--sb-faint); font-size: 11px; }
-.sb-activity.agent-toolbar.attention { border-color: var(--sb-warn-border); background: var(--sb-warn-surface); }
 .sb-activity.agent-toolbar.attention .sb-spinner { border-top-color: var(--sb-warning); }
 .sb-activity.agent-toolbar.done .agent-toolbar-glyph { color: var(--sb-success); }
 .sb-activity.agent-toolbar.failed { border-color: var(--sb-error-border); background: var(--sb-error-surface); }

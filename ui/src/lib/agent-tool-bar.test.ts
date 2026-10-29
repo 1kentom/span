@@ -104,7 +104,7 @@ describe("toolBarView", () => {
 
   it("puts waiting and stopping first and hides the Esc hint for them", () => {
     const running = [shell("pnpm publish")];
-    expect(toolBarView(base({ running, approval: true }))).toMatchObject({ tone: "attention", label: "Waiting for your approval", summary: "Execute: pnpm publish", stoppable: false });
+    expect(toolBarView(base({ running, approval: true }))).toMatchObject({ tone: "attention", label: "Waiting for your approval", summary: undefined, stoppable: false });
     expect(toolBarView(base({ running, answer: true }))).toMatchObject({ tone: "attention", label: "Waiting for your answer", stoppable: false });
     expect(toolBarView(base({ running, browser: true }))).toMatchObject({ tone: "attention", label: "Waiting for you to finish in the browser", stoppable: false });
     expect(toolBarView(base({ running, stopping: true, approval: true }))).toMatchObject({ tone: "stopping", label: "Stopping\u2026", stoppable: false, announce: "Stopping" });
