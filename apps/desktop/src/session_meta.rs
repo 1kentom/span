@@ -261,6 +261,7 @@ mod tests {
             parent: None,
             continues: None,
             changes_tracked: false,
+            usage: None,
         };
         let kept = without_health_sessions(vec![meta("meta-health-1"), meta("meta-user-1")]);
         let ids: Vec<&str> = kept.iter().map(|m| m.session_id.as_str()).collect();

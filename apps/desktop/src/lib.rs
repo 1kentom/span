@@ -25,6 +25,7 @@ pub mod session_meta;
 mod startup;
 mod terminals;
 mod uploads;
+mod usage;
 mod watched_paths;
 mod window;
 mod workspace_files;
@@ -1075,6 +1076,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             session_meta::session_meta_set_archived,
             session_meta::session_meta_delete,
             session_meta::session_export_markdown,
+            usage::usage_summary,
+            usage::usage_sessions,
+            usage::usage_prices,
             agents::agent_registry,
             agents::agent_installed,
             agents::agent_install,
