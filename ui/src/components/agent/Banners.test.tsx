@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { ErrorCard, OfflineBar, StopCard, Notice, ContextBanner } from "./Banners";
-import { UsageRing } from "./UsageRing";
+import { ErrorCard, OfflineBar, StopCard, Notice } from "./Banners";
 import { mount, text } from "./test-utils";
 
 describe("ErrorCard", () => {
@@ -43,32 +42,5 @@ describe("OfflineBar, StopCard, Notice", () => {
   it("labels the notice divider", () => {
     const host = mount(() => <Notice text="Session resumed" />);
     expect(host.querySelector("[role=separator]")!.getAttribute("aria-label")).toBe("Session resumed");
-  });
-});
-
-describe("ContextBanner and UsageRing", () => {
-  it("offers Compact now only when the agent can compact", () => {
-    const compact = vi.fn();
-    const without = mount(() => <ContextBanner used={90} size={100} onCompact={compact} />);
-    expect(without.textContent).not.toContain("Compact now");
-    expect(without.textContent).toContain("Context 90% full");
-    const withIt = mount(() => <ContextBanner used={90} size={100} canCompact onCompact={compact} />);
-    withIt.querySelector<HTMLButtonElement>(".sb-btn.primary")!.click();
-    expect(compact).toHaveBeenCalledOnce();
-    expect(withIt.querySelector("[role=progressbar]")!.getAttribute("aria-valuenow")).toBe("90");
-  });
-  it("turns the ring to the warning colour above 85 percent and reports cost", () => {
-    const low = mount(() => <UsageRing used={85} size={100} />);
-    expect(low.querySelector(".sb-ring")!.classList.contains("warn")).toBe(false);
-    const high = mount(() => <UsageRing used={86} size={100} cost={{ amount: 0.5, currency: "USD" }} />);
-    const ring = high.querySelector(".sb-ring")!;
-    expect(ring.classList.contains("warn")).toBe(true);
-    expect(ring.getAttribute("aria-label")).toContain("86 of 100");
-    expect(ring.getAttribute("aria-label")).toContain("Cost");
-    expect(text(ring)).toContain("86%");
-  });
-  it("clamps nonsense sizes", () => {
-    const host = mount(() => <UsageRing used={5} size={0} />);
-    expect(text(host.querySelector(".sb-ring"))).toContain("0%");
   });
 });

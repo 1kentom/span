@@ -1,0 +1,97 @@
+/* Context meter, its popover and the compact hint. Kept in its own file so other sidebar work never conflicts with it.
+   Tokens only: neutral under 70%, attention (warning) from 70% to 90%, danger (error) over 90%. */
+.sb-ctx {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.sb-ctx:hover,
+.sb-ctx[aria-expanded="true"] {
+  background: var(--sb-hover);
+  color: var(--sb-dim);
+}
+.sb-ctx:focus-visible {
+  outline: 2px solid var(--sb-accent);
+  outline-offset: 1px;
+}
+.sb-ctx .sb-ctx-ring { flex: none; }
+.sb-ctx-label { white-space: nowrap; }
+.sb-ctx.attention { color: var(--sb-warning); }
+.sb-ctx.attention .sb-ring-value { stroke: var(--sb-warning); }
+.sb-ctx.danger { color: var(--sb-error); }
+.sb-ctx.danger .sb-ring-value { stroke: var(--sb-error); }
+.sb-ctx.stale .sb-ring-value { stroke: var(--sb-faint); }
+.sb-ctx.stale .sb-ctx-label { text-decoration: underline dotted; text-underline-offset: 2px; }
+.sb-ctx.unknown { color: var(--sb-faint); }
+.sb-ctx.busy .sb-ctx-ring { animation: sb-pulse 1.5s infinite; }
+
+/* The quiet hint: one line, no card. */
+.sb-ctx-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 2px 16px 6px;
+  color: var(--sb-dim);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.sb-ctx-hint-text { min-width: 0; }
+.sb-ctx-hint.failed { color: var(--sb-error); }
+.sb-ctx-pulse { background: var(--sb-accent-fg); }
+.sb-ctx-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--sb-accent-fg);
+  font: inherit;
+  cursor: pointer;
+}
+.sb-ctx-link:hover { text-decoration: underline; }
+.sb-ctx-link.quiet { color: var(--sb-faint); }
+.sb-ctx-link:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 2px; border-radius: 3px; }
+
+/* The popover: same inset tab and 12px radius as the other pickers (set by .agent-popover-anchor > .sb-popover). */
+.sb-ctx-pop {
+  gap: 6px;
+  padding: 10px 12px 12px;
+  font-size: 12px;
+  color: var(--sb-fg);
+  font-variant-numeric: tabular-nums;
+}
+.sb-ctx-pop:focus { outline: none; }
+.sb-ctx-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.sb-ctx-head-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.sb-ctx-pct { font-weight: 600; color: var(--sb-dim); }
+.sb-ctx-pct.attention { color: var(--sb-warning); }
+.sb-ctx-pct.danger { color: var(--sb-error); }
+.sb-ctx-bar { height: 4px; border-radius: 2px; background: var(--sb-control-border); overflow: hidden; }
+.sb-ctx-bar-fill { height: 100%; border-radius: inherit; background: var(--sb-accent-fg); transition: width 0.3s ease-out; }
+.sb-ctx-bar.attention .sb-ctx-bar-fill { background: var(--sb-warning); }
+.sb-ctx-bar.danger .sb-ctx-bar-fill { background: var(--sb-error); }
+.sb-ctx-figures { display: flex; justify-content: space-between; gap: 8px; margin: 0; color: var(--sb-dim); }
+.sb-ctx-exact { color: var(--sb-faint); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 10.5px; }
+.sb-ctx-note { margin: 0; color: var(--sb-faint); font-size: 11.5px; }
+.sb-ctx-facts { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 0; }
+.sb-ctx-facts:empty { display: none; }
+.sb-ctx-facts > div { display: flex; justify-content: space-between; gap: 10px; min-width: 0; }
+.sb-ctx-facts dt { color: var(--sb-faint); }
+.sb-ctx-facts dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sb-dim); }
+.sb-ctx-facts > .danger dd { color: var(--sb-error); }
+.sb-ctx-run { margin: 0; color: var(--sb-dim); }
+.sb-ctx-run.failed { color: var(--sb-error); }
+.sb-ctx-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.sb-ctx-sub { color: var(--sb-faint); font-size: 11px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.sb-ctx-rows { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.sb-ctx-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 4px 7px; }
+.sb-ctx-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-ctx-row-note { color: var(--sb-faint); font-size: 11px; white-space: nowrap; }
+.sb-ctx-row > .sb-ctx-bar { grid-column: 2 / -1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-ctx.busy .sb-ctx-ring,
+  .sb-ctx-pulse { animation: none; }
+  .sb-ctx-bar-fill { transition: none; }
+}
