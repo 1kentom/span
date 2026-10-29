@@ -262,3 +262,9 @@
 [data-theme="light"] .vw-type-icon-light{display:block}
 
 @media (prefers-reduced-motion:reduce){.vw *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* Workspace files that are not text, shown in an editor tab. */
+.workspace-file-view{flex:1 1 auto;width:100%;height:100%;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--island);color:var(--text)}
+.workspace-file-view>.vw{flex:1 1 auto;min-height:0}
+.vw-file-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;margin:0;max-width:460px;text-align:left}
+.vw-file-facts dt{color:var(--dim)}
+.vw-file-facts dd{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

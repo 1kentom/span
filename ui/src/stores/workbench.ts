@@ -9,7 +9,8 @@ import { api, isDesktop } from "../lib/client";
 import { explorerPreferences, legacyExplorerPreferences, resolveLegacyExplorerPreferences } from "../lib/explorer-prefs";
 import { fileName, normalizePath } from "../lib/navigation";
 import { isViewerTab, viewerTabName } from "../lib/viewer-tabs";
-import type { ExternalFileState, ExternalFileResolution, BufferSnapshot, FileEntry, FileIndexStatus, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
+import { isKnownBinaryPath, isNotTextError } from "../lib/binary-file";
+import type { FileProbe, ExternalFileState, ExternalFileResolution, BufferSnapshot, FileEntry, FileIndexStatus, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
 
 export const SETTINGS_TAB = "span:settings";
 const GIT_TAB_PREFIX = "span:git:";
@@ -33,6 +34,8 @@ export function createWorkbench() {
   const [directories, setDirectories] = createStore<Record<string, FileEntry[]>>({});
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set([""]));
   const [buffers, setBuffers] = createStore<Record<string, BufferSnapshot>>({});
+  /** Workspace files that are not UTF-8 text. They open in the file viewer, never in a buffer. */
+  const [binaryFiles, setBinaryFiles] = createStore<Record<string, FileProbe>>({});
   const [documents, setDocuments] = createSignal<Record<string, { document: Text; change?: EditorDocumentChange }>>({});
   const [groups, setGroups] = createSignal<EditorGroup[]>([{ id: 1, tabs: [] }]);
   const [activeGroup, setActiveGroupState] = createSignal(1);
@@ -323,8 +326,17 @@ export function createWorkbench() {
   }
   const readBuffer = (path: string) => { const scope = settingsBufferScope(path); return scope ? api.openSettingsBuffer(scope) : api.openBuffer(path); };
   const discardBuffer = (path: string) => { const scope = settingsBufferScope(path); return scope ? api.discardSettingsBuffer(scope) : api.discardBuffer(path); };
+  /** Records a file that cannot open as text so its tab shows the file viewer. The probe only adds name and size. */
+  async function markBinary(path: string, version: number) {
+    const fallback: FileProbe = { path, name: fileName(path), size: 0, kind: "binary" };
+    const probe = await Promise.resolve().then(() => api.probeFile(path)).then(found => found ?? fallback, () => fallback);
+    if (version !== workspaceVersion) return false;
+    setBinaryFiles(path, { ...probe, path, kind: "binary" });
+    return true;
+  }
   async function ensureBuffer(path: string, version: number) {
-    if (buffers[path] || isBinaryAssetPath(path)) return version === workspaceVersion;
+    if (buffers[path] || binaryFiles[path] || isBinaryAssetPath(path)) return version === workspaceVersion;
+    if (!isSettingsBuffer(path) && isKnownBinaryPath(path)) return markBinary(path, version);
     let pending = openingBuffers.get(path);
     if (!pending || pending.version !== version) {
       pending = { version, promise: readBuffer(path) };
@@ -339,6 +351,10 @@ export function createWorkbench() {
         setDocuments(current => ({ ...current, [path]: { document: Text.of(buffer.text.split("\n")) } }));
       }
       return true;
+    } catch (e) {
+      // Binary or non UTF-8 content: Rust refuses it as not text, and the tab shows the viewer instead of an error.
+      if (!isSettingsBuffer(path) && isNotTextError(e)) return markBinary(path, version);
+      throw e;
     } finally {
       if (openingBuffers.get(path) === pending) openingBuffers.delete(path);
     }
@@ -389,6 +405,7 @@ export function createWorkbench() {
       tabRecency.clear(); tabClock = 0;
       batch(() => { setWorkspaceGeneration(workspaceVersion); setWorkspace(value); setGroups([{ id: 1, tabs: [] }]); setSplitVertical(false); setActiveGroup(1); setExpanded(new Set([""])); setError(""); setSearchResults([]); setIndexStatus(null); setIndexError(""); });
       for (const key of Object.keys(buffers)) setBuffers(key, undefined!);
+      for (const key of Object.keys(binaryFiles)) setBinaryFiles(key, undefined!);
       for (const key of Object.keys(directories)) setDirectories(key, undefined!);
       clearTimeout(indexTimer); directoryLoads.clear(); setLoadingDirectories(new Set<string>());
       void refreshIndexStatus(workspaceVersion);
@@ -566,7 +583,7 @@ export function createWorkbench() {
       return { ...item, tabs, active: item.active === path ? tabs[Math.min(item.tabs.indexOf(path), tabs.length - 1)] : item.active };
     }));
     if (!groups().find(item => item.id === group)?.tabs.length) removeGroup(group);
-    if (!hasOpenEditor(path)) { cancelFormat(path); releaseBuffer(path); }
+    if (!hasOpenEditor(path)) { cancelFormat(path); releaseBuffer(path); if (binaryFiles[path]) setBinaryFiles(path, undefined!); }
   }
   function closeGroup(group: number) {
     const current = groups().find(item => item.id === group); if (!current || groups().length <= 1) return;
@@ -794,6 +811,10 @@ export function createWorkbench() {
         setBuffers(previous, undefined!); setBuffers(next, snapshot);
         setDocuments(current => { const value = { ...current }; delete value[previous]; value[next] = { document }; return value; });
       }
+      for (const previous of Object.keys(binaryFiles).filter(path => binaryFiles[path] && inSubtree(path, from))) {
+        const next = mapped(previous); const probe = binaryFiles[previous];
+        setBinaryFiles(previous, undefined!); setBinaryFiles(next, { ...probe, path: next, name: fileName(next) });
+      }
       const movedTabs = new Set(groups().flatMap(group => group.tabs).filter(path => inSubtree(path, from)));
       for (const previous of movedTabs) {
         const next = mapped(previous); const priorRecency = tabRecency.get(previous); tabRecency.delete(previous);
@@ -808,6 +829,7 @@ export function createWorkbench() {
   async function trashPath(path: string) {
     return fileOperation(async assertCurrent => {
       await api.trashPath(path); assertCurrent();
+      for (const key of Object.keys(binaryFiles)) if (inSubtree(key, path)) setBinaryFiles(key, undefined!);
       for (const key of Object.keys(buffers)) if (inSubtree(key, path)) { cancelFormat(key); setBuffers(key, undefined!); accepted.delete(key); pendingEdits.delete(key); histories.delete(key); }
       setDocuments(current => Object.fromEntries(Object.entries(current).filter(([key]) => !inSubtree(key, path))));
       setGroups(current => current.map(group => { const tabs = group.tabs.filter(key => !inSubtree(key, path)); return { ...group, tabs, active: group.active && tabs.includes(group.active) ? group.active : tabs[0] }; }));
@@ -928,6 +950,6 @@ export function createWorkbench() {
   });
   createEffect(() => autosave.sync());
   onCleanup(() => { autosave.dispose(); cancelAllFormats(); });
-  return { checkExternalChanges, externalChanges, externalReview, reviewExternalFile, externalReviewText: () => externalReviewDocument?.toString() ?? "", externalOperation, externalAbandoning, resolveExternalChange, openGitTab, openViewerTab, discoveryRevision, indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, trashPath, renamePath, duplicatePath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
+  return { checkExternalChanges, externalChanges, externalReview, reviewExternalFile, externalReviewText: () => externalReviewDocument?.toString() ?? "", externalOperation, externalAbandoning, resolveExternalChange, openGitTab, openViewerTab, binaryFile: (path: string) => binaryFiles[path] as FileProbe | undefined, discoveryRevision, indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, trashPath, renamePath, duplicatePath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;

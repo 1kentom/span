@@ -5,7 +5,7 @@ import type { BufferSnapshot, FileIndexStatus, TextEdit, SessionState_Serialize 
 
 const client = vi.hoisted(() => ({
   migrateExplorerPreferences: vi.fn(), openWorkspace: vi.fn(), checkExternalFiles: vi.fn(), resolveExternalFile: vi.fn(), abandonExternalFile: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
-  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(),
+  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(), probeFile: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
 import { createWorkbench, settleIntent, SETTINGS_TAB, isGitTab, tabName } from "./workbench";
@@ -1118,4 +1118,63 @@ it("finishes an explicitly approved unavailable discard before allowing cancel",
   await workbench.confirmClose("cancel"); expect(workbench.pendingClose()?.path).toBe("src/file.ts"); expect(workbench.externalAbandoning()).toBe(true);
   pending.resolve(); await closing;
   expect(workbench.groups().flatMap(group => group.tabs)).not.toContain("src/file.ts"); expect(workbench.documents()["src/file.ts"]).toBeUndefined();
+});
+
+describe("files that are not text", () => {
+  const notText = "This file isn't text, so it can't be opened in the editor.";
+  const probe = (path: string, size = 2048) => ({ path, name: path.split("/").pop()!, size, kind: "binary" as const });
+
+  it("opens a known binary extension in the viewer without reading it as text", async () => {
+    client.probeFile.mockImplementation(async (path: string) => probe(path));
+    const workbench = testWorkbench(); await workbench.openWorkspace("/workspace");
+    await workbench.openFile("docs/report.docx");
+    expect(client.openBuffer).not.toHaveBeenCalledWith("docs/report.docx");
+    expect(workbench.binaryFile("docs/report.docx")).toEqual(probe("docs/report.docx"));
+    expect(workbench.groups()[0].tabs).toEqual(["docs/report.docx"]);
+    expect(workbench.buffers["docs/report.docx"]).toBeUndefined();
+    expect(workbench.error()).toBe("");
+  });
+
+  it("turns a refused text read into a viewer tab instead of a raw error", async () => {
+    client.openBuffer.mockImplementation(async (path: string) => {
+      if (path === "data/blob.dat") throw "Read file /workspace/data/blob.dat: stream did not contain valid UTF-8";
+      return { ...server.get(path)! };
+    });
+    client.probeFile.mockRejectedValue(new Error("probe unavailable"));
+    const workbench = testWorkbench(); await workbench.openWorkspace("/workspace");
+    await workbench.openFile("data/blob.dat");
+    expect(workbench.error()).toBe("");
+    expect(workbench.binaryFile("data/blob.dat")).toEqual({ path: "data/blob.dat", name: "blob.dat", size: 0, kind: "binary" });
+    expect(workbench.groups()[0].active).toBe("data/blob.dat");
+    // Other read failures are still reported.
+    client.openBuffer.mockRejectedValueOnce(new Error("Permission denied"));
+    await workbench.openFile("src/other.ts");
+    expect(workbench.error()).toBe("Permission denied");
+  });
+
+  it("restores a saved session with a binary tab without an error", async () => {
+    client.openBuffer.mockImplementation(async (path: string) => {
+      if (path === "notes/legacy.txt") throw notText;
+      return { ...server.get(path)! };
+    });
+    client.probeFile.mockImplementation(async (path: string) => probe(path, 10));
+    client.getSession.mockResolvedValue({ workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts", "docs/report.docx", "notes/legacy.txt"], activePath: "docs/report.docx" }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: true }, markdownViews: {}, splitVertical: false } satisfies SessionState);
+    const workbench = testWorkbench(); await workbench.initialize();
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts", "docs/report.docx", "notes/legacy.txt"]);
+    expect(workbench.activeTab()).toBe("docs/report.docx");
+    expect(workbench.binaryFile("docs/report.docx")?.kind).toBe("binary");
+    expect(workbench.binaryFile("notes/legacy.txt")?.kind).toBe("binary");
+    expect(workbench.error()).toBe("");
+    await workbench.persistSession();
+    const saved = client.saveSession.mock.lastCall?.[0] as SessionState;
+    expect(saved.groups[0].paths).toContain("docs/report.docx");
+  });
+
+  it("forgets the binary entry when its last tab closes", async () => {
+    client.probeFile.mockImplementation(async (path: string) => probe(path));
+    const workbench = testWorkbench(); await workbench.openWorkspace("/workspace");
+    await workbench.openFile("docs/report.docx");
+    workbench.closeTab("docs/report.docx", workbench.groups()[0].id);
+    expect(workbench.binaryFile("docs/report.docx")).toBeUndefined();
+  });
 });

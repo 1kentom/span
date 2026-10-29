@@ -16,7 +16,7 @@ import type { HubPort } from './hub-port';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
 import type { AgentHealth_Serialize as AgentHealth, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileProbe, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -308,6 +308,27 @@ export const api = {
   /** Reads a file for a preview. Opens no buffer and never starts a language server. */
   async peekBuffer(path: string): Promise<BufferSnapshot> {
     return isDesktop ? commands.peekBuffer(path) : previewBuffer(path);
+  },
+  /** Name, size and text or binary kind of a workspace file. Browser preview files are all text. */
+  async probeFile(path: string): Promise<FileProbe> {
+    if (isDesktop) return commands.probeFile(path);
+    return { path, name: path.split('/').pop() || path, size: 0, kind: 'text' };
+  },
+  /** Raw bytes of a workspace file for the file viewer. Refused above `maxBytes`, never truncated. */
+  async readFileBytes(path: string, maxBytes: number): Promise<Uint8Array> {
+    if (!isDesktop) nativeRequired('Reading binary files');
+    const encoded = await commands.readFileBytes(path, Math.max(0, Math.min(maxBytes, 0xffffffff)));
+    return Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+  },
+  /** Opens a workspace file with the system default app. Rust refuses programs and scripts. */
+  async openFileWithSystem(path: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Opening files with the default app');
+    await commands.openFileWithSystem(path);
+  },
+  /** Shows a workspace file in Finder, Explorer or the file manager. */
+  async revealFile(path: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Revealing files');
+    await commands.revealFile(path);
   },
   /** The last editor showing `path` closed: language servers may drop the document. */
   async releaseBuffer(path: string): Promise<void> {
