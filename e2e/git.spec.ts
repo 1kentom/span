@@ -14,7 +14,7 @@ async function fixture(page: Page, clean = false) {
     let enabled = false;
     const root = "/fixture/repository/project";
     const repo = { id: "git-fixture-session", root: "/fixture/repository", workspacePrefix: "project", branch: "feature/review", head: "b".repeat(40), detached: false, unborn: false };
-    const trace = { baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false, hosting: [] as any[], conflictReads: [] as any[], conflictSaves: [] as any[], failCreate: true, failReview: true };
+    const trace = { baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false, hosting: [] as any[], conflictReads: [] as any[], conflictSaves: [] as any[], failCreate: true, failReview: true, failDetail: false };
     let treeRevision = 1;
     const text = "const value = 3;\nconst stable = true;\nconst other = 4;\nconst tail = true;\n";
     const indexText = "const value = 2;\nconst stable = true;\nconst other = 3;\nconst tail = true;\n";
@@ -22,9 +22,9 @@ async function fixture(page: Page, clean = false) {
     const stashes: { id: string; selector: string; subject: string }[] = [];
     const tags = [{ name: "v0.1.0", objectId: "d".repeat(40), targetId: repo.head, annotated: false }];
     const worktrees = [
-      { path: repo.root, branch: repo.branch, head: repo.head, bare: false, locked: false, prunable: false },
-      { path: "/fixture/review", branch: "feature/other", head: repo.head, bare: false, locked: false, prunable: false },
-      { path: "/fixture/locked", branch: "feature/locked", head: repo.head, bare: false, locked: true, prunable: false },
+      { path: repo.root, branch: repo.branch, head: repo.head, main: true, bare: false, locked: false, prunable: false },
+      { path: "/fixture/review", branch: "feature/other", head: repo.head, main: false, bare: false, locked: false, prunable: false },
+      { path: "/fixture/locked", branch: "feature/locked", head: repo.head, main: false, bare: false, locked: true, prunable: false },
     ];
     const buffer = { path: "src/file.ts", text, revision: 0, savedRevision: 0, language: "typescript" };
     const changes = [
@@ -54,10 +54,13 @@ async function fixture(page: Page, clean = false) {
             if (command === "github_status") return { available: true, authenticated: true, message: "Authenticated fixture CLI. No hosted requests are executed.", repository };
             if (command === "github_create_pull_request") { if (trace.failCreate) throw new Error("Fixture create failed. Pull request draft retained."); return "https://github.com/fixture/project/pull/43"; }
             if (command === "github_review_pull_request") { if (trace.failReview) throw new Error("Fixture review failed. No review published."); return "Fixture review submitted."; }
-            if (command === "github_read") return { items: args.request.kind === "pullRequestFiles" ? [{ ...item, filename: "project/src/file.ts", patch: "@@ -1 +1 @@\n-before\n+<script>literal patch</script>" }] : [item] };
+            if (command === "github_read") {
+              if (args.request.kind === "pullRequest" && trace.failDetail) throw new Error("Fixture detail read failed. No detail data available.");
+              return { items: args.request.kind === "pullRequestFiles" ? [{ ...item, filename: "project/src/file.ts", patch: "@@ -1 +1 @@\n-before\n+<script>literal patch</script>" }] : args.request.kind === "pullRequests" ? [{ ...item, body: "", statusCheckRollup: [], reviews: [], comments: [], changedFiles: 0, additions: 0, deletions: 0 }] : [item] };
+            }
           }
           if (command === "git_checkout_pull_request") { trace.checkout.push({ command, ...args }); if (args.expectedHead !== "f".repeat(40) || args.expectedConfigFingerprint !== "reviewed-config-1" || args.expectedIndexRevision !== `index-${revision}`) throw new Error("Reviewed PR snapshot changed"); repo.branch = args.localBranch; repo.head = args.expectedHead; revision++; return { status: status(), output: "Checked out pinned fixture PR." }; }
-          if (command === "git_worktree_create") { trace.worktrees.push({ command, ...args }); if (args.expectedHead !== repo.head) throw new Error("HEAD changed"); worktrees.push({ path: args.path, branch: args.mode === "newBranch" ? args.branch : null, head: repo.head, bare: false, locked: false, prunable: false }); treeRevision++; return { status: status(), output: "Created fixture worktree." }; }
+          if (command === "git_worktree_create") { trace.worktrees.push({ command, ...args }); if (args.expectedHead !== repo.head) throw new Error("HEAD changed"); worktrees.push({ path: args.path, branch: args.mode === "newBranch" ? args.branch : null, head: repo.head, main: false, bare: false, locked: false, prunable: false }); treeRevision++; return { status: status(), output: "Created fixture worktree." }; }
           if (command === "git_worktree_prune_review") { trace.worktrees.push({ command, ...args }); return { snapshot: `worktrees-${treeRevision}`, output: "Fixture stale metadata: /fixture/stale. No working directories will be removed." }; }
           if (command === "git_worktree_set_locked" || command === "git_worktree_prune") { trace.worktrees.push({ command, ...args }); if (args.expectedSnapshot !== `worktrees-${treeRevision}`) throw new Error("Worktree review changed"); if (command === "git_worktree_set_locked") worktrees.find(tree => tree.path === args.path)!.locked = args.locked; treeRevision++; return { status: status(), output: "Updated fixture worktree metadata." }; }
           if (command === "git_conflict_resource") { trace.conflictReads.push(args); if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Conflict index changed"); return { path: args.path, base: "const value = 1;\n", ours: "const value = 2;\n", theirs: "const value = 3;\n", working: buffer.text, state: { status: status(), worktreeSnapshot: `disk-${revision}` } }; }
@@ -72,7 +75,7 @@ async function fixture(page: Page, clean = false) {
           if (command === "git_stashes") return structuredClone(stashes);
           if (command === "git_stash") { trace.stashes.push(args); if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Index changed"); if (args.action === "save") stashes.push({ id: "e".repeat(40), selector: "stash@{0}", subject: args.message || "Work in progress" }); else if (args.stashId !== stashes[0]?.id) throw new Error("Stash changed"); revision++; return { status: status(), output: args.action === "save" ? "Saved fixture stash." : "Applied fixture stash, kept stash." }; }
           if (command === "git_worktrees") return structuredClone(worktrees);
-          if (command === "git_worktree_add") { trace.worktrees.push({ command, ...args }); worktrees.push({ path: args.path, branch: args.branch, head: repo.head, bare: false, locked: false, prunable: false }); return { status: status(), output: "Added fixture worktree." }; }
+          if (command === "git_worktree_add") { trace.worktrees.push({ command, ...args }); worktrees.push({ path: args.path, branch: args.branch, head: repo.head, main: false, bare: false, locked: false, prunable: false }); return { status: status(), output: "Added fixture worktree." }; }
           if (command === "git_worktree_remove") { trace.worktrees.push({ command, ...args }); worktrees.splice(worktrees.findIndex(tree => tree.path === args.path), 1); return { status: status(), output: "Removed fixture worktree." }; }
           if (command === "git_remotes") return { remotes: [{ name: "origin", fetchUrl: "https://example.test/fixture/repo.git", pushUrl: "https://example.test/fixture/push.git", current: true }], configFingerprint: "reviewed-config-1" };
           if (command === "git_remote") { trace.remotes.push(args); if (args.expectedConfigFingerprint !== (trace.remoteConfigChanged ? "changed-config-2" : "reviewed-config-1")) throw new Error("Remote configuration changed. Review remotes again."); throw new Error("Fixture authentication failed. No remote operation ran."); }
@@ -131,7 +134,7 @@ async function fixture(page: Page, clean = false) {
   await expect(page.getByRole("main", { name: "span editor", exact: true })).toHaveAttribute("aria-busy", "false");
   return errors;
 }
-const trace = (page: Page) => page.evaluate(() => (window as unknown as { __gitFixture: { enables: number; statusReads: number; stage: any[]; unstage: any[]; commits: any[]; diffs: any[]; history: any[]; diskSaves: number; baseline: any[]; blame: any[]; checkout: any[]; stashes: any[]; tags: any[]; worktrees: any[]; remotes: any[]; hunk: any[]; integration: any[]; remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean } }).__gitFixture);
+const trace = (page: Page) => page.evaluate(() => (window as unknown as { __gitFixture: { enables: number; statusReads: number; stage: any[]; unstage: any[]; commits: any[]; diffs: any[]; history: any[]; diskSaves: number; baseline: any[]; blame: any[]; checkout: any[]; stashes: any[]; tags: any[]; worktrees: any[]; remotes: any[]; hunk: any[]; integration: any[]; remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean; failDetail: boolean } }).__gitFixture);
 
 test("repository-wide saved/index diffs preserve a dirty editor and constrain outside-file opens", async ({ page }, info) => {
   const errors = await fixture(page);
@@ -310,7 +313,9 @@ test("worktree removal is explicit and remote failure retains message and unsave
   await panel.getByRole("tab", { name: "Worktrees", exact: true }).click();
   const trees = panel.getByRole("region", { name: "Git worktrees", exact: true });
   await expect(trees.getByRole("button", { name: "Remove worktree /fixture/repository", exact: true })).toHaveCount(0);
-  await expect(trees.getByRole("button", { name: "Remove worktree /fixture/locked", exact: true })).toBeDisabled();
+  await expect(trees.getByRole("button", { name: "Remove worktree /fixture/locked", exact: true })).toHaveCount(0);
+  await expect(trees.getByRole("button", { name: "Lock worktree /fixture/repository", exact: true })).toHaveCount(0);
+  await expect(trees.locator(".git-worktree-entry").filter({ hasText: "/fixture/repository" })).toContainText("Main");
   await trees.getByRole("button", { name: "Remove worktree /fixture/review", exact: true }).click();
   const confirmation = trees.getByRole("group", { name: "Confirm worktree removal", exact: true });
   await expect(confirmation).toContainText("/fixture/review"); expect((await trace(page)).worktrees).toHaveLength(0);
@@ -330,7 +335,7 @@ test("worktree removal is explicit and remote failure retains message and unsave
   await expect(panel.getByRole("alert")).toContainText("Fixture authentication failed");
   await expect(message).toHaveValue("Keep this commit draft"); await expect(editor).toContainText("keep after remote failure");
   expect((await trace(page)).remotes[0]).toMatchObject({ action: "fetch", expectedConfigFingerprint: "reviewed-config-1" }); expect((await trace(page)).diskSaves).toBe(0);
-  await page.evaluate(() => { (window as unknown as { __gitFixture: { remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean } }).__gitFixture.remoteConfigChanged = true; });
+  await page.evaluate(() => { (window as unknown as { __gitFixture: { remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean; failDetail: boolean } }).__gitFixture.remoteConfigChanged = true; });
   await panel.getByRole("button", { name: "Fetch", exact: true }).click();
   await expect(panel.getByRole("alert")).toContainText("Remote configuration changed. Review remotes again.");
   await expect(message).toHaveValue("Keep this commit draft"); await expect(editor).toContainText("keep after remote failure");
@@ -506,15 +511,16 @@ test("worktrees create a new branch and bind lock and prune actions to metadata 
   const trees = panel.getByRole("region", { name: "Git worktrees", exact: true });
   await trees.getByRole("button", { name: "New", exact: true }).click();
   await trees.getByLabel("Checkout mode", { exact: true }).selectOption("newBranch");
-  await trees.getByLabel("Existing local branch", { exact: true }).fill("feature/fixture-worktree");
+  await trees.getByLabel("New branch name", { exact: true }).fill("feature/fixture-worktree");
   await trees.getByLabel("Absolute folder path", { exact: true }).fill("/fixture/new-worktree");
   await trees.getByRole("button", { name: "Add worktree", exact: true }).click();
   const entry = trees.locator(".git-worktree-entry").filter({ hasText: "/fixture/new-worktree" });
   await expect(entry).toContainText("feature/fixture-worktree");
   expect((await trace(page)).worktrees.find(call => call.command === "git_worktree_create")).toMatchObject({ path: "/fixture/new-worktree", mode: "newBranch", branch: "feature/fixture-worktree", expectedHead: "b".repeat(40) });
-  await entry.getByRole("button", { name: "Lock", exact: true }).click();
+  await entry.getByRole("button", { name: "Lock worktree /fixture/new-worktree", exact: true }).click();
   await expect(entry).toContainText("Locked");
-  await expect(entry.getByRole("button", { name: "Remove worktree /fixture/new-worktree", exact: true })).toBeDisabled();
+  await expect(entry.getByRole("button", { name: "Remove worktree /fixture/new-worktree", exact: true })).toHaveCount(0);
+  await expect(entry.getByRole("button", { name: "Unlock worktree /fixture/new-worktree", exact: true })).toBeVisible();
   expect((await trace(page)).worktrees.find(call => call.command === "git_worktree_set_locked")).toMatchObject({ path: "/fixture/new-worktree", locked: true, expectedSnapshot: "worktrees-2" });
   await trees.getByRole("button", { name: "Review stale worktree metadata", exact: true }).click();
   await expect(trees).toContainText("Fixture stale metadata: /fixture/stale");
@@ -523,4 +529,47 @@ test("worktrees create a new branch and bind lock and prune actions to metadata 
   await trees.getByRole("button", { name: "Prune reviewed metadata", exact: true }).click();
   expect((await trace(page)).worktrees.find(call => call.command === "git_worktree_prune")).toMatchObject({ expectedSnapshot: "worktrees-3" });
   await expect(entry).toBeVisible(); expect(errors).toEqual([]);
+});
+
+test("GitHub detail failures hide unknown counts and retry the selected PR while retaining review drafts", async ({ page }, info) => {
+  const errors = await fixture(page, true);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await panel.getByRole("tab", { name: "GitHub", exact: true }).click();
+  const hosting = panel.getByRole("region", { name: "GitHub", exact: true });
+  await expect(hosting.getByRole("button", { name: /Fixture pull request/ })).toBeVisible();
+  await page.evaluate(() => { (window as any).__gitFixture.failDetail = true; });
+  await hosting.getByRole("button", { name: /Fixture pull request/ }).click();
+  await expect(hosting.getByRole("alert")).toContainText("Fixture detail read failed");
+  await expect(hosting).toContainText("Details are unavailable");
+  await expect(hosting.getByRole("heading", { name: "Fixture pull request", exact: true })).toBeVisible();
+  await expect(hosting.locator("summary").filter({ hasText: /Checks|Reviews|Conversation|Changed files/ })).toHaveCount(0);
+  await expect(hosting).not.toContainText("No checks reported.");
+  await expect(hosting.getByRole("button", { name: "Check out pull request", exact: true })).toHaveCount(0);
+  await expect(hosting.getByLabel("Review message", { exact: true })).toHaveCount(0);
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-github-details-unavailable.png") });
+  await page.evaluate(() => { (window as any).__gitFixture.failDetail = false; });
+  await hosting.getByRole("button", { name: "Retry read", exact: true }).click();
+  await expect(hosting).toContainText("Fixture CI"); await expect(hosting).toContainText("success");
+  expect((await trace(page)).hosting.filter(call => call.command === "github_read").at(-1).request).toEqual({ kind: "pullRequest", number: 42 });
+  await expect(hosting.getByRole("button", { name: "Check out pull request", exact: true })).toBeEnabled();
+  await hosting.getByLabel("Review the displayed commit", { exact: true }).selectOption("requestChanges");
+  await hosting.getByLabel("Review message", { exact: true }).fill("Preserve this draft across failed detail refresh");
+  await page.evaluate(() => { (window as any).__gitFixture.failDetail = true; });
+  await hosting.getByRole("button", { name: "Refresh GitHub", exact: true }).click();
+  await expect(hosting).toContainText("Details are unavailable");
+  await expect(hosting.getByLabel("Review message", { exact: true })).toHaveCount(0);
+  await expect(hosting.getByRole("button", { name: "Check out pull request", exact: true })).toHaveCount(0);
+  await page.evaluate(() => { (window as any).__gitFixture.failDetail = false; });
+  await hosting.getByRole("button", { name: "Retry read", exact: true }).click();
+  await expect(hosting.getByLabel("Review message", { exact: true })).toHaveValue("Preserve this draft across failed detail refresh");
+  await expect(hosting.getByLabel("Review the displayed commit", { exact: true })).toHaveValue("requestChanges");
+  await expect(hosting.locator("summary").filter({ hasText: "Checks (1)" })).toBeVisible();
+  const calls = (await trace(page)).hosting;
+  expect(calls.filter(call => call.request?.kind === "pullRequest")).toHaveLength(4);
+  expect(calls.filter(call => ["github_create_pull_request", "github_review_pull_request"].includes(call.command))).toHaveLength(0);
+  expect((await trace(page)).checkout).toHaveLength(0);
+  await hosting.getByLabel("Review message", { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-github-detail-retry-draft.png") }); expect(errors).toEqual([]);
 });
