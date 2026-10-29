@@ -178,14 +178,16 @@ const dotenvLanguage = StreamLanguage.define(dotenvParser);
 const loading = new Map<string, Promise<LoadedLanguage | null>>();
 
 async function markdownSupport(): Promise<LoadedLanguage> {
-  const [{ markdown, markdownLanguage }, { frontMatter }] = await Promise.all([import("@codemirror/lang-markdown"), import("./markdown-frontmatter")]);
+  const [{ markdown, markdownLanguage }, { frontMatter }, { markdownEditing }] = await Promise.all([import("@codemirror/lang-markdown"), import("./markdown-frontmatter"), import("./markdown-editing")]);
   const names = languageIds.filter((id) => id !== "markdown" && hasGrammar(id));
   // GFM base: tables, strikethrough, task lists and autolinks parse; front matter is its own block.
-  return markdown({ base: markdownLanguage, extensions: frontMatter, codeLanguages: names.map((name) => LanguageDescription.of({ name, alias: Object.keys(aliases).filter((alias) => aliases[alias] === name), load: async () => {
+  // Span's own list keys and URL paste replace lang-markdown's (see markdown-editing.ts).
+  const support = markdown({ base: markdownLanguage, extensions: frontMatter, addKeymap: false, pasteURLAsLink: false, codeLanguages: names.map((name) => LanguageDescription.of({ name, alias: Object.keys(aliases).filter((alias) => aliases[alias] === name), load: async () => {
     const support = await loadLanguage(name);
     if (!support) throw new Error(`No grammar for ${name}`);
     return support instanceof LanguageSupport ? support : new LanguageSupport(support);
   } })) });
+  return new LanguageSupport(support.language, [support.support, markdownEditing(support.language)]);
 }
 
 /** Grammar modules load when a file or a fenced block actually uses them. */

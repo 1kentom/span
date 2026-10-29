@@ -17,6 +17,7 @@ import { activeLineLayer, indentGuides } from "../editor/indent-guides";
 import { indentationSupport } from "../editor/indentation";
 import { selectionPointer } from "../editor/selection-pointer";
 import { lineSelection } from "../editor/line-selection";
+import { markdownFiles, urlPasteSpec, type MarkdownFilePort } from "../editor/markdown-paste";
 import "../styles/editor.css";
 import "../styles/syntax.css";
 
@@ -111,8 +112,18 @@ export async function performClipboardAction(action: "copy" | "cut" | "paste", g
   if (!current || current.doc !== original.doc || !current.selection.eq(original.selection)) throw new Error("The document or selection changed while accessing the clipboard. Try again.");
   const transaction = action === "cut"
     ? current.update({ changes: content!.cuts, userEvent: "delete.cut", scrollIntoView: true })
-    : current.update(current.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
+    : current.update(urlPasteSpec(current, text) ?? current.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
   dispatch(transaction);
+}
+
+/** Pasted Markdown images go through the workspace attachment command, which never overwrites. */
+function markdownFilePort(documentPath: string): MarkdownFilePort {
+  const client = () => import("../lib/client");
+  return {
+    documentPath,
+    save: async (directory, fileName, base64) => (await client()).api.saveAttachment(directory, fileName, base64),
+    list: async (directory) => (await (await client()).api.listDirectory(directory)).map((entry) => entry.name),
+  };
 }
 
 export function handleSharedHistoryKey(event: KeyboardEvent, callbacks: Pick<EditorProps, "onUndo" | "onRedo">): boolean {
@@ -397,6 +408,7 @@ export default function Editor(props: EditorProps) {
       syntaxHighlighting(codeHighlighting), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       props.lsp ? lspExtension(props.buffer.path, props.lsp) : [],
       navigationExtension(props.buffer.path),
+      markdownFiles.of(markdownFilePort(props.buffer.path)),
       keymap.of([
         { key: "Mod-z", run: (editor) => { if (props.onUndo) { props.onUndo(); return true; } return undo(editor); }, preventDefault: true },
         { key: "Mod-Shift-z", run: (editor) => { if (props.onRedo) { props.onRedo(); return true; } return redo(editor); }, preventDefault: true },

@@ -38,3 +38,23 @@ Show Files selects Files even when Search or Git (Changes or History) was select
 Open File requests one file through the native dialog. Cancel does nothing. A file inside the current workspace opens there without replacing it; the workspace root is checked again after the picker returns. An outside file uses the existing typed startup-request queue and unsaved-project guard. Failures are visible, and concurrent picker requests are ignored while a selection is pending. Welcome Open a file, the command palette, keybinding table and native File menu use the distinct, initially unbound `openFile` command.
 
 Regression evidence: [command dispatch and overrides](../ui/src/lib/commands.test.ts), [native picker options and errors](../ui/src/lib/file-picker.test.ts), [keybinding table](../ui/src/components/KeyboardSettings.test.tsx), [Rust command/schema/collision validation](../crates/core/src/settings.rs), and [browser picker/event fixtures](../e2e/open-file-shortcuts.spec.ts). Browser fixtures prove application routing and draft preservation; they do not operate a physical OS dialog. Native verification must use the rebuilt application for [#65](https://github.com/1kentom/span/issues/65).
+
+## Markdown editing
+
+These keys work only in Markdown files and never inside fenced code, indented code, HTML blocks or front matter. They are editor keys, not workbench commands, so they are not listed in Keyboard settings or the command palette yet.
+
+| Key | Action |
+| --- | --- |
+| Enter | Continues a list or quote: same bullet, next number (the rest of an ordered list is renumbered), `- [ ] ` after a task, `> ` in a quote. On an empty item it removes the checkbox first, outdents a nested item, or removes a top-level marker. An empty quote line drops one quote level. |
+| Shift+Enter | Plain new line, no list continuation. |
+| Mod+Enter | Continues the list from the end of the line wherever the caret is. |
+| Tab / Shift+Tab | With the caret in a list marker or a selection over list items: nest under the previous item by its marker width (or one tab in tab-indented files) / move back to the parent's indentation, renumbering ordered lists. Elsewhere Tab indents as usual. |
+| Backspace | Right after a marker: removes a checkbox, outdents a nested item, removes a top-level marker or one quote level. |
+| Mod+I | Toggle italic (`*`). Replaces CodeMirror's Select Parent Syntax in Markdown files. |
+| Mod+Shift+X, Alt+S (Ctrl+Alt+S on macOS) | Toggle strikethrough (`~~`). |
+| Mod+Alt+1 to Mod+Alt+6 | Make the selected lines headings of that level, or remove the heading when they already are. |
+| Alt+C (Mod+Alt+C on macOS) | Toggle task checkboxes on the selected lines. |
+| Mod+B / Mod+E | Bold / inline code. These are also Toggle Project Panel and Toggle Files, which win; the Markdown keys only work after those commands are rebound. |
+| `*` `_` `~` `` ` `` with a selection | Wraps the selection. `[`, `(`, `{` and `<` wrap through bracket closing. |
+
+Pasting a single http(s) URL over selected text makes `[text](url)`, from the keyboard and from the editor's context menu. Pasting or dropping an image saves it next to the Markdown file as `image.png`, `image_1.png`, ... through the workspace attachment command (which never overwrites) and inserts `![](image.png)` with the caret in the alt text. Typing a snippet name such as `bold`, `link`, `table` or `heading2` offers VS Code's Markdown snippets. Header sections, fenced code, tables and `<!-- #region -->` blocks fold.
