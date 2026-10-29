@@ -825,6 +825,58 @@ pub(crate) async fn start_run(
     )
     .await
 }
+/// Start the runner mapped to one workspace file. The command is recomputed
+/// in core from the path, so the renderer cannot supply arbitrary commands.
+pub(crate) async fn start_current_file_shared(
+    state: &DesktopState,
+    path: String,
+    expected_workspace_root: String,
+    sink: RunSink,
+) -> Result<RunInfo, String> {
+    let _gate = state.connection_gate.lock().await;
+    let prepared = with_workspace(state.clone(), move |workspace| {
+        require_root(workspace, &expected_workspace_root)?;
+        let plan = workspace.current_file_run(&path)?;
+        let configuration = plan.configuration.ok_or_else(|| {
+            span_core::CoreError::RunConfiguration(
+                plan.reason
+                    .unwrap_or_else(|| "This file has no runner.".into()),
+            )
+        })?;
+        workspace.prepare_run(configuration)
+    })
+    .await?;
+    state.runs.start(prepared, sink).await
+}
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn current_file_run(
+    state: State<'_, DesktopState>,
+    path: String,
+    expected_workspace_root: String,
+) -> Result<span_core::CurrentFileRun, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        require_root(workspace, &expected_workspace_root)?;
+        workspace.current_file_run(&path)
+    })
+    .await
+}
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn start_current_file_run(
+    state: State<'_, DesktopState>,
+    path: String,
+    expected_workspace_root: String,
+    on_event: tauri::ipc::Channel<RunEvent>,
+) -> Result<RunInfo, String> {
+    start_current_file_shared(
+        state.inner(),
+        path,
+        expected_workspace_root,
+        Arc::new(move |event| on_event.send(event).is_ok()),
+    )
+    .await
+}
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn stop_run(
