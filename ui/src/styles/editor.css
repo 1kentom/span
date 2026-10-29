@@ -5,6 +5,9 @@
   --editor-active-line: #172d45;
   --editor-selection: #25486b;
   --editor-guide: #2b2c30;
+  --editor-guide-active: #4a4d55;
+  --editor-caret: #d7d9de;
+  --editor-caret-secondary: color-mix(in srgb, var(--editor-caret) 70%, transparent);
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -45,6 +48,8 @@
   --editor-active-line: #e9eef6;
   --editor-selection: #cbdcf1;
   --editor-guide: #e0e1e4;
+  --editor-guide-active: #b5b8bf;
+  --editor-caret: #383a42;
 }
 
 .span-editor[data-theme="purple"] {
@@ -54,26 +59,36 @@
   --editor-active-line: #332a49;
   --editor-selection: #4c3a69;
   --editor-guide: #393046;
+  --editor-guide-active: #5d4f73;
+  --editor-caret: #e2dbee;
 }
 
 .span-editor .cm-editor { height: 100%; background: var(--editor-bg); color: var(--editor-fg); }
 .span-editor .cm-editor.cm-focused { outline: none; }
 .span-editor .cm-scroller { overflow: auto; font: 400 var(--editor-font-size, 13px)/var(--editor-line-height, 22px) var(--editor-font-family, "JetBrains Mono", monospace); }
-.span-editor .cm-content { padding: 12px 0 40vh; caret-color: var(--editor-fg); }
+.span-editor .cm-content { padding: 12px 0 40vh; }
 .span-editor .cm-line { padding: 0 20px 0 12px; }
 .span-editor .cm-gutters { background: var(--editor-bg); color: var(--editor-muted); border: 0; padding-top: 0; user-select: none; }
 .span-editor .cm-lineNumbers .cm-gutterElement { min-width: 42px; padding: 0 10px 0 12px; }
 .span-editor .cm-foldGutter { width: 18px; }
 .span-editor .cm-foldGutter .cm-gutterElement { padding: 0 4px; }
-.span-editor .cm-activeLine, .span-editor .cm-activeLineGutter { background: var(--editor-active-line); }
+.span-editor .cm-activeLineBackground, .span-editor .cm-activeLineGutter { background: var(--editor-active-line); }
+/* `.cm-activeLine` stays as a marker; the highlight is painted by the layer below guides and selection. */
+.span-editor .cm-editor .cm-line.cm-activeLine { background: transparent; }
 .span-editor .cm-activeLineGutter { color: var(--editor-fg); }
 .span-editor .cm-selectionBackground, .span-editor .cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground { background: var(--editor-selection); }
 .span-editor .cm-content ::selection { background: var(--editor-selection); }
-.span-editor .cm-cursor, .span-editor .cm-dropCursor { border-left: 1.5px solid var(--editor-fg); }
+.span-editor .cm-content { caret-color: var(--editor-caret); }
+/* 2px caret centred on the character edge; secondary cursors share the shape at lower contrast. */
+.span-editor .cm-editor .cm-cursor, .span-editor .cm-editor .cm-dropCursor { border-left: 2px solid var(--editor-caret); margin-left: -1px; }
+.span-editor .cm-editor .cm-cursor-secondary { border-left-color: var(--editor-caret-secondary); }
+.span-editor .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer { animation-timing-function: ease-in-out; }
+@media (prefers-reduced-motion: reduce) { .span-editor .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer { animation: none; } }
+.span-editor .cm-indent-guide { background: var(--editor-guide); }
+.span-editor .cm-indent-guide-active { background: var(--editor-guide-active); }
 .span-editor .cm-selectionMatch { background: #8fa3c51c; outline: 1px solid #8fa3c538; }
 .span-editor .cm-matchingBracket { background: #8fa3c526; outline: 1px solid #8fa3c566; }
 .span-editor .cm-nonmatchingBracket { color: #ed9292; }
-.span-editor .cm-indent-guides { background-image: repeating-linear-gradient(to right, transparent 0, transparent calc(var(--editor-indent-size, 2ch) - 1px), var(--editor-guide) calc(var(--editor-indent-size, 2ch) - 1px), var(--editor-guide) var(--editor-indent-size, 2ch)); background-repeat: no-repeat; background-position: 12px 0; background-size: var(--indent-guide-width) 100%; }
 .cm-fold-chevron { display: inline-block; width: 12px; height: 12px; vertical-align: middle; background: currentColor; mask: url('/icons/arrow-right4.svg') center / contain no-repeat; -webkit-mask: url('/icons/arrow-right4.svg') center / contain no-repeat; }
 .cm-fold-chevron.is-open { mask-image: url('/icons/arrow-down4.svg'); -webkit-mask-image: url('/icons/arrow-down4.svg'); }
 .span-editor .cm-foldPlaceholder { background: var(--editor-guide); color: var(--editor-muted); border: 0; border-radius: 3px; padding: 0 5px; }
