@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { render } from "solid-js/web";
-import { AgentHealthSettings, AgentStartSettings } from "./AgentStartSettings";
+import { AgentHealthSettings, AgentStartModeSettings, AgentStartSettings } from "./AgentStartSettings";
 
 function mount(view: () => any) {
   const host = document.createElement("div");
@@ -46,5 +46,32 @@ describe("Check agents in the background", () => {
     const toggle = host.querySelector<HTMLButtonElement>("button[role=switch]")!;
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     expect(toggle.disabled).toBe(true);
+  });
+});
+
+describe("Agent start mode", () => {
+  it("is off per agent by default and opting one agent in writes only its entry", () => {
+    const changes: unknown[] = [];
+    const host = mount(() => <AgentStartModeSettings onChange={(value) => changes.push(value)} />);
+    const toggles = [...host.querySelectorAll<HTMLButtonElement>("button[role=switch]")];
+    expect(toggles.map((t) => t.getAttribute("aria-label"))).toEqual(["Claude Agent: keep its own start mode", "Codex: keep its own start mode", "Gemini CLI: keep its own start mode", "Other agents: keep its own start mode"]);
+    expect(toggles.every((t) => t.getAttribute("aria-checked") === "false")).toBe(true);
+    expect(host.textContent).toContain("agents.startMode.claude");
+    expect(host.textContent).not.toContain("\u2014");
+    toggles[0].click();
+    expect(changes).toEqual([{ claude: "agentDefault" }]);
+  });
+  it("shows a saved opt-in and turning it off removes the entry", () => {
+    const changes: unknown[] = [];
+    const host = mount(() => <AgentStartModeSettings value={{ codex: "agentDefault", claude: "approval" }} onChange={(value) => changes.push(value)} />);
+    const codex = host.querySelector<HTMLButtonElement>("#agent-start-mode-codex")!;
+    expect(codex.getAttribute("aria-checked")).toBe("true");
+    expect(host.querySelector("#agent-start-mode-claude")!.getAttribute("aria-checked")).toBe("false");
+    codex.click();
+    expect(changes).toEqual([{ claude: "approval" }]);
+  });
+  it("is read-only without a writer", () => {
+    const host = mount(() => <AgentStartModeSettings />);
+    expect([...host.querySelectorAll<HTMLButtonElement>("button[role=switch]")].every((t) => t.disabled)).toBe(true);
   });
 });
