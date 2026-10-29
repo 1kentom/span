@@ -263,6 +263,59 @@ export const commands = {
 	 */
 	agentChildPermission: (connectionId: string, sessionId: string, requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_child_permission", { connectionId, sessionId, requestId, optionId }),
 	/**
+	 *  Open a new user session and return its key (ADR 0011 phase 1). Unlike
+	 *  `agent_connect` it never closes another session. Runs on `connection_id`
+	 *  when given, on a new or running process for `command` when given, else
+	 *  on the focused connection. With `focus` the new session becomes the
+	 *  sidebar's chat; only a session on the sidebar's own connection can be
+	 *  focused, and that is checked before anything is opened. A failure leaves
+	 *  every existing session and the focus as they were.
+	 */
+	agentOpenSession: (connectionId: string | null, command: AgentCommand_Deserialize | null, focus: boolean) => __TAURI_INVOKE<SessionKey>("agent_open_session", { connectionId, command, focus }),
+	/**
+	 *  Every live session Span holds: user leads, their delegated children
+	 *  (with the parent key) and resumed sessions, with runtime state (idle,
+	 *  running, waiting for approval or an answer, queued follow-ups), agent,
+	 *  title, model, mode and health. Hidden health check sessions never appear.
+	 *  Changes arrive as `AgentSessionStatesChanged` and `AgentKeyedEvent`.
+	 */
+	agentLiveSessions: () => __TAURI_INVOKE<LiveSession_Serialize[]>("agent_live_sessions"),
+	/**  The focused session (the sidebar's chat), `None` without one. */
+	agentFocusedSession: () => __TAURI_INVOKE<SessionKey | null>("agent_focused_session"),
+	/**
+	 *  Run a prompt in the session `key`. Like `agent_prompt`, a busy session
+	 *  refuses it with `PromptError::Busy`.
+	 */
+	agentPromptKeyed: (key: SessionKey, text: string, attachments: PromptAttachment_Deserialize[] | null) => __TAURI_INVOKE<null>("agent_prompt_keyed", { key, text, attachments }),
+	/**  Stop the turn in `key` and every session below it. */
+	agentCancelKeyed: (key: SessionKey) => __TAURI_INVOKE<null>("agent_cancel_keyed", { key }),
+	/**
+	 *  The user's answer to a permission request of `key`. The request must
+	 *  belong to that session on that connection. User only: agents hold an
+	 *  `AgentControl`, which has no answering path (ADR 0003).
+	 */
+	agentPermissionKeyed: (key: SessionKey, requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_permission_keyed", { key, requestId, optionId }),
+	/**
+	 *  The user's answer to an input request of `key`. `action` is accept,
+	 *  decline or cancel. User only, like `agent_permission_keyed`.
+	 */
+	agentElicitationKeyed: (key: SessionKey, requestId: string, action: string, contentJson: string | null) => __TAURI_INVOKE<null>("agent_elicitation_keyed", { key, requestId, action, contentJson }),
+	/**  Change a config option of the session `key`. */
+	agentSetConfigKeyed: (key: SessionKey, configId: string, value: string) => __TAURI_INVOKE<null>("agent_set_config_keyed", { key, configId, value }),
+	/**
+	 *  Accept or reject a proposal of the session `key`, on its connection
+	 *  only. User only.
+	 */
+	agentReviewKeyed: (key: SessionKey, proposalId: string, accept: boolean, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("agent_review_keyed", { key, proposalId, accept, expectedRevision }),
+	/**  Accept some hunks of a proposal of the session `key`. User only. */
+	agentReviewHunksKeyed: (key: SessionKey, proposalId: string, acceptedHunkIds: string[], expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("agent_review_hunks_keyed", { key, proposalId, acceptedHunkIds, expectedRevision }),
+	/**
+	 *  Close the session `key`. Its delegated children are cancelled and
+	 *  closed with it, and its span-agents server stops (ADR 0001 section 5,
+	 *  ADR 0003). Closing the focused session leaves the sidebar without a chat.
+	 */
+	agentCloseKeyed: (key: SessionKey) => __TAURI_INVOKE<null>("agent_close_keyed", { key }),
+	/**
 	 *  The user stops one delegated task: its child session and everything
 	 *  below it are cancelled and the task ends as cancelled. User only: the
 	 *  span-agents `cancel` tool is the lead's separate way to do the same, and
@@ -347,6 +400,7 @@ export const commands = {
 /** Events */
 export const events = {
 	agentHealthChanged: makeEvent<AgentHealthChanged_Serialize, AgentHealthChanged_Deserialize>("agent-health-changed"),
+	agentKeyedEvent: makeEvent<AgentKeyedEvent_Serialize, AgentKeyedEvent_Deserialize>("agent-keyed-event"),
 	agentSessionStatesChanged: makeEvent<AgentSessionStatesChanged_Serialize, AgentSessionStatesChanged_Deserialize>("agent-session-states-changed"),
 	diagnosticsPublished: makeEvent<DiagnosticsPublished_Serialize, DiagnosticsPublished_Deserialize>("diagnostics-published"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
@@ -673,6 +727,46 @@ export type AgentHint =
  *  interrupted turn.
  */
 "interruptedByUser";
+
+/**
+ *  One agent event with the session it belongs to (ADR 0001 section 3,
+ *  ADR 0011 phase 1). Sent for every event of every connection the session
+ *  manager holds, beside the sidebar's own channel, which keeps receiving the
+ *  plain `AgentEvent`s of the focused connection unchanged. `key` is `None`
+ *  for connection level events (`Ready`, `Status`, `Log`, `Capabilities`,
+ *  `AuthRequired`, `ElicitationComplete`, and `Delegation` `unavailable`).
+ */
+export type AgentKeyedEvent = AgentKeyedEvent_Serialize | AgentKeyedEvent_Deserialize;
+
+/**
+ *  One agent event with the session it belongs to (ADR 0001 section 3,
+ *  ADR 0011 phase 1). Sent for every event of every connection the session
+ *  manager holds, beside the sidebar's own channel, which keeps receiving the
+ *  plain `AgentEvent`s of the focused connection unchanged. `key` is `None`
+ *  for connection level events (`Ready`, `Status`, `Log`, `Capabilities`,
+ *  `AuthRequired`, `ElicitationComplete`, and `Delegation` `unavailable`).
+ */
+export type AgentKeyedEvent_Deserialize = {
+	connectionId: string,
+	agentName: string,
+	key?: SessionKey | null,
+	event: AgentEvent_Deserialize,
+};
+
+/**
+ *  One agent event with the session it belongs to (ADR 0001 section 3,
+ *  ADR 0011 phase 1). Sent for every event of every connection the session
+ *  manager holds, beside the sidebar's own channel, which keeps receiving the
+ *  plain `AgentEvent`s of the focused connection unchanged. `key` is `None`
+ *  for connection level events (`Ready`, `Status`, `Log`, `Capabilities`,
+ *  `AuthRequired`, `ElicitationComplete`, and `Delegation` `unavailable`).
+ */
+export type AgentKeyedEvent_Serialize = {
+	connectionId: string,
+	agentName: string,
+	key: SessionKey | null,
+	event: AgentEvent_Serialize,
+};
 
 /**  A launch command for an agent that is not installed from the registry. */
 export type AgentPreset = AgentPreset_Serialize | AgentPreset_Deserialize;
@@ -2094,6 +2188,84 @@ export type LanguageServerWorkProgress_Serialize = {
 	message: string | null,
 	percentage: number | null,
 	kind: WorkProgressKindDto,
+};
+
+/**
+ *  One live session as the agent mode rail lists it: identity, place in the
+ *  session tree, runtime state and the metadata the agent last reported.
+ *  Built only from the manager, so it never mixes up two sessions with the
+ *  same id on different connections.
+ */
+export type LiveSession = LiveSession_Serialize | LiveSession_Deserialize;
+
+/**
+ *  One live session as the agent mode rail lists it: identity, place in the
+ *  session tree, runtime state and the metadata the agent last reported.
+ *  Built only from the manager, so it never mixes up two sessions with the
+ *  same id on different connections.
+ */
+export type LiveSession_Deserialize = {
+	key: SessionKey,
+	agentName: string,
+	/**
+	 *  The installed agent id the connection was started for, when the
+	 *  desktop knows it (registry installs). `None` from the manager.
+	 */
+	agentId?: string | null,
+	/**  The lead session of a delegated child. `None` for a root session. */
+	parent?: SessionKey | null,
+	depth: number,
+	origin: SessionOrigin,
+	state: SessionActivity,
+	queued: number,
+	startedAtMs?: number | null,
+	currentTool?: string | null,
+	/**  The latest `session_info_update` title. */
+	title?: string | null,
+	/**  The current value of the agent's `model` config option. */
+	model?: string | null,
+	/**  The latest `current_mode_update` mode id. */
+	mode?: string | null,
+	/**
+	 *  The agent's latest health check result, filled in by the desktop when
+	 *  checks run. `None` from the manager.
+	 */
+	health?: HealthState | null,
+};
+
+/**
+ *  One live session as the agent mode rail lists it: identity, place in the
+ *  session tree, runtime state and the metadata the agent last reported.
+ *  Built only from the manager, so it never mixes up two sessions with the
+ *  same id on different connections.
+ */
+export type LiveSession_Serialize = {
+	key: SessionKey,
+	agentName: string,
+	/**
+	 *  The installed agent id the connection was started for, when the
+	 *  desktop knows it (registry installs). `None` from the manager.
+	 */
+	agentId: string | null,
+	/**  The lead session of a delegated child. `None` for a root session. */
+	parent: SessionKey | null,
+	depth: number,
+	origin: SessionOrigin,
+	state: SessionActivity,
+	queued: number,
+	startedAtMs: number | null,
+	currentTool: string | null,
+	/**  The latest `session_info_update` title. */
+	title: string | null,
+	/**  The current value of the agent's `model` config option. */
+	model: string | null,
+	/**  The latest `current_mode_update` mode id. */
+	mode: string | null,
+	/**
+	 *  The agent's latest health check result, filled in by the desktop when
+	 *  checks run. `None` from the manager.
+	 */
+	health: HealthState | null,
 };
 
 /**
