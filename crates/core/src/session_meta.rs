@@ -6,7 +6,9 @@
 //! absent field means unknown, and the UI never shows an unknown field.
 //!
 //! The store never holds prompt text, file contents or credentials.
-use crate::{io_error, workspace::atomic_write, CoreError, EditProposal, Result};
+use crate::{
+    io_error, usage::TokenCounts, workspace::atomic_write, CoreError, EditProposal, Result,
+};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
@@ -32,6 +34,8 @@ const MAX_TITLE_CHARS: usize = 200;
 const MAX_LABEL_CHARS: usize = 128;
 const MAX_MODELS: usize = 16;
 const MAX_AGENTS: usize = 32;
+/// Day and model buckets kept per session. Older ones are folded in.
+pub const MAX_USAGE_BUCKETS: usize = 32;
 
 /// One model a session used.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -117,6 +121,156 @@ pub struct SessionMeta {
     /// so zero counters mean "no changes" rather than "unknown".
     #[serde(default, skip_serializing_if = "is_false")]
     pub changes_tracked: bool,
+    /// Token and cost counters Span observed over ACP (ADR 0012). Counters
+    /// only: no prompt text, replies or file contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SessionUsage>,
+}
+
+/// Usage counters of one session (ADR 0012), bucketed by local day and model
+/// so totals over any range of days are plain sums.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SessionUsage {
+    pub buckets: Vec<UsageBucket>,
+    /// The last cumulative session cost the agent reported, kept so the next
+    /// report adds only its growth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_seen: Option<ReportedCost>,
+    /// Peak context window occupancy (`usage_update.used`). Not consumption.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub context_peak: u64,
+    /// The last reported context window size.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub context_size: u64,
+}
+
+/// A cost as the agent reported it, in millionths of `currency`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportedCost {
+    pub micros: u64,
+    /// ISO 4217 code, for example `USD`.
+    pub currency: String,
+}
+
+/// What one model did on one day of a session. Zero means not reported.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UsageBucket {
+    /// Local calendar day, `YYYY-MM-DD`.
+    pub day: String,
+    /// The model as the agent names it. Empty when unknown.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    #[serde(skip_serializing_if = "is_zero32")]
+    pub turns: u32,
+    /// Turns that came with token counts.
+    #[serde(skip_serializing_if = "is_zero32")]
+    pub turns_with_tokens: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub input: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub output: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cache_read: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cache_write: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub thought: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub total: u64,
+    /// Growth of the agent's reported session cost, in millionths.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cost_micros: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+}
+
+impl UsageBucket {
+    pub fn tokens(&self) -> TokenCounts {
+        TokenCounts {
+            input: self.input,
+            output: self.output,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+            thought: self.thought,
+            total: self.total,
+        }
+    }
+    fn add(&mut self, other: &UsageBucket) {
+        let mut tokens = self.tokens();
+        tokens.add(&other.tokens());
+        self.input = tokens.input;
+        self.output = tokens.output;
+        self.cache_read = tokens.cache_read;
+        self.cache_write = tokens.cache_write;
+        self.thought = tokens.thought;
+        self.total = tokens.total;
+        self.turns = self.turns.saturating_add(other.turns);
+        self.turns_with_tokens = self
+            .turns_with_tokens
+            .saturating_add(other.turns_with_tokens);
+        if other.cost_micros > 0 {
+            match (&self.currency, &other.currency) {
+                (None, _) => {
+                    self.currency = other.currency.clone();
+                    self.cost_micros = self.cost_micros.saturating_add(other.cost_micros);
+                }
+                (Some(a), Some(b)) if a == b => {
+                    self.cost_micros = self.cost_micros.saturating_add(other.cost_micros);
+                }
+                // A cost in a second currency is dropped rather than summed.
+                _ => {}
+            }
+        }
+    }
+}
+
+/// What a finished turn reported, merged into the session's usage (ADR
+/// 0012). Token counts are one turn's and are added; `costTotal` is the
+/// agent's cumulative session cost and only its growth is added; `context`
+/// updates the peak.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePatch {
+    /// Local calendar day of the turn, `YYYY-MM-DD`. Absent or invalid: the
+    /// UTC day of the update.
+    #[serde(default)]
+    #[specta(optional)]
+    pub day: Option<String>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub model: Option<String>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub tokens: Option<TokenCounts>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub cost_total: Option<ReportedCost>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub context: Option<ContextReading>,
+    /// Turns this patch stands for. Absent means one.
+    #[serde(default)]
+    #[specta(optional)]
+    pub turns: Option<u32>,
+}
+
+/// A `usage_update` reading: tokens in the context window and its size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextReading {
+    pub used: u64,
+    pub size: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero32(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Fields that default to false are left out of the file, so the new fields
@@ -185,6 +339,10 @@ pub struct SessionMetaPatch {
     #[serde(default)]
     #[specta(optional)]
     pub changes_tracked: Option<bool>,
+    /// A finished turn's usage (ADR 0012).
+    #[serde(default)]
+    #[specta(optional)]
+    pub usage: Option<UsagePatch>,
 }
 
 impl SessionMetaPatch {
@@ -433,6 +591,52 @@ impl SessionMetaStore {
     }
     pub fn path(&self) -> &Path {
         &self.path
+    }
+    /// The profile folder that holds every workspace's store.
+    pub fn profile_directory() -> Result<PathBuf> {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .ok_or_else(|| {
+                CoreError::Settings("Cannot locate user profile for session history".into())
+            })?;
+        Ok(PathBuf::from(home).join(".config/span/session-meta"))
+    }
+    /// Every session of every workspace store in `directory` (ADR 0012, the
+    /// usage page spans all folders). Only regular `<16 hex>.json` files are
+    /// read, never symlinks, at most `max_files` of them. A store that cannot
+    /// be read is skipped.
+    pub fn list_all_in(directory: &Path, max_files: usize) -> Result<Vec<SessionMeta>> {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(io_error("Read session history folder", directory, e)),
+        };
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let stem = name.strip_suffix(".json").unwrap_or("");
+                stem.len() == 16
+                    && stem.bytes().all(|b| b.is_ascii_hexdigit())
+                    && entry.file_type().is_ok_and(|kind| kind.is_file())
+            })
+            .map(|entry| entry.path())
+            .collect();
+        files.sort();
+        files.truncate(max_files);
+        let mut sessions = vec![];
+        for path in files {
+            let store = Self {
+                path,
+                max_sessions: SESSION_META_MAX_SESSIONS,
+                max_bytes: SESSION_META_MAX_BYTES,
+            };
+            if let Ok(mut found) = store.list() {
+                sessions.append(&mut found);
+            }
+        }
+        Ok(sessions)
     }
     #[cfg(test)]
     fn with_limits(mut self, max_sessions: usize, max_bytes: usize) -> Self {
@@ -694,6 +898,7 @@ fn new_meta(agent_id: &str, session_id: &str, now: u64) -> SessionMeta {
         parent: None,
         continues: None,
         changes_tracked: false,
+        usage: None,
     }
 }
 
@@ -791,6 +996,101 @@ fn apply_patch(meta: &mut SessionMeta, patch: &SessionMetaPatch, now: u64) {
     if let Some(tracked) = patch.changes_tracked {
         meta.changes_tracked = tracked;
     }
+    if let Some(usage) = &patch.usage {
+        apply_usage(meta, usage, now);
+    }
+}
+
+/// A three letter upper case code, as ACP's `cost.currency` should be.
+fn valid_currency(code: &str) -> bool {
+    code.len() == 3 && code.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+/// Merges one turn's usage. Token counts add up; a reported cumulative cost
+/// adds only its growth since the last report (a lower figure in the same
+/// currency means the agent's counter restarted, so the whole figure is new);
+/// the context reading updates the peak.
+fn apply_usage(meta: &mut SessionMeta, patch: &UsagePatch, now: u64) {
+    let usage = meta.usage.get_or_insert_with(SessionUsage::default);
+    if let Some(context) = patch.context {
+        usage.context_peak = usage.context_peak.max(context.used);
+        if context.size > 0 {
+            usage.context_size = context.size;
+        }
+    }
+    let mut cost = None;
+    if let Some(total) = patch
+        .cost_total
+        .as_ref()
+        .filter(|c| valid_currency(&c.currency))
+    {
+        let growth = match &usage.cost_seen {
+            Some(seen) if seen.currency == total.currency && total.micros >= seen.micros => {
+                total.micros - seen.micros
+            }
+            _ => total.micros,
+        };
+        usage.cost_seen = Some(total.clone());
+        cost = Some((growth, total.currency.clone()));
+    }
+    let tokens = patch.tokens.unwrap_or_default();
+    let turns = patch.turns.unwrap_or(1);
+    if turns == 0 && tokens.is_empty() && cost.as_ref().is_none_or(|c| c.0 == 0) {
+        if usage.buckets.is_empty() && usage.cost_seen.is_none() && usage.context_peak == 0 {
+            meta.usage = None;
+        }
+        return;
+    }
+    let day = patch
+        .day
+        .as_deref()
+        .filter(|day| crate::usage::parse_day(day).is_some())
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::usage::utc_day(now));
+    let model = clip_label(patch.model.as_deref()).unwrap_or_default();
+    let (cost_micros, currency) = match cost {
+        Some((micros, currency)) if micros > 0 => (micros, Some(currency)),
+        _ => (0, None),
+    };
+    let incoming = UsageBucket {
+        day,
+        model,
+        turns,
+        turns_with_tokens: if tokens.is_empty() { 0 } else { turns },
+        input: tokens.input,
+        output: tokens.output,
+        cache_read: tokens.cache_read,
+        cache_write: tokens.cache_write,
+        thought: tokens.thought,
+        total: tokens.effective_total(),
+        cost_micros,
+        currency,
+    };
+    match usage
+        .buckets
+        .iter_mut()
+        .find(|b| b.day == incoming.day && b.model == incoming.model)
+    {
+        Some(existing) => existing.add(&incoming),
+        None => usage.buckets.push(incoming),
+    }
+    fold_usage_buckets(&mut usage.buckets, MAX_USAGE_BUCKETS);
+}
+
+/// Keeps at most `max` buckets without losing any count: the oldest bucket
+/// is folded into the next oldest one of the same model (so totals per model
+/// stay right and only its day moves later), or into the next oldest bucket
+/// when its model has no other.
+fn fold_usage_buckets(buckets: &mut Vec<UsageBucket>, max: usize) {
+    buckets.sort_by(|a, b| a.day.cmp(&b.day).then(a.model.cmp(&b.model)));
+    while buckets.len() > max.max(1) {
+        let oldest = buckets.remove(0);
+        let target = buckets
+            .iter()
+            .position(|b| b.model == oldest.model)
+            .unwrap_or(0);
+        buckets[target].add(&oldest);
+    }
 }
 
 /// A thread link `meta` may store: valid ids, not the session itself, title
@@ -833,6 +1133,12 @@ fn sanitize_all(sessions: Vec<SessionMeta>) -> Vec<SessionMeta> {
         meta.connection_name = clip(&meta.connection_name, MAX_LABEL_CHARS);
         meta.models.truncate(MAX_MODELS);
         meta.agents.truncate(MAX_AGENTS);
+        if let Some(usage) = meta.usage.as_mut() {
+            usage
+                .buckets
+                .retain(|b| crate::usage::parse_day(&b.day).is_some());
+            fold_usage_buckets(&mut usage.buckets, MAX_USAGE_BUCKETS);
+        }
         meta.continues = meta
             .continues
             .take()

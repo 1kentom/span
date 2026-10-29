@@ -162,6 +162,15 @@ export const commands = {
 	 *  the home directory as `~`. Works without an open folder.
 	 */
 	sessionExportMarkdown: (transcript: Transcript_Deserialize) => __TAURI_INVOKE<string>("session_export_markdown", { transcript }),
+	/**
+	 *  Totals by day, agent and model over every folder's sessions in `range`.
+	 *  Works without an open folder.
+	 */
+	usageSummary: (range: UsageRange_Deserialize) => __TAURI_INVOKE<UsageSummary_Serialize>("usage_summary", { range }),
+	/**  Sessions with usage in `range`, most recently active first. */
+	usageSessions: (range: UsageRange_Deserialize) => __TAURI_INVOKE<SessionUsageRow_Serialize[]>("usage_sessions", { range }),
+	/**  The price table in use, with the user's overrides first. */
+	usagePrices: () => __TAURI_INVOKE<PriceTable_Serialize>("usage_prices"),
 	agentRegistry: () => __TAURI_INVOKE<RegistryAgent_Serialize[]>("agent_registry"),
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
@@ -886,6 +895,11 @@ export type AgentSettings_Deserialize = {
 	 *  user's own settings file. Optional in TypeScript like `agents`.
 	 */
 	startMode?: { [key in string]: StartMode },
+	/**
+	 *  `agents.usage.*`: the Usage page (ADR 0012). Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	usage?: AgentUsageSettings_Deserialize,
 };
 
 /**  `agents.*` settings. */
@@ -913,6 +927,11 @@ export type AgentSettings_Serialize = {
 	 *  user's own settings file. Optional in TypeScript like `agents`.
 	 */
 	startMode?: { [key in string]: StartMode },
+	/**
+	 *  `agents.usage.*`: the Usage page (ADR 0012). Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	usage?: AgentUsageSettings_Serialize,
 };
 
 export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
@@ -953,6 +972,43 @@ export type AgentUpdate_Serialize = {
 	repository: string | null,
 	/**  Why the status is what it is, when that is not obvious. */
 	note: string | null,
+};
+
+export type AgentUsage = AgentUsage_Serialize | AgentUsage_Deserialize;
+
+/**  `agents.usage.*` settings (ADR 0012). */
+export type AgentUsageSettings = AgentUsageSettings_Serialize | AgentUsageSettings_Deserialize;
+
+/**  `agents.usage.*` settings (ADR 0012). */
+export type AgentUsageSettings_Deserialize = {
+	/**
+	 *  `agents.usage.prices.<model>`: the user's own USD per million token
+	 *  prices, keyed by model id or id prefix. They take precedence over the
+	 *  bundled price table.
+	 */
+	prices?: { [key in string]: PriceOverride_Deserialize },
+};
+
+/**  `agents.usage.*` settings (ADR 0012). */
+export type AgentUsageSettings_Serialize = {
+	/**
+	 *  `agents.usage.prices.<model>`: the user's own USD per million token
+	 *  prices, keyed by model id or id prefix. They take precedence over the
+	 *  bundled price table.
+	 */
+	prices?: { [key in string]: PriceOverride_Serialize },
+};
+
+export type AgentUsage_Deserialize = {
+	agentId: string,
+	name: string,
+	totals: UsageTotals_Deserialize,
+};
+
+export type AgentUsage_Serialize = {
+	agentId: string,
+	name: string,
+	totals: UsageTotals_Serialize,
 };
 
 /**  One agent that took part in a session, for example a delegated child. */
@@ -1293,6 +1349,12 @@ export type ConfigOption_Serialize = {
 	groups: ConfigGroup_Serialize[],
 };
 
+/**  A `usage_update` reading: tokens in the context window and its size. */
+export type ContextReading = {
+	used: number,
+	size: number,
+};
+
 /**  The runner chosen for one file, or the reason no runner applies. */
 export type CurrentFileRun = CurrentFileRun_Serialize | CurrentFileRun_Deserialize;
 
@@ -1310,6 +1372,18 @@ export type CurrentFileRun_Serialize = {
 	path: string,
 	configuration: RunConfiguration_Serialize | null,
 	reason: string | null,
+};
+
+/**  One agent's share of a day. */
+export type DaySlice = {
+	agentId: string,
+	tokens: number,
+	cost: UsageCost,
+};
+
+export type DayUsage = {
+	day: string,
+	agents: DaySlice[],
 };
 
 /**  A decision the lead recorded with `record_decision` (#54). */
@@ -2742,6 +2816,67 @@ export type LspResponse<T> = {
 
 export type MarkdownView = "source" | "preview" | "both";
 
+/**  USD per million tokens for one model. */
+export type ModelPrice = ModelPrice_Serialize | ModelPrice_Deserialize;
+
+/**  USD per million tokens for one model. */
+export type ModelPrice_Deserialize = {
+	id: string,
+	label: string,
+	/**  `anthropic`, `openai`, `google`, or `custom` for a settings override. */
+	provider: string,
+	/**  Short names an agent may use for the model, such as `opus`. */
+	aliases?: string[],
+	input: number | null,
+	output: number | null,
+	/**  Cache hits. Absent: the input rate. */
+	cacheRead?: number | null,
+	/**
+	 *  Cache writes (the 5 minute rate where a provider has several).
+	 *  Absent: the input rate, as for providers that do not bill writes.
+	 */
+	cacheWrite?: number | null,
+	note?: string | null,
+};
+
+/**  USD per million tokens for one model. */
+export type ModelPrice_Serialize = {
+	id: string,
+	label: string,
+	/**  `anthropic`, `openai`, `google`, or `custom` for a settings override. */
+	provider: string,
+	/**  Short names an agent may use for the model, such as `opus`. */
+	aliases: string[],
+	input: number | null,
+	output: number | null,
+	/**  Cache hits. Absent: the input rate. */
+	cacheRead: number | null,
+	/**
+	 *  Cache writes (the 5 minute rate where a provider has several).
+	 *  Absent: the input rate, as for providers that do not bill writes.
+	 */
+	cacheWrite: number | null,
+	note: string | null,
+};
+
+export type ModelUsage = ModelUsage_Serialize | ModelUsage_Deserialize;
+
+export type ModelUsage_Deserialize = {
+	/**  The model as the agent named it. Empty when the agent named none. */
+	model: string,
+	agentIds: string[],
+	price?: PriceMatch_Deserialize | null,
+	totals: UsageTotals_Deserialize,
+};
+
+export type ModelUsage_Serialize = {
+	/**  The model as the agent named it. Empty when the agent named none. */
+	model: string,
+	agentIds: string[],
+	price: PriceMatch_Serialize | null,
+	totals: UsageTotals_Serialize,
+};
+
 /**  One model a session used. */
 export type ModelUse = ModelUse_Serialize | ModelUse_Deserialize;
 
@@ -2900,6 +3035,96 @@ export type PrepareRenameDto_Serialize = {
 	defaultBehavior: boolean,
 };
 
+export type PriceMatch = PriceMatch_Serialize | PriceMatch_Deserialize;
+
+/**  How a model id found its price. */
+export type PriceMatchKind =
+/**  The id names the priced model. */
+"exact" |
+/**  A short name the table maps to the current model of that line. */
+"alias" |
+/**  A longer id of a priced model, such as a variant or a dated snapshot. */
+"family" |
+/**  The user's own price from settings. */
+"override";
+
+export type PriceMatch_Deserialize = {
+	id: string,
+	label: string,
+	kind: PriceMatchKind,
+	note?: string | null,
+};
+
+export type PriceMatch_Serialize = {
+	id: string,
+	label: string,
+	kind: PriceMatchKind,
+	note: string | null,
+};
+
+/**
+ *  One `agents.usage.prices.<model>` entry: USD per million tokens. The key
+ *  is a model id or id prefix as the agent names the model.
+ */
+export type PriceOverride = PriceOverride_Serialize | PriceOverride_Deserialize;
+
+/**
+ *  One `agents.usage.prices.<model>` entry: USD per million tokens. The key
+ *  is a model id or id prefix as the agent names the model.
+ */
+export type PriceOverride_Deserialize = {
+	input: number | null,
+	output: number | null,
+	cacheRead?: number | null,
+	cacheWrite?: number | null,
+};
+
+/**
+ *  One `agents.usage.prices.<model>` entry: USD per million tokens. The key
+ *  is a model id or id prefix as the agent names the model.
+ */
+export type PriceOverride_Serialize = {
+	input: number | null,
+	output: number | null,
+	cacheRead?: number | null,
+	cacheWrite?: number | null,
+};
+
+/**  Where a price table came from. */
+export type PriceSource = {
+	provider: string,
+	url: string,
+};
+
+/**  A dated price table. */
+export type PriceTable = PriceTable_Serialize | PriceTable_Deserialize;
+
+export type PriceTableInfo = {
+	asOf: string,
+	currency: string,
+	unit: string,
+	sources: PriceSource[],
+	models: number,
+};
+
+/**  A dated price table. */
+export type PriceTable_Deserialize = {
+	asOf: string,
+	currency: string,
+	unit: string,
+	sources: PriceSource[],
+	models: ModelPrice_Deserialize[],
+};
+
+/**  A dated price table. */
+export type PriceTable_Serialize = {
+	asOf: string,
+	currency: string,
+	unit: string,
+	sources: PriceSource[],
+	models: ModelPrice_Serialize[],
+};
+
 /**  Extra prompt content. Plain text always travels in the prompt text itself. */
 export type PromptAttachment = PromptAttachment_Serialize | PromptAttachment_Deserialize;
 
@@ -2999,6 +3224,13 @@ export type RegistryAgent_Serialize = {
 	/**  Phase 0.1 installs pinned npm distributions. Other transports remain visible. */
 	installable: boolean,
 	package: string | null,
+};
+
+/**  A cost as the agent reported it, in millionths of `currency`. */
+export type ReportedCost = {
+	micros: number,
+	/**  ISO 4217 code, for example `USD`. */
+	currency: string,
 };
 
 export type RunApprovalRequest = {
@@ -3337,6 +3569,8 @@ export type SessionMetaPatch_Deserialize = {
 	 */
 	continues?: SessionLink_Deserialize | null,
 	changesTracked?: boolean | null,
+	/**  A finished turn's usage (ADR 0012). */
+	usage?: UsagePatch_Deserialize | null,
 };
 
 /**
@@ -3362,6 +3596,8 @@ export type SessionMetaPatch_Serialize = {
 	 */
 	continues?: SessionLink_Serialize | null,
 	changesTracked?: boolean | null,
+	/**  A finished turn's usage (ADR 0012). */
+	usage?: UsagePatch_Serialize | null,
 };
 
 /**
@@ -3400,6 +3636,11 @@ export type SessionMeta_Deserialize = {
 	 *  so zero counters mean "no changes" rather than "unknown".
 	 */
 	changesTracked?: boolean,
+	/**
+	 *  Token and cost counters Span observed over ACP (ADR 0012). Counters
+	 *  only: no prompt text, replies or file contents.
+	 */
+	usage?: SessionUsage_Deserialize | null,
 };
 
 /**
@@ -3438,6 +3679,11 @@ export type SessionMeta_Serialize = {
 	 *  so zero counters mean "no changes" rather than "unknown".
 	 */
 	changesTracked?: boolean,
+	/**
+	 *  Token and cost counters Span observed over ACP (ADR 0012). Counters
+	 *  only: no prompt text, replies or file contents.
+	 */
+	usage?: SessionUsage_Serialize,
 };
 
 /**  Who started a session. */
@@ -3590,6 +3836,79 @@ export type SessionSummary_Serialize = {
 	 *  History scope chips tell this workspace from other folders.
 	 */
 	cwd: string | null,
+};
+
+/**
+ *  Usage counters of one session (ADR 0012), bucketed by local day and model
+ *  so totals over any range of days are plain sums.
+ */
+export type SessionUsage = SessionUsage_Serialize | SessionUsage_Deserialize;
+
+/**  One session's usage in the range. */
+export type SessionUsageRow = SessionUsageRow_Serialize | SessionUsageRow_Deserialize;
+
+/**  One session's usage in the range. */
+export type SessionUsageRow_Deserialize = {
+	agentId: string,
+	agentName: string,
+	sessionId: string,
+	title?: string | null,
+	firstSeenMs: number,
+	lastActiveMs: number,
+	models: string[],
+	totals: UsageTotals_Deserialize,
+	/**  Peak context window occupancy the agent reported, and the window size. */
+	contextPeak: number,
+	contextSize: number,
+};
+
+/**  One session's usage in the range. */
+export type SessionUsageRow_Serialize = {
+	agentId: string,
+	agentName: string,
+	sessionId: string,
+	title: string | null,
+	firstSeenMs: number,
+	lastActiveMs: number,
+	models: string[],
+	totals: UsageTotals_Serialize,
+	/**  Peak context window occupancy the agent reported, and the window size. */
+	contextPeak: number,
+	contextSize: number,
+};
+
+/**
+ *  Usage counters of one session (ADR 0012), bucketed by local day and model
+ *  so totals over any range of days are plain sums.
+ */
+export type SessionUsage_Deserialize = {
+	buckets?: UsageBucket_Deserialize[],
+	/**
+	 *  The last cumulative session cost the agent reported, kept so the next
+	 *  report adds only its growth.
+	 */
+	costSeen?: ReportedCost | null,
+	/**  Peak context window occupancy (`usage_update.used`). Not consumption. */
+	contextPeak?: number,
+	/**  The last reported context window size. */
+	contextSize?: number,
+};
+
+/**
+ *  Usage counters of one session (ADR 0012), bucketed by local day and model
+ *  so totals over any range of days are plain sums.
+ */
+export type SessionUsage_Serialize = {
+	buckets: UsageBucket_Serialize[],
+	/**
+	 *  The last cumulative session cost the agent reported, kept so the next
+	 *  report adds only its growth.
+	 */
+	costSeen?: ReportedCost,
+	/**  Peak context window occupancy (`usage_update.used`). Not consumption. */
+	contextPeak?: number,
+	/**  The last reported context window size. */
+	contextSize?: number,
 };
 
 export type Settings = Settings_Serialize | Settings_Deserialize;
@@ -3905,6 +4224,41 @@ export type TextEditDto = {
 
 export type Theme = "Dark" | "Light" | "Purple";
 
+/**  Token counts of one turn, or a sum of turns. Zero means not reported. */
+export type TokenCounts = TokenCounts_Serialize | TokenCounts_Deserialize;
+
+/**  Token counts of one turn, or a sum of turns. Zero means not reported. */
+export type TokenCounts_Deserialize = {
+	/**  Input tokens as the agent reported them (see `input_includes_cache`). */
+	input?: number,
+	output?: number,
+	cacheRead?: number,
+	cacheWrite?: number,
+	/**
+	 *  Reasoning tokens. Reported as part of `output` by the providers this
+	 *  table prices, so never added to the cost a second time.
+	 */
+	thought?: number,
+	/**  The agent's own total when it sent one, else the sum of the parts. */
+	total?: number,
+};
+
+/**  Token counts of one turn, or a sum of turns. Zero means not reported. */
+export type TokenCounts_Serialize = {
+	/**  Input tokens as the agent reported them (see `input_includes_cache`). */
+	input: number,
+	output: number,
+	cacheRead: number,
+	cacheWrite: number,
+	/**
+	 *  Reasoning tokens. Reported as part of `output` by the providers this
+	 *  table prices, so never added to the cost a second time.
+	 */
+	thought: number,
+	/**  The agent's own total when it sent one, else the sum of the parts. */
+	total: number,
+};
+
 /**  A diff from tool call content. */
 export type ToolDiff = ToolDiff_Serialize | ToolDiff_Deserialize;
 
@@ -4218,6 +4572,139 @@ export type Upload_Serialize = {
 	missing: boolean,
 };
 
+/**  What one model did on one day of a session. Zero means not reported. */
+export type UsageBucket = UsageBucket_Serialize | UsageBucket_Deserialize;
+
+/**  What one model did on one day of a session. Zero means not reported. */
+export type UsageBucket_Deserialize = {
+	/**  Local calendar day, `YYYY-MM-DD`. */
+	day?: string,
+	/**  The model as the agent names it. Empty when unknown. */
+	model?: string,
+	turns?: number,
+	/**  Turns that came with token counts. */
+	turnsWithTokens?: number,
+	input?: number,
+	output?: number,
+	cacheRead?: number,
+	cacheWrite?: number,
+	thought?: number,
+	total?: number,
+	/**  Growth of the agent's reported session cost, in millionths. */
+	costMicros?: number,
+	currency?: string | null,
+};
+
+/**  What one model did on one day of a session. Zero means not reported. */
+export type UsageBucket_Serialize = {
+	/**  Local calendar day, `YYYY-MM-DD`. */
+	day: string,
+	/**  The model as the agent names it. Empty when unknown. */
+	model?: string,
+	turns?: number,
+	/**  Turns that came with token counts. */
+	turnsWithTokens?: number,
+	input?: number,
+	output?: number,
+	cacheRead?: number,
+	cacheWrite?: number,
+	thought?: number,
+	total?: number,
+	/**  Growth of the agent's reported session cost, in millionths. */
+	costMicros?: number,
+	currency?: string,
+};
+
+/**
+ *  A cost figure. `known` is false when none of the usage has a price or a
+ *  reported cost: the UI then shows no amount, never zero. `complete` is
+ *  false when some tokens had neither.
+ */
+export type UsageCost = {
+	/**  `reported_usd + estimated_usd`. */
+	usd: number | null,
+	/**  Cost the agent itself reported over ACP, in USD. */
+	reportedUsd: number | null,
+	/**  Span's estimate from tokens and the price table. */
+	estimatedUsd: number | null,
+	/**  Tokens that have neither a price nor a reported cost. */
+	unpricedTokens: number,
+	known: boolean,
+	complete: boolean,
+};
+
+/**
+ *  What a finished turn reported, merged into the session's usage (ADR
+ *  0012). Token counts are one turn's and are added; `costTotal` is the
+ *  agent's cumulative session cost and only its growth is added; `context`
+ *  updates the peak.
+ */
+export type UsagePatch = UsagePatch_Serialize | UsagePatch_Deserialize;
+
+/**
+ *  What a finished turn reported, merged into the session's usage (ADR
+ *  0012). Token counts are one turn's and are added; `costTotal` is the
+ *  agent's cumulative session cost and only its growth is added; `context`
+ *  updates the peak.
+ */
+export type UsagePatch_Deserialize = {
+	/**
+	 *  Local calendar day of the turn, `YYYY-MM-DD`. Absent or invalid: the
+	 *  UTC day of the update.
+	 */
+	day?: string | null,
+	model?: string | null,
+	tokens?: TokenCounts_Deserialize | null,
+	costTotal?: ReportedCost | null,
+	context?: ContextReading | null,
+	/**  Turns this patch stands for. Absent means one. */
+	turns?: number | null,
+};
+
+/**
+ *  What a finished turn reported, merged into the session's usage (ADR
+ *  0012). Token counts are one turn's and are added; `costTotal` is the
+ *  agent's cumulative session cost and only its growth is added; `context`
+ *  updates the peak.
+ */
+export type UsagePatch_Serialize = {
+	/**
+	 *  Local calendar day of the turn, `YYYY-MM-DD`. Absent or invalid: the
+	 *  UTC day of the update.
+	 */
+	day?: string | null,
+	model?: string | null,
+	tokens?: TokenCounts_Serialize | null,
+	costTotal?: ReportedCost | null,
+	context?: ContextReading | null,
+	/**  Turns this patch stands for. Absent means one. */
+	turns?: number | null,
+};
+
+/**
+ *  An inclusive range of local calendar days, `YYYY-MM-DD`. Absent bounds are
+ *  open.
+ */
+export type UsageRange = UsageRange_Serialize | UsageRange_Deserialize;
+
+/**
+ *  An inclusive range of local calendar days, `YYYY-MM-DD`. Absent bounds are
+ *  open.
+ */
+export type UsageRange_Deserialize = {
+	from?: string | null,
+	to?: string | null,
+};
+
+/**
+ *  An inclusive range of local calendar days, `YYYY-MM-DD`. Absent bounds are
+ *  open.
+ */
+export type UsageRange_Serialize = {
+	from?: string | null,
+	to?: string | null,
+};
+
 /**  Usage reported for a delegation. Every field is only set when reported. */
 export type UsageReport = UsageReport_Serialize | UsageReport_Deserialize;
 
@@ -4239,6 +4726,69 @@ export type UsageReport_Serialize = {
 	cost: number | null,
 	currency: string | null,
 	elapsedSeconds: number,
+};
+
+export type UsageSummary = UsageSummary_Serialize | UsageSummary_Deserialize;
+
+export type UsageSummary_Deserialize = {
+	range: UsageRange_Deserialize,
+	totals: UsageTotals_Deserialize,
+	/**
+	 *  Every day of the range, oldest first, with zero days filled in. For
+	 *  an open range it starts at the first recorded day.
+	 */
+	days: DayUsage[],
+	/**  Most tokens first. */
+	agents: AgentUsage_Deserialize[],
+	/**  Most tokens first. */
+	models: ModelUsage_Deserialize[],
+	/**  The model with the most tokens (turns when no tokens were reported). */
+	topModel?: string | null,
+	prices: PriceTableInfo,
+	/**  Sessions with any usage counters at all, in or out of the range. */
+	trackedSessions: number,
+};
+
+export type UsageSummary_Serialize = {
+	range: UsageRange_Serialize,
+	totals: UsageTotals_Serialize,
+	/**
+	 *  Every day of the range, oldest first, with zero days filled in. For
+	 *  an open range it starts at the first recorded day.
+	 */
+	days: DayUsage[],
+	/**  Most tokens first. */
+	agents: AgentUsage_Serialize[],
+	/**  Most tokens first. */
+	models: ModelUsage_Serialize[],
+	/**  The model with the most tokens (turns when no tokens were reported). */
+	topModel: string | null,
+	prices: PriceTableInfo,
+	/**  Sessions with any usage counters at all, in or out of the range. */
+	trackedSessions: number,
+};
+
+/**  Sums for a group of buckets. */
+export type UsageTotals = UsageTotals_Serialize | UsageTotals_Deserialize;
+
+/**  Sums for a group of buckets. */
+export type UsageTotals_Deserialize = {
+	tokens: TokenCounts_Deserialize,
+	turns: number,
+	/**  Turns whose agent reported token counts. */
+	turnsWithTokens: number,
+	sessions: number,
+	cost: UsageCost,
+};
+
+/**  Sums for a group of buckets. */
+export type UsageTotals_Serialize = {
+	tokens: TokenCounts_Serialize,
+	turns: number,
+	/**  Turns whose agent reported token counts. */
+	turnsWithTokens: number,
+	sessions: number,
+	cost: UsageCost,
 };
 
 /**  A non-text block in a replayed user turn, kept as a marker. */

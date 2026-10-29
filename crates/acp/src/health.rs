@@ -139,20 +139,20 @@ fn is_auth(message: &str) -> bool {
 /// Health sessions remembered for one agent across runs of Span.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LedgerAgent {
-    /// Health sessions Span created on this agent, oldest first.
+pub(crate) struct LedgerAgent {
+    /// Sessions Span created on this agent, oldest first.
     #[serde(default)]
-    sessions: Vec<String>,
-    /// Health sessions the cleanup already deleted (or the agent refused),
-    /// so a later run never asks again.
+    pub(crate) sessions: Vec<String>,
+    /// Sessions the cleanup already deleted (or the agent refused), so a
+    /// later run never asks again.
     #[serde(default)]
-    cleaned: Vec<String>,
+    pub(crate) cleaned: Vec<String>,
 }
 
 /// Ids kept per list in the ledger.
 const LEDGER_KEEP: usize = 500;
 
-fn push_capped(list: &mut Vec<String>, id: &str) -> bool {
+pub(crate) fn push_capped(list: &mut Vec<String>, id: &str) -> bool {
     if list.iter().any(|known| known == id) {
         return false;
     }
@@ -162,6 +162,22 @@ fn push_capped(list: &mut Vec<String>, id: &str) -> bool {
         list.drain(..extra);
     }
     true
+}
+
+/// Write a ledger file (small JSON) through a temporary file, so a crash
+/// never leaves half of it. Failures only cost the memory across runs. The
+/// delegated child ledger (`crate::delegated`) uses the same format.
+pub(crate) fn write_ledger(path: &std::path::Path, ledger: &BTreeMap<String, LedgerAgent>) {
+    let Ok(bytes) = serde_json::to_vec_pretty(ledger) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let temporary = path.with_extension("json.tmp");
+    if std::fs::write(&temporary, bytes).is_ok() {
+        let _ = std::fs::rename(&temporary, path);
+    }
 }
 
 struct Tracked {
@@ -315,22 +331,12 @@ impl HealthMonitor {
         }
     }
 
-    /// Write the ledger (a small file) through a temporary file, so a crash
-    /// never leaves half of it. Failures only cost the memory across runs.
+    /// Write the ledger through [`write_ledger`].
     fn save_ledger(&self) {
         let Some(path) = lock(&self.inner.ledger_path).clone() else {
             return;
         };
-        let Ok(bytes) = serde_json::to_vec_pretty(&*lock(&self.inner.ledger)) else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let temporary = path.with_extension("json.tmp");
-        if std::fs::write(&temporary, bytes).is_ok() {
-            let _ = std::fs::rename(&temporary, &path);
-        }
+        write_ledger(&path, &lock(&self.inner.ledger));
     }
 
     /// Record chat activity on a connection: its next check moves to one

@@ -24,6 +24,7 @@ mod text_file;
 mod tools;
 mod transcript_export;
 mod uploads;
+pub mod usage;
 pub mod version;
 mod workspace;
 
@@ -48,12 +49,14 @@ pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use session_meta::{
     patch_for_file_stats, patch_for_model_selected, patch_for_turn_complete, patch_for_turn_start,
-    patches_for_delegation, workspace_hash, workspace_key, AgentUse, FileChangeStats, ModelUse,
-    ModelUsePatch, SessionLink, SessionMeta, SessionMetaPatch, SessionMetaStore, SessionParent,
-    SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS, SESSION_META_SCHEMA_VERSION,
+    patches_for_delegation, workspace_hash, workspace_key, AgentUse, ContextReading,
+    FileChangeStats, ModelUse, ModelUsePatch, ReportedCost, SessionLink, SessionMeta,
+    SessionMetaPatch, SessionMetaStore, SessionParent, SessionUsage, UsageBucket, UsagePatch,
+    MAX_USAGE_BUCKETS, SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS,
+    SESSION_META_SCHEMA_VERSION,
 };
 pub use settings::{
-    AgentSettings, AutoSaveMode, DelegationSettings, ExplorerLegacyPreferences,
+    AgentSettings, AgentUsageSettings, AutoSaveMode, DelegationSettings, ExplorerLegacyPreferences,
     ExplorerPreferenceMigration, ExplorerSettings, LanguageServerSettings, RunToolsSettings,
     Settings, SettingsScope, StartMode, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
     SYNTAX_THEMES, SYNTAX_TOKEN_IDS,

@@ -126,7 +126,8 @@
           "renameSymbol",
           "goBack",
           "goForward",
-          "focusBreadcrumbs"
+          "focusBreadcrumbs",
+          "showUsage"
         ]
       },
       "additionalProperties": {
@@ -463,6 +464,33 @@
       },
       "additionalProperties": false,
       "properties": {
+        "usage": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": false,
+          "properties": {
+            "prices": {
+              "type": "object",
+              "default": {},
+              "propertyNames": {
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["input", "output"],
+                "properties": {
+                  "input": { "type": "number", "minimum": 0, "maximum": 10000 },
+                  "output": { "type": "number", "minimum": 0, "maximum": 10000 },
+                  "cacheRead": { "type": "number", "minimum": 0, "maximum": 10000 },
+                  "cacheWrite": { "type": "number", "minimum": 0, "maximum": 10000 }
+                }
+              },
+              "description": "Your own prices for the Usage page, in USD per million tokens, keyed by model id or id prefix as the agent names it (for example \"claude-opus-5-5\"). They replace the bundled price table for that model. Estimates stay estimates: API-equivalent cost, not a subscription bill. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+            }
+          }
+        },
         "startMode": {
           "type": "object",
           "default": {},

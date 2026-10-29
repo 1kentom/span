@@ -2,7 +2,11 @@ use crate::{io_error, CoreError, CoreWorkspace, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use specta::Type;
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::Path,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
 pub enum Theme {
@@ -252,6 +256,21 @@ pub struct AgentSettings {
     /// user's own settings file. Optional in TypeScript like `agents`.
     #[specta(optional)]
     pub start_mode: HashMap<String, StartMode>,
+    /// `agents.usage.*`: the Usage page (ADR 0012). Honoured only from the
+    /// user's own settings file. Optional in TypeScript like `agents`.
+    #[specta(optional)]
+    pub usage: AgentUsageSettings,
+}
+
+/// `agents.usage.*` settings (ADR 0012).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentUsageSettings {
+    /// `agents.usage.prices.<model>`: the user's own USD per million token
+    /// prices, keyed by model id or id prefix. They take precedence over the
+    /// bundled price table.
+    #[specta(optional)]
+    pub prices: BTreeMap<String, crate::usage::PriceOverride>,
 }
 
 /// How a session Span starts treats the agent's own default mode.
@@ -283,6 +302,7 @@ impl Default for AgentSettings {
             warm_start: true,
             health_check: true,
             start_mode: HashMap::new(),
+            usage: AgentUsageSettings::default(),
         }
     }
 }
@@ -485,6 +505,7 @@ pub const COMMAND_IDS: &[&str] = &[
     "goBack",
     "goForward",
     "focusBreadcrumbs",
+    "showUsage",
 ];
 
 /// Commands introduced after shortcuts could already be saved. Like Toggle Files,
@@ -792,6 +813,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("goBack", vec!["Mod+Alt+ArrowLeft"]),
         ("goForward", vec!["Mod+Alt+ArrowRight"]),
         ("focusBreadcrumbs", vec!["Mod+Shift+."]),
+        ("showUsage", vec![]),
     ];
     let claimed = overrides
         .values()
@@ -854,6 +876,8 @@ const USER_ONLY: &[&[&str]] = &[
     &["agents", "healthCheck"],
     // A cloned project must not make agents skip approval prompts.
     &["agents", "startMode"],
+    // A cloned project must not change what the Usage page reports (ADR 0012).
+    &["agents", "usage"],
     // A cloned project must not make Span contact the network at launch.
     &["updates", "checkOnLaunch"],
 ];
@@ -1129,6 +1153,7 @@ const STRUCT_PATHS: &[&[&str]] = &[
     &["languageServers"],
     &["agents"],
     &["agents", "delegation"],
+    &["agents", "usage"],
     &["updates"],
     &["explorer"],
 ];

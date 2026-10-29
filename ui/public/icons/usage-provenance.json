@@ -1,0 +1,15 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Icon for the Usage page entry in the toolbar (agent token and cost usage, ADR 0012).",
+  "processing": "Copied byte-identical. No edits. The application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied at the user's direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "Usage.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "chart/iconsax-chart-ef55b6f9ae7b-.svg",
+      "sourceSha256": "e7be2d2c34b163b171550513c24ac8f51de7c3110ec00ef114914570679033e5",
+      "assetSha256": "e7be2d2c34b163b171550513c24ac8f51de7c3110ec00ef114914570679033e5"
+    }
+  ]
+}

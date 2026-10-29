@@ -195,6 +195,46 @@ pub fn stop_health(state: &DesktopState) {
     }
 }
 
+/// Remember delegated child session ids across runs (ADR 0003, amendment of
+/// 2026-10-29), so listings keep hiding them and leftovers can be ended
+/// later. Called once at startup, before any History listing.
+pub fn load_delegated_ledger(app: &tauri::AppHandle) {
+    if let Ok(directory) = app.path().app_data_dir() {
+        span_acp::set_delegated_ledger(directory.join("agent-delegated-sessions.json"));
+    }
+}
+
+/// App exit: end (delete, else close) every delegated child still held,
+/// where its agent supports it, bounded to a few seconds. Children that do
+/// not finish in time stay recorded and are ended on a later run.
+pub fn end_delegated(state: &DesktopState) {
+    let children: Vec<span_acp::LiveSession> = state
+        .sessions
+        .live_sessions()
+        .into_iter()
+        .filter(|session| session.origin == SessionOrigin::Delegated)
+        .collect();
+    if children.is_empty() {
+        return;
+    }
+    let sessions = state.sessions.clone();
+    tauri::async_runtime::block_on(async move {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            for child in children {
+                span_acp::end_delegated_session(
+                    &sessions,
+                    &child.key.connection_id,
+                    &child.agent_name,
+                    &child.key.session_id,
+                    std::time::Duration::from_secs(2),
+                )
+                .await;
+            }
+        })
+        .await;
+    });
+}
+
 /// The focused session: the sidebar's agent connection and its open chat.
 /// The unkeyed commands (`agent_prompt`, `agent_cancel`, ...) resolve to it.
 #[derive(Clone)]

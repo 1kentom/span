@@ -1011,6 +1011,16 @@ export async function sessionMetaList(): Promise<import('../bindings').SessionMe
   return isDesktop ? commands.sessionMetaList() : [];
 }
 
+/** Usage totals by day, agent and model over every folder's sessions (ADR 0012). Browser preview records no usage and returns `undefined`. */
+export async function usageSummary(range: import('../bindings').UsageRange_Deserialize): Promise<import('../bindings').UsageSummary_Serialize | undefined> {
+  return isDesktop ? commands.usageSummary(range) : undefined;
+}
+
+/** Sessions with usage in the range, most recently active first (ADR 0012). Empty in the browser preview. */
+export async function usageSessions(range: import('../bindings').UsageRange_Deserialize): Promise<import('../bindings').SessionUsageRow_Serialize[]> {
+  return isDesktop ? commands.usageSessions(range) : [];
+}
+
 /** Merge a patch into one session's metadata: model and agent uses add up, counters and stop reason replace. Debouncing is the caller's job. */
 export async function sessionMetaUpdate(patch: import('../bindings').SessionMetaPatch_Deserialize): Promise<import('../bindings').SessionMeta_Serialize> {
   if (!isDesktop) nativeRequired('Saving session history');

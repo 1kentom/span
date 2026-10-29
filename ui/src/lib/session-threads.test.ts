@@ -89,6 +89,14 @@ describe("visibleThreadRows", () => {
     expect(visibleThreadRows(["s1", "s2", "other"], [first, second], "claude-acp")).toEqual(["s2", "other"]);
     expect(visibleThreadRows(["s1", "other"], [first, second], "codex")).toEqual(["s1", "other"]);
   });
+
+  it("never lists a delegated child as a row of its own, for any agent", () => {
+    const lead = meta({ agentId: "claude-acp", sessionId: "lead", agents: [{ agentId: "codex", name: "codex", role: "delegated", subagent: false }] });
+    const child = meta({ agentId: "codex", sessionId: "child-1", parent: { agentId: "claude-acp", sessionId: "lead" } });
+    const sibling = meta({ agentId: "Codex", sessionId: "child-2", parent: { agentId: "claude-acp", sessionId: "lead" } });
+    expect(visibleThreadRows(["child-1", "chat", "child-2"], [lead, child, sibling], "codex")).toEqual(["chat"]);
+    expect(visibleThreadRows(["lead", "child-1"], [lead, child], "claude-acp")).toEqual(["lead"]);
+  });
 });
 
 describe("listedTitle", () => {
