@@ -144,7 +144,8 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
   await page.setViewportSize({ width: 1440, height: 900 });
   await terminal.getByRole("button", { name: "Choose terminal shell", exact: true }).click();
   const profileMenu = page.getByRole("menu", { name: "Installed terminal shells", exact: true });
-  await expect(profileMenu.getByText("Detected: macOS")).toBeVisible();
+  await expect(profileMenu.getByRole("img", { name: "macOS", exact: true })).toBeVisible();
+  await expect(profileMenu).not.toContainText("Detected: macOS");
   await page.screenshot({ path: testInfo.outputPath("terminal-shell-picker-fixture.png") });
   const popupBounds = (await profileMenu.boundingBox())!;
   expect(popupBounds.y).toBeGreaterThanOrEqual(0); expect(popupBounds.y + popupBounds.height).toBeLessThanOrEqual(900);
@@ -155,6 +156,14 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
   const zoomedPopup = (await profileMenu.boundingBox())!;
   expect(Math.abs(zoomedPopup.x - zoomedTrigger.x)).toBeLessThan(2);
   await page.screenshot({ path: testInfo.outputPath("terminal-shell-picker-zoom125-fixture.png") });
+  for (const factor of [1.728, 2]) {
+    await page.evaluate(factor => { document.documentElement.style.zoom = String(factor); document.querySelector<HTMLElement>(".ide")!.style.height = `calc(100dvh / ${factor})`; }, factor);
+    await expect.poll(async () => { const popup = (await profileMenu.boundingBox())!; return popup.y + popup.height; }).toBeLessThanOrEqual(900);
+    const popup = (await profileMenu.boundingBox())!;
+    expect(popup.x).toBeGreaterThanOrEqual(0); expect(popup.x + popup.width).toBeLessThanOrEqual(1441);
+    expect(popup.y).toBeGreaterThanOrEqual(0);
+    await page.screenshot({ path: testInfo.outputPath(`terminal-platform-picker-zoom${factor}-fixture.png`) });
+  }
   await page.evaluate(() => { document.documentElement.style.zoom = "1"; document.querySelector<HTMLElement>(".ide")!.style.height = "100dvh"; });
   await profileMenu.getByRole("menuitem").filter({ hasText: "/bin/bash" }).click();
   await expect.poll(async () => (await trace()).creates.length).toBe(2);

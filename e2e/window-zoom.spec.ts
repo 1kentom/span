@@ -37,3 +37,29 @@ test("window zoom scales the whole workbench and persists independently of font 
   await expect.poll(async () => (await page.locator(".ide").boundingBox())!.height).toBeCloseTo(900, 0);
   await page.keyboard.press(`${modifier}+0`);
 });
+
+
+for (const factor of [1.728, 2]) {
+  test(`keeps editor and terminal inside the viewport at ${factor} CSS zoom and resizes panels in logical pixels`, async ({ page }, testInfo) => {
+    await ready(page);
+    await page.evaluate(async factor => { const zoom = await import("/src/lib/zoom.ts"); await zoom.applyWindowZoom(factor); }, factor);
+    const center = page.locator(".center-area");
+    await expect.poll(async () => (await center.boundingBox())!.width).toBeGreaterThan(100);
+    const viewport = page.viewportSize()!;
+    for (const selector of [".ide", ".workbench-main", ".center-area", ".run-bottom-panel", ".statusbar"]) {
+      const bounds = (await page.locator(selector).boundingBox())!;
+      expect(bounds.y).toBeGreaterThanOrEqual(0); expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height + 1);
+      expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width + 1);
+    }
+    const handle = page.getByRole("separator", { name: "Resize project panel", exact: true });
+    const logicalWidth = await page.locator(".workbench-main").evaluate(node => node.clientWidth);
+    expect(Number(await handle.getAttribute("aria-valuemax"))).toBeCloseTo(logicalWidth * .42, 1);
+    // Drag inward to stay below the responsive width cap.
+    const before = Number(await handle.getAttribute("aria-valuenow"));
+    const grip = handle.locator(".panel-rail-grip"); await grip.hover();
+    const box = (await grip.boundingBox())!; const x = box.x + box.width / 2; const y = box.y + box.height / 2;
+    await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x - 40, y, { steps: 5 }); await page.mouse.up();
+    await expect.poll(async () => Number(await handle.getAttribute("aria-valuenow"))).toBeCloseTo(before - 40 / factor, 0);
+    await page.screenshot({ path: testInfo.outputPath(`workbench-zoom${factor}.png`) });
+  });
+}

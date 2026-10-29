@@ -48,3 +48,5 @@
 @container span-terminal (max-width:650px){.terminal-dock-context{max-width:80px;padding:0 5px}}
 
 .terminal-host .xterm{font-variant-ligatures:none;font-feature-settings:"liga" 0,"calt" 0;letter-spacing:0}
+
+.terminal-platform-mark{display:inline-block;flex:none;width:13px;height:16px;background:currentColor;color:var(--dim);mask:url("/brands/apple.svg") center/contain no-repeat;-webkit-mask:url("/brands/apple.svg") center/contain no-repeat}

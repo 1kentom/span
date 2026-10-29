@@ -1,0 +1,29 @@
+{
+  "retrieved": "2026-10-29",
+  "api": "https://api.svgl.app?search=apple",
+  "repository": "https://github.com/pheralb/svgl",
+  "license": "Repository MIT, logos remain subject to their respective owners trademark and brand terms.",
+  "assets": [
+    {
+      "key": "apple",
+      "retrieved": "2026-10-29",
+      "registry": {
+        "id": 213,
+        "title": "Apple",
+        "category": "Software",
+        "route": {
+          "light": "https://svgl.app/library/apple.svg",
+          "dark": "https://svgl.app/library/apple_dark.svg"
+        },
+        "url": "https://www.apple.com"
+      },
+      "files": {
+        "mono": {
+          "file": "apple.svg",
+          "source": "https://svgl.app/library/apple.svg",
+          "sha256": "0b8ffab7955ccdd02e8a3a8cfc0091abb1ddb2d1e9eb0861a4c6ee3bad7d3582"
+        }
+      }
+    }
+  ]
+}

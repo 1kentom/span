@@ -13,6 +13,14 @@ function storedLevel(): number {
   try { const value = window.localStorage.getItem(ZOOM_STORAGE_KEY); return value === null ? 0 : clampZoomLevel(Number(value)); }
   catch { return 0; }
 }
+/** CSS zoom scales pointer coordinates, while layout dimensions stay in CSS pixels. */
+export function cssZoomFactor(): number {
+  return parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+}
+export function layoutSize(element?: HTMLElement): { width: number; height: number } {
+  const factor = cssZoomFactor();
+  return { width: element?.clientWidth || window.innerWidth / factor, height: element?.clientHeight || window.innerHeight / factor };
+}
 export async function applyWindowZoom(factor: number): Promise<void> {
   if (isTauri()) await getCurrentWebview().setZoom(factor);
   else {

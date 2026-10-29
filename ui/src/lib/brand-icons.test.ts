@@ -69,3 +69,15 @@ describe("brand identity", () => {
     }
   });
 });
+
+
+it("preserves the SVGL Apple platform artwork and its source hash", () => {
+  const record = JSON.parse(readFileSync(resolve("public/brands/platform-provenance.json"), "utf8")).assets[0];
+  const file = record.files.mono;
+  const contents = readFileSync(resolve("public/brands", file.file), "utf8");
+  expect(record.registry.title).toBe("Apple");
+  expect(file.source).toBe("https://svgl.app/library/apple.svg");
+  expect(createHash("sha256").update(contents).digest("hex")).toBe(file.sha256);
+  expect(contents).not.toMatch(/<(?:script|foreignObject|image|iframe|object|embed)\b|\bon\w+\s*=|javascript:/i);
+  expect(contents).not.toMatch(/(?:href|xlink:href)\s*=\s*["'](?!#)/i);
+});
