@@ -4,13 +4,13 @@ import { readFileSync } from "node:fs";
 // Explicit browser IPC fixture. This test never starts a shell or executes a command.
 const properties = JSON.parse(readFileSync("crates/core/settings.schema.json", "utf8")).properties;
 const settings = Object.fromEntries(Object.entries(properties as Record<string, { default?: unknown }>).filter(([key, value]) => !key.includes(".") && key !== "$schema" && "default" in value).map(([key, value]) => [key, value.default]));
-type Trace = { commands: { language: string; code: string; root: string }[]; writes: { id: string; text: string }[]; creates: string[]; closes: string[]; resizes: { id: string; cols: number; rows: number }[]; acknowledgements: number; warnings: string[]; menus: Record<string, string[]>[] };
+type Trace = { dimensions: Record<string, { cols: number; rows: number }>; commands: { language: string; code: string; root: string }[]; writes: { id: string; text: string }[]; creates: string[]; closes: string[]; resizes: { id: string; cols: number; rows: number }[]; acknowledgements: number; warnings: string[]; menus: Record<string, string[]>[] };
 
 test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run versus staged Send", async ({ page }, testInfo) => {
   await page.addInitScript(settings => {
     Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
     let callback = 0; let next = 0;
-    const trace = { commands: [], writes: [], creates: [], closes: [], resizes: [], acknowledgements: 0, warnings: [], menus: [] } as Trace;
+    const trace = { dimensions: {}, commands: [], writes: [], creates: [], closes: [], resizes: [], acknowledgements: 0, warnings: [], menus: [] } as Trace;
     const warn = console.warn.bind(console);
     console.warn = (...messages) => { if (String(messages[0]).includes("computations created outside")) trace.warnings.push(new Error(String(messages[0])).stack || "Unknown reactive owner warning"); warn(...messages); };
     const sessions = new Map<string, { channel: { onmessage: (event: unknown) => void }; queue: string[]; sequence: number; waiting: boolean; exitCode?: number }>();
@@ -53,13 +53,13 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
           { id: "/fixture/bin/python3", name: "Python REPL", path: "/fixture/bin/python3", isDefault: false, kind: "python" },
         ];
         if (command === "terminal_create_command") {
-          const id = `fixture:${++next}`; trace.creates.push(id); trace.commands.push({ language: args.language, code: args.code, root: args.expectedWorkspaceRoot });
+          const id = `fixture:${++next}`; trace.creates.push(id); trace.dimensions[id] = { cols: args.cols, rows: args.rows }; trace.commands.push({ language: args.language, code: args.code, root: args.expectedWorkspaceRoot });
           sessions.set(id, { channel: args.onEvent, queue: [], sequence: 0, waiting: false, exitCode: 0 });
           setTimeout(() => output(id, "Explicit command fixture output, no command executed.\r\n"), 0);
           return { id, cwd: root, shell: args.language === "bash" ? "/bin/bash" : "/bin/zsh", cols: args.cols, rows: args.rows, processId: null, exitCode: null, exited: false };
         }
         if (command === "terminal_create") {
-          const id = `fixture:${++next}`; trace.creates.push(id);
+          const id = `fixture:${++next}`; trace.creates.push(id); trace.dimensions[id] = { cols: args.cols, rows: args.rows };
           sessions.set(id, { channel: args.onEvent, queue: [], sequence: 0, waiting: false });
           setTimeout(() => {
             const normal = Array.from({ length: 8 }, (_, index) => `\x1b[${30 + index}mANSI ${index} `).join("");
@@ -69,7 +69,7 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
           return { id, cwd: root, shell: args.profileId || "/bin/zsh", cols: args.cols, rows: args.rows, processId: null, exitCode: null, exited: false };
         }
         if (command === "terminal_write") { const text = new TextDecoder().decode(Uint8Array.from(args.data)); trace.writes.push({ id: args.id, text }); output(args.id, text); return null; }
-        if (command === "terminal_resize") { trace.resizes.push({ id: args.id, cols: args.cols, rows: args.rows }); return null; }
+        if (command === "terminal_resize") { trace.dimensions[args.id] = { cols: args.cols, rows: args.rows }; trace.resizes.push({ id: args.id, cols: args.cols, rows: args.rows }); return null; }
         if (command === "terminal_acknowledge") { trace.acknowledgements++; const session = sessions.get(args.id); if (session) session.waiting = false; output(args.id); if (session && !session.waiting && !session.queue.length && session.exitCode !== undefined) { session.channel.onmessage({ kind: "exit", id: args.id, code: session.exitCode }); session.exitCode = undefined; } return null; }
         if (command === "terminal_close") { trace.closes.push(args.id); sessions.delete(args.id); return null; }
         if (command === "terminal_interrupt") return null;
@@ -79,6 +79,13 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
   }, settings);
   const trace = () => page.evaluate(() => (window as unknown as { __terminalFixture: Trace }).__terminalFixture);
   await page.goto("/");
+  const rootName = page.locator(".tree-root-name");
+  await expect(rootName).toHaveAttribute("title", "Native transport fixture");
+  const rootMetrics = await rootName.evaluate(node => ({ height: node.getBoundingClientRect().height, client: node.clientWidth, scroll: node.scrollWidth, wrap: getComputedStyle(node).whiteSpace, ellipsis: getComputedStyle(node).textOverflow }));
+  expect(rootMetrics.wrap).toBe("nowrap"); expect(rootMetrics.ellipsis).toBe("ellipsis");
+  expect(rootMetrics.height).toBeLessThanOrEqual(20); expect(rootMetrics.scroll).toBeGreaterThan(rootMetrics.client);
+  const rootBounds = (await page.locator(".tree-root").boundingBox())!;
+  expect((await page.locator(".file-index-status").boundingBox())!.y).toBeGreaterThanOrEqual(rootBounds.y + rootBounds.height);
   const terminal = page.getByRole("region", { name: "Terminal", exact: true });
   await expect(terminal.getByRole("tab", { name: "zsh", exact: true })).toBeVisible();
   const input = terminal.locator(".xterm-helper-textarea:visible");
@@ -146,6 +153,7 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
   await expect(terminal.getByRole("tab", { name: "bash", exact: true })).toBeVisible();
   await expect(input).toBeFocused();
   expect((await trace()).creates).toHaveLength(2); expect((await trace()).closes).toEqual([]);
+  const resizeCountBeforeThemes = (await trace()).resizes.length;
   const viewport = terminal.locator(".xterm:visible .xterm-scrollable-element");
   for (const [theme, background] of [["light", "rgb(255, 255, 255)"], ["purple", "rgb(23, 23, 43)"], ["dark", "rgb(24, 25, 27)"]] as const) {
     await page.locator(".ide").evaluate((node, value) => { node.classList.remove("theme-dark", "theme-light", "theme-purple"); node.classList.add(`theme-${value}`); }, theme);
@@ -155,18 +163,19 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
     await terminal.screenshot({ path: testInfo.outputPath(`terminal-${theme}-fixture.png`) });
     await page.screenshot({ path: testInfo.outputPath(`app-terminal-${theme}-fixture.png`) });
   }
-  const columns = (await trace()).resizes.filter(value => value.id === "fixture:2").at(-1)!.cols;
+  expect((await trace()).resizes).toHaveLength(resizeCountBeforeThemes);
+  const columns = (await trace()).dimensions["fixture:2"].cols;
   await page.evaluate(cols => (window as any).__terminalFixtureOutput("fixture:2", "\x1b[2J\x1b[H" + "X".repeat(cols - 4) + "日本語"), columns);
   const wrappingRows = terminal.locator(".xterm:visible .xterm-rows > div");
   await expect(wrappingRows.nth(0)).toHaveText("X".repeat(columns - 4) + "日本");
   await expect(wrappingRows.nth(1)).toContainText("語");
-  const columnsBeforeFontChange = (await trace()).resizes.filter(value => value.id === "fixture:2").at(-1)!.cols;
+  const columnsBeforeFontChange = (await trace()).dimensions["fixture:2"].cols;
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await expect.poll(async () => Object.keys((await trace()).menus.at(-1) || {}).length).toBeGreaterThan(0);
   await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("Editor font size");
   const fontSize = page.getByRole("spinbutton", { name: "Editor font size", exact: true });
   await fontSize.fill("18"); await fontSize.press("Tab");
-  await expect.poll(async () => (await trace()).resizes.filter(value => value.id === "fixture:2").at(-1)?.cols || columnsBeforeFontChange).toBeLessThan(columnsBeforeFontChange);
+  await expect.poll(async () => (await trace()).dimensions["fixture:2"].cols).toBeLessThan(columnsBeforeFontChange);
   expect((await trace()).creates).toHaveLength(2); expect((await trace()).closes).toEqual([]);
   await terminal.screenshot({ path: testInfo.outputPath("terminal-font18-fixture.png") });
   await page.screenshot({ path: testInfo.outputPath("app-terminal-font18-fixture.png") });

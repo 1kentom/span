@@ -63,6 +63,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
   let disposed = false;
   let resizeFrame = 0;
   let fontRequest = 0;
+  let resizeState: { id: string; token: number; applied?: { cols: number; rows: number }; desired?: { cols: number; rows: number }; running: boolean } | undefined;
   let generation = 0;
   let inputQueue: Promise<void> = Promise.resolve();
   let startupInput: { token: number; chunks: Uint8Array[]; bytes: number } | undefined;
@@ -95,6 +96,29 @@ export function TerminalPanel(props: TerminalPanelProps) {
     });
     return inputQueue;
   };
+  const requestResize = (id: string, token: number, cols: number, rows: number) => {
+    if (!resizeState || resizeState.id !== id || resizeState.token !== token) return;
+    const state = resizeState;
+    state.desired = { cols, rows };
+    if (state.running) return;
+    state.running = true;
+    void (async () => {
+      try {
+        while (!disposed && token === generation && sessionId === id && !exited()) {
+          const desired = state.desired; state.desired = undefined;
+          if (!desired) break;
+          if (state.applied?.cols === desired.cols && state.applied.rows === desired.rows) continue;
+          try {
+            await props.transport.resize(id, desired.cols, desired.rows);
+            state.applied = desired;
+          } catch (failure) {
+            state.applied = undefined;
+            if (!disposed && token === generation && sessionId === id) report(failure);
+          }
+        }
+      } finally { state.running = false; }
+    })();
+  };
   const applyAppearance = () => {
     if (!terminal || disposed) return;
     const style = getComputedStyle(host);
@@ -119,7 +143,8 @@ export function TerminalPanel(props: TerminalPanelProps) {
       if (!props.visible || !terminal || !fit || disposed || host.clientWidth === 0) return;
       fit.fit();
       const id = sessionId; const token = generation;
-      if (id && !exited()) void props.transport.resize(id, terminal.cols, terminal.rows).catch(failure => { if (token === generation && id === sessionId) report(failure); });
+      if (!id || exited()) return;
+      requestResize(id, token, terminal.cols, terminal.rows);
     });
   };
   const start = async () => {
@@ -161,6 +186,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
     terminal.onData(data => { void write(new TextEncoder().encode(data), token).catch(reportInput); });
     terminal.onBinary(data => { void write(Uint8Array.from(data, character => character.charCodeAt(0)), token).catch(reportInput); });
     let id: string;
+    const cols = terminal.cols; const rows = terminal.rows;
     try {
       const handlers: TerminalHandlers = {
         started: shell => { if (!disposed && token === generation) props.onShell?.(shell); },
@@ -169,8 +195,8 @@ export function TerminalPanel(props: TerminalPanelProps) {
         error: message => { if (!disposed && token === generation) report(message); },
       };
       id = props.command
-        ? await props.transport.createCommand(terminal.cols, terminal.rows, handlers, props.command.language, props.command.code)
-        : await props.transport.create(terminal.cols, terminal.rows, handlers, props.profileId);
+        ? await props.transport.createCommand(cols, rows, handlers, props.command.language, props.command.code)
+        : await props.transport.create(cols, rows, handlers, props.profileId);
     } catch (failure) {
       if (startupInput?.token === token) startupInput = undefined;
       if (!disposed && token === generation) throw failure;
@@ -178,6 +204,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
     }
     if (disposed || token !== generation) { await props.transport.close(id); return; }
     sessionId = id;
+    resizeState = { id, token, applied: { cols, rows }, running: false };
     const pending = startupInput?.token === token ? startupInput.chunks : [];
     startupInput = undefined;
     for (const bytes of pending) void write(bytes, token).catch(reportInput);

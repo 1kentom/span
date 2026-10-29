@@ -5,13 +5,14 @@ import { render } from "solid-js/web";
 import { TerminalPanel, type TerminalController, type TerminalTransport, type TerminalHandlers } from "./TerminalPanel";
 
 const xterm = vi.hoisted(() => ({
+  instance: undefined as { cols: number; rows: number } | undefined,
   construct: vi.fn(), write: vi.fn(), dispose: vi.fn(), focus: vi.fn(), paste: vi.fn(), webgl: vi.fn(),
   data: undefined as ((data: string) => void) | undefined,
   binary: undefined as ((data: string) => void) | undefined,
 }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   cols = 80; rows = 24; options = { theme: {} as Record<string, unknown>, fontSize: 13, fontFamily: "JetBrains Mono" };
-  constructor(options: { theme: Record<string, unknown>; fontSize: number; fontFamily: string }) { Object.assign(this.options, options); xterm.construct(this.options); }
+  constructor(options: { theme: Record<string, unknown>; fontSize: number; fontFamily: string }) { Object.assign(this.options, options); xterm.instance = this; xterm.construct(this.options); }
   loadAddon() {} open() {} clear() {}
   write = xterm.write; dispose = xterm.dispose; focus = xterm.focus;
   getSelection() { return "selected terminal text"; } paste = xterm.paste;
@@ -53,8 +54,11 @@ describe("terminal panel", () => {
     const view = mount();
     Object.defineProperty(view.root.querySelector(".terminal-host"), "clientWidth", { value: 640 });
     await vi.waitFor(() => expect(view.controller()).toBeDefined());
-    await vi.waitFor(() => expect(view.transport.resize).toHaveBeenCalledWith("terminal-1", 80, 24));
+    expect(view.transport.resize).not.toHaveBeenCalled();
+    xterm.instance!.cols = 81; observations.at(-1)!([], {} as ResizeObserver);
+    await vi.waitFor(() => expect(view.transport.resize).toHaveBeenCalledWith("terminal-1", 81, 24));
     vi.mocked(view.transport.resize).mockRejectedValueOnce(new Error("Resize disconnected"));
+    xterm.instance!.cols = 82;
     observations.at(-1)!([], {} as ResizeObserver);
     await vi.waitFor(() => expect(view.root.querySelector('[role="alert"]')?.textContent).toContain("Resize disconnected"));
     view.setShown(false); vi.mocked(view.transport.resize).mockClear();
@@ -258,6 +262,8 @@ it("does not surface a superseded resize failure after restarting the shell", as
   const view = mount(); let reject!: (cause: Error) => void;
   Object.defineProperty(view.root.querySelector(".terminal-host"), "clientWidth", { value: 640 });
   vi.mocked(view.transport.resize).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  await vi.waitFor(() => expect(view.controller()).toBeDefined());
+  xterm.instance!.cols = 81; observations.at(-1)!([], {} as ResizeObserver);
   await vi.waitFor(() => expect(view.transport.resize).toHaveBeenCalledOnce());
   view.handlers().exit(0);
   view.root.querySelector<HTMLButtonElement>('[aria-label="Start new shell"]')!.click();
@@ -283,7 +289,7 @@ it("finishes an explicit draft without focusing a hidden terminal", async () => 
 it("updates editor font settings in the renderer without respawning or stealing focus", async () => {
   const view = mount(); Object.defineProperty(view.root.querySelector(".terminal-host"), "clientWidth", { value: 640 });
   await vi.waitFor(() => expect(view.controller()).toBeDefined());
-  await vi.waitFor(() => expect(view.transport.resize).toHaveBeenCalled()); xterm.focus.mockClear();
+  expect(view.transport.resize).not.toHaveBeenCalled(); xterm.focus.mockClear();
   view.setFontSize(18); view.setFontFamily("SFMono-Regular");
   await vi.waitFor(() => expect(xterm.construct.mock.calls[0][0]).toMatchObject({ fontSize: 18, fontFamily: '"SFMono-Regular", monospace' }));
   expect(view.transport.create).toHaveBeenCalledOnce(); expect(view.transport.close).not.toHaveBeenCalled(); expect(xterm.focus).not.toHaveBeenCalled();
@@ -341,4 +347,42 @@ it.each([
     await vi.waitFor(() => expect(view.transport.write).toHaveBeenCalledOnce());
     expect(view.transport.write).toHaveBeenCalledExactlyOnceWith("terminal-1", new TextEncoder().encode("printf explicit\r"));
   } finally { platformSpy.mockRestore(); }
+});
+
+it("sends SIGWINCH through native resize only when logical rows or columns change", async () => {
+  const view = mount(); Object.defineProperty(view.root.querySelector(".terminal-host"), "clientWidth", { value: 640 });
+  await vi.waitFor(() => expect(view.controller()).toBeDefined());
+  for (let index = 0; index < 20; index++) observations.at(-1)!([], {} as ResizeObserver);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(view.transport.resize).not.toHaveBeenCalled();
+  xterm.instance!.cols = 100; xterm.instance!.rows = 30;
+  observations.at(-1)!([], {} as ResizeObserver);
+  await vi.waitFor(() => expect(view.transport.resize).toHaveBeenCalledExactlyOnceWith("terminal-1", 100, 30));
+  view.setShown(false); view.setFontFamily("Menlo"); view.setShown(true);
+  for (let index = 0; index < 20; index++) observations.at(-1)!([], {} as ResizeObserver);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(view.transport.resize).toHaveBeenCalledOnce();
+  xterm.instance!.rows = 31; observations.at(-1)!([], {} as ResizeObserver);
+  await vi.waitFor(() => expect(view.transport.resize).toHaveBeenCalledTimes(2));
+  expect(view.transport.resize).toHaveBeenLastCalledWith("terminal-1", 100, 31);
+});
+
+it("serializes native resizes and coalesces pending layouts to the latest dimensions", async () => {
+  const view = mount(); Object.defineProperty(view.root.querySelector(".terminal-host"), "clientWidth", { value: 640 });
+  await vi.waitFor(() => expect(view.controller()).toBeDefined());
+  let release!: () => void;
+  vi.mocked(view.transport.resize).mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+  xterm.instance!.cols = 100; observations.at(-1)!([], {} as ResizeObserver);
+  await vi.waitFor(() => expect(view.transport.resize).toHaveBeenCalledExactlyOnceWith("terminal-1", 100, 24));
+  xterm.instance!.cols = 110; observations.at(-1)!([], {} as ResizeObserver);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  xterm.instance!.cols = 120; xterm.instance!.rows = 30; observations.at(-1)!([], {} as ResizeObserver);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(view.transport.resize).toHaveBeenCalledOnce();
+  release();
+  await vi.waitFor(() => expect(view.transport.resize).toHaveBeenCalledTimes(2));
+  expect(view.transport.resize).toHaveBeenLastCalledWith("terminal-1", 120, 30);
+  observations.at(-1)!([], {} as ResizeObserver);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(view.transport.resize).toHaveBeenCalledTimes(2);
 });
