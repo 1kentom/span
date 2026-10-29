@@ -13,7 +13,7 @@ afterEach(() => { disposers.splice(0).forEach(d => d()); document.body.replaceCh
 function mount(view: HubView, open = false) {
   const root = document.createElement("div"); document.body.append(root);
   const onToggle = vi.fn();
-  disposers.push(render(() => <><LanguageIntelligenceButton view={view} open={open} onToggle={onToggle} /><LanguageServerStatus view={view} open={open} onToggle={onToggle} /></>, root));
+  disposers.push(render(() => <><LanguageIntelligenceButton view={view} open={open} onToggle={onToggle} /><LanguageServerStatus view={view} language={view.card ? "java" : undefined} open={open} onToggle={onToggle} /></>, root));
   return { root, onToggle, button: root.querySelector<HTMLButtonElement>(".hub-button")!, status: root.querySelector<HTMLButtonElement>(".lsp-status-button") };
 }
 const java = (state: any, entry: any = {}, activity: any[] = []) => makeServer("jdtls", state, { state: { kind: "ready" }, ...entry }, activity);
@@ -34,8 +34,8 @@ describe("fixture: top bar button and status bar item", () => {
     const dash = m.button.querySelector(".hub-ring-bar")!.getAttribute("stroke-dasharray")!;
     expect(parseFloat(dash)).toBeCloseTo(2 * Math.PI * 12 * 0.42, 1);
     expect(m.button.getAttribute("aria-label")).toBe("Language intelligence. Installing Java (42%).");
-    expect(m.status!.textContent).toBe("Java 42%");
-    expect(m.status!.getAttribute("aria-label")).toBe(m.button.getAttribute("aria-label"));
+    expect(m.status!.getAttribute("aria-label")).toBe("Java, Eclipse JDT LS 1.62, installing 42%. Show language support");
+    expect(m.root.querySelector(".lsp-status")!.getAttribute("data-state")).toBe("starting");
   });
   it("shows a spinning ring while starting and a determinate one while indexing", () => {
     expect(mount(viewOf(java({ kind: "starting", server: "jdtls" }, { state: { kind: "starting" } }))).button.querySelector(".hub-ring-bar")!.classList.contains("spin")).toBe(true);
@@ -47,7 +47,8 @@ describe("fixture: top bar button and status bar item", () => {
     expect(m.button.classList.contains("blue")).toBe(true);
     expect(m.button.querySelector(".hub-badge")).toBeNull();
     expect(m.button.hasAttribute("data-check")).toBe(false);
-    expect(m.status!.textContent).toBe("Java");
+    expect(m.status!.textContent).toBe("");
+    expect(m.root.querySelector(".lsp-status")!.getAttribute("data-state")).toBe("ready");
   });
   it("shows an attention badge for needs install, runtime missing, failed and crashed", () => {
     const cases: [any, string][] = [
@@ -68,7 +69,8 @@ describe("fixture: top bar button and status bar item", () => {
     const m = mount(viewOf(java({ kind: "ready", server: "jdtls" }, { hub: { trust: { workspaceTrusted: false, needsTrust: true } } })));
     expect(m.button.dataset.badge).toBe("restricted");
     expect(m.button.getAttribute("aria-label")).toBe("Language intelligence. Java is ready, folder not trusted.");
-    expect(m.status!.textContent).toBe("Java \u00b7 Trust");
+    expect(m.root.querySelector(".lsp-status")!.getAttribute("data-state")).toBe("needs-trust");
+    expect(m.button.querySelector(".hub-badge.dot")!.getAttribute("data-state")).toBe("needs-trust");
     expect(m.button.querySelector(".hub-badge.dot")).not.toBeNull();
   });
   it("has no title attribute, a tooltip that reads the same summary, and none while the panel is open", () => {
@@ -84,6 +86,14 @@ describe("fixture: top bar button and status bar item", () => {
     expect(open.root.querySelector("[role=tooltip]")).toBeNull();
     expect(open.button.getAttribute("aria-expanded")).toBe("true");
     expect(open.button.getAttribute("aria-haspopup")).toBe("dialog");
+  });
+  it("badges the worst state of any enabled server, even when the active file is fine", () => {
+    const failing = makeServer("html", { kind: "start-failed", server: "html", reason: "x" }, { state: { kind: "startFailed", reason: "x" } });
+    const m = mount(viewOf(java({ kind: "ready", server: "jdtls" }), { servers: [java({ kind: "ready", server: "jdtls" }), failing] }));
+    expect(m.button.dataset.badge).toBe("attention");
+    expect(m.button.querySelector(".hub-badge.dot")!.getAttribute("data-state")).toBe("error");
+    const off = makeServer("html", { kind: "start-failed", server: "html", reason: "x" }, { state: { kind: "startFailed", reason: "x" }, enabled: false });
+    expect(mount(viewOf(java({ kind: "ready", server: "jdtls" }), { servers: [java({ kind: "ready", server: "jdtls" }), off] })).button.querySelector(".hub-badge")).toBeNull();
   });
   it("passes its own element to the toggle so focus can return to it", () => {
     const m = mount(viewOf(java({ kind: "ready", server: "jdtls" })));
