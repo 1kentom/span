@@ -881,6 +881,12 @@ export type AuthMethodInfo_Deserialize = {
 	 *  `agent_authenticate_with` and an [`AuthCredential`] of the same kind.
 	 */
 	input?: AuthInput | null,
+	/**
+	 *  For a gateway method, the wire protocol the agent expects from the
+	 *  gateway (`_meta.gateway.protocol`), for example `anthropic`,
+	 *  `bedrock` or `openai`. The UI offers provider presets by it.
+	 */
+	gatewayProtocol?: string | null,
 	/**  Set when the method cannot run from Span and the user must act instead. */
 	hint?: AgentHint | null,
 };
@@ -902,6 +908,12 @@ export type AuthMethodInfo_Serialize = {
 	 *  `agent_authenticate_with` and an [`AuthCredential`] of the same kind.
 	 */
 	input?: AuthInput,
+	/**
+	 *  For a gateway method, the wire protocol the agent expects from the
+	 *  gateway (`_meta.gateway.protocol`), for example `anthropic`,
+	 *  `bedrock` or `openai`. The UI offers provider presets by it.
+	 */
+	gatewayProtocol?: string,
 	/**  Set when the method cannot run from Span and the user must act instead. */
 	hint?: AgentHint,
 };
