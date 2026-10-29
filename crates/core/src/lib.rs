@@ -5,6 +5,7 @@ mod buffer;
 mod format;
 mod format_native;
 mod fs_ops;
+mod git;
 mod images;
 mod proposal_diff;
 mod recent;
@@ -25,6 +26,10 @@ pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, Tex
 pub use format::{
     native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
     FormatResult,
+};
+pub use git::{
+    GitChange, GitCommit, GitCommitResult, GitContext, GitDiff, GitDiffSide, GitHistoryPage,
+    GitHistoryQuery, GitRepository, GitService, GitStatus,
 };
 pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
@@ -84,6 +89,8 @@ pub enum CoreError {
     Formatter(String),
     #[error("Run configuration: {0}")]
     RunConfiguration(String),
+    #[error("Git: {0}")]
+    Git(String),
     #[error("Search: {0}")]
     Search(String),
     #[error("Attachment rejected: {0}")]
