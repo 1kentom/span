@@ -44,7 +44,7 @@ describe("AgentMarkdown streaming reveal", () => {
   });
 
   it("keeps the full text in state for copy, export and the queue while the display catches up", () => {
-    let state = initialAgentState();
+    let state = initialAgentState(false);
     const chunk = (text: string) => ({ kind: "text", text } as unknown as AgentEvent);
     const body = sentence.repeat(10);
     for (let index = 0; index < body.length; index += 37) state = reduceAgentEvent(state, chunk(body.slice(index, index + 37)));
