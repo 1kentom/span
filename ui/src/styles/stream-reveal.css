@@ -1,0 +1,17 @@
+/* Streamed agent text: newly revealed words fade in. Opacity only, so nothing shifts layout. */
+.agent-markdown {
+  --stream-reveal-fade: 160ms;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .agent-markdown .stream-fresh {
+    animation: stream-reveal-in var(--stream-reveal-fade) ease-out both;
+  }
+}
+@keyframes stream-reveal-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

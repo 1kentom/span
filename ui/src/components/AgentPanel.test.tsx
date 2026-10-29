@@ -141,7 +141,8 @@ describe("agent menu", () => {
     const type = (text: string) => { input.value = text; input.dispatchEvent(new Event("input", { bubbles: true })); };
     type("first question"); root.querySelector<HTMLButtonElement>('[aria-label="Send prompt"]')!.click(); await flush();
     receive({ kind: "text", sessionId: "session-1", text: "**Streamed result**\n\n- preserved formatting" }); await flush();
-    expect(root.querySelector(".agent-markdown strong")?.textContent).toBe("Streamed result");
+    // Streamed text is revealed at a steady pace over a few frames, so wait for it rather than expecting it at once.
+    await vi.waitFor(() => expect(root.querySelector(".agent-markdown strong")?.textContent).toBe("Streamed result"));
     type("follow up while busy"); root.querySelector<HTMLButtonElement>('[aria-label="Queue follow-up"]')!.click(); await flush();
     expect(root.querySelector('[aria-label="Queued messages"]')?.textContent).toContain("follow up while busy");
     expect(mocks.prompt).toHaveBeenCalledTimes(1);

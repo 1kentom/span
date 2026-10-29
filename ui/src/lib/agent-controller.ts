@@ -2092,8 +2092,22 @@ export function createAgentController(props: AgentPanelProps) {
   };
 
   const scrollers: { content?: HTMLDivElement } = {};
-  const scrollToLatest = (smooth = false) =>
-    requestAnimationFrame(() => scrollers.content?.scrollTo({ top: scrollers.content.scrollHeight, behavior: smooth && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" }));
+  // Streaming text grows the feed every frame and several watchers ask to follow it: coalesce them into one scroll write
+  // per animation frame, and skip it if the reader scrolled away before the frame ran.
+  let scrollFrame: number | undefined;
+  let scrollSmooth = false;
+  const scrollToLatest = (smooth = false) => {
+    scrollSmooth ||= smooth;
+    if (scrollFrame !== undefined) return scrollFrame;
+    scrollFrame = requestAnimationFrame(() => {
+      const behavior = scrollSmooth && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto";
+      scrollFrame = undefined;
+      scrollSmooth = false;
+      if (!pinned()) return;
+      scrollers.content?.scrollTo({ top: scrollers.content.scrollHeight, behavior });
+    });
+    return scrollFrame;
+  };
   function followLatest() {
     setPinned(true);
     scrollToLatest(true);
