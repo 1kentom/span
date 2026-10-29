@@ -341,12 +341,20 @@
   padding: 9px 11px;
   font-size: 12px;
 }
-.agent-panel .agent-markdown table {
+.agent-panel .agent-markdown .markdown-table {
+  --markdown-table-surface: var(--sb-surface);
   margin: 0 0 10px;
-  font-size: 11px;
 }
-.agent-panel .agent-markdown :is(th, td) {
-  padding: 4px 8px;
+.agent-panel .agent-markdown .markdown-table table,
+.agent-panel .agent-markdown .markdown-table th {
+  font-size: 12px;
+}
+.agent-panel .agent-markdown .markdown-table :is(th, td) {
+  padding: 6px 10px;
+}
+.agent-panel .agent-markdown .markdown-table .markdown-cell {
+  min-width: 12ch;
+  max-width: 32ch;
 }
 .agent-panel .agent-markdown blockquote {
   margin: 0 0 10px;
