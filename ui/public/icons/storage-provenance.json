@@ -1,0 +1,15 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Icon for the Settings > Storage section (uploads store usage, reveal and clear).",
+  "processing": "Copied byte-identical. No edits. The application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied at the user's direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "Storage.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "essential/iconsax-archive-c5217bb650a1-.svg",
+      "sourceSha256": "b8ea566a25175c81f632af20db65f49488457a6f0c98325735164611f96aafc2",
+      "assetSha256": "b8ea566a25175c81f632af20db65f49488457a6f0c98325735164611f96aafc2"
+    }
+  ]
+}

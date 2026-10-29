@@ -4,7 +4,7 @@
 use crate::DesktopState;
 use serde::Serialize;
 use span_core::{
-    CoreWorkspace, SavedAttachment, Upload, UploadSource, UploadStore, UploadUsage,
+    ClearedUploads, CoreWorkspace, SavedAttachment, Upload, UploadSource, UploadStore, UploadUsage,
     MAX_UPLOAD_BYTES,
 };
 use specta::Type;
@@ -194,6 +194,33 @@ pub async fn uploads_open(state: State<'_, DesktopState>, id: String) -> Result<
         launch(&open_launch(Os::current(), &copy.path)?)
     })
     .await
+}
+
+/// The store folder for the open workspace, for Settings > Storage. App data,
+/// never inside the workspace.
+#[tauri::command]
+#[specta::specta]
+pub async fn uploads_folder(state: State<'_, DesktopState>) -> Result<String, String> {
+    with_store(state.inner(), |store| Ok(display_path(store.dir()))).await
+}
+
+/// Opens the store folder in the system file manager.
+#[tauri::command]
+#[specta::specta]
+pub async fn uploads_reveal_folder(state: State<'_, DesktopState>) -> Result<(), String> {
+    with_store(state.inner(), |store| {
+        launch(&open_launch(Os::current(), store.dir())?)
+    })
+    .await
+}
+
+/// Clear uploads in Settings > Storage, after the user confirmed: removes this
+/// workspace's blobs (orphans included), `open/` copies and index. Workspace
+/// files and uploads saved into the workspace are untouched.
+#[tauri::command]
+#[specta::specta]
+pub async fn uploads_clear(state: State<'_, DesktopState>) -> Result<ClearedUploads, String> {
+    with_store(state.inner(), |store| core(store.clear())).await
 }
 
 /// Same bound as `save_attachment`: the decoded size can exceed the cap by at most

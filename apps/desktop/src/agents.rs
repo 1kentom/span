@@ -1,6 +1,8 @@
 use crate::DesktopState;
 use serde::Serialize;
-use span_acp::tools::{DelegationEventSink, DelegationStatus, ToolPolicy, ToolServerConfig};
+use span_acp::tools::{
+    DelegationEventSink, DelegationStatus, DelegationTranscript, ToolPolicy, ToolServerConfig,
+};
 use span_acp::{
     AgentCommand, AgentEvent, AgentHealth, AgentPreset, AgentService, AuthCredential,
     BackgroundAgents, BackgroundState, EventSink, HealthMonitor, HealthPolicy, InstalledAgent,
@@ -997,6 +999,23 @@ pub async fn agent_cancel_task(
         .filter(|agent| !agent.session.is_empty())
         .map(|agent| agent.key(&agent.session));
     state.leads.cancel_task(lead.as_ref(), &task_id)
+}
+
+/// One delegated task and what its child session wrote so far, for the
+/// user opening the child session from its card. Read only. Searched like
+/// `agent_cancel_task`.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_task_transcript(
+    state: State<'_, DesktopState>,
+    task_id: String,
+) -> Result<DelegationTranscript, String> {
+    let state = state.inner();
+    let lead = active(state)
+        .ok()
+        .filter(|agent| !agent.session.is_empty())
+        .map(|agent| agent.key(&agent.session));
+    state.leads.transcript(lead.as_ref(), &task_id)
 }
 
 /// The user's answer to a permission request from a delegated child

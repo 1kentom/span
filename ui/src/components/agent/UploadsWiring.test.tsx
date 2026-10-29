@@ -107,6 +107,17 @@ describe("recording sent attachments in the uploads store", () => {
     expect(uploads.add).toHaveBeenCalledTimes(1);
   });
 
+  it("records the chat title with the file so the Uploads panel can name the session later", async () => {
+    const uploads = recorder();
+    const { a } = await composer(features(), { uploads });
+    mocks.emit({ kind: "sessionInfo", sessionId: "s1", title: "Fix the login bug" } as unknown as AgentEvent);
+    await a.intake.addFiles([new File(["notes"], "notes.md", { type: "text/markdown" })], "dropped");
+    a.setPrompt("read this");
+    a.send();
+    await tick();
+    expect(uploads.calls[0].source).toMatchObject({ sessionId: "s1", sessionTitle: "Fix the login bug" });
+  });
+
   it("never records workspace files or selections, which already live in the workspace", async () => {
     const uploads = recorder();
     const { a } = await composer(features(), { uploads, activePath: "src/a.ts" });
@@ -221,6 +232,27 @@ describe("attach menu: paste screenshot, folder and earlier session", () => {
     a.send();
     await tick();
     expect(sentAttachments().map((item) => [item.kind, item.uri])).toEqual([["resource", "file:///w/ui"], ["resourceLink", "file:///w/ui"]]);
+  });
+
+  it("uses the backend outline in one call when the desktop offers it", async () => {
+    const folderOutline = vi.fn(async () => ({ text: "Folder outline of ui/ (3 files). Added by Span, not an ACP content type.\n\na.ts\nb.ts\nc.ts", files: 3, truncated: false }));
+    const { a, host } = await composer(features(), { pickFolder: async () => "/w/ui", folderOutline });
+    openMenu(host);
+    menuItem(host, "Folder").click();
+    await tick();
+    expect(folderOutline).toHaveBeenCalledWith("ui", 200);
+    expect(mocks.api.listDirectory).not.toHaveBeenCalled();
+    expect(a.attachments()[0]).toMatchObject({ kind: "folder", name: "ui", path: "ui", folder: { files: 3, truncated: false } });
+    expect(a.attachments()[0].text).toContain("c.ts");
+  });
+
+  it("says why when the backend outline fails, and attaches nothing", async () => {
+    const { a, host } = await composer(features(), { pickFolder: async () => "/w/ui", folderOutline: async () => { throw new Error("Not a directory"); } });
+    openMenu(host);
+    menuItem(host, "Folder").click();
+    await tick();
+    expect(a.attachments()).toHaveLength(0);
+    expect(host.querySelector(".att-notices")?.textContent).toContain("ui: Could not outline the folder: Not a directory");
   });
 
   it("refuses a folder outside the workspace with the reason", async () => {

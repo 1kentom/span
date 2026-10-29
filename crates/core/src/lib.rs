@@ -2,12 +2,14 @@
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
 mod attachment;
 mod buffer;
+mod folder_outline;
 mod format;
 mod format_native;
 mod fs_ops;
 mod git;
 mod images;
 mod java_run;
+mod pdf_pages;
 mod proposal_diff;
 mod recent;
 mod run_config;
@@ -25,6 +27,7 @@ mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
+pub use folder_outline::{FolderOutline, FOLDER_OUTLINE_LIMIT, MAX_FOLDER_OUTLINE_LIMIT};
 pub use format::{
     native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
     FormatResult,
@@ -34,6 +37,7 @@ pub use git::{
     GitHistoryQuery, GitRepository, GitService, GitStatus,
 };
 pub use images::RasterImage;
+pub use pdf_pages::pdf_page_count;
 pub use recent::{RecentProject, RecentProjectStore};
 pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration};
 pub use run_current_file::{current_file_run, CurrentFileRun, CURRENT_FILE_RUN_ID};
@@ -54,9 +58,9 @@ pub use tools::{list_tools, ToolInfo};
 pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};
 pub use uploads::{
     content_fingerprint, is_valid_upload_id, open_refusal, sniff_upload,
-    workspace_key as uploads_workspace_key, ExternalCopy, Upload, UploadChunk, UploadKind,
-    UploadLimits, UploadOrigin, UploadSource, UploadStore, UploadUsage, MAX_UPLOADS_TOTAL_BYTES,
-    MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, MAX_UPLOAD_READ_BYTES,
+    workspace_key as uploads_workspace_key, ClearedUploads, ExternalCopy, Upload, UploadChunk,
+    UploadKind, UploadLimits, UploadOrigin, UploadSource, UploadStore, UploadUsage,
+    MAX_UPLOADS_TOTAL_BYTES, MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, MAX_UPLOAD_READ_BYTES,
 };
 pub use workspace::{atomic_write, CoreWorkspace, FileEntry, Workspace};
 

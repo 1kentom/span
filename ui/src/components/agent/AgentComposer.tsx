@@ -6,27 +6,26 @@ import { ATTACH_UNAVAILABLE } from "../../lib/agent-controller";
 import { composerHints } from "../../lib/agent-hints";
 import { shouldFocusDock } from "../../lib/agent-dock-focus";
 import { delegationLine, isFinished } from "../../lib/agent-delegation";
-import { canCompact, type FeedItem, type PermissionEvent } from "../../lib/agent-session";
+import { type FeedItem, type PermissionEvent } from "../../lib/agent-session";
 import { isSlashQuery, leaf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
+import { agentLimit } from "../../lib/agent-errors";
 import { api, isDesktop } from "../../lib/client";
 import { URL_COPY, parseUrlRequest, type UrlRequestView } from "../../lib/agent-url-request";
-import { ContextBanner } from "./Banners";
+import { ContextHint, ContextMeter, ContextPopover, createCompaction, createStaleTracker } from "./ContextMeter";
+import { compactCommand, contextPercent, meterState, limitNote, showCompactHint, type LimitNote } from "../../lib/context-usage";
+import type { DelegationTaskState } from "../../lib/agent-delegation";
 import { AgentStatusBar } from "./AgentStatusBar";
 import { PermissionDock, QuestionDock, RewindDock, UrlDock, focusDock } from "./Docks";
 import { ToolActivityBar } from "./ToolActivityBar";
 import { RUN_TEXT } from "../../lib/agent-hint-text";
 import { createPickers } from "./ComposerPickers";
 import { brandFromModelNames, brandIconFor } from "../../lib/brand-icons";
-import { configViews } from "../../lib/agent-view";
+import { configViews, currentChoice } from "../../lib/agent-view";
 import { PlanDrawer } from "./PlanDrawer";
 import { LiveAgents } from "./LiveAgents";
 import { QueuePanel } from "./QueuePanel";
 import { SlashPopover } from "./SlashPopover";
-import { UsageRing } from "./UsageRing";
 import type { Brand, PlanItem, SlashItem } from "./types";
-import { percent } from "./util";
-
-const BANNER_AT = 85;
 
 /** Everything below the conversation: banners, plan, queue, docks, the prompt box and its toolbar. */
 export function AgentComposer(props: { agent: AgentController; brand: Brand; label: string }) {
@@ -88,9 +87,40 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     void a.respondElicitation(ask.requestId, "decline");
   });
   const usage = () => a.state().usage;
-  const showBanner = () => {
-    const current = usage();
-    return Boolean(current && a.connected() && !a.bannerDismissed() && percent(current.used, current.size) >= BANNER_AT);
+  const modelName = () => currentChoice(configViews(a.state().config).find((option) => option.category === "model"))?.name;
+  const stale = createStaleTracker(usage, modelName);
+  const turnFinished = () => !a.running() && a.state().feed.some((item) => item.kind === "user");
+  const meter = () => meterState({ usage: usage(), turnFinished: turnFinished(), stale: stale() });
+  const usagePct = () => (usage() ? contextPercent(usage()!.used, usage()!.size) : undefined);
+  const compact = () => compactCommand(a.state().commands);
+  const compaction = createCompaction({
+    usage,
+    running: a.running,
+    failure: () => a.state().failure,
+    compactions: () => a.state().feed.filter((item): item is Extract<FeedItem, { kind: "compaction" }> => item.kind === "compaction"),
+    send: (command) => a.sendText(command),
+  });
+  const runCompact = () => {
+    const command = compact();
+    if (!command || !a.connected() || a.running()) return;
+    compaction.start(command);
+  };
+  /** A clock for the reset countdown, ticking only while an agent limit event exists. */
+  const [limitNow, setLimitNow] = createSignal(Date.now());
+  const limit = (): LimitNote | undefined => limitNote(agentLimit(), a.agentId() ?? a.agentName(), limitNow());
+  createEffect(() => {
+    if (!agentLimit()) return;
+    setLimitNow(Date.now());
+    const timer = setInterval(() => setLimitNow(Date.now()), 15_000);
+    onCleanup(() => clearInterval(timer));
+  });
+  const delegatedTasks = () => a.state().feed.flatMap((item): DelegationTaskState[] => (item.kind === "delegation" ? [item.task] : []));
+  const showMeter = () => a.connected() && (Boolean(usage()) || meter() === "unreported" && !a.state().turnUsage || Boolean(compaction.run()) || Boolean(limit()));
+  const hint = () => showCompactHint({ pct: usagePct(), canCompact: Boolean(compact()), dismissed: a.bannerDismissed(), running: a.running(), stale: stale(), compacting: Boolean(compaction.run()) });
+  let meterButton: HTMLButtonElement | undefined;
+  const closeUsage = () => {
+    a.setMenu(null);
+    meterButton?.focus();
   };
   const plan = createMemo<PlanItem[]>(() =>
     a.state().plan.map((entry) => ({ text: entry.content, status: entry.status === "completed" || entry.status === "in_progress" ? entry.status : "pending" })),
@@ -224,13 +254,13 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         )}
       </Show>
       <LiveAgents agents={a.liveAgents()} now={a.healthNow()} showHealth={a.healthOn()} onOpen={(agent) => agent.taskId && openTaskCard(agent.taskId)} />
-      <Show when={showBanner()}>
-        <ContextBanner
-          used={usage()!.used}
-          size={usage()!.size}
-          canCompact={canCompact(a.state().commands) && !a.running()}
-          onCompact={() => a.sendText("/compact")}
-          onDismiss={() => a.setBannerDismissed(true)}
+      <Show when={a.connected()}>
+        <ContextHint
+          pct={usagePct()}
+          run={compaction.run()}
+          showHint={hint()}
+          onCompact={runCompact}
+          onDismiss={() => (compaction.run() ? compaction.clear() : a.setBannerDismissed(true))}
         />
       </Show>
       <Show when={plan().length}>
@@ -375,11 +405,30 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
         <Show when={pickers.open()}>
           <button class="agent-menu-dismiss" aria-label="Close agent menu" tabindex="-1" onClick={pickers.close} />
         </Show>
+        <Show when={a.menu() === "usage"}>
+          <button class="agent-menu-dismiss" aria-label="Close usage details" tabindex="-1" onClick={closeUsage} />
+        </Show>
         <div class="agent-popover-anchor">
           <Show when={slashOpen() && (groups().length || a.prompt().length > 1)}>
             <SlashPopover groups={groups()} onSelect={pickSlash} onClose={() => setSlashClosedFor(a.prompt())} />
           </Show>
           <pickers.Popovers />
+          <Show when={a.menu() === "usage"}>
+            <ContextPopover
+              agent={{ id: a.agentId(), name: props.label }}
+              state={meter()}
+              usage={usage()}
+              model={modelName()}
+              limit={limit()}
+              now={limitNow()}
+              tasks={delegatedTasks()}
+              compactCommand={compact()}
+              busy={a.running()}
+              run={compaction.run()}
+              onCompact={runCompact}
+              onClose={closeUsage}
+            />
+          </Show>
         </div>
         <Show when={a.menu() === "attach"}>
           <AttachMenu agentName={props.label} capabilities={a.caps()} handlers={attachHandlers()} disabledReasons={attachReasons()} onClose={() => a.setMenu(null)} returnFocus={() => plus} />
@@ -502,8 +551,19 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
           <input ref={imageInput} class="att-file-input" type="file" multiple accept="image/*" tabIndex={-1} aria-hidden="true" onChange={pickFiles} />
           <pickers.Chips />
           <span class="agent-toolbar-spacer" />
-          <Show when={a.connected() && usage()}>
-            <UsageRing used={usage()!.used} size={usage()!.size} cost={usage()!.cost} warnAt={BANNER_AT} />
+          <Show when={showMeter()}>
+            <ContextMeter
+              state={meter()}
+              usage={usage()}
+              agent={props.label}
+              expanded={a.menu() === "usage"}
+              compacting={compaction.run()?.phase === "running"}
+              onToggle={(button) => {
+                meterButton = button;
+                if (a.menu() === "usage") closeUsage();
+                else a.setMenu("usage");
+              }}
+            />
           </Show>
           <Show when={a.connected() && !usage() && a.state().turnUsage}>
             <span class="sb-sub nowrap agent-turn-tokens" title="Tokens the agent reported for the last turn. It did not report a context size.">
