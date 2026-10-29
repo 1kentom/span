@@ -1350,7 +1350,7 @@ async fn astro_family() {
         fresh(d, rev.revision) && has_message(&d.diagnostics, "not assignable")
     })
     .await;
-    env.hover_until(id, "Page.astro", before(src, "count;\nconst label"), |t| {
+    env.hover_until(id, "Page.astro", before(src, "count;\n---"), |t| {
         t.contains("count")
     })
     .await;
