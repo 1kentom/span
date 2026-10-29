@@ -367,13 +367,23 @@ impl ZipBundle {
             let mut source = match archive.by_index(index) {
                 Ok(file) if !file.encrypted() => file,
                 Ok(_) => {
-                    let _ = parent.remove_file(&file_name);
+                    if let Err(error) = parent.remove_file(&file_name) {
+                        result.error =
+                            Some(format!("Remove incomplete encrypted entry {path}: {error}"));
+                        break;
+                    }
                     result.skipped.push(path.clone());
                     continue;
                 }
                 Err(error) => {
-                    let _ = parent.remove_file(&file_name);
-                    result.error = Some(format!("Open {path}: {error}"));
+                    let cleanup = parent
+                        .remove_file(&file_name)
+                        .err()
+                        .map(|cleanup| {
+                            format!("; incomplete output could not be removed: {cleanup}")
+                        })
+                        .unwrap_or_default();
+                    result.error = Some(format!("Open {path}: {error}{cleanup}"));
                     break;
                 }
             };
@@ -420,11 +430,20 @@ impl ZipBundle {
             drop(source);
             drop(target);
             if let Some(reason) = failed {
-                let _ = parent.remove_file(&file_name);
+                let cleanup = parent
+                    .remove_file(&file_name)
+                    .err()
+                    .map(|error| format!("; incomplete output could not be removed: {error}"));
                 if reason == "cancelled" {
                     result.cancelled = true;
+                    if let Some(cleanup) = cleanup {
+                        result.error = Some(format!("Cancellation cleanup failed{cleanup}"));
+                    }
                 } else {
-                    result.error = Some(format!("Extract {path}: {reason}"));
+                    result.error = Some(format!(
+                        "Extract {path}: {reason}{}",
+                        cleanup.unwrap_or_default()
+                    ));
                 }
                 break;
             }
