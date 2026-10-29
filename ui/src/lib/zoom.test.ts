@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyWindowZoom, clampZoomLevel, createZoomController, MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, ZOOM_STORAGE_KEY, zoomFactor } from "./zoom";
+import { applyWindowZoom, cssZoomFactor, layoutSize, clampZoomLevel, createZoomController, MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, ZOOM_STORAGE_KEY, zoomFactor } from "./zoom";
 beforeEach(() => {
   const values = new Map<string, string>();
   Object.defineProperty(window, "localStorage", { configurable: true, value: {
@@ -39,4 +39,14 @@ describe("whole window zoom", () => {
     await applyWindowZoom(1.2); expect(document.documentElement.style.zoom).toBe("1.2"); expect(workbench.style.height).toMatch(/83\.333/);
     await applyWindowZoom(1); expect(document.documentElement.style.zoom).toBe("1");
   });
+});
+
+
+it("uses measured logical layout bounds and compensates CSS zoom only in fallback viewport values", () => {
+  document.documentElement.style.zoom = "2";
+  const panel = document.createElement("div");
+  Object.defineProperties(panel, { clientWidth: { value: 720 }, clientHeight: { value: 388 } });
+  expect(cssZoomFactor()).toBe(2);
+  expect(layoutSize(panel)).toEqual({ width: 720, height: 388 });
+  expect(layoutSize()).toEqual({ width: window.innerWidth / 2, height: window.innerHeight / 2 });
 });
