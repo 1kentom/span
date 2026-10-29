@@ -1,4 +1,4 @@
-import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import { batch, createComputed, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
@@ -6,7 +6,7 @@ import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDele
 import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
 import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
 import { agentCatalog } from "./agent-stores/catalog";
-import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
+import { agentBackground } from "./agent-stores/background";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
@@ -38,7 +38,7 @@ import { droppedPathInfo, droppedRelative, readDroppedFile } from "./native-drop
 import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
 import { feedTurns } from "./agent-handoff";
 import { moveItem } from "./agent-queue";
-import { noteAgentUsed, readLastSession, readRecentAgents, writeLastSession } from "./last-session";
+import { noteAgentUsed, readLastSession, writeLastSession } from "./last-session";
 import { chooseRestores, readLastConfig, writeLastConfig, type SavedConfig } from "./last-config";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
@@ -143,6 +143,10 @@ export function createAgentController(props: AgentPanelProps) {
   const [working, setWorking] = createSignal(false);
   const [pendingAction, setPendingAction] = createSignal("");
   const catalog = agentCatalog.use();
+  const background = agentBackground.use();
+  // Before any effect reads it, and again on every change, so the store sees the setting exactly when the panel does.
+  createComputed(() => background.setHealthOn(props.healthCheck !== false));
+  const { health } = background;
   const { installed, registry, presets, registryBusy, installingIds, installErrors, installing, catalogSearch, setCatalogSearch, catalogRows, otherInstalled, registryName } = catalog;
   /** An installed agent waiting for the user to confirm its removal. Nothing is removed until confirmRemoval. */
   const [removal, setRemoval] = createSignal<{ entry: InstalledAgent; uninstall: boolean }>();
@@ -239,7 +243,6 @@ export function createAgentController(props: AgentPanelProps) {
   let agentEpoch = 0;
   let unsubscribe: (() => void) | undefined;
   let unsubscribeStates: (() => void) | undefined;
-  let unsubscribeHealth: (() => void) | undefined;
   let input: HTMLTextAreaElement | undefined;
 
   const selectionKey = createMemo(() => `${props.selectionContext?.path}:${props.selectionContext?.text}`);
@@ -652,8 +655,8 @@ export function createAgentController(props: AgentPanelProps) {
         })
         .catch(() => undefined);
       void loadAgents().then(() => {
-        warmStart();
-        startHealth();
+        background.warmStart(props.workspacePath);
+        background.startHealth();
         return restoreLastSession();
       });
     }
@@ -674,55 +677,11 @@ export function createAgentController(props: AgentPanelProps) {
     for (const timer of limitTimers.values()) clearTimeout(timer);
     unsubscribe?.();
     unsubscribeStates?.();
-    unsubscribeHealth?.();
   });
 
   const guard = (epoch: number) => () => !disposed && epoch === agentEpoch;
 
   const loadAgents = () => catalog.loadAgents(fail);
-  /**
-   * Warm start (ADR 0009): once the panel has painted, ask the backend to start installed agents in the background, most
-   * recently used first, so a delegation or a switch does not wait. Quiet: a failed start never shows an error here.
-   */
-  function warmStart() {
-    if (!isDesktop || disposed || !props.workspacePath || !api.agentWarmStart) return;
-    const recent = readRecentAgents();
-    const run = () => {
-      if (!disposed) void api.agentWarmStart?.(recent).catch(() => undefined);
-    };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
-    else setTimeout(run, 0);
-  }
-  /**
-   * Agent health check (ADR 0010): once the panel has painted, read the latest results, which also starts the backend's
-   * periodic checks, and follow every change. Quiet: a failure leaves the dots grey.
-   */
-  function startHealth() {
-    if (!isDesktop || disposed || !api.agentHealth) return;
-    const run = () => {
-      if (!disposed && props.healthCheck !== false) void api.agentHealth?.().then(setAgentHealth).catch(() => undefined);
-    };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
-    else setTimeout(run, 0);
-    void api
-      .onAgentHealth?.(setAgentHealth)
-      .then((cleanup) => {
-        if (disposed) cleanup();
-        else unsubscribeHealth = cleanup;
-      })
-      .catch(() => undefined);
-  }
-  // Turned back on in Settings: show the current results again (the backend checks only while it is on).
-  createEffect(
-    on(
-      () => props.healthCheck !== false,
-      (enabled, before) => {
-        if (enabled && before === false && isDesktop) void api.agentHealth?.().then(setAgentHealth).catch(() => undefined);
-      },
-    ),
-  );
-  /** Health results to show: none while `agents.healthCheck` is off. */
-  const health = createMemo(() => (props.healthCheck === false ? [] : agentHealthResults()));
   /** On app open: reconnect the agent that had the last chat in this workspace and resume that chat when the agent can. */
   async function restoreLastSession() {
     const workspace = props.workspacePath;
@@ -2412,7 +2371,7 @@ export function createAgentController(props: AgentPanelProps) {
     sessionMeta,
     threadFor,
     health,
-    healthNow,
+    healthNow: background.healthNow,
     healthOn: () => props.healthCheck !== false,
     liveAgents,
     currentTitle,
