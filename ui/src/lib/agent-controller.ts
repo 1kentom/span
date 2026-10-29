@@ -1,13 +1,14 @@
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, ConfigOption, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
+import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, agentPresets, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
 import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
 import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
+import { agentCatalog } from "./agent-stores/catalog";
 import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
-import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } from "./acp-catalog";
+import { removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { createSavedImageStore } from "./agent-saved-images";
 import { RUN_TEXT } from "./agent-hint-text";
@@ -141,16 +142,8 @@ export function createAgentController(props: AgentPanelProps) {
   const [menu, setMenu] = createSignal<Menu>(null);
   const [working, setWorking] = createSignal(false);
   const [pendingAction, setPendingAction] = createSignal("");
-  const [installed, setInstalled] = createSignal<InstalledAgent[]>([]);
-  const [registry, setRegistry] = createSignal<RegistryAgent[]>([]);
-  const [presets, setPresets] = createSignal<AgentPreset_Serialize[]>([]);
-  const [registryBusy, setRegistryBusy] = createSignal(false);
-  /** Registry ids being installed. Each install keeps its own row state, so other rows stay usable meanwhile. */
-  const [installingIds, setInstallingIds] = createSignal<string[]>([]);
-  const [installErrors, setInstallErrors] = createSignal<Record<string, string>>({});
-  /** The first install in flight, for views that show one install at a time. */
-  const installing = () => installingIds()[0];
-  const [catalogSearch, setCatalogSearch] = createSignal("");
+  const catalog = agentCatalog.use();
+  const { installed, registry, presets, registryBusy, installingIds, installErrors, installing, catalogSearch, setCatalogSearch, catalogRows, otherInstalled, registryName } = catalog;
   /** An installed agent waiting for the user to confirm its removal. Nothing is removed until confirmRemoval. */
   const [removal, setRemoval] = createSignal<{ entry: InstalledAgent; uninstall: boolean }>();
   const [agentName, setAgentName] = createSignal("Select agent");
@@ -244,12 +237,6 @@ export function createAgentController(props: AgentPanelProps) {
   const followed = new Set<string>();
   let disposed = false;
   let agentEpoch = 0;
-  /**
-   * An installed-agent read started before an install or removal finished must not overwrite that change, so reads
-   * and mutations each carry a generation and a stale snapshot is dropped.
-   */
-  let installedReadGeneration = 0;
-  let installedMutationGeneration = 0;
   let unsubscribe: (() => void) | undefined;
   let unsubscribeStates: (() => void) | undefined;
   let unsubscribeHealth: (() => void) | undefined;
@@ -692,38 +679,7 @@ export function createAgentController(props: AgentPanelProps) {
 
   const guard = (epoch: number) => () => !disposed && epoch === agentEpoch;
 
-  function beginInstalledRead() {
-    return { read: ++installedReadGeneration, mutation: installedMutationGeneration };
-  }
-  function applyInstalledSnapshot(token: ReturnType<typeof beginInstalledRead>, snapshot: InstalledAgent[]) {
-    if (disposed || token.read !== installedReadGeneration || token.mutation !== installedMutationGeneration) return false;
-    setInstalled(snapshot);
-    return true;
-  }
-  function commitInstalledMutation(change: (current: InstalledAgent[]) => InstalledAgent[]) {
-    installedMutationGeneration += 1;
-    installedReadGeneration += 1;
-    setInstalled(change(installed()));
-  }
-  function upsertInstalled(current: InstalledAgent[], incoming: InstalledAgent) {
-    const index = current.findIndex((entry) => entry.id === incoming.id);
-    if (index < 0) return [...current, incoming];
-    return current.map((entry, currentIndex) => (currentIndex === index ? incoming : entry));
-  }
-
-  async function loadAgents() {
-    if (!isDesktop || registryBusy()) return;
-    setRegistryBusy(true);
-    const installedRead = beginInstalledRead();
-    const [local, remote, preset] = await Promise.allSettled([api.agentInstalled(), api.agentRegistry(), agentPresets()]);
-    // A preset list that fails to load only hides the preset rows; the rest of the screen still works.
-    if (preset.status === "fulfilled") setPresets(preset.value);
-    if (local.status === "fulfilled") applyInstalledSnapshot(installedRead, local.value);
-    else fail({ phase: "connect", message: `Could not read installed agents: ${errorText(local.reason)}` });
-    if (remote.status === "fulfilled") setRegistry(remote.value);
-    else fail({ phase: "connect", message: `Could not load the ACP registry: ${errorText(remote.reason)}` });
-    setRegistryBusy(false);
-  }
+  const loadAgents = () => catalog.loadAgents(fail);
   /**
    * Warm start (ADR 0009): once the panel has painted, ask the backend to start installed agents in the background, most
    * recently used first, so a delegation or a switch does not wait. Quiet: a failed start never shows an error here.
@@ -796,8 +752,6 @@ export function createAgentController(props: AgentPanelProps) {
       if (id && agent) writeLastSession(workspace, { agentId: agent, sessionId: id });
     }
   }
-  const registryName = (id: string) => registry().find((agent) => agent.id === id)?.name;
-
   /**
    * Starts `name` in a new session. With `switching` (the agent pickers), a chat with messages that moves to another
    * agent keeps its feed: a divider marks the switch and recent context goes out with the first prompt (issue #87).
@@ -932,34 +886,8 @@ export function createAgentController(props: AgentPanelProps) {
     const last = launch();
     if (last) void connect(last.command, last.name, last.id);
   };
-  /**
-   * Installs a registry agent. The result lands on its row even when the user connects another agent or changes view
-   * meanwhile, and a second click on the same row while it installs does nothing.
-   */
-  async function install(id: string) {
-    const entry = registry().find((agent) => agent.id === id);
-    if (!entry || installingIds().includes(id)) return;
-    setInstallingIds((previous) => [...previous, id]);
-    setInstallErrors((previous) => {
-      const next = { ...previous };
-      delete next[id];
-      return next;
-    });
-    try {
-      const added = await api.agentInstall(id);
-      if (disposed) return;
-      commitInstalledMutation((current) => upsertInstalled(current, added));
-    } catch (cause) {
-      if (disposed) return;
-      setInstallErrors((previous) => ({ ...previous, [id]: errorText(cause) }));
-      fail({ phase: "connect", message: `Could not install ${curatedAgent(id)?.name || entry.name}: ${errorText(cause)}` });
-    } finally {
-      if (!disposed) setInstallingIds((previous) => previous.filter((installingId) => installingId !== id));
-    }
-  }
-  const catalogRows = createMemo<CatalogRow[]>(() => buildAgentCatalog(registry(), installed(), catalogSearch()));
-  /** Installed adapters outside the curated list. */
-  const otherInstalled = createMemo(() => installed().filter((entry) => !curatedAgent(entry.id)));
+  /** Installs a registry agent (see the catalog store). */
+  const install = (id: string) => catalog.install(id, fail);
   /** Connects, installs or prepares the local command for one curated row. Returns the command line for a local row. */
   function pickCatalog(row: CatalogRow): string | undefined {
     if (row.installed) {
@@ -1004,12 +932,12 @@ export function createAgentController(props: AgentPanelProps) {
       }
       await removeAgent(choice.entry.id, choice.uninstall);
       if (!current()) return;
-      commitInstalledMutation((agents) => agents.filter((entry) => entry.id !== choice.entry.id));
+      catalog.commitInstalledMutation((agents) => agents.filter((entry) => entry.id !== choice.entry.id));
       setRemoval(undefined);
-      const installedRead = beginInstalledRead();
+      const installedRead = catalog.beginInstalledRead();
       try {
         const remaining = await api.agentInstalled();
-        if (current()) applyInstalledSnapshot(installedRead, remaining);
+        if (current()) catalog.applyInstalledSnapshot(installedRead, remaining);
       } catch (cause) {
         if (current()) fail({ phase: "connect", message: `Could not refresh installed agents: ${errorText(cause)}` });
       }
