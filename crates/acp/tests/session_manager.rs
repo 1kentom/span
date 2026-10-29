@@ -878,3 +878,73 @@ fn prompt_errors_serialise_as_a_tagged_union_the_ui_matches_on() {
     .unwrap();
     assert_eq!(failed["kind"], "failed");
 }
+
+#[tokio::test]
+async fn keyed_elicitation_answers_and_live_sessions_stay_with_their_session() {
+    let mut h = harness();
+    let connection = h.connect(&["--rich"]).await;
+    let a = h.root(&connection).await;
+    let b = h.root(&connection).await;
+    let manager = h.manager.clone();
+    let asked = a.clone();
+    let turn = tokio::spawn(async move {
+        manager
+            .prompt(&asked, "elicit-form".into(), Vec::new())
+            .await
+    });
+    let event = h
+        .next(|e| matches!(&e.event, AgentEvent::Elicitation { session_id, .. } if session_id.as_deref() == Some(a.session_id.as_str())))
+        .await;
+    let AgentEvent::Elicitation { request_id, .. } = event.event else {
+        unreachable!()
+    };
+    eventually("a waits for an answer", || {
+        h.manager
+            .live_session(&a)
+            .is_some_and(|s| s.state == span_acp::SessionActivity::WaitingForAnswer)
+    })
+    .await;
+    let live = h.manager.live_sessions();
+    assert_eq!(live.len(), 2);
+    let row = |key: &SessionKey| live.iter().find(|s| s.key == *key).unwrap().clone();
+    assert_eq!(row(&b).state, span_acp::SessionActivity::Idle);
+    // Metadata the agent sent right after session/new is kept per session.
+    assert_eq!(row(&a).title.as_deref(), Some("Renamed chat"));
+    assert_eq!(row(&a).mode.as_deref(), Some("architect"));
+    assert_eq!(row(&b).mode.as_deref(), Some("architect"));
+
+    // Another session on the same connection cannot answer it.
+    let refused = h.manager.respond_elicitation_for(
+        &b,
+        request_id.clone(),
+        "accept".into(),
+        Some(r#"{"name":"b"}"#.into()),
+    );
+    assert_eq!(
+        refused.unwrap_err(),
+        "Elicitation belongs to a different session"
+    );
+    assert_eq!(
+        h.manager.live_session(&a).unwrap().state,
+        span_acp::SessionActivity::WaitingForAnswer
+    );
+    h.manager
+        .respond_elicitation_for(
+            &a,
+            request_id,
+            "accept".into(),
+            Some(r#"{"name":"a"}"#.into()),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), turn)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        h.manager.live_session(&a).unwrap().state,
+        span_acp::SessionActivity::Idle
+    );
+    h.manager.disconnect(&connection).unwrap();
+    assert!(h.manager.live_sessions().is_empty());
+}

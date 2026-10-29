@@ -1,17 +1,20 @@
 use crate::DesktopState;
 use serde::Serialize;
 use span_acp::tools::{
-    DelegationEventSink, DelegationStatus, DelegationTranscript, ToolPolicy, ToolServerConfig,
+    DelegationEvent, DelegationEventSink, DelegationStatus, DelegationTranscript, ToolPolicy,
+    ToolServerConfig,
 };
 use span_acp::{
     AgentCommand, AgentEvent, AgentHealth, AgentPreset, AgentService, AuthCredential,
     BackgroundAgents, BackgroundState, EventSink, HealthMonitor, HealthPolicy, InstalledAgent,
-    PromptAttachment, PromptError, RegistryAgent, SessionActivity, SessionKey, SessionOrigin,
-    SessionStates, PROMPT_ALREADY_RUNNING,
+    LiveSession, PromptAttachment, PromptError, RegistryAgent, SessionActivity, SessionEvent,
+    SessionKey, SessionManager, SessionOrigin, SessionStates, PROMPT_ALREADY_RUNNING,
 };
 use span_core::{BufferSnapshot, CoreWorkspace};
 use specta::Type;
-use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{ipc::Channel, Manager, State};
 use tauri_specta::Event;
 
@@ -36,6 +39,97 @@ pub fn watch_session_states(app: &tauri::AppHandle) {
     }));
     // The watch lasts as long as the app: the manager lives in the app state.
     std::mem::forget(subscription);
+}
+
+/// One agent event with the session it belongs to (ADR 0001 section 3,
+/// ADR 0011 phase 1). Sent for every event of every connection the session
+/// manager holds, beside the sidebar's own channel, which keeps receiving the
+/// plain `AgentEvent`s of the focused connection unchanged. `key` is `None`
+/// for connection level events (`Ready`, `Status`, `Log`, `Capabilities`,
+/// `AuthRequired`, `ElicitationComplete`, and `Delegation` `unavailable`).
+#[derive(Debug, Clone, Serialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentKeyedEvent {
+    pub connection_id: String,
+    pub agent_name: String,
+    pub key: Option<SessionKey>,
+    pub event: AgentEvent,
+}
+
+impl From<SessionEvent> for AgentKeyedEvent {
+    fn from(tagged: SessionEvent) -> Self {
+        let key = tagged
+            .session_id
+            .map(|session| SessionKey::new(tagged.connection_id.clone(), session));
+        Self {
+            connection_id: tagged.connection_id,
+            agent_name: tagged.agent_name,
+            key,
+            event: tagged.event,
+        }
+    }
+}
+
+/// A span-agents event as a keyed event: the key is the lead session.
+fn keyed_delegation(sessions: &SessionManager, event: DelegationEvent) -> AgentKeyedEvent {
+    let key = event.lead().cloned();
+    let (connection_id, agent_name) = match (&key, &event) {
+        (Some(lead), _) => (
+            lead.connection_id.clone(),
+            sessions
+                .connection(&lead.connection_id)
+                .map(|c| c.agent_name)
+                .unwrap_or_default(),
+        ),
+        (
+            None,
+            DelegationEvent::Unavailable {
+                connection_id,
+                agent_name,
+                ..
+            },
+        ) => (connection_id.clone(), agent_name.clone()),
+        (None, _) => (String::new(), String::new()),
+    };
+    AgentKeyedEvent {
+        connection_id,
+        agent_name,
+        key,
+        event: AgentEvent::Delegation { event },
+    }
+}
+
+/// Forward every event of every managed connection to the UI as an
+/// `AgentKeyedEvent` for the life of the app.
+pub fn watch_keyed_events(app: &tauri::AppHandle) {
+    let state = app.state::<DesktopState>();
+    let handle = app.clone();
+    let subscription = state.sessions.subscribe(Arc::new(move |event| {
+        crate::events::emit(&handle, &AgentKeyedEvent::from(event));
+    }));
+    // The subscription lasts as long as the app: the manager lives in the app state.
+    std::mem::forget(subscription);
+}
+
+/// The span-agents event sink of a lead: the sidebar's channel while
+/// `channel`'s gate is open, and the keyed event stream when `app` is given.
+fn delegation_sink(
+    app: Option<tauri::AppHandle>,
+    sessions: SessionManager,
+    channel: Option<(Channel<AgentEvent>, Arc<AtomicBool>)>,
+) -> DelegationEventSink {
+    Arc::new(move |event: DelegationEvent| {
+        if let Some((channel, forward)) = &channel {
+            if forward.load(Ordering::SeqCst) {
+                let _ = channel.send(AgentEvent::Delegation {
+                    event: event.clone(),
+                });
+            }
+        }
+        if let Some(app) = &app {
+            crate::events::emit(app, &keyed_delegation(&sessions, event));
+        }
+    })
 }
 
 /// The latest health check result of every checked agent (ADR 0010), sent
@@ -96,6 +190,8 @@ pub fn stop_health(state: &DesktopState) {
     }
 }
 
+/// The focused session: the sidebar's agent connection and its open chat.
+/// The unkeyed commands (`agent_prompt`, `agent_cancel`, ...) resolve to it.
 #[derive(Clone)]
 pub struct ActiveAgent {
     service: AgentService,
@@ -103,6 +199,42 @@ pub struct ActiveAgent {
     session: String,
     /// Forwards span-agents events to the UI channel as `AgentEvent::Delegation`.
     delegation_events: DelegationEventSink,
+    /// Open while this connection is the sidebar's: its events reach the
+    /// sidebar channel. Closed when the sidebar switches agents, so a
+    /// connection kept alive for other live sessions stops feeding the old
+    /// channel (its events still arrive keyed).
+    forward: Arc<AtomicBool>,
+}
+
+/// The live agent sessions the desktop holds for the user (ADR 0011 phase 1).
+/// Sessions, their trees and their runtime state live in the session manager;
+/// this adds the focused session and which leads were opened by key.
+#[derive(Default)]
+pub struct LiveAgents {
+    /// The sidebar's agent and chat. `None` without a connected agent.
+    focused: Option<ActiveAgent>,
+    /// Lead sessions opened with `agent_open_session`. A connection that still
+    /// holds one is kept when the sidebar switches agents.
+    opened: HashSet<SessionKey>,
+    /// Connections kept or started for keyed sessions, ended with the folder.
+    kept: HashSet<String>,
+}
+
+impl LiveAgents {
+    /// Whether `connection` still holds a live lead opened by key.
+    fn holds_opened(&mut self, sessions: &SessionManager, connection: &str) -> bool {
+        self.opened.retain(|key| sessions.session(key).is_some());
+        self.opened
+            .iter()
+            .any(|key| key.connection_id == connection)
+    }
+}
+
+fn live(state: &DesktopState) -> Result<MutexGuard<'_, LiveAgents>, String> {
+    state
+        .agent
+        .lock()
+        .map_err(|_| "Agent state is unavailable".to_owned())
 }
 
 impl ActiveAgent {
@@ -116,11 +248,9 @@ fn switch_session(
     expected: &AgentService,
     session: &str,
 ) -> Result<(), String> {
-    let mut guard = state
-        .agent
-        .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())?;
+    let mut guard = live(state)?;
     let active = guard
+        .focused
         .as_mut()
         .ok_or_else(|| "Connect an agent first".to_owned())?;
     if !active.service.same_connection(expected) {
@@ -130,24 +260,31 @@ fn switch_session(
     Ok(())
 }
 
-fn clear_if_active(state: &DesktopState, session: &str) -> Result<(), String> {
-    let mut guard = state
-        .agent
-        .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())?;
-    if let Some(agent) = guard.as_mut().filter(|agent| agent.session == session) {
+/// A session left the manager: it is no longer focused or opened.
+fn forget_session(state: &DesktopState, key: &SessionKey) -> Result<(), String> {
+    let mut guard = live(state)?;
+    guard.opened.remove(key);
+    if let Some(agent) = guard
+        .focused
+        .as_mut()
+        .filter(|agent| agent.connection == key.connection_id && agent.session == key.session_id)
+    {
         agent.session.clear();
     }
     Ok(())
 }
 
 fn active(state: &DesktopState) -> Result<ActiveAgent, String> {
-    state
-        .agent
-        .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())?
+    live(state)?
+        .focused
         .clone()
         .ok_or_else(|| "Connect an agent first".to_owned())
+}
+
+/// The focused session's key, the target of every unkeyed command.
+fn focused_key(state: &DesktopState) -> Result<SessionKey, String> {
+    let agent = active_session(state)?;
+    Ok(agent.key(&agent.session))
 }
 
 /// Like `active`, but refuses while the agent still needs authentication.
@@ -189,7 +326,7 @@ async fn delegation_enabled(workspace: Arc<Mutex<CoreWorkspace>>) -> bool {
 async fn delegation_config(
     app: &tauri::AppHandle,
     state: &DesktopState,
-    agent: &ActiveAgent,
+    events: DelegationEventSink,
 ) -> Result<Option<ToolServerConfig>, String> {
     let workspace = workspace(state)?;
     let delegation_enabled = delegation_enabled(workspace.clone()).await;
@@ -215,7 +352,7 @@ async fn delegation_config(
         run_tools,
         installed,
         background: background_agents,
-        events: Some(agent.delegation_events.clone()),
+        events: Some(events),
     }))
 }
 
@@ -286,7 +423,7 @@ async fn open_lead(
     state: &DesktopState,
     agent: &ActiveAgent,
 ) -> Result<String, String> {
-    let config = delegation_config(app, state, agent).await?;
+    let config = delegation_config(app, state, agent.delegation_events.clone()).await?;
     let (key, _) = state
         .leads
         .open_lead(&state.sessions, &agent.connection, config)
@@ -294,37 +431,76 @@ async fn open_lead(
     Ok(key.session_id)
 }
 
+/// Take the focused agent and every connection kept for keyed sessions.
+/// Returns the focused agent and the other connections.
+fn take_all(state: &DesktopState) -> Result<(Option<ActiveAgent>, Vec<String>), String> {
+    let mut guard = live(state)?;
+    let focused = guard.focused.take();
+    let mut others: Vec<String> = guard.kept.drain().collect();
+    others.extend(guard.opened.drain().map(|key| key.connection_id));
+    others.sort();
+    others.dedup();
+    if let Some(focused) = &focused {
+        others.retain(|c| *c != focused.connection);
+    }
+    Ok((focused, others))
+}
+
+/// App exit: end the focused agent and every connection held for keyed
+/// sessions, without waiting.
 pub fn disconnect(state: &DesktopState) -> Result<(), String> {
-    if let Some(active) = state
-        .agent
-        .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())?
-        .take()
-    {
+    let (focused, others) = take_all(state)?;
+    for connection in others {
+        state.run_approvals.cancel_connection(&connection);
+        let _ = state.sessions.disconnect(&connection);
+    }
+    if let Some(active) = focused {
         state.run_approvals.cancel_connection(&active.connection);
         state.sessions.disconnect(&active.connection)?;
     }
     Ok(())
 }
 
+/// The folder closes: end the focused agent and every connection held for
+/// keyed sessions, and wait for their processes.
 pub async fn disconnect_and_wait(state: &DesktopState) -> Result<(), String> {
-    let active = state
-        .agent
-        .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())?
-        .take();
-    match active {
-        Some(active) => end_connection(state, active).await,
+    let (focused, others) = take_all(state)?;
+    for connection in others {
+        let _ = end_connection(state, &connection).await;
+    }
+    match focused {
+        Some(active) => end_connection(state, &active.connection).await,
+        None => Ok(()),
+    }
+}
+
+/// The sidebar disconnects its agent: end the focused connection only.
+/// Sessions opened by key on other connections keep running.
+async fn disconnect_focused_and_wait(state: &DesktopState) -> Result<(), String> {
+    let focused = {
+        let mut guard = live(state)?;
+        let focused = guard.focused.take();
+        if let Some(focused) = &focused {
+            guard.kept.remove(&focused.connection);
+        }
+        focused
+    };
+    match focused {
+        Some(active) => end_connection(state, &active.connection).await,
         None => Ok(()),
     }
 }
 
 /// End the connection's sessions and delegated children in the session
 /// manager, then wait for the process and its callbacks.
-async fn end_connection(state: &DesktopState, agent: ActiveAgent) -> Result<(), String> {
-    state.run_approvals.cancel_connection(&agent.connection);
-    let _ = state.sessions.disconnect(&agent.connection);
-    agent.service.shutdown_and_wait().await
+async fn end_connection(state: &DesktopState, connection: &str) -> Result<(), String> {
+    state.run_approvals.cancel_connection(connection);
+    let service = state.sessions.service(connection);
+    let _ = state.sessions.disconnect(connection);
+    match service {
+        Some(service) => service.shutdown_and_wait().await,
+        None => Ok(()),
+    }
 }
 
 /// Switch the active agent to the one `connect` opens (issue #87). The new
@@ -341,15 +517,33 @@ where
     let agent = connect.await?;
     let session = agent.session.clone();
     let connection = agent.connection.clone();
-    let previous = state
-        .agent
-        .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())?
-        .replace(agent);
+    let (previous, keep) = {
+        let mut guard = live(state)?;
+        let previous = guard.focused.replace(agent);
+        let keep = match &previous {
+            Some(previous) if previous.connection != connection => {
+                guard.holds_opened(&state.sessions, &previous.connection)
+            }
+            _ => false,
+        };
+        if keep {
+            if let Some(previous) = &previous {
+                guard.kept.insert(previous.connection.clone());
+            }
+        }
+        guard.kept.remove(&connection);
+        (previous, keep)
+    };
     if let Some(previous) = previous.filter(|previous| previous.connection != connection) {
-        // The switch is done: a slow or failed shutdown of the old process
-        // must not fail it.
-        let _ = end_connection(state, previous).await;
+        // The old connection no longer feeds the sidebar channel.
+        previous.forward.store(false, Ordering::SeqCst);
+        // Sessions opened by key on it keep it alive (ADR 0011): starting a
+        // sidebar agent never closes another live thread.
+        if !keep {
+            // The switch is done: a slow or failed shutdown of the old process
+            // must not fail it.
+            let _ = end_connection(state, &previous.connection).await;
+        }
     }
     Ok(session)
 }
@@ -450,12 +644,16 @@ pub async fn agent_connect(
         .as_ref()
         .is_some_and(|installed| reuses_active(&state, &background, installed))
     {
-        disconnect_and_wait(&state).await?;
+        disconnect_focused_and_wait(&state).await?;
     }
+    let forward = Arc::new(AtomicBool::new(true));
     let ui: EventSink = {
         let channel = on_event.clone();
+        let forward = forward.clone();
         Arc::new(move |event| {
-            let _ = channel.send(event);
+            if forward.load(Ordering::SeqCst) {
+                let _ = channel.send(event);
+            }
         })
     };
     let opening = open_agent(
@@ -467,6 +665,7 @@ pub async fn agent_connect(
         cwd,
         workspace,
         on_event,
+        forward,
         ui.clone(),
     );
     let session = connect_then_replace(&state, opening).await?;
@@ -489,11 +688,14 @@ async fn open_agent(
     cwd: String,
     workspace: Arc<Mutex<CoreWorkspace>>,
     on_event: Channel<AgentEvent>,
+    forward: Arc<AtomicBool>,
     ui: EventSink,
 ) -> Result<ActiveAgent, String> {
-    let delegation_events: DelegationEventSink = Arc::new(move |event| {
-        let _ = on_event.send(AgentEvent::Delegation { event });
-    });
+    let delegation_events = delegation_sink(
+        Some(app.clone()),
+        state.sessions.clone(),
+        Some((on_event, forward.clone())),
+    );
     let connection = match installed {
         // An installed agent runs through the background map, so a warm or
         // delegated process is reused and never started twice.
@@ -521,6 +723,7 @@ async fn open_agent(
         connection: connection.clone(),
         session: String::new(),
         delegation_events,
+        forward,
     };
     let session = match tokio::time::timeout(
         std::time::Duration::from_secs(45),
@@ -672,7 +875,8 @@ pub async fn agent_resume_session(
     if !live {
         // ACP does not keep MCP servers across session/load, so with delegation
         // on a fresh span-agents entry is offered in this load (ADR 0003).
-        let config = delegation_config(&app, state.inner(), &agent).await?;
+        let config =
+            delegation_config(&app, state.inner(), agent.delegation_events.clone()).await?;
         state
             .leads
             .load_lead(&state.sessions, &agent.connection, &session_id, config)
@@ -691,10 +895,7 @@ pub async fn agent_close_session(
     session_id: String,
 ) -> Result<(), String> {
     let agent = active(state.inner())?;
-    let key = agent.key(&session_id);
-    state.run_approvals.cancel_lead(&key);
-    state.sessions.close(&key).await?;
-    clear_if_active(state.inner(), &session_id)
+    close_key(state.inner(), &agent.key(&session_id)).await
 }
 
 /// Delete a session from the agent's history. Any running turn in it is
@@ -709,7 +910,7 @@ pub async fn agent_delete_session(
     let key = agent.key(&session_id);
     state.run_approvals.cancel_lead(&key);
     state.sessions.delete(&key).await?;
-    clear_if_active(state.inner(), &session_id)
+    forget_session(state.inner(), &key)
 }
 
 /// Run a prompt in the active session and resolve when its turn ends. A
@@ -723,18 +924,26 @@ pub async fn agent_prompt(
     text: String,
     attachments: Option<Vec<PromptAttachment>>,
 ) -> Result<(), PromptError> {
-    let agent = active_session(state.inner()).map_err(|message| PromptError::Failed { message })?;
-    let key = agent.key(&agent.session);
-    let done = state
-        .sessions
-        .start_turn(&key, text, attachments.unwrap_or_default())?;
+    let key = focused_key(state.inner()).map_err(|message| PromptError::Failed { message })?;
+    prompt_key(state.inner(), &key, text, attachments.unwrap_or_default()).await
+}
+
+/// Run a prompt in the session `key` (ADR 0011 phase 1). Same refusal as
+/// `agent_prompt`: a busy session answers `PromptError::Busy`.
+async fn prompt_key(
+    state: &DesktopState,
+    key: &SessionKey,
+    text: String,
+    attachments: Vec<PromptAttachment>,
+) -> Result<(), PromptError> {
+    let done = state.sessions.start_turn(key, text, attachments)?;
     match done.await {
         Ok(Ok(())) => Ok(()),
         // The agent itself still had a turn in flight (it started between
         // the manager's check and the prompt reaching it).
         Ok(Err(message)) if message == PROMPT_ALREADY_RUNNING => Err(PromptError::Busy {
             message,
-            state: state.sessions.session_state(&key),
+            state: state.sessions.session_state(key),
         }),
         Ok(Err(message)) => Err(PromptError::Failed { message }),
         Err(_) => Err(PromptError::Failed {
@@ -881,18 +1090,28 @@ pub async fn agent_set_config(
     config_id: String,
     value: String,
 ) -> Result<(), String> {
-    let agent = active_session(state.inner())?;
-    agent
-        .service
-        .set_config(agent.session, config_id, value)
+    let key = focused_key(state.inner())?;
+    set_config_key(state.inner(), &key, config_id, value).await
+}
+
+async fn set_config_key(
+    state: &DesktopState,
+    key: &SessionKey,
+    config_id: String,
+    value: String,
+) -> Result<(), String> {
+    state
+        .sessions
+        .service(&key.connection_id)
+        .ok_or("Unknown or disconnected connection")?
+        .set_config(key.session_id.clone(), config_id, value)
         .await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_cancel(state: State<'_, DesktopState>) -> Result<(), String> {
-    let agent = active_session(state.inner())?;
-    state.sessions.cancel(&agent.key(&agent.session))
+    state.sessions.cancel(&focused_key(state.inner())?)
 }
 
 #[tauri::command]
@@ -900,7 +1119,7 @@ pub async fn agent_cancel(state: State<'_, DesktopState>) -> Result<(), String> 
 pub async fn agent_disconnect(state: State<'_, DesktopState>) -> Result<(), String> {
     let state = state.inner();
     let _gate = state.connection_gate.lock().await;
-    disconnect_and_wait(state).await
+    disconnect_focused_and_wait(state).await
 }
 
 #[tauri::command]
@@ -910,10 +1129,10 @@ pub async fn agent_permission(
     request_id: String,
     option_id: Option<String>,
 ) -> Result<(), String> {
-    let agent = active_session(state.inner())?;
-    agent
-        .service
-        .respond_permission(agent.session, request_id, option_id)
+    let key = focused_key(state.inner())?;
+    state
+        .sessions
+        .respond_permission(&key, request_id, option_id)
 }
 
 #[tauri::command]
@@ -1045,6 +1264,330 @@ pub async fn agent_child_permission(
         .respond_permission(&key, request_id, option_id)
 }
 
+/// Open a user lead session on `connection` without touching the focused
+/// session. Each lead gets its own span-agents server and token when tools
+/// are enabled (ADR 0003). A failure leaves every existing session as it was.
+async fn open_on(
+    state: &DesktopState,
+    connection: &str,
+    config: Option<ToolServerConfig>,
+) -> Result<SessionKey, String> {
+    let (key, _) = state
+        .leads
+        .open_lead(&state.sessions, connection, config)
+        .await?;
+    live(state)?.opened.insert(key.clone());
+    Ok(key)
+}
+
+/// Start a custom agent command for keyed sessions. Its events reach the UI
+/// only as `AgentKeyedEvent`s; the sidebar channel is not involved.
+async fn connect_command(
+    state: &DesktopState,
+    command: AgentCommand,
+    cwd: String,
+    workspace: Arc<Mutex<CoreWorkspace>>,
+) -> Result<String, String> {
+    let sessions = state.sessions.clone();
+    let connection = tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(sessions.connect(command, cwd, workspace, None))
+    })
+    .await
+    .map_err(|error| format!("Agent connection task failed: {error}"))??;
+    live(state)?.kept.insert(connection.clone());
+    Ok(connection)
+}
+
+/// The connection a new keyed session runs on: the given one, the focused
+/// one, or a new one for `command`. The bool is true when this call started
+/// a process it must end again if the session fails to open.
+async fn connection_for_open(
+    app: &tauri::AppHandle,
+    state: &DesktopState,
+    connection_id: Option<String>,
+    command: Option<AgentCommand>,
+) -> Result<(String, bool), String> {
+    match (connection_id, command) {
+        (Some(_), Some(_)) => Err("Pass a connection or a command, not both".into()),
+        (Some(connection), None) => Ok((connection, false)),
+        (None, None) => Ok((active(state)?.connection, false)),
+        (None, Some(command)) => {
+            let workspace = workspace(state)?;
+            let installed = installed_agents(app)
+                .await
+                .into_iter()
+                .find(|agent| same_command(&agent.launch, &command));
+            match installed {
+                // Installed agents run through the background map, so a warm
+                // or delegated process is reused and never started twice.
+                Some(installed) => {
+                    let ensured = background(state)
+                        .ensure(&installed, std::time::Duration::from_secs(60))
+                        .await?;
+                    live(state)?.kept.insert(ensured.connection_id.clone());
+                    Ok((ensured.connection_id, false))
+                }
+                None => {
+                    let cwd = workspace
+                        .lock()
+                        .map_err(|_| "Workspace lock poisoned".to_owned())?
+                        .workspace()
+                        .root;
+                    let connection = connect_command(state, command, cwd, workspace).await?;
+                    Ok((connection, true))
+                }
+            }
+        }
+    }
+}
+
+/// Open a new user session and return its key (ADR 0011 phase 1). Unlike
+/// `agent_connect` it never closes another session. Runs on `connection_id`
+/// when given, on a new or running process for `command` when given, else
+/// on the focused connection. With `focus` the new session becomes the
+/// sidebar's chat; only a session on the sidebar's own connection can be
+/// focused, and that is checked before anything is opened. A failure leaves
+/// every existing session and the focus as they were.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_open_session(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    connection_id: Option<String>,
+    command: Option<AgentCommand>,
+    focus: bool,
+) -> Result<SessionKey, String> {
+    let state = state.inner().clone();
+    let focused = active(&state).ok();
+    if focus {
+        let on_focused = match (&connection_id, &command, &focused) {
+            (_, Some(_), _) | (_, _, None) => false,
+            (Some(connection), None, Some(agent)) => *connection == agent.connection,
+            (None, None, Some(_)) => true,
+        };
+        if !on_focused {
+            return Err("Only a session on the sidebar's agent connection can be focused".into());
+        }
+    }
+    let _gate = state.connection_gate.lock().await;
+    let (connection, started) = connection_for_open(&app, &state, connection_id, command).await?;
+    let events = delegation_sink(Some(app.clone()), state.sessions.clone(), None);
+    let opened = async {
+        let config = delegation_config(&app, &state, events).await?;
+        open_on(&state, &connection, config).await
+    };
+    let key = match tokio::time::timeout(std::time::Duration::from_secs(45), opened).await {
+        Ok(Ok(key)) => key,
+        result => {
+            if started {
+                if let Ok(mut guard) = live(&state) {
+                    guard.kept.remove(&connection);
+                }
+                let _ = state.sessions.disconnect(&connection);
+            }
+            return Err(match result {
+                Ok(Err(error)) => error,
+                _ => "Agent session creation timed out after 45 seconds".to_owned(),
+            });
+        }
+    };
+    if let (true, Some(agent)) = (focus, focused) {
+        switch_session(&state, &agent.service, &key.session_id)?;
+    }
+    Ok(key)
+}
+
+/// Every live session Span holds: user leads, their delegated children
+/// (with the parent key) and resumed sessions, with runtime state (idle,
+/// running, waiting for approval or an answer, queued follow-ups), agent,
+/// title, model, mode and health. Hidden health check sessions never appear.
+/// Changes arrive as `AgentSessionStatesChanged` and `AgentKeyedEvent`.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_live_sessions(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<LiveSession>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || live_sessions(&state))
+        .await
+        .map_err(|error| format!("Live session task failed: {error}"))
+}
+
+fn live_sessions(state: &DesktopState) -> Vec<LiveSession> {
+    let mut sessions = state.sessions.live_sessions();
+    // Neither is created here: no background map means no installed agents
+    // run, and no monitor means no health results yet.
+    let background = state
+        .background
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let health = state
+        .health
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .map(|monitor| monitor.results())
+        .unwrap_or_default();
+    for session in &mut sessions {
+        session.agent_id = background
+            .as_ref()
+            .and_then(|b| b.agent_for(&session.key.connection_id));
+        session.health = session.agent_id.as_ref().and_then(|id| {
+            health
+                .iter()
+                .find(|h| h.agent_id.eq_ignore_ascii_case(id))
+                .map(|h| h.state)
+        });
+    }
+    sessions
+}
+
+/// The focused session (the sidebar's chat), `None` without one.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_focused_session(
+    state: State<'_, DesktopState>,
+) -> Result<Option<SessionKey>, String> {
+    Ok(focused_key(state.inner()).ok())
+}
+
+/// Run a prompt in the session `key`. Like `agent_prompt`, a busy session
+/// refuses it with `PromptError::Busy`.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_prompt_keyed(
+    state: State<'_, DesktopState>,
+    key: SessionKey,
+    text: String,
+    attachments: Option<Vec<PromptAttachment>>,
+) -> Result<(), PromptError> {
+    prompt_key(state.inner(), &key, text, attachments.unwrap_or_default()).await
+}
+
+/// Stop the turn in `key` and every session below it.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_cancel_keyed(
+    state: State<'_, DesktopState>,
+    key: SessionKey,
+) -> Result<(), String> {
+    state.sessions.cancel(&key)
+}
+
+/// The user's answer to a permission request of `key`. The request must
+/// belong to that session on that connection. User only: agents hold an
+/// `AgentControl`, which has no answering path (ADR 0003).
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_permission_keyed(
+    state: State<'_, DesktopState>,
+    key: SessionKey,
+    request_id: String,
+    option_id: Option<String>,
+) -> Result<(), String> {
+    state
+        .sessions
+        .respond_permission(&key, request_id, option_id)
+}
+
+/// The user's answer to an input request of `key`. `action` is accept,
+/// decline or cancel. User only, like `agent_permission_keyed`.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_elicitation_keyed(
+    state: State<'_, DesktopState>,
+    key: SessionKey,
+    request_id: String,
+    action: String,
+    content_json: Option<String>,
+) -> Result<(), String> {
+    state
+        .sessions
+        .respond_elicitation_for(&key, request_id, action, content_json)
+}
+
+/// Change a config option of the session `key`.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_set_config_keyed(
+    state: State<'_, DesktopState>,
+    key: SessionKey,
+    config_id: String,
+    value: String,
+) -> Result<(), String> {
+    set_config_key(state.inner(), &key, config_id, value).await
+}
+
+/// The service a keyed review runs on: only the connection of `key`.
+fn review_service(state: &DesktopState, key: &SessionKey) -> Result<AgentService, String> {
+    state
+        .sessions
+        .service(&key.connection_id)
+        .ok_or_else(|| "Unknown or disconnected connection".to_owned())
+}
+
+/// Accept or reject a proposal of the session `key`, on its connection
+/// only. User only.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_review_keyed(
+    state: State<'_, DesktopState>,
+    lsp: State<'_, crate::language_servers::LspService>,
+    key: SessionKey,
+    proposal_id: String,
+    accept: bool,
+    expected_revision: u64,
+) -> Result<BufferSnapshot, String> {
+    let service = review_service(state.inner(), &key)?;
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        service.review_proposal(proposal_id, accept, expected_revision)
+    })
+    .await
+    .map_err(|error| format!("Review task failed: {error}"))??;
+    lsp.on_snapshot(&snapshot);
+    Ok(snapshot)
+}
+
+/// Accept some hunks of a proposal of the session `key`. User only.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_review_hunks_keyed(
+    state: State<'_, DesktopState>,
+    lsp: State<'_, crate::language_servers::LspService>,
+    key: SessionKey,
+    proposal_id: String,
+    accepted_hunk_ids: Vec<String>,
+    expected_revision: u64,
+) -> Result<BufferSnapshot, String> {
+    let service = review_service(state.inner(), &key)?;
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        service.review_proposal_hunks(proposal_id, accepted_hunk_ids, expected_revision)
+    })
+    .await
+    .map_err(|error| format!("Review task failed: {error}"))??;
+    lsp.on_snapshot(&snapshot);
+    Ok(snapshot)
+}
+
+/// Close the session `key`. Its delegated children are cancelled and
+/// closed with it, and its span-agents server stops (ADR 0001 section 5,
+/// ADR 0003). Closing the focused session leaves the sidebar without a chat.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_close_keyed(
+    state: State<'_, DesktopState>,
+    key: SessionKey,
+) -> Result<(), String> {
+    close_key(state.inner(), &key).await
+}
+
+async fn close_key(state: &DesktopState, key: &SessionKey) -> Result<(), String> {
+    state.run_approvals.cancel_lead(key);
+    state.sessions.close(key).await?;
+    forget_session(state, key)
+}
+
 /// Check-only: reads the public GitHub release list for this build's channel.
 /// Opening the release page is a separate, user-initiated `open_external`.
 #[tauri::command]
@@ -1131,11 +1674,12 @@ mod session_tests {
         .await
         .unwrap();
         let state = DesktopState::default();
-        *state.agent.lock().unwrap() = Some(ActiveAgent {
+        state.agent.lock().unwrap().focused = Some(ActiveAgent {
             service: current.clone(),
             connection: String::new(),
             session: "current".into(),
             delegation_events: Arc::new(|_| {}),
+            forward: Arc::new(AtomicBool::new(true)),
         });
         assert!(switch_session(&state, &old, "old-result").is_err());
         assert_eq!(active(&state).unwrap().session, "current");
@@ -1180,6 +1724,7 @@ mod session_tests {
             connection,
             session: session.into(),
             delegation_events: Arc::new(|_| {}),
+            forward: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -1189,7 +1734,7 @@ mod session_tests {
         let state = DesktopState::default();
         let old = fixture_agent(&state, directory.path(), "old-session").await;
         let old_connection = old.connection.clone();
-        *state.agent.lock().unwrap() = Some(old);
+        state.agent.lock().unwrap().focused = Some(old);
 
         // A failed switch: the old agent stays active and its process alive.
         let failed = connect_then_replace(&state, async {
@@ -1220,5 +1765,313 @@ mod session_tests {
 
         disconnect_and_wait(&state).await.unwrap();
         assert!(state.sessions.service(&current.connection).is_none());
+    }
+
+    fn fixture_command(flags: &[&str]) -> AgentCommand {
+        let mut args = vec![format!(
+            "{}/../../crates/acp/tests/fixtures/agent.mjs",
+            env!("CARGO_MANIFEST_DIR")
+        )];
+        args.extend(flags.iter().map(|flag| flag.to_string()));
+        AgentCommand {
+            command: "node".into(),
+            args,
+            env: BTreeMap::new(),
+        }
+    }
+
+    fn fixture_workspace(directory: &std::path::Path) -> Arc<Mutex<CoreWorkspace>> {
+        std::fs::write(directory.join("sample.txt"), "disk text\n").unwrap();
+        Arc::new(Mutex::new(
+            span_core::CoreWorkspace::open(directory)
+                .unwrap()
+                .with_user_settings(None),
+        ))
+    }
+
+    /// Start a fixture agent for keyed sessions, the way `agent_open_session`
+    /// starts a custom command.
+    async fn keyed_connection(
+        state: &DesktopState,
+        directory: &std::path::Path,
+        flags: &[&str],
+    ) -> String {
+        connect_command(
+            state,
+            fixture_command(flags),
+            directory.to_string_lossy().into_owned(),
+            fixture_workspace(directory),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Make `key` the focused session, as `agent_connect` does for the sidebar.
+    fn focus(state: &DesktopState, key: &SessionKey) {
+        state.agent.lock().unwrap().focused = Some(ActiveAgent {
+            service: state.sessions.service(&key.connection_id).unwrap(),
+            connection: key.connection_id.clone(),
+            session: key.session_id.clone(),
+            delegation_events: Arc::new(|_| {}),
+            forward: Arc::new(AtomicBool::new(true)),
+        });
+    }
+
+    async fn activity_becomes(state: &DesktopState, key: &SessionKey, wanted: SessionActivity) {
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                if state.sessions.session_state(key).map(|s| s.state) == Some(wanted) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "{key:?} never became {wanted:?}, it is {:?}",
+            state.sessions.session_state(key)
+        );
+    }
+
+    fn activity(state: &DesktopState, key: &SessionKey) -> Option<SessionActivity> {
+        state.sessions.session_state(key).map(|s| s.state)
+    }
+
+    fn spawn_prompt(
+        state: &DesktopState,
+        key: &SessionKey,
+        text: &str,
+    ) -> tokio::task::JoinHandle<Result<(), PromptError>> {
+        let (state, key, text) = (state.clone(), key.clone(), text.to_owned());
+        tokio::spawn(async move { prompt_key(&state, &key, text, Vec::new()).await })
+    }
+
+    async fn finished(
+        turn: tokio::task::JoinHandle<Result<(), PromptError>>,
+    ) -> Result<(), PromptError> {
+        tokio::time::timeout(std::time::Duration::from_secs(15), turn)
+            .await
+            .expect("turn did not finish")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn two_live_sessions_route_prompt_cancel_and_permission_by_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DesktopState::default();
+        let alpha = keyed_connection(&state, directory.path(), &["--name=alpha"]).await;
+        let beta = keyed_connection(&state, directory.path(), &["--name=beta"]).await;
+        let a = open_on(&state, &alpha, None).await.unwrap();
+        let b = open_on(&state, &beta, None).await.unwrap();
+        // Same agent session id on two processes: only the key tells them apart.
+        assert_eq!(a.session_id, b.session_id);
+        assert_ne!(a, b);
+        let listed: Vec<SessionKey> = live_sessions(&state).into_iter().map(|s| s.key).collect();
+        assert_eq!(listed, vec![a.clone(), b.clone()]);
+
+        // Both ask for a permission with the same request id.
+        let turn_a = spawn_prompt(&state, &a, "edit please");
+        let turn_b = spawn_prompt(&state, &b, "edit please");
+        activity_becomes(&state, &a, SessionActivity::WaitingForApproval).await;
+        activity_becomes(&state, &b, SessionActivity::WaitingForApproval).await;
+        let request = |connection: &str| {
+            state
+                .sessions
+                .pending_requests()
+                .into_iter()
+                .find(|r| r.connection_id == connection)
+                .unwrap()
+                .request_id
+        };
+        let (request_a, request_b) = (request(&alpha), request(&beta));
+        assert_eq!(request_a, request_b);
+
+        // A key that does not own the request cannot answer it.
+        let stranger = SessionKey::new(alpha.clone(), "fixture-99");
+        assert!(state
+            .sessions
+            .respond_permission(&stranger, request_b.clone(), Some("yes".into()))
+            .is_err());
+        assert_eq!(
+            activity(&state, &b),
+            Some(SessionActivity::WaitingForApproval)
+        );
+
+        // The answer by key reaches only that session.
+        state
+            .sessions
+            .respond_permission(&a, request_a, Some("no".into()))
+            .unwrap();
+        finished(turn_a).await.unwrap();
+        assert_eq!(activity(&state, &a), Some(SessionActivity::Idle));
+        assert_eq!(
+            activity(&state, &b),
+            Some(SessionActivity::WaitingForApproval)
+        );
+
+        // Cancel by key stops only that session.
+        let wait_a = spawn_prompt(&state, &a, "wait");
+        activity_becomes(&state, &a, SessionActivity::Running).await;
+        state.sessions.cancel(&a).unwrap();
+        finished(wait_a).await.unwrap();
+        assert_eq!(activity(&state, &a), Some(SessionActivity::Idle));
+        assert_eq!(
+            activity(&state, &b),
+            Some(SessionActivity::WaitingForApproval)
+        );
+        state.sessions.cancel(&b).unwrap();
+        finished(turn_b).await.unwrap();
+
+        disconnect_and_wait(&state).await.unwrap();
+        assert!(state.sessions.service(&alpha).is_none());
+        assert!(state.sessions.service(&beta).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_unkeyed_command_resolves_to_the_focused_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DesktopState::default();
+        let alpha = keyed_connection(&state, directory.path(), &["--name=alpha", "--close"]).await;
+        let beta = keyed_connection(&state, directory.path(), &["--name=beta"]).await;
+        let a = open_on(&state, &alpha, None).await.unwrap();
+        let b = open_on(&state, &beta, None).await.unwrap();
+        focus(&state, &a);
+        // Opening another session without focus leaves the focus alone.
+        let a2 = open_on(&state, &alpha, None).await.unwrap();
+        assert_ne!(a2, a);
+        assert_eq!(focused_key(&state).unwrap(), a);
+
+        let turn = spawn_prompt(&state, &focused_key(&state).unwrap(), "wait");
+        activity_becomes(&state, &a, SessionActivity::Running).await;
+        assert_eq!(activity(&state, &b), Some(SessionActivity::Idle));
+        assert_eq!(activity(&state, &a2), Some(SessionActivity::Idle));
+        state
+            .sessions
+            .cancel(&focused_key(&state).unwrap())
+            .unwrap();
+        finished(turn).await.unwrap();
+        assert_eq!(activity(&state, &a), Some(SessionActivity::Idle));
+
+        // Closing the focused session by key leaves the sidebar without a chat.
+        close_key(&state, &a).await.unwrap();
+        assert!(focused_key(&state).is_err());
+        assert!(state.sessions.session(&b).is_some());
+        disconnect_and_wait(&state).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_a_lead_by_key_cascades_to_its_children() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DesktopState::default();
+        let lead_connection = keyed_connection(&state, directory.path(), &["--close"]).await;
+        let worker = keyed_connection(&state, directory.path(), &["--close"]).await;
+        let lead = open_on(&state, &lead_connection, None).await.unwrap();
+        let other = open_on(&state, &worker, None).await.unwrap();
+        let child = state
+            .sessions
+            .open_session(&worker, Some(lead.clone()), SessionOrigin::Delegated)
+            .await
+            .unwrap();
+        let listed = live_sessions(&state);
+        let row = listed.iter().find(|s| s.key == child).unwrap();
+        assert_eq!(row.parent.as_ref(), Some(&lead));
+        assert_eq!(row.origin, SessionOrigin::Delegated);
+
+        let busy = spawn_prompt(&state, &child, "wait");
+        activity_becomes(&state, &child, SessionActivity::Running).await;
+        close_key(&state, &lead).await.unwrap();
+        let _ = finished(busy).await;
+        assert!(state.sessions.session(&lead).is_none());
+        assert!(state.sessions.session(&child).is_none());
+        // A session that is not below the lead stays.
+        assert!(state.sessions.session(&other).is_some());
+        assert!(!state.agent.lock().unwrap().opened.contains(&lead));
+        disconnect_and_wait(&state).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_open_leaves_existing_sessions_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DesktopState::default();
+        let alpha = keyed_connection(&state, directory.path(), &[]).await;
+        let a = open_on(&state, &alpha, None).await.unwrap();
+        focus(&state, &a);
+        let before = live_sessions(&state);
+
+        assert!(open_on(&state, "connection-404", None).await.is_err());
+        let missing = connect_command(
+            &state,
+            AgentCommand {
+                command: "span-no-such-agent-command".into(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+            },
+            directory.path().to_string_lossy().into_owned(),
+            fixture_workspace(directory.path()),
+        )
+        .await;
+        assert!(missing.is_err());
+        let refusing = keyed_connection(&state, directory.path(), &["--missing-session"]).await;
+        assert!(open_on(&state, &refusing, None).await.is_err());
+
+        assert_eq!(live_sessions(&state), before);
+        assert_eq!(focused_key(&state).unwrap(), a);
+        let turn = spawn_prompt(&state, &a, "stop:end_turn");
+        finished(turn).await.unwrap();
+        disconnect_and_wait(&state).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_event_for_one_session_never_updates_another() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DesktopState::default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentKeyedEvent>();
+        let _subscription = state.sessions.subscribe(Arc::new(move |event| {
+            let _ = tx.send(AgentKeyedEvent::from(event));
+        }));
+        let alpha = keyed_connection(&state, directory.path(), &["--name=alpha", "--config"]).await;
+        let beta = keyed_connection(&state, directory.path(), &["--name=beta", "--config"]).await;
+        let a = open_on(&state, &alpha, None).await.unwrap();
+        let a2 = open_on(&state, &alpha, None).await.unwrap();
+        let b = open_on(&state, &beta, None).await.unwrap();
+
+        // A config change of one session updates only that session's model.
+        set_config_key(&state, &a, "model".into(), "deep".into())
+            .await
+            .unwrap();
+        let model = |key: &SessionKey| state.sessions.live_session(key).unwrap().model;
+        assert_eq!(model(&a).as_deref(), Some("deep"));
+        assert_eq!(model(&a2).as_deref(), Some("fast"));
+        assert_eq!(model(&b).as_deref(), Some("fast"));
+
+        // Interleaved streams: every text chunk carries the key of the session
+        // that wrote it.
+        let turns = [
+            spawn_prompt(&state, &a, "stream:5"),
+            spawn_prompt(&state, &a2, "stream:5"),
+            spawn_prompt(&state, &b, "stream:5"),
+        ];
+        for turn in turns {
+            finished(turn).await.unwrap();
+        }
+        let mut chunks = 0;
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Text { text, .. } = &event.event {
+                let key = event.key.as_ref().expect("text is session level");
+                let name = if key.connection_id == alpha {
+                    "alpha"
+                } else {
+                    "beta"
+                };
+                assert_eq!(
+                    *text,
+                    format!("{name}:{}:{}", key.session_id, &text[text.len() - 1..])
+                );
+                chunks += 1;
+            }
+        }
+        assert_eq!(chunks, 15);
+        disconnect_and_wait(&state).await.unwrap();
     }
 }
