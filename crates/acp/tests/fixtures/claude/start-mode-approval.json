@@ -1,0 +1,75 @@
+{
+  "quirk": "Claude's own configuration starts sessions in bypassPermissions. Under the default approval start mode Span asks for Claude's ListAgents tool to be left out in session/new _meta and changes the mode to default (Manual) before the UI sees the options, so the mode chip shows Manual and no bypass notice is raised.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "c-1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "c-1",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "default"
+        },
+        {
+          "id": "model",
+          "currentValue": "sonnet"
+        }
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "bypassPermissions"
+        },
+        {
+          "id": "model"
+        }
+      ]
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/new",
+      "params": {
+        "_meta": {
+          "claudeCode": {
+            "options": {
+              "disallowedTools": [
+                "ListAgents"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "c-1",
+        "configId": "mode",
+        "value": "default"
+      }
+    }
+  ]
+}

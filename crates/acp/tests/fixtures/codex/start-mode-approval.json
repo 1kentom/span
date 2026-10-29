@@ -1,0 +1,56 @@
+{
+  "quirk": "A global Codex config with approval_policy never and danger-full-access starts sessions in agent-full-access. Under the default approval start mode Span changes the mode to agent (Auto review, codex-acp's own default) at session start: the mode chip shows Auto review and no bypass notice is raised. Codex gets no _meta.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "x-1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "x-1",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "agent"
+        },
+        {
+          "id": "collaboration_mode"
+        }
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "x-1",
+        "configId": "mode",
+        "value": "agent"
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/new",
+      "params": {
+        "_meta": {}
+      }
+    }
+  ]
+}

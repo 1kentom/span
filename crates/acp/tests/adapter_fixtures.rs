@@ -13,6 +13,8 @@
 //! - `counts`: `{"match": event, "count": n}`, how often an event appears.
 //! - `logsExclude`: text that must not appear in any protocol log line.
 //! - `debugExclude`: text that must not appear in the `Debug` output of any event.
+//! - `userSettings`: the user's settings file content. Without it the user
+//!   has no settings file, so every agent starts in the approval mode.
 //! - A `listSessions` step's `expectSessions` lists the session ids the
 //!   client returns, in order.
 use serde_json::{json, Value};
@@ -150,8 +152,15 @@ async fn replay(agent: &str, name: &str) {
         .expect("expected events");
     let expected: Value = serde_json::from_str(&substitute(&expected_text, &root)).unwrap();
 
+    let user_settings = expected.get("userSettings").map(|settings| {
+        let path = root.join(".user-settings.jsonc");
+        std::fs::write(&path, settings.to_string()).unwrap();
+        path
+    });
     let workspace = Arc::new(Mutex::new(
-        CoreWorkspace::open(&root).unwrap().with_user_settings(None),
+        CoreWorkspace::open(&root)
+            .unwrap()
+            .with_user_settings(user_settings),
     ));
     let events: Events = Arc::new(Mutex::new(Vec::new()));
     let debug: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -487,6 +496,38 @@ fixture!(
     codex_thread_status_is_not_session_info,
     "codex",
     "thread-status"
+);
+// Start-mode policy (#81): a bypass mode from the agent's own configuration
+// is changed to its approval mode at session start unless the user opted in.
+fixture!(
+    claude_start_mode_approval_leaves_bypass,
+    "claude",
+    "start-mode-approval"
+);
+fixture!(
+    codex_start_mode_approval_leaves_full_access,
+    "codex",
+    "start-mode-approval"
+);
+fixture!(
+    codex_start_mode_agent_default_keeps_full_access,
+    "codex",
+    "start-mode-agent-default"
+);
+fixture!(
+    gemini_start_mode_approval_leaves_yolo,
+    "gemini",
+    "start-mode-approval"
+);
+fixture!(
+    opencode_start_mode_changes_nothing,
+    "opencode",
+    "start-mode"
+);
+fixture!(
+    generic_start_mode_approval_leaves_bypass,
+    "generic",
+    "start-mode-approval"
 );
 fixture!(
     claude_interrupted_replay_is_a_notice,

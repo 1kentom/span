@@ -1,0 +1,53 @@
+{
+  "quirk": "An unknown agent whose mode option starts in bypassPermissions and offers default is moved to default at session start under the approval start mode; a set_config_option answered with {} still updates the chip from the known options.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "p-1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "p-1",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "default"
+        }
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "p-1",
+        "configId": "mode",
+        "value": "default"
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/new",
+      "params": {
+        "_meta": {}
+      }
+    }
+  ]
+}

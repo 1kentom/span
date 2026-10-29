@@ -1,0 +1,51 @@
+{
+  "quirk": "The user opted Codex in to its own default mode (agents.startMode.codex = agentDefault): a session that starts in agent-full-access stays there, the bypass notice is raised as before, and Span sends no mode change.",
+  "userSettings": {
+    "agents": {
+      "startMode": {
+        "codex": "agentDefault"
+      }
+    }
+  },
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "x-1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "x-1",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "agent-full-access"
+        },
+        {
+          "id": "collaboration_mode"
+        }
+      ]
+    },
+    {
+      "kind": "notice",
+      "severity": "warning",
+      "title": "Full access",
+      "noticeId": "span/permission-bypass",
+      "hint": "permissionsBypassed"
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/set_config_option"
+    }
+  ]
+}
