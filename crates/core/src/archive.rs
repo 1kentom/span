@@ -244,6 +244,9 @@ impl ZipBundle {
                 "selected files exceed the 256 MiB total limit",
             ));
         }
+        if selected.is_empty() {
+            return Err(archive_error("no safe files selected for extraction"));
+        }
         let destination = choose_destination(workspace)?;
         Ok(ArchivePlan {
             destination,
@@ -271,6 +274,9 @@ impl ZipBundle {
         check_workspace_root(workspace, expected_root)?;
         if plan.bundle_id != self.id {
             return Err(archive_error("plan belongs to a different archive"));
+        }
+        if plan.selected.is_empty() {
+            return Err(archive_error("no safe files selected for extraction"));
         }
         validate_destination(&plan.destination)?;
         let entries = self.inspect()?;
@@ -309,17 +315,6 @@ impl ZipBundle {
             ));
         }
 
-        let root_path = &workspace.root;
-        let root_dir = open_workspace_root_nofollow(workspace, expected_root)?;
-        // `create_dir` is atomic with respect to a competing creator. It fails
-        // instead of merging into or replacing an existing directory.
-        root_dir
-            .create_dir(&plan.destination)
-            .map_err(|error| crate::io_error("Create archive destination", root_path, error))?;
-        let destination = root_dir
-            .open_dir_nofollow(&plan.destination)
-            .map_err(|error| crate::io_error("Open archive destination", root_path, error))?;
-
         let mut result = ArchiveResult {
             extracted: 0,
             skipped: plan.skipped_unsafe.clone(),
@@ -327,6 +322,33 @@ impl ZipBundle {
             cancelled: false,
             error: None,
         };
+        if cancellation.is_cancelled() {
+            result.cancelled = true;
+            return Ok(result);
+        }
+
+        let root_path = &workspace.root;
+        let root_dir = open_workspace_root_nofollow(workspace, expected_root)?;
+        if cancellation.is_cancelled() {
+            result.cancelled = true;
+            return Ok(result);
+        }
+        // `create_dir` is atomic with respect to a competing creator. It fails
+        // instead of merging into or replacing an existing directory.
+        root_dir
+            .create_dir(&plan.destination)
+            .map_err(|error| crate::io_error("Create archive destination", root_path, error))?;
+        if cancellation.is_cancelled() {
+            result.cancelled = true;
+            if let Err(error) = root_dir.remove_dir(&plan.destination) {
+                result.error = Some(format!("Cancellation cleanup failed: {error}"));
+            }
+            return Ok(result);
+        }
+        let destination = root_dir
+            .open_dir_nofollow(&plan.destination)
+            .map_err(|error| crate::io_error("Open archive destination", root_path, error))?;
+
         let mut archive = self.archive()?;
         let total = plan.files;
         let mut bytes_done = 0u64;
@@ -803,6 +825,48 @@ mod tests {
             .unwrap(),
             b"hello zip"
         );
+    }
+
+    #[test]
+    fn pre_cancelled_extraction_does_not_change_the_workspace_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        let workspace = CoreWorkspace::open(&workspace_path).unwrap();
+        let expected_root = workspace.workspace().root;
+        let bundle = ZipBundle::new(Arc::new(stored_zip("hello.txt", b"hello"))).unwrap();
+        let plan = bundle
+            .plan(&workspace, &expected_root, ArchiveExtractOptions::default())
+            .unwrap();
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+
+        let result = bundle
+            .extract(&workspace, &expected_root, &plan, &cancellation, |_| {})
+            .unwrap();
+
+        assert!(result.cancelled);
+        assert_eq!(result.error, None);
+        assert!(!workspace_path.join(&plan.destination).exists());
+        assert_eq!(fs::read_dir(&workspace_path).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn planning_rejects_a_selection_with_no_safe_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        let workspace = CoreWorkspace::open(&workspace_path).unwrap();
+        let expected_root = workspace.workspace().root;
+        let bundle = ZipBundle::new(Arc::new(stored_zip(".hidden.txt", b"hidden"))).unwrap();
+        let options = ArchiveExtractOptions {
+            paths: None,
+            keep_structure: true,
+            skip_hidden: true,
+        };
+
+        assert!(bundle.plan(&workspace, &expected_root, options).is_err());
+        assert_eq!(fs::read_dir(&workspace_path).unwrap().count(), 0);
     }
 
     #[cfg(unix)]
