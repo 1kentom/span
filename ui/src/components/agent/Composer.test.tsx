@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createSignal } from "solid-js";
 import { ModelPopover } from "./ModelPopover";
 import { SlashPopover } from "./SlashPopover";
-import { ActivityBar, PermissionDock, QuestionDock, UrlDock } from "./Docks";
+import { PermissionDock, QuestionDock, UrlDock } from "./Docks";
 import { PlanDrawer } from "./PlanDrawer";
 import { QueuePanel } from "./QueuePanel";
 import type { ConfigOptionView, SlashGroup } from "./types";
@@ -229,7 +229,7 @@ describe("PermissionDock", () => {
   });
 });
 
-describe("UrlDock and ActivityBar", () => {
+describe("UrlDock", () => {
   it("opens on click or Enter and cancels on Escape", () => {
     const open = vi.fn();
     const cancel = vi.fn();
@@ -251,11 +251,6 @@ describe("UrlDock and ActivityBar", () => {
     const cancelButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Cancel")!;
     key("Enter", {}, cancelButton);
     expect(open).not.toHaveBeenCalled();
-  });
-  it("shows the label and elapsed time outside any live region", () => {
-    const host = mount(() => <ActivityBar label="Working" elapsed="12s" hint="Esc to stop" />);
-    expect(host.querySelector("[role=status], [aria-live]")).toBeNull();
-    expect(text(host.querySelector(".sb-shimmer"))).toBe("Working · 12s");
   });
 });
 
