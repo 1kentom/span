@@ -1,5 +1,5 @@
 /* Uploads workspace: rail, viewer tab strip, menus and toasts. Theme tokens only, no literal colours. */
-.up-workspace{position:relative;display:flex;gap:8px;width:100%;height:100%;min-width:0;min-height:0;padding:0 8px 8px;background:var(--canvas);color:var(--text);font-size:13px;line-height:18px}
+.up-workspace{position:relative;display:flex;gap:8px;width:100%;height:100%;min-width:0;min-height:0;padding:0 0 8px;background:var(--canvas);color:var(--text);font-size:13px;line-height:18px}
 .up-workspace .icon,.up-menu .icon,.up-toast .icon{color:inherit}
 .up-workspace button,.up-workspace input,.up-menu button{font:inherit}
 
@@ -11,11 +11,11 @@
 .up-rail-tab:hover{background:var(--hover);color:var(--text)}
 .up-icon-btn{display:grid;place-items:center;width:26px;height:26px;flex:none;border:0;border-radius:4px;background:transparent;color:var(--faint);cursor:pointer}
 .up-icon-btn:hover{background:var(--hover);color:var(--text)}
-.up-filter{display:flex;align-items:center;gap:6px;height:31px;margin:2px 10px 6px;padding:3px 7px;border:1px solid var(--border);border-radius:5px;background:var(--field);color:var(--faint);flex:none}
+.up-filter{display:flex;align-items:center;gap:6px;height:31px;margin:2px 6px 6px;padding:3px 7px;border:1px solid var(--border);border-radius:5px;background:var(--field);color:var(--faint);flex:none}
 .up-filter:focus-within{border-color:var(--accent)}
 .up-filter input{flex:1;min-width:0;border:0;outline:0;background:none;color:var(--text);font-size:12px}
 .up-rail-body{position:relative;flex:1;min-height:0;overflow:auto;padding:0 6px 14px}
-.up-rail-foot{display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-top:1px solid var(--sepLine);font-size:11px;color:var(--faint);flex:none}
+.up-rail-foot{display:flex;flex-direction:column;gap:2px;padding:8px 14px;overflow-wrap:anywhere;border-top:1px solid var(--sepLine);font-size:11px;color:var(--faint);flex:none}
 .up-usage{color:var(--dim)}
 .up-tree{display:flex;flex-direction:column;outline:none}
 .up-group{display:flex;flex-direction:column;margin-top:8px;border-radius:5px;outline:none}
@@ -39,7 +39,7 @@
 .up-rename-error{font-size:11px;line-height:15px;color:var(--error)}
 .up-confirm{position:sticky;bottom:0;display:flex;flex-direction:column;gap:8px;margin:10px 2px 0;padding:10px;border:1px solid var(--redBorder);border-radius:8px;background:var(--popup);box-shadow:var(--shadow);font-size:12px}
 .up-confirm-actions{display:flex;gap:6px;justify-content:flex-end}
-.up-empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:32px 16px;text-align:center;color:var(--dim);font-size:12px}
+.up-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;box-sizing:border-box;min-height:100%;padding:16px 14px;text-align:center;color:var(--dim);font-size:12px}
 .up-empty strong{color:var(--text);font-weight:500}
 
 /* Main area and tabs */
