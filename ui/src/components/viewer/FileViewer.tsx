@@ -26,7 +26,8 @@ import { mdxToMarkdown } from './mdx';
 import { TextView } from './TextView';
 import { TypeIcon, ViewerState, type StateAction } from './ViewerStates';
 // Document viewers (docx, pptx, xlsx, pdf, archives): OfficeView loads each viewer as a lazy chunk.
-import { officeKindOf, type OfficeKind } from '../../lib/office/kind';
+import { OFFICE_PREVIEW_BYTES } from '../../lib/office/limits';
+import { officeKindOf, officeLabels, type OfficeKind } from '../../lib/office/kind';
 import { OfficeView } from './office/OfficeView';
 import '../../styles/viewer.css';
 
@@ -142,7 +143,13 @@ export function FileViewer(props: FileViewerProps) {
     const { kind, reason, label } = classification();
     if (asBinary()) return data ? { t: 'hex', bytes: data, binary: false } : { t: 'damaged', text: 'File data is not available.' };
     const office = officeKindOf(props.name, props.mime);
-    if (office) return data ? { t: 'office', kind: office, bytes: data } : { t: 'damaged', text: 'File data is not available.' };
+    if (office) {
+      const limit = OFFICE_PREVIEW_BYTES[office];
+      if (Math.max(size(), data?.byteLength ?? 0) > limit) return { t: 'too-large', text: `${officeLabels[office]} preview is limited to ${formatAssetBytes(limit)}.`, canShow: false };
+      if (!data) return { t: 'damaged', text: 'File data is not available.' };
+      if (data.byteLength < size()) return { t: 'damaged', text: 'The file data is incomplete. Refresh the upload and try again.' };
+      return { t: 'office', kind: office, bytes: data };
+    }
     if (kind === 'unsupported') {
       const title = `${label} files cannot be previewed here`;
       if (reason === 'format' && label === 'Image') return { t: 'unsupported', title, text: 'Preview supports PNG, JPEG, GIF, WebP and SVG. This format is not supported.' };
