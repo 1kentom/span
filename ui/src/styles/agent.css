@@ -145,6 +145,10 @@
   scrollbar-width: thin;
   scrollbar-color: var(--scroll) transparent;
 }
+/* A following feed is pinned explicitly (feed-follow.ts); scroll anchoring would fight those writes. */
+.agent-content[data-follow="following"] {
+  overflow-anchor: none;
+}
 .agent-body {
   display: flex;
   flex-direction: column;

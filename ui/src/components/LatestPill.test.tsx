@@ -136,7 +136,10 @@ async function session() {
   const scroller = root.querySelector<HTMLElement>(".agent-content")!;
   const metrics = { scrollHeight: 2000, clientHeight: 400, scrollTop: 1600 };
   for (const key of Object.keys(metrics) as (keyof typeof metrics)[]) Object.defineProperty(scroller, key, { configurable: true, writable: true, value: metrics[key] });
-  const scrollTo = async (top: number) => { (scroller as unknown as { scrollTop: number }).scrollTop = top; scroller.dispatchEvent(new Event("scroll")); await flush(); };
+  // The scroll event a browser fires on reaching the bottom, so the feed knows where the reader starts.
+  scroller.dispatchEvent(new Event("scroll"));
+  // A user scroll: only a gesture on the scroller detaches the feed (feed-follow.ts), so the wheel comes first.
+  const scrollTo = async (top: number) => { scroller.dispatchEvent(new Event("wheel")); (scroller as unknown as { scrollTop: number }).scrollTop = top; scroller.dispatchEvent(new Event("scroll")); await flush(); };
   return { root, scroller, scrollTo };
 }
 const pill = (root: HTMLElement) => root.querySelector<HTMLButtonElement>(".agent-jump")!;
@@ -160,6 +163,15 @@ describe("latest pill", () => {
     expect(pill(root).classList.contains("shown")).toBe(true);
     await scrollTo(1600);
     expect(pill(root).classList.contains("shown")).toBe(false);
+  });
+  it("keeps following when a scroll event without a user gesture lands far from the bottom", async () => {
+    const { root, scroller } = await session();
+    // The echo of a pin read after a big chunk grew the feed, or a frame of an older smooth scroll.
+    (scroller as unknown as { scrollHeight: number }).scrollHeight = 2466;
+    scroller.dispatchEvent(new Event("scroll"));
+    await flush();
+    expect(pill(root).classList.contains("shown")).toBe(false);
+    expect(scroller.dataset.follow).toBe("following");
   });
   it("scrolls to the very bottom on click and hides again", async () => {
     const { root, scroller, scrollTo } = await session();

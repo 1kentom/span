@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { api, isDesktop } from "../../lib/client";
 import { NATIVE_UNAVAILABLE, type AgentController } from "../../lib/agent-controller";
-import { isNearBottom, pillVisible } from "../../lib/agent-feed";
+import { pillVisible } from "../../lib/agent-feed";
 import { liveTone, orderByUrgency } from "../../lib/live-agents";
 import { AgentComposer } from "../agent/AgentComposer";
 import { AgentFeed } from "../agent/AgentFeed";
@@ -75,12 +75,7 @@ export function ThreadView(props: ThreadViewProps) {
   });
   createEffect(() => {
     const element = feedElement();
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (a.pinned()) a.scrollToLatest();
-    });
-    observer.observe(element);
-    onCleanup(() => observer.disconnect());
+    if (element) onCleanup(a.follow.observe(element));
   });
   onMount(() => {
     // The same Escape rule as the sidebar: inside the thread, outside a dock and with no modal, Escape closes the
@@ -150,11 +145,11 @@ export function ThreadView(props: ThreadViewProps) {
       <div class="agent-feed-region">
         <div
           class="agent-content ap-thread-scroll"
-          ref={(element) => (a.scrollers.content = element)}
-          onScroll={(event) => {
-            a.setPinned(isNearBottom(event.currentTarget));
-            setAway(pillVisible(away(), event.currentTarget));
+          ref={(element) => {
+            a.scrollers.content = element;
+            onCleanup(a.follow.attach(element));
           }}
+          onScroll={(event) => setAway(pillVisible(away(), event.currentTarget))}
         >
           <Show when={body() === "picker"}>{props.picker}</Show>
           <Show when={body() === "feed"}>

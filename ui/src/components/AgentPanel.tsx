@@ -2,7 +2,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCle
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentController, type AgentPanelProps } from "../lib/agent-controller";
 import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
-import { isNearBottom, relativeTime, pillVisible } from "../lib/agent-feed";
+import { relativeTime, pillVisible } from "../lib/agent-feed";
 import { classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
@@ -74,7 +74,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
         const target = message();
         if (inComposer() || !target) return undefined;
         return () => {
-          a.setPinned(false);
+          a.follow.detach();
           requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
         };
       },
@@ -264,12 +264,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
   createEffect(() => {
     // Markdown and highlighting settle after the feed signal changes, so watch the real height.
     const element = feedElement();
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (a.pinned()) a.scrollToLatest();
-    });
-    observer.observe(element);
-    onCleanup(() => observer.disconnect());
+    if (element) onCleanup(a.follow.observe(element));
   });
 
   return (
@@ -376,10 +371,12 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
       <div class="agent-feed-region">
       <div
         class="agent-content"
-        ref={(element) => (a.scrollers.content = element)}
+        ref={(element) => {
+          a.scrollers.content = element;
+          onCleanup(a.follow.attach(element));
+        }}
         onScroll={(event) => {
           if (a.view() === "history") return;
-          a.setPinned(isNearBottom(event.currentTarget));
           setAway(pillVisible(away(), event.currentTarget));
         }}
       >
@@ -537,7 +534,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
             const target = message();
             if (!target) return;
             a.setViewing(undefined);
-            a.setPinned(false);
+            a.follow.detach();
             requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
           };
           return (

@@ -51,6 +51,7 @@ import { sessionKeyId } from "./agent-stores/live-sessions";
 import { editQueuedEntry, mergeQueued } from "./agent-threads/thread-queue";
 import { createUsageRecorder } from "./usage";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
+import { createFeedFollow } from "./feed-follow";
 
 const DELEGATION_POLL_MS = 3000;
 
@@ -2181,25 +2182,12 @@ export function createAgentController(props: AgentPanelProps) {
   };
 
   const scrollers: { content?: HTMLDivElement } = {};
-  // Streaming text grows the feed every frame and several watchers ask to follow it: coalesce them into one scroll write
-  // per animation frame, and skip it if the reader scrolled away before the frame ran.
-  let scrollFrame: number | undefined;
-  let scrollSmooth = false;
-  const scrollToLatest = (smooth = false) => {
-    scrollSmooth ||= smooth;
-    if (scrollFrame !== undefined) return scrollFrame;
-    scrollFrame = requestAnimationFrame(() => {
-      const behavior = scrollSmooth && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto";
-      scrollFrame = undefined;
-      scrollSmooth = false;
-      if (!pinned()) return;
-      scrollers.content?.scrollTo({ top: scrollers.content.scrollHeight, behavior });
-    });
-    return scrollFrame;
-  };
+  // The one follow authority for both layouts (feed-follow.ts): only a user gesture detaches the feed, sending and the
+  // Latest pill re-attach it, and its single writer pins instantly, at most once per frame or right after layout.
+  const follow = createFeedFollow({ following: pinned, setFollowing: setPinned, scroller: () => scrollers.content, active: () => view() !== "history" });
+  const scrollToLatest = () => follow.pin();
   function followLatest() {
-    setPinned(true);
-    scrollToLatest(true);
+    follow.send();
   }
 
   /** The step running in the open chat: the newest unfinished tool call. */
@@ -2368,6 +2356,7 @@ export function createAgentController(props: AgentPanelProps) {
     focusPrompt,
     scrollToLatest,
     followLatest,
+    follow,
     dismissFailure: () => patch({ failure: undefined }),
     leaveConnecting: () => setConnecting(undefined),
     loadAgents,
