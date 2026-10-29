@@ -1,4 +1,4 @@
-import type { GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
+import type { ExplorerLegacyPreferences_Deserialize, ExplorerPreferenceMigration_Serialize, GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
 import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest, CurrentFileRun_Serialize as CurrentFileRun } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
@@ -142,11 +142,18 @@ function previewBuffer(path: string): BufferSnapshot {
   return { ...buffer };
 }
 
+/** The browser fixture has no repository ignore rules; hidden-file settings still
+ * exercise the same listing, finder and search preference in the preview. */
+function previewFilePaths(): string[] {
+  const showHidden = previewSettings.get().explorer?.showHiddenFiles ?? true;
+  return Object.keys(fixture).filter(path => showHidden || !path.split('/').some(part => part.startsWith('.'))).sort();
+}
+
 function previewEntries(path: string): FileEntry[] {
   const prefix = path.replace(/^\/preview\/intellij\/?/, '').replace(/\/$/, '');
   const directory = prefix ? `${prefix}/` : '';
   const entries = new Map<string, FileEntry>();
-  for (const file of Object.keys(fixture)) {
+  for (const file of previewFilePaths()) {
     if (!file.startsWith(directory)) continue;
     const relative = file.slice(directory.length);
     const name = relative.split('/')[0];
@@ -272,15 +279,15 @@ export const api = {
     return isDesktop ? commands.listDirectory(path) : previewEntries(path);
   },
   async listFiles(): Promise<FileEntry[]> {
-    return isDesktop ? commands.listFiles() : Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
+    return isDesktop ? commands.listFiles() : previewFilePaths().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
   },
   async fileIndexStatus(): Promise<FileIndexStatus | null> {
     if (isDesktop) return commands.fileIndexStatus();
-    return { workspaceRoot: previewWorkspace.root, generation: 1, status: 'ready', scannedEntries: Object.keys(fixture).length, indexedFiles: Object.keys(fixture).length, errorCount: 0, lastError: null, watcherReady: false, watcherError: null };
+    return { workspaceRoot: previewWorkspace.root, generation: 1, status: 'ready', scannedEntries: previewFilePaths().length, indexedFiles: previewFilePaths().length, errorCount: 0, lastError: null, watcherReady: false, watcherError: null };
   },
   async queryFile(query: string, limit = 100): Promise<FileIndexQueryResponse> {
     if (isDesktop) return commands.queryFile(query, Math.max(1, Math.min(100, limit)));
-    const files = Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
+    const files = previewFilePaths().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
     return { workspaceRoot: previewWorkspace.root, generation: 1, requestId: 0, results: fileResults(files, query).slice(0, limit).map(file => ({ path: file.path, score: 0 })) };
   },
   async openBuffer(path: string): Promise<BufferSnapshot> {
@@ -326,7 +333,7 @@ export const api = {
     if (isDesktop) return commands.search({ text: query, isRegex: false, caseSensitive: false, maxResults: 1000 });
     if (!query) return [];
     const results: SearchMatch[] = [];
-    for (const path of Object.keys(fixture)) {
+    for (const path of previewFilePaths()) {
       previewBuffer(path).text.split('\n').forEach((text, index) => {
         const column = text.toLowerCase().indexOf(query.toLowerCase());
         if (column >= 0) results.push({ path, line: index + 1, column: column + 1, text });
@@ -353,6 +360,10 @@ export const api = {
       }),
       cancel: async () => { cancelled = true; },
     };
+  },
+  async migrateExplorerPreferences(expectedWorkspaceRoot: string, legacy: ExplorerLegacyPreferences_Deserialize): Promise<ExplorerPreferenceMigration_Serialize> {
+    if (!isDesktop) nativeRequired('Migrating Explorer preferences');
+    return commands.migrateExplorerPreferences(expectedWorkspaceRoot, legacy);
   },
   async getSettingsForScope(scope: SettingsScope): Promise<Settings> {
     return isDesktop ? commands.getSettingsForScope(scope) : previewSettings.get(scope);

@@ -162,7 +162,13 @@ async fn open_workspace(
     .map_err(|error| format!("Open folder task failed: {error}"))??;
     state
         .file_index
-        .activate(PathBuf::from(&result.root))
+        .activate_with_visibility(
+            PathBuf::from(&result.root),
+            span_file_index::ScanVisibility {
+                show_hidden_files: settings.explorer.show_hidden_files,
+                show_ignored_files: settings.explorer.show_ignored_files,
+            },
+        )
         .await?;
     state.run_approvals.cancel_all();
     state.runs.shutdown().await?;
@@ -789,6 +795,24 @@ async fn get_settings_for_scope(
 
 #[tauri::command]
 #[specta::specta]
+async fn migrate_explorer_preferences(
+    state: State<'_, DesktopState>,
+    expected_workspace_root: String,
+    legacy: span_core::ExplorerLegacyPreferences,
+) -> Result<span_core::ExplorerPreferenceMigration, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        if workspace.workspace().root != expected_workspace_root {
+            return Err(span_core::CoreError::Settings(
+                "The workspace changed before Explorer preferences could be migrated".into(),
+            ));
+        }
+        workspace.migrate_explorer_preferences(legacy)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn get_settings_jsonc_for_scope(
     state: State<'_, DesktopState>,
     scope: SettingsScope,
@@ -988,6 +1012,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             cancel_search,
             get_settings,
             get_settings_for_scope,
+            migrate_explorer_preferences,
             open_settings_buffer,
             edit_settings_buffer,
             save_settings_buffer,

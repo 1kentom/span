@@ -6,6 +6,7 @@ import { isAssetPath, isBinaryAssetPath } from "../components/AssetPreview";
 import { planTabEvictions } from "./tabLimit";
 import type { EditorEdit, EditorDocumentChange } from "../components/Editor";
 import { api, isDesktop } from "../lib/client";
+import { explorerPreferences, legacyExplorerPreferences, resolveLegacyExplorerPreferences } from "../lib/explorer-prefs";
 import { fileName, normalizePath } from "../lib/navigation";
 import { isViewerTab, viewerTabName } from "../lib/viewer-tabs";
 import type { BufferSnapshot, FileEntry, FileIndexStatus, SearchMatch, Settings_Serialize as Settings, Workspace, SessionState_Serialize as SessionState, SessionPanels_Serialize as SessionPanels, MarkdownView, SettingsScope, StartupRequest_Serialize as StartupRequest } from "../bindings";
@@ -41,7 +42,7 @@ export function createWorkbench() {
   // Goto can use already visible/open files before the background index finds them.
   const files = createMemo(() => {
     const known = new Map<string, FileEntry>();
-    for (const entries of Object.values(directories)) for (const entry of entries || []) if (!entry.isDir) known.set(entry.path, entry);
+    for (const entries of Object.values(directories)) for (const entry of entries || []) if (!entry.isDir && !entry.backgroundExcluded) known.set(entry.path, entry);
     for (const path of recentPaths()) known.set(path, { path, name: fileName(path), isDir: false });
     return [...known.values()];
   });
@@ -87,6 +88,8 @@ export function createWorkbench() {
   let indexTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   let indexRequest = 0;
+  let discoveryEpoch = 0;
+  const [discoveryRevision, setDiscoveryRevision] = createSignal(0);
   const directoryLoads = new Map<string, Promise<void>>();
   const [loadingDirectories, setLoadingDirectories] = createSignal<ReadonlySet<string>>(new Set());
   onCleanup(() => { disposed = true; clearTimeout(indexTimer); });
@@ -108,10 +111,10 @@ export function createWorkbench() {
     }
   }
   async function queryFiles(query: string): Promise<FileEntry[]> {
-    const version = workspaceVersion; const root = workspace()?.root;
+    const version = workspaceVersion; const epoch = discoveryEpoch; const root = workspace()?.root;
     if (!root) return [];
     const result = await api.queryFile(query, 100);
-    if (disposed || version !== workspaceVersion || normalizePath(result.workspaceRoot) !== normalizePath(root) || (indexStatus() && result.generation < indexStatus()!.generation)) return [];
+    if (disposed || version !== workspaceVersion || epoch !== discoveryEpoch || normalizePath(result.workspaceRoot) !== normalizePath(root) || (indexStatus() && result.generation < indexStatus()!.generation)) return [];
     return result.results.map(match => ({ path: match.path, name: fileName(match.path), isDir: false }));
   }
   let settingsRequest = 0;
@@ -236,12 +239,12 @@ export function createWorkbench() {
 
   async function loadDirectory(path: string) {
     const pending = directoryLoads.get(path); if (pending) return pending;
-    const version = workspaceVersion;
+    const version = workspaceVersion; const epoch = discoveryEpoch;
     setLoadingDirectories(current => new Set([...current, path]));
     const operation = (async () => {
-      try { const entries = await api.listDirectory(path); if (!disposed && version === workspaceVersion) setDirectories(path, entries); }
-      catch (e) { if (!disposed && version === workspaceVersion) report(e); }
-      finally { if (version === workspaceVersion) { directoryLoads.delete(path); setLoadingDirectories(current => { const next = new Set(current); next.delete(path); return next; }); } }
+      try { const entries = await api.listDirectory(path); if (!disposed && version === workspaceVersion && epoch === discoveryEpoch) setDirectories(path, entries); }
+      catch (e) { if (!disposed && version === workspaceVersion && epoch === discoveryEpoch) report(e); }
+      finally { if (version === workspaceVersion && epoch === discoveryEpoch) { directoryLoads.delete(path); setLoadingDirectories(current => { const next = new Set(current); next.delete(path); return next; }); } }
     })();
     directoryLoads.set(path, operation);
     return operation;
@@ -639,10 +642,30 @@ export function createWorkbench() {
   }
   async function refreshSettingsScope(scope: SettingsScope = settingsScope()) {
     const request = ++settingsRequest; const version = workspaceVersion;
+    const root = workspace()?.root; const legacy = legacyExplorerPreferences();
+    if (isDesktop && root && Object.values(legacy).some(value => value !== null)) {
+      try {
+        const migration = await api.migrateExplorerPreferences(root, legacy);
+        if (request !== settingsRequest || version !== workspaceVersion) return;
+        resolveLegacyExplorerPreferences(migration.resolvedLegacyKeys);
+      } catch { /* Keep legacy values until both settings scopes can be safely read and migrated. */ }
+    }
+    if (request !== settingsRequest || version !== workspaceVersion) return;
     const [selected, effective, raw, keys] = await Promise.all([api.getSettingsForScope(scope), api.getSettings(), api.getSettingsJsoncForScope(scope), api.getSettingsKeysForScope(scope)]);
     if (request !== settingsRequest || version !== workspaceVersion) return;
+    const before = explorerPreferences(settings()); const after = explorerPreferences(effective);
+    const visibilityChanged = before.showHiddenFiles !== after.showHiddenFiles || before.showIgnoredFiles !== after.showIgnoredFiles;
+    if (visibilityChanged) {
+      discoveryEpoch++; setDiscoveryRevision(discoveryEpoch); indexRequest++; searchVersion++;
+      void activeSearch?.cancel().catch(() => undefined); activeSearch = undefined;
+      setSearching(false); setSearchResults([]);
+      directoryLoads.clear(); setLoadingDirectories(new Set<string>());
+      for (const path of Object.keys(directories)) setDirectories(path, undefined!);
+      setIndexStatus(null);
+    }
     batch(() => { setSettingsScope(scope); setScopeSettings(selected); setSettings(effective); setSettingsJsonc(raw); setConfiguredSettingsKeys(keys); });
     enforceTabLimit();
+    if (visibilityChanged && root) await refreshFiles();
   }
   async function reloadSettingsJsonc(): Promise<string> { await refreshSettingsScope(); return settingsJsonc(); }
   async function openSettingsJsonc(scope = settingsScope()) { await openFile(settingsBufferPath(scope)); }
@@ -827,6 +850,6 @@ export function createWorkbench() {
   });
   createEffect(() => autosave.sync());
   onCleanup(() => { autosave.dispose(); cancelAllFormats(); });
-  return { openGitTab, openViewerTab, indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, trashPath, renamePath, duplicatePath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
+  return { openGitTab, openViewerTab, discoveryRevision, indexStatus, indexError, queryFiles, loadingDirectories, newFile, newDirectory, trashPath, renamePath, duplicatePath, refreshFiles, fileOperationBusy, settingsScope, scopeSettings, configuredSettingsKeys, refreshSettingsScope, resetSetting, updateEffectiveSetting, openSettingsJsonc, autoSaveFailures, autoSaveEditorBlur: autosave.editorBlur, autoSaveWindowBlur: autosave.windowBlur, workspace, workspaceGeneration, panels, setPanels, markdownView, setMarkdownView, isMarkdown, settingsJsonc, saveSettingsJsonc, reloadSettingsJsonc, persistSession, openSettings, reopenClosedTab, activeTab, directories, expanded, buffers, documents, synchronized, groups, activeGroup, setActiveGroup, files, recentPaths, settings, setSettings, pendingRecovery, resolveRecovery, acceptAgentBuffer, error, setError, busy, searching, searchResults, pendingClose, pendingWorkspace, setPendingWorkspace, failed, activePath, dirty, hasDirty, loadDirectory, refreshTree, toggleDirectory, openFile, openToSide, openWorkspace, requestWorkspace, initialize, edit, applyHistory, format, save, closeTab, closeGroup, closeBusy, moveTab, moveTabToZone, openInZone, splitVertical, setSplitVertical, confirmClose, splitEditor, search, updateSettings, updateSettingKey, refreshBuffer };
 }
 export type Workbench = ReturnType<typeof createWorkbench>;

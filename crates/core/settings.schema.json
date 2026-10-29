@@ -520,6 +520,69 @@
           "description": "Check once per launch whether a newer Span release or agent version exists. Check-only: nothing is downloaded or installed, and the request is a plain GET with no identifiers. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
         }
       }
+    },
+    "explorer": {
+      "type": "object",
+      "default": {
+        "showHiddenFiles": true,
+        "showIgnoredFiles": false,
+        "compactFolders": true,
+        "autoReveal": true,
+        "confirmDelete": true
+      },
+      "additionalProperties": false,
+      "properties": {
+        "showHiddenFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show hidden files, including dotfiles such as .env.example."
+        },
+        "showIgnoredFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show files excluded by ignore rules."
+        },
+        "compactFolders": {
+          "type": "boolean",
+          "default": true,
+          "description": "Render chains of single-child folders as one row."
+        },
+        "autoReveal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reveal the active file in the Explorer."
+        },
+        "confirmDelete": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask before deleting files or folders."
+        }
+      }
+    },
+    "explorer.showHiddenFiles": {
+      "type": "boolean",
+      "default": true,
+      "description": "Dotted alias for explorer.showHiddenFiles. Dotted keys take precedence over the nested value in the same scope."
+    },
+    "explorer.showIgnoredFiles": {
+      "type": "boolean",
+      "default": false,
+      "description": "Dotted alias for explorer.showIgnoredFiles. Dotted keys take precedence over the nested value in the same scope."
+    },
+    "explorer.compactFolders": {
+      "type": "boolean",
+      "default": true,
+      "description": "Dotted alias for explorer.compactFolders. Dotted keys take precedence over the nested value in the same scope."
+    },
+    "explorer.autoReveal": {
+      "type": "boolean",
+      "default": true,
+      "description": "Dotted alias for explorer.autoReveal. Dotted keys take precedence over the nested value in the same scope."
+    },
+    "explorer.confirmDelete": {
+      "type": "boolean",
+      "default": true,
+      "description": "Dotted alias for explorer.confirmDelete. Dotted keys take precedence over the nested value in the same scope."
     }
   },
   "description": "Span supports the documented built-in settings and selected VS Code keys. Other keys are preserved in JSONC but have no effect."

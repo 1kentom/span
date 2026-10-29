@@ -3,7 +3,7 @@ import type { FileEntry } from "../bindings";
 import type { Workbench } from "../stores/workbench";
 import { copyName, creationFolder, join, rangeBetween, renameSelectionEnd, topLevelPaths, validateName } from "./explorer-ops";
 import { compactChain } from "./compact-tree";
-import { compactFolders, confirmDelete } from "./explorer-prefs";
+import { explorerPreferences } from "./explorer-prefs";
 import { fileName, parentPath } from "./navigation";
 
 export type ExplorerEdit = { mode: "create" | "rename"; kind: "file" | "folder"; parent: string; path?: string; value: string; template?: string; error?: string; warning?: string; select?: [number, number]; busy?: boolean };
@@ -27,6 +27,7 @@ export const templates = [
 
 /** All Explorer state and file operations. The Explorer component renders it, App wires the actions and dialogs. */
 export function createExplorerState(w: Workbench) {
+  const preferences = () => explorerPreferences(w.settings());
   const [selection, setSelection] = createSignal<readonly string[]>([]);
   const [focus, setFocus] = createSignal<string>();
   const [anchor, setAnchor] = createSignal<string>();
@@ -72,7 +73,7 @@ export function createExplorerState(w: Workbench) {
     const known = templates.find(item => item.id === template);
     await ensureExpanded(folder);
     // A compact chain shows only its deepest folder, so a new row for an inner segment belongs under that one.
-    if (compactFolders() && folder) { const deepest = compactChain(folder, w.directories).deepest; if (deepest !== folder) { await ensureExpanded(deepest); folder = deepest; } }
+    if (preferences().compactFolders && folder) { const deepest = compactChain(folder, w.directories).deepest; if (deepest !== folder) { await ensureExpanded(deepest); folder = deepest; } }
     setEdit({ mode: "create", kind, parent: folder, value: known?.ext ?? "", template, select: [0, 0] });
     scrollIntoView("");
   }
@@ -183,7 +184,7 @@ export function createExplorerState(w: Workbench) {
   }
   async function trash(paths = targets()) {
     const items = topLevelPaths(paths); if (!items.length) return;
-    if (confirmDelete()) { const ok = await new Promise<boolean>(resolve => setDialog({ kind: "delete", paths: items, resolve })); setDialog(undefined); if (!ok) return; }
+    if (preferences().confirmDelete) { const ok = await new Promise<boolean>(resolve => setDialog({ kind: "delete", paths: items, resolve })); setDialog(undefined); if (!ok) return; }
     const visible = visiblePaths(); const next = visible.find(path => !items.some(item => path === item || path.startsWith(`${item}/`)) && visible.indexOf(path) > visible.indexOf(items[items.length - 1]));
     try { for (const path of items) await w.trashPath(path); } catch (error) { fail(error); }
     batch(() => { setSelection(next ? [next] : []); setFocus(next); });

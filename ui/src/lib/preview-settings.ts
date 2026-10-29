@@ -10,7 +10,9 @@ const aliases: Record<string, string> = {
   'workbench.editor.limit.enabled': 'tabLimitEnabled', 'workbench.editor.limit.value': 'tabLimit',
   'workbench.editor.limit.perEditorGroup': 'tabLimitPerGroup', 'editor.syntaxColors': 'syntaxColors',
 };
-type Rule = { type?: string | string[]; enum?: unknown[]; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; items?: Rule; propertyNames?: Rule; pattern?: string; additionalProperties?: Rule | boolean };
+const explorerLeaves = ['showHiddenFiles', 'showIgnoredFiles', 'compactFolders', 'autoReveal', 'confirmDelete'] as const;
+const explorerLeafAliases = new Set(explorerLeaves.map(leaf => `explorer.${leaf}`));
+type Rule = { type?: string | string[]; enum?: unknown[]; minimum?: number; maximum?: number; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number; items?: Rule; properties?: Record<string, Rule>; propertyNames?: Rule; pattern?: string; additionalProperties?: Rule | boolean };
 const rules = schema.properties as Record<string, Rule & { default?: unknown }>;
 const defaults = Object.fromEntries(Object.entries(rules).filter(([key, rule]) => !key.includes('.') && key !== '$schema' && 'default' in rule).map(([key, rule]) => [key, structuredClone(rule.default)])) as Settings;
 // The schema gives `languageServers` no default of its own, so the browser preview supplies the plain one.
@@ -47,7 +49,10 @@ function validate(value: unknown, rule: Rule, path: string): void {
   } else if (value && typeof value === 'object') {
     for (const [key, item] of Object.entries(value)) {
       if (rule.propertyNames) validate(key, rule.propertyNames, path);
-      if (rule.additionalProperties && typeof rule.additionalProperties === 'object') validate(item, rule.additionalProperties, `${path}.${key}`);
+      const property = rule.properties?.[key];
+      if (property) validate(item, property, `${path}.${key}`);
+      else if (rule.additionalProperties === false) throw new Error(`${path}.${key} is not a supported setting.`);
+      else if (rule.additionalProperties && typeof rule.additionalProperties === 'object') validate(item, rule.additionalProperties, `${path}.${key}`);
     }
   }
 }
@@ -58,6 +63,14 @@ function decode(text: string): Record<string, unknown> {
   if (errors.length) throw new Error(`Invalid settings JSONC: ${printParseErrorCode(errors[0].error)} at ${errors[0].offset}.`);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Settings must contain an object.');
   for (const [key, item] of Object.entries(value)) if (rules[key]) validate(item, rules[key], key);
+  const explorer = (value as Record<string, unknown>).explorer;
+  if (explorer !== undefined) {
+    if (!explorer || typeof explorer !== 'object' || Array.isArray(explorer)) throw new Error('explorer has an invalid type.');
+    for (const [key, item] of Object.entries(explorer)) {
+      if (!explorerLeaves.includes(key as typeof explorerLeaves[number])) throw new Error(`explorer.${key} is not a supported setting.`);
+      if (typeof item !== 'boolean') throw new Error(`explorer.${key} has an invalid type.`);
+    }
+  }
   return value as Record<string, unknown>;
 }
 
@@ -67,7 +80,19 @@ function normalized(raw: Record<string, unknown>): Record<string, unknown> {
     result[key] = alias === 'editor.wordWrap' ? raw[alias] === 'on' : raw[alias];
     delete result[alias];
   }
+  const explorer = { ...(raw.explorer as Record<string, unknown> | undefined) };
+  let hasExplorer = 'explorer' in raw;
+  for (const leaf of explorerLeaves) {
+    const alias = `explorer.${leaf}`;
+    if (alias in raw) { explorer[leaf] = raw[alias]; delete result[alias]; hasExplorer = true; }
+  }
+  if (hasExplorer) result.explorer = explorer;
   return Object.fromEntries(Object.entries(result).filter(([key]) => key in defaults));
+}
+
+function explorerKeys(raw: Record<string, unknown>): string[] {
+  const nested = raw.explorer && typeof raw.explorer === 'object' ? Object.keys(raw.explorer as Record<string, unknown>) : [];
+  return explorerLeaves.filter(leaf => nested.includes(leaf) || `explorer.${leaf}` in raw).map(leaf => `explorer.${leaf}`);
 }
 
 function withoutUserOnly(value: Record<string, unknown>): Record<string, unknown> {
@@ -85,6 +110,7 @@ export function createPreviewSettings() {
     const workspace = scope === 'workspace' ? withoutUserOnly(normalized(decode(texts.workspace))) : {};
     return structuredClone({ ...defaults, ...user, ...workspace,
       keybindings: { ...defaults.keybindings, ...(user.keybindings as Settings['keybindings']), ...(workspace.keybindings as Settings['keybindings']) },
+      explorer: { ...defaults.explorer, ...(user.explorer as Settings['explorer']), ...(workspace.explorer as Settings['explorer']) },
       syntaxColors: mergeColors(user.syntaxColors, workspace.syntaxColors),
       languageServers: Object.assign({}, defaults.languageServers, user.languageServers, workspace.languageServers) as Settings['languageServers'],
       formatters: { ...defaults.formatters, ...(user.formatters as Settings['formatters']), ...(workspace.formatters as Settings['formatters']) },
@@ -103,9 +129,34 @@ export function createPreviewSettings() {
   return {
     get,
     raw: (scope: SettingsScope) => texts[scope],
-    keys: (scope: SettingsScope) => [...new Set(Object.keys(decode(texts[scope])).filter(key => key !== '$schema' && !!rules[key]).map(canonical))],
+    keys: (scope: SettingsScope) => {
+      const raw = decode(texts[scope]);
+      return [...new Set([...Object.keys(raw).filter(key => key !== '$schema' && !!rules[key] && key !== 'explorer').map(canonical), ...explorerKeys(raw)])];
+    },
     updateJsonc: commit,
     update(scope: SettingsScope, key: string, valueJson: string | null): Settings {
+      if (explorerLeafAliases.has(key)) {
+        const leaf = key.slice('explorer.'.length);
+        let next = texts[scope];
+        const options = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+        const raw = decode(next);
+        const hasFlat = key in raw;
+        const hasNested = !!raw.explorer && typeof raw.explorer === 'object' && leaf in (raw.explorer as Record<string, unknown>);
+        if (valueJson === null) {
+          if (hasFlat) next = applyEdits(next, modify(next, [key], undefined, {}));
+          if (hasNested) next = applyEdits(next, modify(next, ['explorer', leaf], undefined, {}));
+          const after = decode(next).explorer as Record<string, unknown> | undefined;
+          if (after && Object.keys(after).length === 0) next = applyEdits(next, modify(next, ['explorer'], undefined, {}));
+        } else {
+          const value = JSON.parse(valueJson);
+          const targets: string[][] = [];
+          if (hasFlat) targets.push([key]);
+          if (hasNested) targets.push(['explorer', leaf]);
+          if (!targets.length) targets.push(['explorer', leaf]);
+          for (const path of targets) next = applyEdits(next, modify(next, path, value, options));
+        }
+        return commit(scope, next);
+      }
       const resolved = resolveKey(key);
       if (!resolved) throw new Error(`Unknown setting: ${key}`);
       const { name, rest } = resolved;

@@ -181,3 +181,33 @@ it("keeps an in-flight file query alive while progress updates arrive", async ()
   resolve([{ path: "fresh.ts", name: "fresh.ts", isDir: false }]); await settle();
   expect(root.querySelector('.goto-name')?.textContent).toBe("fresh.ts");
 });
+
+
+it("refreshes the same file query on a discovery policy change and drops the prior reply", async () => {
+  vi.useFakeTimers();
+  const [revision, setRevision] = createSignal(0);
+  const replies: ((files: FileEntry[]) => void)[] = [];
+  const query = vi.fn(() => new Promise<FileEntry[]>(resolve => replies.push(resolve)));
+  const { root } = setup({ files: [], workspace: { root: "/project", name: "project" }, get discoveryRevision() { return revision(); }, onQueryFiles: query });
+  await settle(); await vi.advanceTimersByTimeAsync(0);
+  setRevision(1); await settle(); await vi.advanceTimersByTimeAsync(0);
+  expect(query).toHaveBeenCalledTimes(2);
+  replies[1]([{ path: "visible.ts", name: "visible.ts", isDir: false }]); await settle();
+  replies[0]([{ path: ".hidden.ts", name: ".hidden.ts", isDir: false }]); await settle();
+  expect(root.querySelector('.goto-name')?.textContent).toBe("visible.ts");
+  expect(root.textContent).not.toContain(".hidden.ts");
+});
+
+it("refreshes text matches after a discovery policy change and rejects old results", async () => {
+  vi.useFakeTimers();
+  const [revision, setRevision] = createSignal(0);
+  const replies: ((matches: { path: string; line: number; column: number; text: string }[]) => void)[] = [];
+  const search = vi.fn(() => new Promise<{ path: string; line: number; column: number; text: string }[]>(resolve => replies.push(resolve)));
+  const { root, input } = setup({ workspace: { root: "/project", name: "project" }, get discoveryRevision() { return revision(); }, onSearch: search });
+  selectMode(root, "Text Search"); inputValue(input, "marker"); await settle(); await vi.advanceTimersByTimeAsync(180);
+  setRevision(1); await settle(); await vi.advanceTimersByTimeAsync(180);
+  expect(search).toHaveBeenCalledTimes(2);
+  replies[1]([{ path: "visible.ts", line: 1, column: 1, text: "new marker" }]); await settle();
+  replies[0]([{ path: ".hidden.ts", line: 1, column: 1, text: "old marker" }]); await settle();
+  expect(root.textContent).toContain("new marker"); expect(root.textContent).not.toContain("old marker");
+});

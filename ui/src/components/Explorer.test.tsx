@@ -16,7 +16,7 @@ afterEach(() => { disposers.splice(0).forEach(d => d()); document.body.replaceCh
 beforeEach(() => setCompactFolders(true));
 const tick = async () => { for (let i = 0; i < 5; i++) await new Promise(done => setTimeout(done, 0)); };
 
-function fake(disk: Record<string, FileEntry[]>, active = "") {
+function fake(disk: Record<string, FileEntry[]>, active = "", settings: () => unknown = () => ({})) {
   const [directories, setDirectories] = createStore<Record<string, FileEntry[]>>({ "": disk[""] });
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set([""]));
   const [generation] = createSignal(0);
@@ -26,7 +26,7 @@ function fake(disk: Record<string, FileEntry[]>, active = "") {
     if (expanded().has(path)) setExpanded(c => { const n = new Set(c); n.delete(path); return n; });
     else { if (!directories[path]) await loadDirectory(path); setExpanded(c => new Set([...c, path])); }
   };
-  const workbench = { directories, expanded, loadDirectory, toggleDirectory, activePath: () => active, dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
+  const workbench = { directories, expanded, loadDirectory, toggleDirectory, settings, activePath: () => active, dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
   const root = document.createElement("div"); document.body.append(root);
   const state = createExplorerState(workbench as never);
   disposers.push(render(() => <Explorer workbench={workbench as never} state={state} view="Files" onNavigate={() => {}} onOpenToSide={() => {}} onEditorTarget={() => undefined} onEditorPreview={() => {}} onEditorDrop={() => {}} />, root));
@@ -89,6 +89,21 @@ describe("Explorer compact folders (fixture)", () => {
     const t = fake(disk); t.rows()[0].click(); await tick();
     expect(t.rows()[0].textContent).toBe("com"); expect(t.rows()[0].hasAttribute("aria-label")).toBe(false);
     expect(t.rows()[1].textContent).toBe("example"); expect(t.rows()[1].getAttribute("aria-level")).toBe("2");
+  });
+  it("compacts through a filtered hidden sibling but stops when an ignored sibling is visible", async () => {
+    const tree = { "": [dir("src")], src: [dir("src/lib")], "src/lib": [file("src/lib/a.ts")] };
+    const hidden = fake(tree, "", () => ({ explorer: { showHiddenFiles: true, showIgnoredFiles: false, compactFolders: true, autoReveal: true, confirmDelete: true } }));
+    hidden.rows()[0].click(); await tick();
+    expect(hidden.rows()[0].textContent).toBe("src/lib");
+
+    const withIgnoredSibling = { ...tree, src: [dir("src/lib"), { ...file("src/.cache"), ignored: true }] };
+    const visible = fake(withIgnoredSibling, "", () => ({ explorer: { showHiddenFiles: true, showIgnoredFiles: true, compactFolders: true, autoReveal: true, confirmDelete: true } }));
+    visible.rows()[0].click(); await tick();
+    expect(visible.rows()[0].textContent).toBe("src");
+    const ignored = visible.rows().find(row => row.textContent === ".cache")!;
+    expect(ignored.querySelector(".tree-name")?.classList.contains("tree-name-muted")).toBe(true);
+    expect(ignored.querySelector(".tree-name")?.getAttribute("title")).toContain("Ignored by workspace rules");
+    expect(ignored.getAttribute("title")).toBe("src/.cache");
   });
   it("uses dotted labels and plain icons below a Java source root", async () => {
     const java = {

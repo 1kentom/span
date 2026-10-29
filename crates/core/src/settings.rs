@@ -170,6 +170,9 @@ pub struct Settings {
     /// Update checks. Optional in TypeScript like `agents`.
     #[specta(optional)]
     pub updates: UpdateSettings,
+    /// Explorer preferences. Optional in TypeScript like `agents`.
+    #[specta(optional)]
+    pub explorer: ExplorerSettings,
 }
 
 /// `updates.*`: update checks for the app and for agents (ADR 0004).
@@ -179,6 +182,52 @@ pub struct UpdateSettings {
     /// Check once per launch, check-only, with a plain GET. Off by default.
     /// Honoured only from the user's own settings file.
     pub check_on_launch: bool,
+}
+
+/// `explorer.*`: file tree visibility and navigation preferences.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExplorerSettings {
+    /// Keep dotfiles and other hidden files visible, matching the current Explorer behavior.
+    pub show_hidden_files: bool,
+    /// Include files excluded by ignore rules in the Explorer.
+    pub show_ignored_files: bool,
+    /// Render a chain of single-child folders as one compact row.
+    pub compact_folders: bool,
+    /// Reveal the active file in the Explorer when it is outside the visible selection.
+    pub auto_reveal: bool,
+    /// Ask before deleting a file or folder.
+    pub confirm_delete: bool,
+}
+
+/// Settings stored by the earlier local-storage based Explorer preferences.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExplorerLegacyPreferences {
+    pub compact_folders: Option<bool>,
+    pub auto_reveal: Option<bool>,
+    pub confirm_delete: Option<bool>,
+}
+
+/// Result of reconciling legacy Explorer values with the current settings scopes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerPreferenceMigration {
+    pub settings: Settings,
+    /// Legacy leaf names whose values were imported or already configured by the user.
+    pub resolved_legacy_keys: Vec<String>,
+}
+
+impl Default for ExplorerSettings {
+    fn default() -> Self {
+        Self {
+            show_hidden_files: true,
+            show_ignored_files: false,
+            compact_folders: true,
+            auto_reveal: true,
+            confirm_delete: true,
+        }
+    }
 }
 
 /// `agents.*` settings.
@@ -288,6 +337,7 @@ impl Default for Settings {
             syntax_colors: HashMap::new(),
             agents: AgentSettings::default(),
             updates: UpdateSettings::default(),
+            explorer: ExplorerSettings::default(),
         }
     }
 }
@@ -800,6 +850,62 @@ const USER_ONLY: &[&[&str]] = &[
 ];
 
 impl CoreWorkspace {
+    /// Imports legacy Explorer preferences into user settings only when neither scope has
+    /// configured that typed preference. Callers serialize this operation with other
+    /// workspace commands so the read/check/write is one transaction.
+    pub fn migrate_explorer_preferences(
+        &self,
+        legacy: ExplorerLegacyPreferences,
+    ) -> Result<ExplorerPreferenceMigration> {
+        let user = self.get_settings_jsonc_for_scope(SettingsScope::User)?;
+        let workspace = self.get_settings_jsonc_for_scope(SettingsScope::Workspace)?;
+
+        // Validate both files independently before preparing any write. In particular, a
+        // malformed workspace file must not result in a partial import to user settings.
+        load_with_texts(&user, "{}")?;
+        load_with_texts("{}", &workspace)?;
+
+        let user_configured = explicit_explorer_preferences(&user)?;
+        let workspace_configured = explicit_explorer_preferences(&workspace)?;
+        let candidates = [
+            ("compactFolders", legacy.compact_folders),
+            ("autoReveal", legacy.auto_reveal),
+            ("confirmDelete", legacy.confirm_delete),
+        ];
+        let mut patched = user.clone();
+        let mut resolved_legacy_keys = Vec::new();
+        for (leaf, legacy_value) in candidates {
+            if let Some(value) = legacy_value {
+                if user_configured.contains(leaf) {
+                    resolved_legacy_keys.push(leaf.to_owned());
+                } else if !workspace_configured.contains(leaf) {
+                    patched = patch_in_scope(
+                        SettingsScope::User,
+                        &patched,
+                        &format!("explorer.{leaf}"),
+                        Some(if value { "true" } else { "false" }),
+                    )?;
+                    resolved_legacy_keys.push(leaf.to_owned());
+                }
+            }
+        }
+        let settings = if patched == user {
+            load_with_texts(&user, &workspace)?
+        } else {
+            if self.has_dirty_settings_buffer() {
+                return Err(CoreError::Settings(
+                    "Save or discard the open settings draft before importing Explorer preferences"
+                        .into(),
+                ));
+            }
+            self.update_settings_jsonc_for_scope(SettingsScope::User, &patched)?
+        };
+        Ok(ExplorerPreferenceMigration {
+            settings,
+            resolved_legacy_keys,
+        })
+    }
+
     /// Run tools are an execution capability, so repository settings cannot
     /// enable them for an agent. Read only the user's settings scope.
     pub fn run_tools_enabled(&self) -> Result<bool> {
@@ -1015,6 +1121,7 @@ const STRUCT_PATHS: &[&[&str]] = &[
     &["agents"],
     &["agents", "delegation"],
     &["updates"],
+    &["explorer"],
 ];
 
 fn at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -1110,6 +1217,14 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("workbench.editor.limit.perEditorGroup", "tabLimitPerGroup"),
 ];
 
+const EXPLORER_LEAVES: &[&str] = &[
+    "showHiddenFiles",
+    "showIgnoredFiles",
+    "compactFolders",
+    "autoReveal",
+    "confirmDelete",
+];
+
 fn normalize(mut value: Value) -> Result<Value> {
     let object = value.as_object_mut().expect("parsed settings object");
     for (alias, key) in ALIASES {
@@ -1124,7 +1239,32 @@ fn normalize(mut value: Value) -> Result<Value> {
             object.insert((*key).into(), configured);
         }
     }
+    for leaf in EXPLORER_LEAVES {
+        let dotted = format!("explorer.{leaf}");
+        let Some(configured) = object.remove(&dotted) else {
+            continue;
+        };
+        let explorer = object
+            .entry("explorer")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        let Some(explorer) = explorer.as_object_mut() else {
+            return Err(CoreError::Settings("explorer must be an object".into()));
+        };
+        // Dotted settings are the canonical alias when both spellings occur in one file.
+        explorer.insert((*leaf).into(), configured);
+    }
     Ok(value)
+}
+
+pub(crate) fn explicit_explorer_preferences(
+    text: &str,
+) -> Result<std::collections::HashSet<String>> {
+    let normalized = normalize(parse(text)?)?;
+    Ok(normalized
+        .get("explorer")
+        .and_then(Value::as_object)
+        .map(|preferences| preferences.keys().cloned().collect())
+        .unwrap_or_default())
 }
 
 pub(crate) fn load_with_texts(user: &str, workspace: &str) -> Result<Settings> {
@@ -1157,6 +1297,9 @@ pub(crate) fn patch_in_scope(
     key: &str,
     value_json: Option<&str>,
 ) -> Result<String> {
+    if let Some(rest) = key.strip_prefix("explorer.") {
+        return patch_explorer(text, rest, value_json);
+    }
     if let Some(rest) = key
         .strip_prefix("editor.syntaxColors.")
         .or_else(|| key.strip_prefix("syntaxColors."))
@@ -1351,6 +1494,158 @@ fn patch_syntax_color(text: &str, rest: &str, value_json: Option<&str>) -> Resul
         patch(text, member, None)
     } else {
         patch(text, member, Some(&Value::Object(colors).to_string()))
+    }
+}
+
+/// Sets or removes one `explorer.<leaf>` preference while preserving other Explorer keys.
+fn patch_explorer(text: &str, leaf: &str, value_json: Option<&str>) -> Result<String> {
+    const KEYS: &[&str] = &[
+        "showHiddenFiles",
+        "showIgnoredFiles",
+        "compactFolders",
+        "autoReveal",
+        "confirmDelete",
+    ];
+    if !KEYS.contains(&leaf) {
+        return Err(CoreError::Settings(format!(
+            "Unsupported setting: explorer.{leaf}"
+        )));
+    }
+    let value = value_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|error| CoreError::Settings(error.to_string()))?
+        .filter(|value| !value.is_null());
+    if value.as_ref().is_some_and(|value| !value.is_boolean()) {
+        return Err(CoreError::Settings(format!(
+            "explorer.{leaf} must be true or false"
+        )));
+    }
+    let root = parse(text)?;
+    let explorer = match root.get("explorer") {
+        None => serde_json::Map::new(),
+        Some(Value::Object(map)) => map.clone(),
+        Some(_) => return Err(CoreError::Settings("explorer must be an object".into())),
+    };
+    let dotted = format!("explorer.{leaf}");
+    let has_dotted = root.get(&dotted).is_some();
+    let has_nested = explorer.contains_key(leaf);
+    if let Some(value) = value {
+        let mut patched = text.to_owned();
+        if has_dotted {
+            patched = patch_nested_key(&patched, &[&dotted], value.clone())?;
+        }
+        if has_nested || !has_dotted {
+            patched = patch_nested_key(&patched, &["explorer", leaf], value)?;
+        }
+        return Ok(patched);
+    }
+
+    let mut patched = text.to_owned();
+    if has_dotted {
+        patched = remove_jsonc_key(&patched, &[&dotted])?;
+    }
+    if has_nested {
+        patched = remove_jsonc_key(&patched, &["explorer", leaf])?;
+    }
+    let after = parse(&patched)?;
+    if after
+        .get("explorer")
+        .and_then(Value::as_object)
+        .is_some_and(serde_json::Map::is_empty)
+    {
+        patched = remove_jsonc_key(&patched, &["explorer"])?;
+    }
+    Ok(patched)
+}
+
+/// Removes one member from a JSONC object while leaving unrelated source bytes untouched.
+fn remove_jsonc_key(text: &str, path: &[&str]) -> Result<String> {
+    let Some((key, rest)) = path.split_first() else {
+        return Err(CoreError::Settings("Empty preference path".into()));
+    };
+    let Some((start, value_start, value_end, delimiter, previous_comma)) =
+        jsonc_member_span(text, key)?
+    else {
+        return Ok(text.to_owned());
+    };
+    if !rest.is_empty() {
+        let child = remove_jsonc_key(&text[value_start..value_end], rest)?;
+        let mut patched = text.to_owned();
+        patched.replace_range(value_start..value_end, &child);
+        parse(&patched)?;
+        return Ok(patched);
+    }
+
+    let mut patched = text.to_owned();
+    if let Some(delimiter) = delimiter {
+        patched.replace_range(start..delimiter + 1, "");
+    } else {
+        let remove_start = previous_comma.unwrap_or(start);
+        patched.replace_range(remove_start..value_end, "");
+    }
+    parse(&patched)?;
+    Ok(patched)
+}
+
+/// Returns the key/value spans and its separator in one object, respecting JSONC comments.
+fn jsonc_member_span(
+    text: &str,
+    key: &str,
+) -> Result<Option<(usize, usize, usize, Option<usize>, Option<usize>)>> {
+    parse(text)?;
+    let mask = comment_mask(text);
+    let mut index = skip_space(&mask, 0) + 1;
+    let mut previous_comma = None;
+    loop {
+        index = skip_space(&mask, index);
+        if mask.get(index) == Some(&b'}') {
+            return Ok(None);
+        }
+        let start = index;
+        index = string_end(&mask, index);
+        let member_key: String = serde_json::from_slice(&mask[start..index])
+            .map_err(|error| CoreError::Settings(error.to_string()))?;
+        index = skip_space(&mask, index) + 1;
+        let value_start = skip_space(&mask, index);
+        index = value_start;
+        let mut depth = 0;
+        while index < mask.len() {
+            match mask[index] {
+                b'"' => {
+                    index = string_end(&mask, index);
+                    continue;
+                }
+                b'{' | b'[' => depth += 1,
+                b'}' if depth == 0 => break,
+                b'}' | b']' => depth -= 1,
+                b',' if depth == 0 => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        let mut value_end = index;
+        while value_end > value_start && mask[value_end - 1].is_ascii_whitespace() {
+            value_end -= 1;
+        }
+        let delimiter = if mask.get(index) == Some(&b',') {
+            Some(index)
+        } else {
+            None
+        };
+        if member_key == key {
+            return Ok(Some((
+                start,
+                value_start,
+                value_end,
+                delimiter,
+                previous_comma,
+            )));
+        }
+        if delimiter.is_some() {
+            previous_comma = delimiter;
+            index += 1;
+        }
     }
 }
 

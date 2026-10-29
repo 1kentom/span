@@ -240,10 +240,19 @@ impl CoreWorkspace {
             .ok_or_else(|| CoreError::InvalidEdit("Missing file name".into()))?
             .to_string_lossy()
             .into_owned();
+        let ignored = path.parent().is_some_and(|parent| {
+            !span_file_index::unignored_children(&self.root, parent).contains(path)
+        });
         Ok(FileEntry {
             path: self.relative(path)?,
             name,
             is_dir: metadata.is_dir(),
+            ignored,
+            background_excluded: span_file_index::background_excluded(
+                path,
+                metadata.is_dir(),
+                ignored,
+            ),
         })
     }
     fn copy_entry(

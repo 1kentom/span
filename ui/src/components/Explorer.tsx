@@ -4,7 +4,7 @@ import type { Workbench } from "../stores/workbench";
 import Icon, { FileIcon } from "./Icon";
 import { fileIndexMessage } from "../lib/file-index";
 import { MAX_CHAIN_DEPTH, compactChain, isSourceRoot } from "../lib/compact-tree";
-import { compactFolders } from "../lib/explorer-prefs";
+import { explorerPreferences } from "../lib/explorer-prefs";
 import type { ExplorerState } from "../lib/explorer-state";
 import { createInternalDrag, type InternalDragState } from "../lib/internal-drag";
 import type { EditorDropTarget } from "../lib/drop-zones";
@@ -17,6 +17,7 @@ type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: E
 
 export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void }) {
   const w = props.workbench; const state = props.state;
+  const preferences = () => explorerPreferences(w.settings());
   const mac = currentPlatform() === "mac";
   let treeElement!: HTMLDivElement;
   let dragPaths: string[] = [];
@@ -146,7 +147,7 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
   const TreeRows = (rowProps: { path: string; depth: number }) => <><Show when={state.edit()?.mode === "create" && state.edit()!.parent === rowProps.path}><EditRow depth={rowProps.depth} /></Show><For each={w.directories[rowProps.path] || []}>{entry => <TreeRow entry={entry} depth={rowProps.depth} />}</For></>;
   const TreeRow = (rowProps: { entry: FileEntry; depth: number }) => {
     const entry = rowProps.entry;
-    const chain = createMemo(() => entry.isDir && compactFolders() ? compactChain(entry.path, w.directories) : undefined);
+    const chain = createMemo(() => entry.isDir && preferences().compactFolders ? compactChain(entry.path, w.directories) : undefined);
     const target = () => chain()?.deepest ?? entry.path;
     /** A tail directory discovered below an expanded parent whose listing has not arrived yet. It is shown open so the row does not flip. */
     const awaitingTail = () => { const current = chain(); if (!current || current.segments.length < 2 || w.directories[current.deepest]) return false; return w.expanded().has(current.segments[current.segments.length - 2].path) && !attempted.has(`${w.workspaceGeneration()}\0${current.deepest}`) || pending().has(current.deepest); };
@@ -177,7 +178,7 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
       }} title={target()}>
         <Show when={entry.isDir} fallback={<span class="tree-indent" />}><Icon name={expanded() ? "arrow-down4" : "arrow-right4"} size={13} /></Show>
         <FileIcon path={target()} directory={entry.isDir} open={expanded()} plain={chain()?.inSourceRoot} />
-        <span class="tree-name"><Show when={merged()} fallback={entry.name}><For each={chain()!.segments}>{(segment, index) => <>{index() > 0 && <span class="tree-separator" aria-hidden="true">{chain()!.separator}</span>}<span class="tree-segment" data-segment-path={segment.path}>{segment.name}</span></>}</For></Show></span>
+        <span class={`tree-name ${entry.ignored || entry.backgroundExcluded ? "tree-name-muted" : ""}`} title={entry.ignored || entry.backgroundExcluded ? [entry.ignored ? "Ignored by workspace rules" : "", entry.backgroundExcluded ? "Excluded from background indexing" : ""].filter(Boolean).join(". ") : undefined} aria-label={entry.ignored || entry.backgroundExcluded ? `${entry.name}, ${[entry.ignored ? "ignored by workspace rules" : "", entry.backgroundExcluded ? "excluded from background indexing" : ""].filter(Boolean).join(", ")}` : undefined}><Show when={merged()} fallback={entry.name}><For each={chain()!.segments}>{(segment, index) => <>{index() > 0 && <span class="tree-separator" aria-hidden="true">{chain()!.separator}</span>}<span class="tree-segment" data-segment-path={segment.path}>{segment.name}</span></>}</For></Show></span>
         <Show when={w.dirty(entry.path)}><span class="dirty-dot" aria-label="Unsaved changes" /></Show>
       </button>}><EditRow depth={rowProps.depth} /></Show>
       <Show when={entry.isDir && expanded()}><Show when={w.loadingDirectories().has(target())}><div class="tree-loading" role="status" style={{ "padding-left": `${28 + rowProps.depth * 16}px` }}>Loading folder…</div></Show><TreeRows path={target()} depth={rowProps.depth + 1} /></Show>
