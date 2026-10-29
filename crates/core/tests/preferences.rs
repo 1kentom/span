@@ -513,13 +513,12 @@ fn explorer_legacy_preferences_import_only_unconfigured_values_once() {
         second.resolved_legacy_keys,
         vec!["autoReveal".to_owned(), "confirmDelete".to_owned()]
     );
-    assert_eq!(
-        workspace
+    assert!(
+        !workspace
             .get_settings_for_scope(SettingsScope::User)
             .unwrap()
             .explorer
-            .auto_reveal,
-        false
+            .auto_reveal
     );
 }
 
