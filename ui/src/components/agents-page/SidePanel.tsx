@@ -2,9 +2,10 @@ import { For, Match, Show, Switch, createMemo, createUniqueId } from "solid-js";
 import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem } from "../../lib/agent-session";
 import type { Attachment } from "../../lib/attachments";
-import { changedFiles } from "../../lib/agent-view";
+import { changedFiles, diffLines } from "../../lib/agent-view";
 import { liveStateText, liveTone, type LiveAgent } from "../../lib/live-agents";
-import { ChangesCard } from "../agent/WorkGroup";
+import type { DiffLine } from "../agent/types";
+import { ChangesCard, DiffView } from "../agent/WorkGroup";
 import { AttachmentIcon, tileMeta } from "../attachments";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
@@ -28,6 +29,12 @@ export function sessionFiles(feed: readonly FeedItem[], composer: readonly Attac
   }
   for (const item of composer) if (!seen.has(item.id)) (seen.add(item.id), found.push({ item, where: "composer" }));
   return found;
+}
+
+/** A proposal's hunks as one unified diff. Hunk offsets are not line numbers, so the lines carry none. */
+export function proposalDiff(item: ProposalItem): DiffLine[] {
+  const trim = (text: string) => text.replace(/\n$/, "");
+  return item.proposal.hunks.flatMap((hunk) => diffLines(trim(hunk.before), trim(hunk.after)).map((line) => ({ kind: line.kind, text: line.text })));
 }
 
 function Empty(props: { title: string; text: string }) {
@@ -65,6 +72,15 @@ function ChangesTab(props: { agent: AgentController; onOpenFile: (path: string) 
           }}
         />
         <p class="ap-fine">Accepting changes the editor buffer. Saving is a separate step.</p>
+        <div class="ap-review" aria-label="Proposed changes">
+          <For each={proposals()}>
+            {(item) => (
+              <div class="ap-review-file" data-state={item.resolution ?? "pending"}>
+                <DiffView path={item.proposal.path} lines={proposalDiff(item)} onOpen={() => props.onOpenFile(item.proposal.path)} />
+              </div>
+            )}
+          </For>
+        </div>
       </div>
     </Show>
   );
