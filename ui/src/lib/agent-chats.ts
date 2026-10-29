@@ -6,7 +6,7 @@ import type {
   SessionRuntimeState_Serialize as SessionRuntimeState,
   SessionStates_Serialize as SessionStates,
 } from "../bindings";
-import type { Queued } from "./agent-controller";
+import type { Queued } from "./agent-threads/thread-state";
 import { RUN_TEXT } from "./agent-hint-text";
 import { clockText } from "./agent-running";
 import { reduceAgentEvent, type AgentState } from "./agent-session";
