@@ -9,6 +9,8 @@ import { AgentModeSwitch } from "../AgentModeSwitch";
 import { mount, text } from "../agent/test-utils";
 import { SessionsRail } from "./SessionsRail";
 import { SidePanel, sessionFiles, type SideTab } from "./SidePanel";
+import { NewSessionPicker } from "./NewSessionPicker";
+import { PlanLimits } from "./PlanLimits";
 
 const flush = async () => {
   for (let i = 0; i < 4; i++) await Promise.resolve();
@@ -201,5 +203,69 @@ describe("SidePanel", () => {
       { id: 2, kind: "user", text: "second", attachments: [file("b"), file("c")] },
     ] as unknown as FeedItem[];
     expect(sessionFiles(feed, [file("d"), file("a")] as never).map((entry) => `${entry.item.id}:${entry.where}`)).toEqual(["b:sent", "c:sent", "a:sent", "d:composer"]);
+  });
+});
+
+describe("rail row menu", () => {
+  it("offers the History actions the agent supports and runs them for the row", async () => {
+    const onRename = vi.fn();
+    const onArchive = vi.fn();
+    const onFork = vi.fn();
+    const onExport = vi.fn();
+    const host = mount(() => <SessionsRail rows={[row("done")]} now={NOW} workspaceName="span" scope="workspace" onScope={() => undefined} onOpen={() => undefined} onNew={() => undefined} onRename={onRename} onArchive={onArchive} onFork={onFork} onExport={onExport} />);
+    const option = host.querySelector<HTMLElement>('[role="option"]')!;
+    key(option, "F10", { shiftKey: true });
+    await flush();
+    const items = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    expect(items().map((item) => text(item))).toEqual(expect.arrayContaining(["Open session", "Rename…", "Fork", "Export…", "Archive"]));
+    items().find((item) => text(item) === "Archive")!.click();
+    expect(onArchive).toHaveBeenCalledWith(expect.objectContaining({ id: "done" }), true);
+  });
+  it("leaves the actions out when the agent does not support them", async () => {
+    const host = mount(() => <SessionsRail rows={[row("done")]} now={NOW} workspaceName="span" scope="workspace" onScope={() => undefined} onOpen={() => undefined} onNew={() => undefined} />);
+    key(host.querySelector<HTMLElement>('[role="option"]')!, "ContextMenu");
+    await flush();
+    expect([...document.querySelectorAll('[role="menuitem"]')].map((item) => text(item))).toEqual(["Open session"]);
+  });
+});
+
+describe("NewSessionPicker", () => {
+  it("shows one card per agent, picks the lead, and the delegation switch is the real setting", () => {
+    const onPick = vi.fn();
+    const onDelegationChange = vi.fn();
+    const host = mount(() => (
+      <NewSessionPicker
+        workspaceName="span"
+        agents={[{ id: "claude-acp", name: "Claude Agent", connected: true, model: "Opus" }, { id: "codex-acp", name: "Codex", connected: false }]}
+        busy={false}
+        now={NOW}
+        showHealth={false}
+        delegationEnabled
+        onDelegationChange={onDelegationChange}
+        onPick={onPick}
+        onMoreAgents={() => undefined}
+      />
+    ));
+    const cards = [...host.querySelectorAll<HTMLButtonElement>("button.ap-agent-card")];
+    expect(cards.map((card) => card.getAttribute("aria-label"))).toEqual(["Start with Claude Agent, connected, Opus", "Start with Codex"]);
+    cards[1].click();
+    expect(onPick).toHaveBeenCalledWith("codex-acp");
+    cards[0].focus();
+    key(cards[0], "ArrowRight");
+    expect(document.activeElement).toBe(cards[1]);
+    const toggle = host.querySelector<HTMLInputElement>('input[role="switch"]')!;
+    expect(toggle.checked).toBe(true);
+    toggle.click();
+    expect(onDelegationChange).toHaveBeenCalledWith(false);
+    expect(host.querySelectorAll(".ap-delegate-chip")).toHaveLength(2);
+  });
+});
+
+describe("PlanLimits", () => {
+  it("never shows a percentage: a reported limit with its reset, or no limit reported", () => {
+    const host = mount(() => <PlanLimits now={NOW} limits={[{ id: "codex-acp", name: "Codex", limited: true, resetAt: NOW + 40 * 60_000, models: ["gpt-fast"] }, { id: "claude-acp", name: "Claude Agent", limited: false, models: [] }]} />);
+    const meters = [...host.querySelectorAll(".ap-limit")];
+    expect(meters.map((meter) => meter.getAttribute("aria-label"))).toEqual(["Codex: usage limit reached on gpt-fast, resets in 40m", "Claude Agent: no usage limit reported"]);
+    expect(host.textContent).not.toMatch(/%/);
   });
 });

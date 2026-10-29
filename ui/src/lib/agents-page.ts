@@ -287,3 +287,30 @@ export function currentThreadState(input: { running: boolean; waiting: "approval
   if (input.running) return { state: "working", statusText: `${input.stopping ? "Stopping" : "Working"}${queued}` };
   return { state: "idle", statusText: input.connected ? `Idle${queued}` : "Not connected" };
 }
+
+/** One installed agent in the rail's Plan limits footer. */
+export type PlanLimit = { id: string; name: string; limited: boolean; resetAt?: number; models: string[] };
+
+/**
+ * The Plan limits footer: the first `max` installed agents (the connected one first), each with the models Span saw
+ * hit a usage limit and the earliest known reset. Agents report no plan usage over ACP, so an agent without a limit
+ * reads as "no limit reported", never as a made-up percentage.
+ */
+export function planLimits(installed: readonly { id: string; name: string }[], limitedModels: Readonly<Record<string, number>>, connectedId: string | undefined, max = 3): PlanLimit[] {
+  const ordered = [...installed].sort((a, b) => Number(b.id === connectedId) - Number(a.id === connectedId));
+  return ordered.slice(0, max).map((agent) => {
+    const prefix = `${agent.id}\n`;
+    const entries = Object.entries(limitedModels).filter(([key]) => key.startsWith(prefix));
+    const resets = entries.map(([, at]) => at).filter((at) => at > 0);
+    return { id: agent.id, name: agent.name, limited: entries.length > 0, resetAt: resets.length ? Math.min(...resets) : undefined, models: entries.map(([key]) => key.slice(prefix.length)) };
+  });
+}
+
+/** "resets in 2h 5m", "resets in 40m", "reset time unknown". */
+export function resetText(resetAt: number | undefined, now: number): string {
+  if (!resetAt) return "reset time unknown";
+  const minutes = Math.max(1, Math.ceil((resetAt - now) / 60_000));
+  if (minutes < 60) return `resets in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 ? `resets in ${hours}h ${minutes % 60}m` : `resets in ${hours}h`;
+}

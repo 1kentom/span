@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import { api, isDesktop } from "../../lib/client";
 import { NATIVE_UNAVAILABLE, type AgentController } from "../../lib/agent-controller";
 import { isNearBottom, pillVisible } from "../../lib/agent-feed";
@@ -23,6 +23,8 @@ export type ThreadViewProps = {
   onToggleSide: () => void;
   /** Connecting, signing in and choosing an agent still live in the sidebar: switch there with its connect view. */
   onSetup: () => void;
+  /** The new-session picker, shown in place of the thread while set. */
+  picker?: JSX.Element;
 };
 
 /**
@@ -48,7 +50,9 @@ export function ThreadView(props: ThreadViewProps) {
   /** What the thread area shows: the feed, or a pointer to the sidebar for what the page does not host yet. */
   const body = createMemo(() => {
     if (!isDesktop) return "unavailable";
-    if (a.connecting() || a.state().auth || a.view() === "connect") return "setup";
+    if (a.connecting() || a.state().auth) return "setup";
+    if (props.picker) return "picker";
+    if (a.view() === "connect") return "setup";
     if (a.feed().length) return "feed";
     return a.connected() ? "empty" : "setup";
   });
@@ -147,6 +151,7 @@ export function ThreadView(props: ThreadViewProps) {
             setAway(pillVisible(away(), event.currentTarget));
           }}
         >
+          <Show when={body() === "picker"}>{props.picker}</Show>
           <Show when={body() === "feed"}>
             <AgentFeed agent={a} ref={setFeedElement} />
           </Show>
@@ -172,7 +177,7 @@ export function ThreadView(props: ThreadViewProps) {
               <p>This browser preview cannot start local agent processes, so nothing here talks to an agent.</p>
             </div>
           </Show>
-          <Show when={failure() && body() !== "setup"}>
+          <Show when={failure() && body() !== "setup" && body() !== "picker"}>
             <div class="ap-thread-failure">
               <ErrorCard
                 level={failure()!.level}
