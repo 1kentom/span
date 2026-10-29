@@ -261,3 +261,10 @@ credentials.
   the stored transcript is only a fallback.
 
 Not implemented yet (phase 1 of ADR 0011).
+
+## Amendment (2026-10-29): usage counters
+
+ADR 0012 adds an optional `usage` field to each session: token and cost
+counters in day and model buckets, the last reported cumulative cost, and
+the context peak. Counters only; the store still holds no prompt text,
+replies, file contents, paths or credentials. No schema version bump.

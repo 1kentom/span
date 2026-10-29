@@ -47,6 +47,7 @@ export const actionDefinitions = [
   { id: "goBack", label: "Go Back", category: "Navigation", keys: ["Mod+Alt+ArrowLeft"], inputs: true },
   { id: "goForward", label: "Go Forward", category: "Navigation", keys: ["Mod+Alt+ArrowRight"], inputs: true },
   { id: "focusBreadcrumbs", label: "Focus Breadcrumbs", category: "Navigation", keys: ["Mod+Shift+."], inputs: true },
+  { id: "showUsage", label: "Show Usage", category: "View", keys: [], inputs: true },
 ] as const;
 /** Colourable syntax tokens. Identical to `SYNTAX_TOKEN_IDS` in crates/core/src/settings.rs (a test compares them). */
 export const syntaxTokenIds = ["keyword", "controlKeyword", "operator", "punctuation", "comment", "docComment", "string", "number", "constant", "boolean", "function", "method", "type", "class", "interface", "enum", "typeParameter", "variable", "parameter", "property", "namespace", "importPath", "annotation", "macro", "label", "tag", "attribute", "regexp", "escape", "invalid"] as const;
