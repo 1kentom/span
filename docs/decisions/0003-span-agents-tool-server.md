@@ -1,9 +1,11 @@
 # 0003: span-agents MCP tool server
 
-Status: proposed for issue #52 (tool server) with the guardrails of #53 and
-the `record_decision` tool of #54. Builds on 0001 (session manager).
-Wired into the desktop behind `agents.delegation.enabled` (section 6);
-not yet run against real agents (see UNVERIFIED).
+Status: shipped (originally proposed) for issue #52 (tool server) with the
+guardrails of #53 and the `record_decision` tool of #54. Builds on 0001
+(session manager). Shipped in the desktop behind `agents.delegation.enabled`,
+default on (section 6); not yet verified against real agents (see
+UNVERIFIED). The UI setting for `max_depth` (section 4) is not built.
+Status updated 2026-10-29; agent mode (0011) builds on this record.
 
 ## Context
 
