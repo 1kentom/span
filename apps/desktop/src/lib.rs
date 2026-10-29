@@ -36,7 +36,8 @@ pub struct DesktopState {
     pub(crate) terminals: terminals::TerminalState,
     pub(crate) runs: runs::RunService,
     pub(crate) run_approvals: run_approval::RunApprovalState,
-    pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
+    /// The focused agent session and the leads opened by key (ADR 0011).
+    pub agent: Arc<Mutex<agents::LiveAgents>>,
     pub user_settings: Arc<Mutex<Option<CoreWorkspace>>>,
     /// Every agent connection. The single agent commands use its primary one.
     pub sessions: span_acp::SessionManager,
@@ -926,7 +927,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::WorkspaceTrustChanged,
             startup::StartupRequestError,
             agents::AgentSessionStatesChanged,
-            agents::AgentHealthChanged
+            agents::AgentHealthChanged,
+            agents::AgentKeyedEvent
         ])
         .commands(collect_commands![
             open_workspace,
@@ -1078,6 +1080,17 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::lsp_status,
             agents::agent_delegation_status,
             agents::agent_child_permission,
+            agents::agent_open_session,
+            agents::agent_live_sessions,
+            agents::agent_focused_session,
+            agents::agent_prompt_keyed,
+            agents::agent_cancel_keyed,
+            agents::agent_permission_keyed,
+            agents::agent_elicitation_keyed,
+            agents::agent_set_config_keyed,
+            agents::agent_review_keyed,
+            agents::agent_review_hunks_keyed,
+            agents::agent_close_keyed,
             agents::agent_cancel_task,
             agents::agent_task_transcript,
             agents::agent_warm_start,
@@ -1157,6 +1170,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             app.manage(lsp);
             agents::watch_session_states(app.handle());
+            agents::watch_keyed_events(app.handle());
             menu::install(app.handle())?;
             // The window starts hidden; the frontend shows it once the session has rendered (its
             // own cap is 2s after the first render). This only catches a frontend that never

@@ -4,6 +4,7 @@ import { render } from "solid-js/web";
 import { LanguageIntelligencePanel } from "./LanguageIntelligencePanel";
 import { allCapabilities, javaInstalling, makeServer, viewOf } from "../stores/language-intelligence.testkit";
 import type { HubView } from "../stores/language-intelligence";
+import { serverOrder } from "../lib/language-intelligence-copy";
 
 // Fixture tests: static views are passed in, no store or server is running.
 const MB = 1024 * 1024;
@@ -32,7 +33,7 @@ describe("fixture: language server popover", () => {
     expect(text(m.root, ".hub-pill")).toBe("Ready");
     expect(m.root.querySelector(".hub-pill")!.getAttribute("data-state")).toBe("ready");
     expect([...m.panel.children].map(child => child.className.split(" ")[0])).toEqual(["hub-head", "hub-chips", "hub-trust-block", "hub-list", "hub-foot"]);
-    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(7);
+    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(serverOrder.length);
     expect(text(m.root, ".hub-settings-link")).toBe("Language server settings");
     expect(m.root.textContent).not.toContain("All languages");
   });
@@ -171,7 +172,7 @@ describe("fixture: language server popover", () => {
     expect(m.root.querySelector(".hub-pill")).toBeNull();
     expect(text(m.root, ".hub-status-text")).toBe("No completions or error checking for Markdown. Editing works as usual.");
     expect(m.root.querySelector(".hub-chips")).toBeNull();
-    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(7);
+    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(serverOrder.length);
     const plain = mount(viewOf(undefined), { fileLanguage: "text" });
     expect(text(plain.root, ".hub-status-text")).toBe("No language support for this file type.");
     expect(plain.root.querySelector(".hub-head .language-icon")!.getAttribute("data-language")).toBe("unknown");
@@ -202,8 +203,8 @@ describe("fixture: language server popover", () => {
     key(switches[1], "ArrowUp");
     expect(document.activeElement).toBe(switches[0]);
     key(switches[0], "End");
-    expect(document.activeElement).toBe(switches[6]);
-    key(switches[6], "Home");
+    expect(document.activeElement).toBe(switches.at(-1));
+    key(switches.at(-1)!, "Home");
     expect(document.activeElement).toBe(switches[0]);
     expect(switches[0].tagName).toBe("BUTTON");
   });
@@ -232,7 +233,7 @@ describe("fixture: language server popover", () => {
     const embedded = mount(ready(), { embedded: true });
     expect(embedded.panel.getAttribute("role")).toBe("region");
     expect(embedded.root.textContent).not.toContain("Language server settings");
-    expect(embedded.root.querySelectorAll(".hub-row")).toHaveLength(7);
+    expect(embedded.root.querySelectorAll(".hub-row")).toHaveLength(serverOrder.length);
   });
   it("opens above the status bar when asked, and under the top bar by default", () => {
     expect(mount(ready()).panel.dataset.placement).toBe("top");

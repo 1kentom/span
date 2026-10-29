@@ -208,6 +208,34 @@ threads, which is the gap seen in Zed.
   regressions in the sidebar are likely without the phase 2 tests.
 - Shared folder before phase 6: two threads can overwrite each other.
 
+## Amendment: phase 1 keyed API (2026-10-29)
+
+The first phase 1 PR adds the keyed backend; the transcript store is a
+later PR.
+
+- Events: `AgentKeyedEvent` carries every event of every connection with
+  its `SessionKey` (0001 section 3 update). Span-agents events are sent on
+  it too, keyed by their lead.
+- Commands by key: `agent_open_session` (a new lead on a given connection,
+  on a process for a command, or on the focused connection; returns the key
+  and never closes another session), `agent_live_sessions` (key, parent
+  key, origin, depth, state, queued count, agent name and installed id,
+  title, model, mode, health), `agent_focused_session`, and the `_keyed`
+  forms of prompt, cancel, permission, elicitation, set config, review,
+  review hunks and close.
+- The desktop holds a focused session (the sidebar's chat) beside the
+  sessions of the manager. The unkeyed commands resolve to it, so the
+  sidebar behaves as before. `agent_connect` still replaces the focused
+  agent, but a connection that holds a lead opened by key is kept alive
+  instead of closed, and stops feeding the old sidebar channel.
+- Rules kept: answers go through `SessionManager` and are checked against
+  the full key (permission and elicitation alike); closing a lead cascades
+  to its children; each lead gets its own span-agents server and token.
+- Not in this PR: focusing a session on another connection (refused), sign
+  in for a connection opened by key (the open fails instead), ending a
+  process started by key when its last session closes (it ends with the
+  folder), and the transcript store.
+
 ## UNVERIFIED
 
 - The research findings come from public source, documentation and issue

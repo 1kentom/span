@@ -71,7 +71,7 @@ for (const theme of ["dark", "light"] as const) {
     await expect(panel(page)).toBeVisible();
     // The language list is always there; the old "All languages" disclosure is gone.
     await expect(panel(page).getByRole("button", { name: "All languages", exact: true })).toHaveCount(0);
-    await expect(panel(page).locator(".hub-row")).toHaveCount(7);
+    await expect(panel(page).locator(".hub-row")).toHaveCount(10);
     const bolt0 = await box(topButton(page));
     const status0 = await box(statusButton(page));
     const sizes: { name: string; width: number; height: number }[] = [];

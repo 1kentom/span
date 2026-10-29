@@ -20,6 +20,20 @@ describe('viewer and uploads stylesheets use theme tokens only', () => {
     expect(source.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
     expect(source).not.toMatch(/rgba?\(|hsla?\(/);
   });
+  it('uploads layer sits at the Explorer inset: the handle gap is reclaimed and the workspace adds no side padding', () => {
+    const bench = css('workbench.css');
+    const layer = bench.match(/\.uploads-view-layer\{([^}]*)\}/)![1];
+    expect(bench).toMatch(/\.workbench-main\{--panel-handle-gap:8px;/);
+    expect(bench).toMatch(/@media\(max-width:900px\)\{\.workbench-main\{--panel-handle-gap:0px\}/);
+    expect(layer).toContain('inset:0 0 0 calc(-1*var(--panel-handle-gap))');
+    expect(bench).toMatch(/\.workbench-main:has\(\.uploads-view-layer\)>\.panel-handle\[data-panel-side="left"\]:not\(\.collapsed\)\{pointer-events:none/);
+    const uploads = css('uploads.css');
+    expect(uploads.match(/\.up-workspace\{([^}]*)\}/)![1]).toMatch(/padding:0 0 8px;/);
+    expect(uploads.match(/\.up-filter\{([^}]*)\}/)![1]).toMatch(/margin:2px 6px 6px;/);
+    expect(uploads.match(/\.up-rail-body\{([^}]*)\}/)![1]).toMatch(/padding:0 6px 14px/);
+    expect(uploads.match(/\.up-rail-foot\{([^}]*)\}/)![1]).toMatch(/padding:8px 14px;overflow-wrap:anywhere/);
+    expect(uploads.match(/\.up-empty\{([^}]*)\}/)![1]).toMatch(/justify-content:center;[^}]*min-height:100%;padding:16px 14px/);
+  });
   it('syntax colours are tokens with theme fallbacks', () => {
     const source = css('viewer.css');
     for (const token of ['tag', 'attr', 'string', 'comment', 'heading', 'keyword', 'number']) expect(source).toMatch(new RegExp(`--vw-syn-${token}:var\\(--syntax-[a-z]+,var\\(--[A-Za-z]+\\)\\)`));
