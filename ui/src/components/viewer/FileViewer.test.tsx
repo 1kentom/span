@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'solid-js/web';
 import { Show, createSignal } from 'solid-js';
 import { FileViewer, type FileViewerProps } from './FileViewer';
+import { OFFICE_PREVIEW_BYTES } from '../../lib/office/limits';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); vi.restoreAllMocks(); });
@@ -252,4 +253,16 @@ describe('audio and video', () => {
     expect(root.querySelector('[data-state="damaged"]')?.textContent).toContain('codec may not be supported on this platform');
     expect(revoked).toEqual(['blob:test/0']);
   });
+});
+
+
+it.each([['a.pdf', 'pdf'], ['a.docx', 'docx'], ['a.pptx', 'pptx'], ['a.xlsx', 'xlsx'], ['a.zip', 'archive']] as const)('explains an oversized %s before trying to load a lazy decoder', (name, kind) => {
+  const root = show({ name, size: OFFICE_PREVIEW_BYTES[kind] + 1, content: { status: 'ready' } });
+  expect(root.querySelector('[data-state="too-large"]')?.textContent).toContain('preview is limited');
+  expect(root.querySelector('[data-state="damaged"]')).toBeNull();
+});
+
+it('reports incomplete binary document data instead of sending a prefix to the decoder', () => {
+  const root = show({ name: 'partial.pdf', size: 100_000, content: ready(bytes('%PDF-1.7')) });
+  expect(root.querySelector('[data-state="damaged"]')?.textContent).toContain('file data is incomplete');
 });

@@ -5,6 +5,7 @@ import { strToU8, zipSync } from 'fflate';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import ArchiveView from './ArchiveView';
+import { ARCHIVE_MAX_BYTES } from '../../lib/office/limits';
 import { createMemoryArchiveApi } from '../../lib/archive-api.memory';
 import type { ArchiveEntry } from '../../lib/archive-api';
 
@@ -137,4 +138,12 @@ describe('test-only archive implementation', () => {
     const offenders = walk(src).filter(p => /\.tsx?$/.test(p) && !/\.test\.tsx?$/.test(p) && !p.endsWith('archive-api.memory.ts') && readFileSync(p, 'utf8').includes('archive-api.memory'));
     expect(offenders).toEqual([]);
   });
+});
+
+
+it('refuses an oversized whole archive before starting directory parsing', async () => {
+  const root = mount(() => <ArchiveView name="large.zip" bytes={new Uint8Array(ARCHIVE_MAX_BYTES + 1)} />);
+  await settle();
+  expect(root.querySelector('[data-state="too-large"]')?.textContent).toContain('Archive preview is limited');
+  expect(root.querySelector('[data-state="damaged"]')).toBeNull();
 });

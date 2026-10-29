@@ -5,7 +5,8 @@ import { ViewerState } from '../ViewerStates';
 import { OfficeFailure, createParse, plural, type DocumentViewProps } from './shared';
 import '../../../styles/office.css';
 
-export const PPTX_MAX_BYTES = 256 * 1024 * 1024;
+import { PPTX_MAX_BYTES } from '../../../lib/office/limits';
+export { PPTX_MAX_BYTES };
 
 const boxStyle = (box: { left: number; top: number; width: number; height: number }): JSX.CSSProperties => ({ left: `${box.left}%`, top: `${box.top}%`, width: `${box.width}%`, height: `${box.height}%` });
 
