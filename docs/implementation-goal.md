@@ -18,6 +18,8 @@ Use the [dated primary-source behavior matrix](editor-behavior-research.md) as t
 
 Run-configuration behavior and its execution-only boundary are recorded in the [focused source comparison](run-configurations-research.md) for [#84](https://github.com/1kentom/span/issues/84).
 
+The expanded Git workbench for [#186](https://github.com/1kentom/span/issues/186) is specified in [expanded Git workflows](git-expanded-workflows.md), with actual evidence and remaining parity gates in [Git verification](git-integration-verification.md). It adds editor decorations and repository workflows beyond the original local-only cut; it does not establish full reference-product parity or close the other Phase 0.1 gates.
+
 The selected local Git scope, primary references and session-consent boundary are recorded in [Git integration research](git-integration-research.md). The bounded local workflow is published through merged PR #123 at `da16d0c`; its reconciled feature head `2c76acf` passed hosted checks. Installed Git workflow acceptance remains pending.
 
 Refresh the feature-specific row before further implementation. This audit documents existing code and does not establish that research preceded earlier changes. Familiar controls do not establish product parity, native performance, or provider interoperability. Keep the issue-specific verification status below separate from the research observations.
