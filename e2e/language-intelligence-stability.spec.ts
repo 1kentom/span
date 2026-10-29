@@ -9,22 +9,22 @@ const SIZES = process.env.HUB_SIZES;
 const FILE = "src/hover-sample/Controller.java";
 type Rect = { x: number; y: number; width: number; height: number };
 
-const scenarios: { name: string; kind: string; status: RegExp; word?: string; percent?: string }[] = [
-  { name: "needs-install", kind: "needs-install", status: /^Install for completions and errors \(about 120 MB\)$/ },
-  { name: "installing-0", kind: "installing", status: /^Downloading 0 of 320 MB$/, word: "Installing", percent: "0%" },
-  { name: "installing", kind: "installing", status: /^Downloading 128 of 320 MB$/, word: "Installing", percent: "40%" },
-  { name: "installing-100", kind: "installing", status: /^Downloading 320 MB of 320 MB$|^Downloading 320 of 320 MB$/, word: "Installing", percent: "100%" },
-  { name: "verifying", kind: "installing", status: /^Checking the download$/, word: "Installing", percent: "100%" },
-  { name: "extracting", kind: "installing", status: /^Unpacking$/, word: "Installing", percent: "100%" },
-  { name: "starting", kind: "starting", status: /^The first start can take a minute$/, word: "Starting" },
-  { name: "indexing", kind: "working", status: /^Reading classes and dependencies$/, word: "Indexing", percent: "35%" },
-  { name: "ready", kind: "ready", status: /^Completions, errors, hover, go to definition, references, rename, format$/ },
-  { name: "runtime-missing", kind: "runtime-missing", status: /^Needs JDK 25 or newer\. Found JDK 21$/ },
-  { name: "install-failed", kind: "install-failed", status: /^Couldn't install\. Check your connection$/ },
-  { name: "crashed", kind: "crashed", status: /^Stopped unexpectedly$/ },
-  { name: "disabled", kind: "disabled", status: /^Turn on for completions and errors$/, word: "Off" },
-  { name: "needs-trust", kind: "ready", status: /^Completions, errors, hover/ },
-  { name: "trusted", kind: "ready", status: /^Completions, errors, hover/ },
+const scenarios: { name: string; kind: string; status?: RegExp; pill: string; percent?: string }[] = [
+  { name: "needs-install", kind: "needs-install", status: /^Install for completions and errors \(about 120 MB\)$/, pill: "Not installed" },
+  { name: "installing-0", kind: "installing", status: /^Downloading 0 of 320 MB$/, pill: "Installing", percent: "0%" },
+  { name: "installing", kind: "installing", status: /^Downloading 128 of 320 MB$/, pill: "Installing", percent: "40%" },
+  { name: "installing-100", kind: "installing", status: /^Downloading 320 MB of 320 MB$|^Downloading 320 of 320 MB$/, pill: "Installing", percent: "100%" },
+  { name: "verifying", kind: "installing", status: /^Checking the download$/, pill: "Installing", percent: "100%" },
+  { name: "extracting", kind: "installing", status: /^Unpacking$/, pill: "Installing", percent: "100%" },
+  { name: "starting", kind: "starting", status: /^The first start can take a minute$/, pill: "Starting" },
+  { name: "indexing", kind: "working", status: /^Reading classes and dependencies$/, pill: "Indexing", percent: "35%" },
+  { name: "ready", kind: "ready", pill: "Ready" },
+  { name: "runtime-missing", kind: "runtime-missing", status: /^Needs JDK 25 or newer\. Found JDK 21$/, pill: "Needs runtime" },
+  { name: "install-failed", kind: "install-failed", status: /^Couldn't install\. Check your connection$/, pill: "Install failed" },
+  { name: "crashed", kind: "crashed", status: /^Stopped unexpectedly$/, pill: "Stopped" },
+  { name: "disabled", kind: "disabled", status: /^Turn on for completions and errors$/, pill: "Off" },
+  { name: "needs-trust", kind: "ready", pill: "Needs trust" },
+  { name: "trusted", kind: "ready", pill: "Ready" },
 ];
 
 const topButton = (page: Page) => page.locator(".top-right .hub-button");
@@ -51,62 +51,52 @@ const shot = async (page: Page, name: string, theme: string, clip?: Rect) => {
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: `${SHOTS}/hub2-${name}-${theme}.png`, clip });
 };
-/** Text zones must not overflow sideways: they ellipsize instead. */
+/** Text zones must not overflow sideways. */
 const overflowing = (page: Page) => page.evaluate(() => {
   const bad: string[] = [];
   const check = (el: Element, label: string) => { const node = el as HTMLElement; if (node.scrollWidth > node.clientWidth) bad.push(`${label}: ${node.scrollWidth} > ${node.clientWidth}`); };
   const panel = document.querySelector(".hub-panel")!;
   check(panel, "panel");
-  for (const selector of [".hub-name strong", ".hub-name small", ".hub-status-text", ".hub-state-word", ".hub-percent", ".hub-trust-row", ".hub-all-row", ".hub-actions"]) panel.querySelectorAll(selector).forEach(el => check(el, selector));
+  for (const selector of [".hub-head", ".hub-name strong", ".hub-name small", ".hub-status-text", ".hub-pill", ".hub-percent", ".hub-chips", ".hub-trust-row", ".hub-list-head", ".hub-actions", ".hub-row"]) panel.querySelectorAll(selector).forEach(el => check(el, selector));
   return bad;
 });
 
 for (const theme of ["dark", "light"] as const) {
-  test(`the panel, the bolt and the status bar item never change size or place across every state (${theme})`, async ({ page }, testInfo) => {
+  test(`the panel keeps its width and place, and the bolt and the status bar item keep their box, across every state (${theme})`, async ({ page }, testInfo) => {
     test.slow(); // fifteen states, each measured several times
     await setup(page, "ready");
     if (theme === "light") await useLightTheme(page);
     await page.evaluate(() => (window as any).__spanHubPreview.set("ready"));
-    // The list is collapsed by default, and it stays that way for this test.
     await topButton(page).click();
     await expect(panel(page)).toBeVisible();
-    await expect(panel(page).getByRole("button", { name: "All languages", exact: true })).toHaveAttribute("aria-expanded", "false");
+    // The language list is always there; the old "All languages" disclosure is gone.
+    await expect(panel(page).getByRole("button", { name: "All languages", exact: true })).toHaveCount(0);
+    await expect(panel(page).locator(".hub-row")).toHaveCount(7);
     const bolt0 = await box(topButton(page));
-    const statusLeft0 = (await box(statusButton(page))).x;
-    const sizes: { name: string; width: number; height: number; status: string }[] = [];
+    const status0 = await box(statusButton(page));
+    const sizes: { name: string; width: number; height: number }[] = [];
     let first: Rect | undefined;
     for (const item of scenarios) {
       await page.evaluate(name => (window as any).__spanHubPreview.set(name), item.name);
       await expect(panel(page)).toHaveAttribute("data-kind", item.kind);
-      await expect(panel(page).locator(".hub-status-text")).toHaveText(item.status);
-      await expect(panel(page).locator(".hub-state-word")).toHaveText(item.word ?? "");
-      await expect(panel(page).locator("[data-testid=hub-percent]")).toHaveText(item.percent ?? "");
+      await expect(panel(page).locator(".hub-pill")).toHaveText(item.pill);
+      if (item.status) await expect(panel(page).locator(".hub-status-text")).toHaveText(item.status);
+      else await expect(panel(page).locator(".hub-status-text")).toHaveCount(0);
+      if (item.percent) await expect(panel(page).locator("[data-testid=hub-percent]")).toHaveText(item.percent);
+      else await expect(panel(page).locator("[data-testid=hub-percent]")).toHaveCount(0);
       const now = await box(panel(page));
       first ??= now;
+      // Height follows the content (no dead space); width and the anchored corner never move.
       expect(now.width, `${item.name} width`).toBe(first.width);
-      expect(now.height, `${item.name} height`).toBe(first.height);
       expect(now.x, `${item.name} x`).toBe(first.x);
       expect(now.y, `${item.name} y`).toBe(first.y);
       expect(await box(topButton(page)), `${item.name} bolt`).toEqual(bolt0);
-      expect((await box(statusButton(page))).x, `${item.name} status bar left edge`).toBe(statusLeft0);
+      expect(await box(statusButton(page)), `${item.name} status bar item`).toEqual(status0);
       expect(await overflowing(page), `${item.name} overflow`).toEqual([]);
-      sizes.push({ name: item.name, width: now.width, height: now.height, status: item.status.source });
-      await shot(page, item.name, theme, { x: 1040, y: 0, width: 400, height: 380 });
+      sizes.push({ name: item.name, width: now.width, height: now.height });
+      await shot(page, item.name, theme, { x: 1040, y: 0, width: 400, height: 640 });
     }
-    if (SIZES && theme === "dark") await import("node:fs").then(fs => fs.writeFileSync(SIZES, JSON.stringify({ bolt: bolt0, statusLeft: statusLeft0, sizes }, null, 2)));
-    // Opening the list is the only thing that may change the height; the width stays.
-    await panel(page).getByRole("button", { name: "All languages", exact: true }).click();
-    const open = await box(panel(page));
-    expect(open.width).toBe(first!.width);
-    expect(open.height).toBeGreaterThan(first!.height);
-    expect(await overflowing(page)).toEqual([]);
-    await shot(page, "all-languages", theme, { x: 1040, y: 0, width: 400, height: 640 });
-    // The choice is remembered.
-    await page.keyboard.press("Escape");
-    await topButton(page).click();
-    await expect(panel(page).getByRole("button", { name: "All languages", exact: true })).toHaveAttribute("aria-expanded", "true");
-    await panel(page).getByRole("button", { name: "All languages", exact: true }).click();
-    expect(await box(topButton(page))).toEqual(bolt0);
+    if (SIZES && theme === "dark") await import("node:fs").then(fs => fs.writeFileSync(SIZES, JSON.stringify({ bolt: bolt0, status: status0, sizes }, null, 2)));
     await testInfo.attach("sizes", { body: JSON.stringify(sizes), contentType: "application/json" });
   });
 }
@@ -114,13 +104,13 @@ for (const theme of ["dark", "light"] as const) {
 test("the bolt and the status bar item keep their box with the panel closed, whatever the state", async ({ page }) => {
   await setup(page, "ready");
   const bolt0 = await box(topButton(page));
-  const left0 = (await box(statusButton(page))).x;
+  const status0 = await box(statusButton(page));
   for (const item of scenarios) {
     await page.evaluate(name => (window as any).__spanHubPreview.set(name), item.name);
     await expect(topButton(page)).toHaveAttribute("aria-label", /.+/);
     await page.waitForTimeout(40);
     expect(await box(topButton(page)), `${item.name} bolt`).toEqual(bolt0);
-    expect((await box(statusButton(page))).x, `${item.name} status bar left edge`).toBe(left0);
+    expect(await box(statusButton(page)), `${item.name} status bar item`).toEqual(status0);
     const check = await page.evaluate(() => document.querySelector(".top-right .hub-button .hub-badge.check") === null);
     expect(check).toBe(true);
   }
@@ -182,7 +172,7 @@ for (const theme of ["dark", "light"] as const) {
     await topButton(page).click();
     await expect(panel(page)).toBeVisible();
     await expect(prompt).toHaveCount(0);
-    await expect(panel(page).locator(".hub-trust")).toHaveText("Untrusted folderWhy?");
+    await expect(panel(page).locator(".hub-trust")).toHaveText("Untrusted folder");
     expect({ editor: await box(editor), areas: await areas() }).toEqual(before);
     await page.keyboard.press("Escape");
     await expect(prompt).toHaveCount(0);
