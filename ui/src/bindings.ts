@@ -258,6 +258,12 @@ export const commands = {
 	 */
 	agentCancelTask: (taskId: string) => __TAURI_INVOKE<null>("agent_cancel_task", { taskId }),
 	/**
+	 *  One delegated task and what its child session wrote so far, for the
+	 *  user opening the child session from its card. Read only. Searched like
+	 *  `agent_cancel_task`.
+	 */
+	agentTaskTranscript: (taskId: string) => __TAURI_INVOKE<DelegationTranscript_Serialize>("agent_task_transcript", { taskId }),
+	/**
 	 *  Warm start (ADR 0009): start installed agents in the background so a
 	 *  delegation or an agent switch does not wait for the process. Process and
 	 *  ACP `initialize` only, no session. `recent` lists agent ids most recently
@@ -293,6 +299,29 @@ export const commands = {
 	uploadsCopyPath: (id: string) => __TAURI_INVOKE<string>("uploads_copy_path", { id }),
 	uploadsReveal: (id: string) => __TAURI_INVOKE<null>("uploads_reveal", { id }),
 	uploadsOpen: (id: string) => __TAURI_INVOKE<null>("uploads_open", { id }),
+	/**
+	 *  The store folder for the open workspace, for Settings > Storage. App data,
+	 *  never inside the workspace.
+	 */
+	uploadsFolder: () => __TAURI_INVOKE<string>("uploads_folder"),
+	/**  Opens the store folder in the system file manager. */
+	uploadsRevealFolder: () => __TAURI_INVOKE<null>("uploads_reveal_folder"),
+	/**
+	 *  Clear uploads in Settings > Storage, after the user confirmed: removes this
+	 *  workspace's blobs (orphans included), `open/` copies and index. Workspace
+	 *  files and uploads saved into the workspace are untouched.
+	 */
+	uploadsClear: () => __TAURI_INVOKE<ClearedUploads>("uploads_clear"),
+	/**
+	 *  Bounded outline of a workspace folder for a folder attachment: one call
+	 *  instead of one listing per folder. Paths in the text are folder-relative.
+	 */
+	folderOutline: (path: string, limit: number) => __TAURI_INVOKE<FolderOutline>("folder_outline", { path, limit }),
+	/**
+	 *  Page count of a PDF the viewer's library could not open, or `None` when it
+	 *  cannot be read reliably. The bytes come from an attachment the user added.
+	 */
+	pdfPageCount: (dataBase64: string) => __TAURI_INVOKE<number | null>("pdf_page_count", { dataBase64 }),
 	/**  Logs the webview's startup marks next to the time since the process started. */
 	reportStartupTimings: (timings: StartupTimings_Deserialize) => __TAURI_INVOKE<void>("report_startup_timings", { timings }),
 	/**
@@ -989,6 +1018,13 @@ export type CapabilitiesDto = {
 	signatureHelp: boolean,
 };
 
+/**  What `UploadStore::clear` removed. */
+export type ClearedUploads = {
+	/**  Indexed uploads plus orphaned blobs. */
+	files: number,
+	bytes: number,
+};
+
 export type CompletionItemDto = CompletionItemDto_Serialize | CompletionItemDto_Deserialize;
 
 export type CompletionItemDto_Deserialize = {
@@ -1318,6 +1354,33 @@ export type DelegationTask_Serialize = {
 	budgetUsed: UsageReport_Serialize,
 };
 
+/**
+ *  One delegated task and the text its child session wrote so far, for the
+ *  user opening the child session from its card. `text` is bounded by the
+ *  task registry and is the child's reply only (no tool output).
+ */
+export type DelegationTranscript = DelegationTranscript_Serialize | DelegationTranscript_Deserialize;
+
+/**
+ *  One delegated task and the text its child session wrote so far, for the
+ *  user opening the child session from its card. `text` is bounded by the
+ *  task registry and is the child's reply only (no tool output).
+ */
+export type DelegationTranscript_Deserialize = {
+	task: DelegationTask_Deserialize,
+	text: string,
+};
+
+/**
+ *  One delegated task and the text its child session wrote so far, for the
+ *  user opening the child session from its card. `text` is bounded by the
+ *  task registry and is the child's reply only (no tool output).
+ */
+export type DelegationTranscript_Serialize = {
+	task: DelegationTask_Serialize,
+	text: string,
+};
+
 export type DetectedRunTask = DetectedRunTask_Serialize | DetectedRunTask_Deserialize;
 
 export type DetectedRunTask_Deserialize = {
@@ -1453,6 +1516,19 @@ export type FileIndexStatus_Serialize = {
 export type FoldRange = {
 	from: number,
 	to: number,
+};
+
+export type FolderOutline = {
+	/**  The folder's own name, or the workspace folder's name for the root. */
+	name: string,
+	/**  Workspace-relative path with forward slashes, `.` for the root. */
+	path: string,
+	/**  Header line, a blank line, then one entry per line (folders end in `/`). */
+	text: string,
+	/**  Files listed. A lower bound when `truncated`. */
+	files: number,
+	/**  The walk stopped at the entry limit. */
+	truncated: boolean,
 };
 
 export type FormatWarning = {
@@ -3191,6 +3267,11 @@ export type UploadSource_Deserialize = {
 	agentId?: string | null,
 	messageId?: string | null,
 	origin: UploadOrigin,
+	/**
+	 *  The chat's title when the file was recorded, so the panel can name the
+	 *  session after the chat is gone. Display text only; cleaned on store.
+	 */
+	sessionTitle?: string | null,
 };
 
 /**  Where an upload came from. Ids are opaque labels for "Show in session". */
@@ -3199,6 +3280,11 @@ export type UploadSource_Serialize = {
 	agentId: string | null,
 	messageId: string | null,
 	origin: UploadOrigin,
+	/**
+	 *  The chat's title when the file was recorded, so the panel can name the
+	 *  session after the chat is gone. Display text only; cleaned on store.
+	 */
+	sessionTitle: string | null,
 };
 
 export type UploadUsage = {
