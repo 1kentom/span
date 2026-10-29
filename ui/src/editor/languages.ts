@@ -178,9 +178,10 @@ const dotenvLanguage = StreamLanguage.define(dotenvParser);
 const loading = new Map<string, Promise<LoadedLanguage | null>>();
 
 async function markdownSupport(): Promise<LoadedLanguage> {
-  const { markdown } = await import("@codemirror/lang-markdown");
+  const [{ markdown, markdownLanguage }, { frontMatter }] = await Promise.all([import("@codemirror/lang-markdown"), import("./markdown-frontmatter")]);
   const names = languageIds.filter((id) => id !== "markdown" && hasGrammar(id));
-  return markdown({ codeLanguages: names.map((name) => LanguageDescription.of({ name, alias: Object.keys(aliases).filter((alias) => aliases[alias] === name), load: async () => {
+  // GFM base: tables, strikethrough, task lists and autolinks parse; front matter is its own block.
+  return markdown({ base: markdownLanguage, extensions: frontMatter, codeLanguages: names.map((name) => LanguageDescription.of({ name, alias: Object.keys(aliases).filter((alias) => aliases[alias] === name), load: async () => {
     const support = await loadLanguage(name);
     if (!support) throw new Error(`No grammar for ${name}`);
     return support instanceof LanguageSupport ? support : new LanguageSupport(support);
