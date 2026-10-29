@@ -1,13 +1,14 @@
 import { batch, createComputed, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
+import type { AgentCommand, AgentEvent, ConfigOption, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
-import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, api, isDesktop, sessionExportMarkdown, sessionMetaSetArchived, sessionMetaSetTitle } from "./client";
+import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadRowMeta } from "./session-threads";
 import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
 import { agentCatalog } from "./agent-stores/catalog";
 import { agentBackground } from "./agent-stores/background";
 import { agentLimits } from "./agent-stores/limits";
+import { agentHistory } from "./agent-stores/history";
 import { liveAgentsOf, resolveInstalled, type LiveState } from "./live-agents";
 import { removalBlockReason, type CatalogRow } from "./acp-catalog";
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
@@ -157,11 +158,9 @@ export function createAgentController(props: AgentPanelProps) {
   const [connecting, setConnecting] = createSignal<Connecting>();
   const [contextPaths, setContextPaths] = createSignal<string[]>([]);
   const [hiddenSelection, setHiddenSelection] = createSignal("");
-  const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
-  const [sessionsBusy, setSessionsBusy] = createSignal(false);
-  const [sessionsError, setSessionsError] = createSignal("");
-  /** Span's stored metadata for the workspace's sessions (ADR 0005). Empty when none is stored or it cannot be read. */
-  const [sessionMeta, setSessionMeta] = createSignal<SessionMeta[]>([]);
+  /** The agent's session list and Span's metadata index (see the history store). */
+  const sessionHistory = agentHistory.use();
+  const { sessions, setSessions, sessionsBusy, sessionsError, setSessionsError, sessionScope, sessionMeta, keepSaved } = sessionHistory;
   /** Delegated child session id to its lead session id, so a child's model is recorded on the lead as a subagent. */
   const delegatedChildren = new Map<string, string>();
   /** Accepted edit totals per session in this run, added to what the store had when counting began. */
@@ -1311,59 +1310,21 @@ export function createAgentController(props: AgentPanelProps) {
       if (current()) setPendingAction("");
     }
   }
-  /** History scope: this workspace (the agent lists sessions of the folder) or every folder the agent knows. */
-  const [sessionScope, setSessionScopeSignal] = createSignal<"workspace" | "all">("workspace");
   const setSessionScope = (scope: "workspace" | "all") => {
     if (scope === sessionScope()) return;
-    setSessionScopeSignal(scope);
+    sessionHistory.setSessionScope(scope);
     void loadSessions();
   };
   async function loadSessions() {
     if (!state().canList || sessionsBusy()) return;
-    const current = guard(agentEpoch);
-    setSessionsBusy(true);
-    setSessionsError("");
-    void loadSessionMeta();
-    try {
-      const found = sessionScope() === "all" ? await api.agentListAllSessions() : await api.agentListSessions();
-      if (current()) setSessions(found);
-    } catch (cause) {
-      if (current()) setSessionsError(errorText(cause));
-    } finally {
-      if (current()) setSessionsBusy(false);
-    }
+    await sessionHistory.loadSessions(guard(agentEpoch));
   }
-  /** Metadata only adds chips and titles to History rows, so a failed read leaves the rows as the agent lists them. */
-  async function loadSessionMeta() {
-    const current = guard(agentEpoch);
-    try {
-      const found = await sessionMetaList();
-      if (current()) setSessionMeta(found);
-    } catch {
-      if (current()) setSessionMeta([]);
-    }
-  }
-  /**
-   * Writes what Span observed about a session to the metadata store (ADR 0005) and keeps the History rows in step.
-   * The store is a convenience: a failed write (no folder open, browser preview) never disturbs the chat.
-   */
-  async function recordSessionMeta(patch: SessionMetaPatch) {
-    if (!isDesktop) return;
-    const current = guard(agentEpoch);
-    try {
-      const saved = await sessionMetaUpdate(patch);
-      if (current()) setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
-    } catch {
-      // Nothing to show: History falls back to what the agent lists.
-    }
-  }
+  /** Writes what Span observed about a session to the metadata store (see the history store). */
+  const recordSessionMeta = (patch: SessionMetaPatch) => sessionHistory.recordSessionMeta(patch, guard(agentEpoch));
   /** Stored metadata for one of the connected agent's sessions. Sessions are keyed by agent and id (ADR 0005). */
-  const sessionMetaOf = (sessionId: string) => {
-    const agent = agentId();
-    return agent ? sessionMeta().find((entry) => entry.agentId === agent && entry.sessionId === sessionId) : undefined;
-  };
+  const sessionMetaOf = (sessionId: string) => sessionHistory.metaOf(agentId(), sessionId);
   /** Every stored segment of the chat thread that holds one of the connected agent's sessions (ADR 0005, thread links). */
-  const threadFor = (sessionId: string) => threadOf(sessionMeta(), agentId(), sessionId);
+  const threadFor = (sessionId: string) => sessionHistory.threadFor(agentId(), sessionId);
   /** The lead's state in the Live agents strip, from its turn and the requests that wait for the user. */
   const leadState = (): LiveState => (permission() || elicitation() ? "Waiting for you" : running() ? "Working" : connecting() ? "Starting" : "Idle");
   /**
@@ -1396,7 +1357,6 @@ export function createAgentController(props: AgentPanelProps) {
     const id = sessionId();
     return (id ? threadRowMeta(threadFor(id)).title : undefined) ?? listedTitle(state().sessionTitle) ?? (id ? listedTitle(sessions().find((entry) => entry.sessionId === id)?.title) : undefined);
   };
-  const keepSaved = (saved: SessionMeta) => setSessionMeta((list) => [saved, ...list.filter((entry) => !(entry.agentId === saved.agentId && entry.sessionId === saved.sessionId))]);
   /** The store keys a thread action writes: every stored segment, and the row's own session first (it may have no metadata yet). */
   function threadKeys(id: string): { agentId: string; sessionId: string }[] {
     const agent = agentId();
