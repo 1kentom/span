@@ -563,13 +563,43 @@ async fn run(
             bounded(stdout),
             bounded(stderr)
         )?;
-        let _ = err;
         if !status.success() {
-            return Err("GitHub request failed. Check gh authentication, repository permissions, network access, and GitHub API limits".into());
+            return Err(github_request_error(&err));
         }
         String::from_utf8(out).map_err(|_| "GitHub CLI returned non UTF-8 output".into())
     };
     tokio::select! { result=tokio::time::timeout(Duration::from_secs(45),operation)=>result.map_err(|_|"GitHub request timed out".to_owned())?, _=async{loop{if token.is_cancelled(){break}tokio::time::sleep(Duration::from_millis(40)).await}}=>Err("GitHub request cancelled".into()) }
+}
+
+fn github_request_error(stderr: &[u8]) -> String {
+    // Classify diagnostics without returning arbitrary CLI output or credentials.
+    let diagnostic = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let guidance = if diagnostic.contains("rate limit") {
+        "GitHub API rate limit reached. Wait for the limit to reset, then retry this read."
+    } else if diagnostic.contains("resource not accessible")
+        || diagnostic.contains("http 403")
+        || diagnostic.contains("forbidden")
+    {
+        "GitHub denied this request. Check the selected repository and the GitHub CLI account's repository, pull request and checks permissions."
+    } else if diagnostic.contains("http 401")
+        || diagnostic.contains("bad credentials")
+        || diagnostic.contains("not logged")
+        || diagnostic.contains("gh auth login")
+    {
+        "GitHub authentication is unavailable. Run gh auth status, then gh auth login if needed, and retry."
+    } else if diagnostic.contains("could not resolve")
+        || diagnostic.contains("error connecting")
+        || diagnostic.contains("timeout")
+        || diagnostic.contains("tls")
+        || diagnostic.contains("connection")
+        || diagnostic.contains("http 502")
+        || diagnostic.contains("http 503")
+    {
+        "GitHub could not be reached. Check your connection and retry this read."
+    } else {
+        "GitHub request failed. Check gh authentication, repository permissions, network access, and GitHub API limits."
+    };
+    guidance.to_owned()
 }
 fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
@@ -724,5 +754,21 @@ mod tests {
         assert!(valid_ref("--web").is_err());
         assert!(valid_ref("feature/valid").is_ok());
         assert!(valid_body(&"a".repeat(65537)).is_err());
+    }
+
+    #[test]
+    fn request_errors_are_actionable_without_echoing_cli_secrets() {
+        let denied = github_request_error(
+            b"GraphQL: Resource not accessible by integration, unpublished-credential-value",
+        );
+        assert!(denied.contains("GitHub denied"));
+        assert!(!denied.contains("unpublished-credential-value"));
+        assert!(github_request_error(b"API rate limit exceeded").contains("limit to reset"));
+        assert!(github_request_error(b"error connecting to api.github.com").contains("connection"));
+        assert!(github_request_error(b"HTTP 401: Bad credentials").contains("gh auth status"));
+        assert!(
+            !github_request_error(b"unexpected unpublished-credential-value")
+                .contains("unpublished-credential-value")
+        );
     }
 }

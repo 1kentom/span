@@ -22,6 +22,7 @@ The broad UI run initially exposed a one-second lazy archive import wait under l
 - [ ] Complete the remaining rows in [the feature matrix](git-expanded-workflows.md), including init/clone from the welcome screen, first push, richer history/reflog and comparisons, range staging, amend/signing setup, line history, interactive rebase, submodules and multi-repository workflows.
 - [ ] Add remaining GitHub workflow controls, including hosted merge, issue actions and review-thread handling, with explicit targets, drafts, stale-state guards and realistic error paths.
 - [ ] Exercise the newly built native GitHub, auto-fetch, merge-conflict and worktree UI. Do not substitute the earlier installed review binary's runtime evidence.
+- [ ] Verify the follow-up native main/current-worktree controls and GitHub detail-error recovery. Runtime `8502b33` verified actual auto-fetch, a two-parent resolved merge, worktree creation/locking/opening and GitHub auth/list; native PR details and folder-picker recovery remain unverified.
 - [x] Pass the complete UI suite and production build after machine disk pressure is resolved (3,042 tests, 271 files, two workers).
 - [ ] Publish and pass exact-head hosted checks for the new source.
 - [ ] Audit completion against every original requirement. Keep the objective active while any requirement is missing or unverified.

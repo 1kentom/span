@@ -187,6 +187,8 @@ pub struct GitStash {
 #[serde(rename_all = "camelCase")]
 pub struct GitWorktree {
     pub path: String,
+    /// The main worktree, reported first by Git regardless of the open workspace.
+    pub main: bool,
     pub head: Option<String>,
     pub branch: Option<String>,
     pub bare: bool,

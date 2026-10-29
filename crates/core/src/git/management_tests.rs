@@ -131,6 +131,10 @@ async fn remote_config_and_branch_management_require_current_review() {
         .await
         .unwrap();
     assert_eq!(added.remotes.len(), 1);
+    assert_eq!(
+        OsString::from(run(&root, &["remote", "get-url", "origin"])),
+        git_path(&root)
+    );
     assert!(service
         .configure_remote(
             &id,
@@ -237,7 +241,90 @@ async fn worktree_creation_lock_and_prune_bind_reviewed_state() {
         .worktree_prune(&id, &review.snapshot, CancellationToken::default())
         .await
         .is_err());
-    let locked = service
+    let listed_path = service
+        .worktrees(&id, CancellationToken::default())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|tree| tree.branch.as_deref() == Some("linked"))
+        .unwrap()
+        .path;
+    // Opening a linked worktree must not make it the main worktree.
+    let linked_service = GitService::new(target.clone()).unwrap();
+    let linked_id = linked_service
+        .context(CancellationToken::default())
+        .await
+        .unwrap()
+        .repository
+        .unwrap()
+        .id;
+    linked_service
+        .enable(&linked_id, CancellationToken::default())
+        .await
+        .unwrap();
+    let linked_trees = linked_service
+        .worktrees(&linked_id, CancellationToken::default())
+        .await
+        .unwrap();
+    assert_eq!(linked_trees.iter().filter(|tree| tree.main).count(), 1);
+    assert!(linked_trees[0].main);
+    let main = linked_trees.iter().find(|tree| tree.main).unwrap();
+    assert!(management::management_same_path(
+        Path::new(&main.path),
+        &root
+    ));
+    assert!(
+        !linked_trees
+            .iter()
+            .find(|tree| tree.path == listed_path)
+            .unwrap()
+            .main
+    );
+    let locked = linked_service
+        .worktree_prune_review(&linked_id, CancellationToken::default())
+        .await
+        .unwrap();
+    assert!(linked_service
+        .worktree_set_locked(
+            &linked_id,
+            &main.path,
+            true,
+            &locked.snapshot,
+            CancellationToken::default()
+        )
+        .await
+        .is_err());
+    assert!(linked_service
+        .worktree_remove(&linked_id, &main.path, CancellationToken::default())
+        .await
+        .is_err());
+    assert!(linked_service
+        .worktree_remove(&linked_id, &listed_path, CancellationToken::default())
+        .await
+        .is_err());
+    linked_service
+        .worktree_set_locked(
+            &linked_id,
+            &listed_path,
+            false,
+            &locked.snapshot,
+            CancellationToken::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !linked_service
+            .worktrees(&linked_id, CancellationToken::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|tree| tree.path == listed_path)
+            .unwrap()
+            .locked
+    );
+
+    fs::remove_dir_all(&target).unwrap();
+    let offline_review = service
         .worktree_prune_review(&id, CancellationToken::default())
         .await
         .unwrap();
@@ -245,13 +332,26 @@ async fn worktree_creation_lock_and_prune_bind_reviewed_state() {
         .worktree_set_locked(
             &id,
             target.to_str().unwrap(),
-            false,
-            &locked.snapshot,
+            true,
+            &offline_review.snapshot,
             CancellationToken::default(),
         )
         .await
         .unwrap();
-    fs::remove_dir_all(&target).unwrap();
+    let offline_locked = service
+        .worktree_prune_review(&id, CancellationToken::default())
+        .await
+        .unwrap();
+    service
+        .worktree_set_locked(
+            &id,
+            &listed_path,
+            false,
+            &offline_locked.snapshot,
+            CancellationToken::default(),
+        )
+        .await
+        .unwrap();
     let prune = service
         .worktree_prune_review(&id, CancellationToken::default())
         .await
@@ -268,5 +368,51 @@ async fn worktree_creation_lock_and_prune_bind_reviewed_state() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[test]
+fn management_sources_preserve_transport_syntax() {
+    for source in [
+        "https://example.invalid/repo",
+        "file:///tmp/repo",
+        "user@example.invalid:repo",
+    ] {
+        assert_eq!(
+            management::management_remote_source(source),
+            OsString::from(source)
+        );
+    }
+    assert!(!management::management_same_path(
+        Path::new("relative"),
+        Path::new("relative")
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn management_windows_native_paths_match_git_paths() {
+    for (native, reported) in [
+        (
+            r"\\?\C:\span-path-test-missing\repo",
+            "C:/span-path-test-missing/repo",
+        ),
+        (
+            r"\\?\UNC\span-path-test-missing\share\repo",
+            "//span-path-test-missing/share/repo",
+        ),
+    ] {
+        assert_eq!(
+            management::management_remote_source(native),
+            OsString::from(reported)
+        );
+        assert!(management::management_same_path(
+            Path::new(native),
+            Path::new(reported)
+        ));
+    }
+    assert_eq!(
+        management::management_remote_source("ssh://git@example.invalid/repo"),
+        OsString::from("ssh://git@example.invalid/repo")
     );
 }

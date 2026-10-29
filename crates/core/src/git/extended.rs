@@ -534,6 +534,8 @@ impl GitService {
             if let Some(path) = record.strip_prefix("worktree ") {
                 current = Some(GitWorktree {
                     path: path.into(),
+                    // Git guarantees main first even when invoked from a linked worktree.
+                    main: result.is_empty(),
                     head: None,
                     branch: None,
                     bare: false,
@@ -628,6 +630,7 @@ impl GitService {
         let trees = self.worktrees_for(&repo, &token).await?;
         if !trees.iter().any(|tree| {
             Path::new(&tree.path).canonicalize().ok().as_ref() == Some(&target)
+                && !tree.main
                 && !tree.bare
                 && !tree.locked
         }) {

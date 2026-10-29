@@ -39,7 +39,7 @@ describe("repository-scoped GitHub workbench", () => {
     const selected=f.github.selected(); const items=f.github.items(); const calls=f.transport.githubRepositories.mock.calls.length;
     f.setContextPoll(1);
     await Promise.resolve();
-    expect(f.github.selected()).toBe(selected); expect(f.github.items()).toBe(items); expect(f.github.remote()).toBe("origin");
+    expect(f.github.selected()).toBe(selected); expect(f.github.detailsLoaded()).toBe(true); expect(f.github.items()).toBe(items); expect(f.github.remote()).toBe("origin");
     expect(f.transport.githubRepositories).toHaveBeenCalledTimes(calls);
   });
   it("drops a read response after the workspace generation changes", async () => {
@@ -77,6 +77,20 @@ describe("repository-scoped GitHub workbench", () => {
     const f = fixture(); f.transport.githubRepositories.mockResolvedValue([]); await f.github.load();
     expect(f.github.repositories()).toEqual([]); expect(f.github.remote()).toBe(""); expect(f.github.status()).toBeUndefined();
     expect(f.transport.githubStatus).not.toHaveBeenCalled(); expect(f.transport.githubRead).not.toHaveBeenCalled();
+  });
+  it("marks the full current-branch payload loaded and clears it on a workspace generation change", async () => {
+    const f = fixture(); await f.github.load(); await f.github.currentBranch();
+    expect(f.github.selected()?.number).toBe(12); expect(f.github.detailsLoaded()).toBe(true);
+    f.setGeneration(2); expect(f.github.detailsLoaded()).toBe(false); expect(f.github.selected()).toBeUndefined();
+  });
+  it("blocks reviews and patches until details have successfully loaded", async () => {
+    const f = fixture(); await f.github.load(); f.transport.githubRead.mockRejectedValueOnce(new Error("Details unavailable"));
+    await f.github.detail(item()); expect(f.github.detailsLoaded()).toBe(false);
+    const reads=f.transport.githubRead.mock.calls.length;
+    expect(await f.github.review("approve", "")).toBe(false); await f.github.loadFiles();
+    expect(f.transport.githubReviewPullRequest).not.toHaveBeenCalled(); expect(f.transport.githubRead).toHaveBeenCalledTimes(reads);
+    await f.github.detail(item()); expect(f.github.detailsLoaded()).toBe(true);
+    await f.github.chooseRemote("upstream"); expect(f.github.detailsLoaded()).toBe(false);
   });
   it("binds explicit review submission to the displayed PR head", async () => {
     const f = fixture(); await f.github.load(); await f.github.detail(item());

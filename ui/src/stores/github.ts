@@ -19,6 +19,7 @@ export function createGitHubWorkbench(options: { git: GitWorkbench; active(): bo
   const [moreFiles, setMoreFiles] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
   const [detailLoading, setDetailLoading] = createSignal(false);
+  const [detailsLoaded, setDetailsLoaded] = createSignal(false);
   const [filesLoading, setFilesLoading] = createSignal(false);
   const [operation, setOperation] = createSignal("");
   const [error, setError] = createSignal("");
@@ -42,7 +43,7 @@ export function createGitHubWorkbench(options: { git: GitWorkbench; active(): bo
       const repo = repos.find(item => item.remoteName === name);
       const previous = repository();
       if (previous && repo && (previous.owner !== repo.owner || previous.name !== repo.name || previous.host !== repo.host || previous.remoteName !== repo.remoteName)) {
-        detailsRequest++; fileRequest++; setSelected(undefined); setFiles([]); setDetailLoading(false); setFilesLoading(false); setRepositoryInfo(undefined);
+        detailsRequest++; fileRequest++; setSelected(undefined); setDetailsLoaded(false); setFiles([]); setDetailLoading(false); setFilesLoading(false); setRepositoryInfo(undefined);
       }
       setRemote(name);
       if (!name || !repo) { setStatus(undefined); setItems([]); return; }
@@ -58,24 +59,24 @@ export function createGitHubWorkbench(options: { git: GitWorkbench; active(): bo
     } catch (cause) { if (live(token, id) && serial === request) setError(message(cause)); }
     finally { if (live(token, id) && serial === request) setLoading(false); }
   }
-  async function chooseRemote(name: string) { if (operation()) return; detailsRequest++; fileRequest++; setDetailLoading(false); setFilesLoading(false); setSelected(undefined); setFiles([]); setStatus(undefined); setRemote(name); await load(); }
-  async function chooseKind(value: "pullRequests" | "issues") { if (operation()) return; detailsRequest++; fileRequest++; setDetailLoading(false); setFilesLoading(false); setKind(value); setSelected(undefined); setFiles([]); setItems([]); await load(); }
+  async function chooseRemote(name: string) { if (operation()) return; detailsRequest++; fileRequest++; setDetailLoading(false); setFilesLoading(false); setSelected(undefined); setDetailsLoaded(false); setFiles([]); setStatus(undefined); setRemote(name); await load(); }
+  async function chooseKind(value: "pullRequests" | "issues") { if (operation()) return; detailsRequest++; fileRequest++; setDetailLoading(false); setFilesLoading(false); setKind(value); setSelected(undefined); setDetailsLoaded(false); setFiles([]); setItems([]); await load(); }
   async function chooseFilter(value: string) { if (operation()) return; setFilter(value); setItems([]); await load(); }
   async function detail(item: GitHubItem) {
     const id = contextId(); if (!id || !ready()) return;
     const name = remote(); const token = epoch; const serial = ++detailsRequest;
-    fileRequest++; setFiles([]); setFilePage(0); setMoreFiles(false); setSelected(item); setDetailLoading(true); setError("");
+    fileRequest++; setFiles([]); setFilePage(0); setMoreFiles(false); setSelected(item); setDetailsLoaded(false); setDetailLoading(true); setError("");
     try {
       const result = await transport.githubRead(id, name, { kind: kind() === "pullRequests" ? "pullRequest" : "issue", number: item.number }, repository()!);
       if (live(token, id, name) && serial === detailsRequest) {
         if (!result.items[0]) throw new Error("GitHub returned no details for this item.");
-        setSelected(result.items[0]);
+        setSelected(result.items[0]); setDetailsLoaded(true);
       }
     } catch (cause) { if (live(token, id, name) && serial === detailsRequest) setError(message(cause)); }
     finally { if (live(token, id, name) && serial === detailsRequest) setDetailLoading(false); }
   }
   async function loadFiles(more = false) {
-    const id = contextId(); const item = selected(); if (!id || !item || kind() !== "pullRequests" || filesLoading() || !ready()) return;
+    const id = contextId(); const item = selected(); if (!id || !item || !detailsLoaded() || kind() !== "pullRequests" || filesLoading() || !ready()) return;
     const name = remote(); const token = epoch; const serial = ++fileRequest; const page = more ? filePage() + 1 : 1;
     setFilesLoading(true); setError("");
     try {
@@ -94,7 +95,7 @@ export function createGitHubWorkbench(options: { git: GitWorkbench; active(): bo
   }
   const createPullRequest = (value: GitHubCreatePullRequest) => mutate("Create pull request", (id, name) => transport.githubCreatePullRequest(id, name, value, repository()!));
   const review = async (event: GitHubReviewEvent, body: string) => {
-    const item = selected(); if (!item?.headRefOid || detailLoading()) return false;
+    const item = selected(); if (!item?.headRefOid || !detailsLoaded() || detailLoading()) return false;
     const ok = await mutate("Submit review", (id, name) => transport.githubReviewPullRequest(id, name, { number: item.number, expectedHead: item.headRefOid, event, body }, repository()!));
     if (ok) await detail(item);
     return ok;
@@ -103,22 +104,22 @@ export function createGitHubWorkbench(options: { git: GitWorkbench; active(): bo
     const id = contextId(); const branch = options.git.status()?.repository.branch;
     if (!id || !branch || !ready()) return;
     const token = epoch; const name = remote(); const serial = ++detailsRequest;
-    setDetailLoading(true); setError("");
+    setDetailsLoaded(false); setDetailLoading(true); setError("");
     try {
       const result = await transport.githubRead(id, name, { kind: "currentPullRequest", branch }, repository()!);
       if (!live(token, id, name) || serial !== detailsRequest) return;
       if (!result.items[0]) { setNotice("No pull request found for the current branch."); return; }
-      setKind("pullRequests"); setSelected(result.items[0]); fileRequest++; setFiles([]); setFilePage(0); setMoreFiles(false);
+      setKind("pullRequests"); setSelected(result.items[0]); setDetailsLoaded(true); fileRequest++; setFiles([]); setFilePage(0); setMoreFiles(false);
     } catch (cause) { if (live(token, id, name) && serial === detailsRequest) setError(message(cause)); }
     finally { if (live(token, id, name) && serial === detailsRequest) setDetailLoading(false); }
   }
   const workspaceIdentity = createMemo(() => `${contextId()}:${options.generation()}`);
   createEffect(on(workspaceIdentity, () => {
     epoch++; request++; detailsRequest++; fileRequest++;
-    batch(() => { setRepositories(undefined); setRemote(""); setStatus(undefined); setRepositoryInfo(undefined); setItems([]); setSelected(undefined); setFiles([]); setFilePage(0); setMoreFiles(false); setLoading(false); setDetailLoading(false); setFilesLoading(false); setOperation(""); setError(""); setNotice(""); });
+    batch(() => { setRepositories(undefined); setRemote(""); setStatus(undefined); setRepositoryInfo(undefined); setItems([]); setSelected(undefined); setDetailsLoaded(false); setFiles([]); setFilePage(0); setMoreFiles(false); setLoading(false); setDetailLoading(false); setFilesLoading(false); setOperation(""); setError(""); setNotice(""); });
   }));
   createEffect(() => { if (options.active() && contextId() && repositories() === undefined && !loading() && !error()) void load(); });
   onCleanup(() => { disposed = true; epoch++; });
-  return { repositories, repositoryInfo, remote, status, kind, filter, items, selected, files, filePage, moreFiles, loading, detailLoading, filesLoading, operation, error, notice, ready, load, chooseRemote, chooseKind, chooseFilter, detail, loadFiles, currentBranch, createPullRequest, review, back: () => { detailsRequest++; fileRequest++; setSelected(undefined); setFiles([]); setDetailLoading(false); setFilesLoading(false); } };
+  return { repositories, repositoryInfo, remote, status, kind, filter, items, selected, files, filePage, moreFiles, loading, detailLoading, detailsLoaded, filesLoading, operation, error, notice, ready, load, chooseRemote, chooseKind, chooseFilter, detail, loadFiles, currentBranch, createPullRequest, review, back: () => { detailsRequest++; fileRequest++; setSelected(undefined); setDetailsLoaded(false); setFiles([]); setDetailLoading(false); setFilesLoading(false); } };
 }
 export type GitHubWorkbench = ReturnType<typeof createGitHubWorkbench>;

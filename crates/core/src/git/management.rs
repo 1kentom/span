@@ -67,7 +67,7 @@ impl GitService {
             "--no-local".into(),
             "--no-recurse-submodules".into(),
             "--".into(),
-            source.into(),
+            management_remote_source(source),
             git_path(&target),
         ];
         let result = self
@@ -133,7 +133,7 @@ impl GitService {
         if action != GitRemoteConfigAction::Remove {
             let source = url.ok_or_else(|| error("A remote URL is required"))?;
             validate_remote_source(source)?;
-            args.push(source.into());
+            args.push(management_remote_source(source));
         }
         self.management_config_review(&repo, expected_config_fingerprint, &token)
             .await?;
@@ -428,9 +428,9 @@ impl GitService {
         let trees = self.worktrees_for(&repo, &token).await?;
         let tree = trees
             .iter()
-            .find(|tree| tree.path == path && !tree.bare)
+            .find(|tree| !tree.bare && management_same_path(Path::new(&tree.path), Path::new(path)))
             .ok_or_else(|| error("Select a linked worktree"))?;
-        if Path::new(path) == repo.root || tree.locked == locked {
+        if tree.main || tree.locked == locked {
             return Err(error(
                 "Worktree lock state cannot be changed by this action",
             ));
@@ -445,12 +445,16 @@ impl GitService {
         }
         self.operation_result(
             &repo,
-            strings(&[
-                "worktree",
-                if locked { "lock" } else { "unlock" },
-                "--",
-                path,
-            ]),
+            vec![
+                "worktree".into(),
+                if locked {
+                    "lock".into()
+                } else {
+                    "unlock".into()
+                },
+                "--".into(),
+                git_path(Path::new(&tree.path)),
+            ],
             &token,
         )
         .await
@@ -521,4 +525,28 @@ fn validate_remote_source(source: &str) -> Result<()> {
     Err(error(
         "Use HTTPS, SSH, Git, file, or an absolute local repository path",
     ))
+}
+
+/// Keep URL and SCP transport syntax intact, normalize only native absolute paths.
+pub(super) fn management_remote_source(source: &str) -> OsString {
+    if Path::new(source).is_absolute() {
+        git_path(Path::new(source))
+    } else {
+        source.into()
+    }
+}
+
+/// Git reports DOS paths on Windows while canonicalize returns verbatim paths.
+/// Canonical identity also resolves existing aliases. Missing portable worktrees
+/// retain an exact normalized spelling so they can still be locked offline.
+pub(super) fn management_same_path(left: &Path, right: &Path) -> bool {
+    if !left.is_absolute() || !right.is_absolute() {
+        return false;
+    }
+    if git_path(left) == git_path(right) {
+        return true;
+    }
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    git_path(&left) == git_path(&right)
 }

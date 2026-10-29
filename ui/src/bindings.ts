@@ -2652,6 +2652,8 @@ export type GitWorktreePruneReview = {
 
 export type GitWorktree_Deserialize = {
 	path: string,
+	/**  The main worktree, reported first by Git regardless of the open workspace. */
+	main: boolean,
 	head?: string | null,
 	branch?: string | null,
 	bare: boolean,
@@ -2661,6 +2663,8 @@ export type GitWorktree_Deserialize = {
 
 export type GitWorktree_Serialize = {
 	path: string,
+	/**  The main worktree, reported first by Git regardless of the open workspace. */
+	main: boolean,
 	head: string | null,
 	branch: string | null,
 	bare: boolean,

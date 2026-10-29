@@ -45,6 +45,27 @@ describe("GitHub panel explicit actions", () => {
     expect(f.host.textContent).not.toContain("New pull request"); expect(f.transport.githubRead).not.toHaveBeenCalled();
     expect(f.transport.githubCreatePullRequest).not.toHaveBeenCalled(); expect(f.transport.githubReviewPullRequest).not.toHaveBeenCalled();
   });
+  it("does not invent detail counts after a failed read and retries the selected item in the displayed repository", async () => {
+    const f = await fixture(); const listCalls=f.transport.githubRepositories.mock.calls.length;
+    f.transport.githubRead.mockRejectedValueOnce(new Error("Temporary GitHub failure")); await f.github.detail(item());
+    expect(f.github.detailsLoaded()).toBe(false); expect(f.host.textContent).toContain("Reviewed change");
+    expect(f.host.textContent).toContain("Details are unavailable");
+    for (const text of ["No checks reported", "Checks (0)", "Changed files (", "Conversation (", "Review submission", "Check out pull request"]) expect(f.host.textContent).not.toContain(text);
+    button(f.host, "Retry read").click();
+    await vi.waitFor(() => expect(f.github.detailsLoaded()).toBe(true));
+    expect(f.transport.githubRead).toHaveBeenLastCalledWith("workspace-a", "origin", {kind:"pullRequest",number:12}, repository);
+    expect(f.transport.githubRepositories).toHaveBeenCalledTimes(listCalls);
+    expect(f.host.textContent).toContain("No checks reported");
+    expect(f.transport.githubReviewPullRequest).not.toHaveBeenCalled(); expect(f.checkoutPullRequest).not.toHaveBeenCalled();
+  });
+  it("preserves the review draft across a failed refresh and explicit detail retry", async () => {
+    const f = await fixture(); await f.github.detail(item()); input(f.host,"github-review-body","Keep my unsent review");
+    f.transport.githubRead.mockRejectedValueOnce(new Error("Read interrupted")); await f.github.detail(f.github.selected()!);
+    expect(f.host.textContent).toContain("Details are unavailable"); expect(f.github.selected()?.title).toBe("Reviewed change");
+    button(f.host,"Retry read").click(); await vi.waitFor(() => expect(f.github.detailsLoaded()).toBe(true));
+    expect(f.host.querySelector<HTMLTextAreaElement>("#github-review-body")?.value).toBe("Keep my unsent review");
+    expect(f.transport.githubReviewPullRequest).not.toHaveBeenCalled();
+  });
   it("preserves an explicitly submitted PR draft after the hosted create fails", async () => {
     const f = await fixture(); f.transport.githubCreatePullRequest.mockRejectedValueOnce(new Error("Network unavailable. Refresh before retrying"));
     button(f.host, "New pull request").click(); input(f.host, "github-pr-title", "Keep this title"); input(f.host, "github-pr-body", "Keep this description");

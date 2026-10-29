@@ -27,7 +27,7 @@ function fixture() {
     gitWorktreeSetLocked: vi.fn(async () => ({ status, output: "Locked worktree" })),
     gitRemotes: vi.fn(async () => ({ remotes: [{ name: "origin", current: true, fetchUrl: "https://example.test/repo", pushUrl: "https://example.test/repo" }], configFingerprint: "config" })), gitRemote: vi.fn(async () => ({ status, output: "Remote updated" })),
     gitStashes: vi.fn(async () => [{ id: "c".repeat(40), selector: "stash@{0}", subject: "Saved work" }]), gitStash: vi.fn(async () => ({ status, output: "Changes restored" })),
-    gitWorktrees: vi.fn(async () => [{ path: "/repo", branch: "main", head: "a".repeat(40), bare: false, locked: false, prunable: false }, { path: "/other", branch: "feature/test", head: "b".repeat(40), bare: false, locked: false, prunable: false }]),
+    gitWorktrees: vi.fn(async () => [{ path: "/repo", branch: "main", head: "a".repeat(40), main: true, bare: false, locked: false, prunable: false }, { path: "/other", branch: "feature/test", head: "b".repeat(40), main: false, bare: false, locked: false, prunable: false }]),
     gitWorktreeAdd: vi.fn(async () => ({ status, output: "Added worktree" })), gitWorktreeRemove: vi.fn(async () => ({ status, output: "Removed worktree" })),
     gitHunkDiff: vi.fn(async () => ({ diff: patch, worktreeSnapshot: "disk", hunks: [{ id: "hunk-id", header: "@@ -1 +1 @@", patch: patch.patch }] })), gitApplyHunk: vi.fn(async () => status),
     gitIntegrationStart: vi.fn(async () => ({ state, completed: true, output: "Merged" })),
@@ -268,4 +268,24 @@ it("recovers from stale conflict tokens only after an explicit Changes refresh",
   await vi.waitFor(() => expect(f.git.operation()).toBeUndefined());
   f.transport.gitIntegrationState.mockResolvedValue({ status: conflicted, worktreeSnapshot: "header-reviewed" });
   button(f.host, "Refresh Git").click(); await vi.waitFor(() => expect(f.git.integrationState()?.worktreeSnapshot).toBe("header-reviewed"));
+});
+
+it("distinguishes the main worktree from the currently opened locked linked worktree", async () => {
+  const f = fixture(); const linkedContext = { ...context, workspaceRoot: "/other", repository: { ...status.repository, root: "/other" } };
+  f.setRoot("/other"); f.transport.gitContext.mockResolvedValue(linkedContext);
+  f.transport.gitStatus.mockResolvedValue({ ...status, repository: linkedContext.repository });
+  f.transport.gitWorktrees.mockResolvedValue([
+    { path: "/repo", branch: "main", head: "a".repeat(40), main: true, bare: false, locked: false, prunable: false },
+    { path: "/other", branch: "feature/test", head: "b".repeat(40), main: false, bare: false, locked: true, prunable: false },
+  ]);
+  await f.git.refresh(); f.view.setSubView("worktrees"); f.mount();
+  await vi.waitFor(() => expect(f.host.querySelectorAll(".git-worktree-entry")).toHaveLength(2));
+  const rows = [...f.host.querySelectorAll<HTMLElement>(".git-worktree-entry")];
+  expect(rows[0].textContent).toContain("Main"); expect(rows[0].textContent).not.toContain("Current");
+  expect(rows[0].querySelector('[aria-label="Lock worktree /repo"]')).toBeNull(); expect(rows[0].querySelector('[aria-label="Remove worktree /repo"]')).toBeNull();
+  expect(rows[1].textContent).toContain("Current"); expect(rows[1].querySelector('[aria-label="Remove worktree /other"]')).toBeNull();
+  expect(button(f.host, "Unlock worktree /other").disabled).toBe(false);
+  expect(rows.every(row => [...row.querySelectorAll("button")].some(button => button.textContent === "Open"))).toBe(true);
+  button(f.host, "Unlock worktree /other").click();
+  await vi.waitFor(() => expect(f.transport.gitWorktreeSetLocked).toHaveBeenCalledWith(linkedContext, "/other", false, "reviewed-worktrees"));
 });
