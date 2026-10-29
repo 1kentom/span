@@ -270,7 +270,13 @@ test("five keyboard subviews create a branch, manage local tags and save/apply a
   await stashes.getByRole("button", { name: "Save stash", exact: true }).click();
   await expect(stashes).toContainText("Browser fixture work");
   await stashes.getByRole("button", { name: "Apply stash@{0}", exact: true }).click();
-  await expect(stashes).toContainText("Applied fixture stash, kept stash.");
+  await expect(stashes.getByRole("status")).toContainText("Applied stash eeeeeeee. Stash retained.");
+  const output = stashes.getByLabel("Git command output", { exact: true });
+  await expect(output).not.toBeVisible();
+  await stashes.locator("summary").filter({ hasText: "Git output" }).click();
+  await expect(output).toBeVisible(); await expect(output).toContainText("Applied fixture stash, kept stash.");
+  await stashes.locator("summary").filter({ hasText: "Git output" }).click();
+  await expect(output).not.toBeVisible();
   await expect(stashes.getByRole("button", { name: "Apply stash@{0}", exact: true })).toBeVisible();
   const result = await trace(page); expect(result.stashes).toHaveLength(2); expect(result.stashes[0]).toMatchObject({ action: "save", message: "Browser fixture work", stashId: null }); expect(result.stashes[1]).toMatchObject({ action: "apply", stashId: "e".repeat(40), expectedIndexRevision: "index-3" });
   await page.screenshot({ path: info.outputPath("git-branch-stash.png") }); expect(errors).toEqual([]);
