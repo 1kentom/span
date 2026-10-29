@@ -11,6 +11,7 @@ mod java_run;
 mod proposal_diff;
 mod recent;
 mod run_config;
+mod run_current_file;
 mod run_detection;
 mod search;
 mod session;
@@ -35,6 +36,7 @@ pub use git::{
 pub use images::RasterImage;
 pub use recent::{RecentProject, RecentProjectStore};
 pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration};
+pub use run_current_file::{current_file_run, CurrentFileRun, CURRENT_FILE_RUN_ID};
 pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use session_meta::{

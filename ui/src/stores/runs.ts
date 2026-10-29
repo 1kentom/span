@@ -1,13 +1,15 @@
 import { batch, createEffect, createSignal, on, onCleanup } from "solid-js";
-import type { RunCatalog_Serialize as RunCatalog, RunConfiguration_Serialize as RunConfiguration, RunEvent_Deserialize as RunEvent, RunInfo_Serialize as RunInfo } from "../bindings";
+import type { CurrentFileRun_Serialize as CurrentFileRun, RunCatalog_Serialize as RunCatalog, RunConfiguration_Serialize as RunConfiguration, RunEvent_Deserialize as RunEvent, RunInfo_Serialize as RunInfo } from "../bindings";
 import { api } from "../lib/client";
+import { CURRENT_FILE_OPTION } from "../lib/run-options";
+export { CURRENT_FILE_OPTION };
 
-type RunTransport = Pick<typeof api, "runConfigurations" | "saveRunConfiguration" | "deleteRunConfiguration" | "duplicateRunConfiguration" | "startRun" | "stopRun" | "restartRun" | "listRuns" | "runOutput" | "acknowledgeRun" | "onRunEvent" | "runContext">;
+type RunTransport = Pick<typeof api, "runConfigurations" | "saveRunConfiguration" | "deleteRunConfiguration" | "duplicateRunConfiguration" | "startRun" | "stopRun" | "restartRun" | "listRuns" | "runOutput" | "acknowledgeRun" | "onRunEvent" | "runContext"> & Partial<Pick<typeof api, "currentFileRun" | "startCurrentFileRun">>;
 export type RunOutputChunk = { stream: "stdout" | "stderr" | "history"; text: string };
 export type RunOutputView = { chunks: RunOutputChunk[]; trimmed: boolean };
 const emptyCatalog = (): RunCatalog => ({ workspaceRoot: "", configurations: [], detected: [] });
 const active = (run: RunInfo) => run.status === "running" || run.status === "stopping";
-export function createRunWorkbench(options: { generation: () => number; root: () => string | undefined; blocked: () => boolean; available: boolean; onReveal: () => void; transport?: RunTransport }) {
+export function createRunWorkbench(options: { generation: () => number; root: () => string | undefined; blocked: () => boolean; available: boolean; onReveal: () => void; transport?: RunTransport; activeFile?: () => string | undefined }) {
   const transport = options.transport ?? api;
   const [catalog, setCatalog] = createSignal<RunCatalog>(emptyCatalog());
   const [runs, setRuns] = createSignal<RunInfo[]>([]);
@@ -26,7 +28,15 @@ export function createRunWorkbench(options: { generation: () => number; root: ()
   const retired = new Set<string>();
   let epoch = 0; let loadRequest = 0; let disposed = false;
   const live = (token: number) => !disposed && token === epoch;
-  const selectedConfiguration = () => catalog().configurations.find(value => value.id === selectedId()) || catalog().detected.find(value => value.configuration.id === selectedId())?.configuration;
+  const [currentFile, setCurrentFile] = createSignal<CurrentFileRun>();
+  const [currentFileTick, setCurrentFileTick] = createSignal(0);
+  let currentFileRequest = 0;
+  createEffect(on(() => [options.activeFile?.(), options.root(), options.generation(), currentFileTick()] as const, ([path, root], previous) => {
+    const request = ++currentFileRequest; if (!previous || previous[0] !== path || previous[1] !== root) setCurrentFile(undefined);
+    if (!path || !root || !options.available || !transport.currentFileRun) return;
+    transport.currentFileRun(path, root).then(plan => { if (!disposed && request === currentFileRequest) setCurrentFile(plan); }, cause => { if (!disposed && request === currentFileRequest) setCurrentFile({ path, configuration: null, reason: cause instanceof Error ? cause.message : String(cause) }); });
+  }));
+  const selectedConfiguration = () => selectedId() === CURRENT_FILE_OPTION ? currentFile()?.configuration ?? undefined : catalog().configurations.find(value => value.id === selectedId()) || catalog().detected.find(value => value.configuration.id === selectedId())?.configuration;
   const selectedRun = () => runs().find(value => value.id === selectedRunId());
   const running = () => runs().some(active);
   const report = (cause: unknown, token = epoch) => { if (live(token)) setError(cause instanceof Error ? cause.message : String(cause)); };
@@ -79,7 +89,7 @@ export function createRunWorkbench(options: { generation: () => number; root: ()
     const token = epoch; const request = ++loadRequest;
     if (!options.available || !options.root()) return;
     setLoading(true); setError("");
-    try { const next = await transport.runConfigurations(); if (!live(token) || request !== loadRequest) return; if (next.workspaceRoot !== options.root()) throw new Error("Run configurations belong to a different workspace. Refresh after the folder finishes opening."); setCatalog(next); const ids = [...next.configurations, ...next.detected.map(value => value.configuration)].map(value => value.id); const preferred = selectedId() || remembered(); selectConfiguration(preferred && ids.includes(preferred) ? preferred : ids[0]); }
+    try { const next = await transport.runConfigurations(); if (!live(token) || request !== loadRequest) return; if (next.workspaceRoot !== options.root()) throw new Error("Run configurations belong to a different workspace. Refresh after the folder finishes opening."); setCatalog(next); const ids = [...next.configurations, ...next.detected.map(value => value.configuration)].map(value => value.id); ids.push(CURRENT_FILE_OPTION); const preferred = selectedId() || remembered(); selectConfiguration(preferred && ids.includes(preferred) ? preferred : ids.length > 1 ? ids[0] : undefined); }
     catch (cause) { report(cause, token); }
     finally { if (live(token) && request === loadRequest) setLoading(false); }
   }
@@ -94,30 +104,32 @@ export function createRunWorkbench(options: { generation: () => number; root: ()
   const save = (value: RunConfiguration) => mutation("save", root => transport.saveRunConfiguration(value, root));
   const duplicate = (id: string) => mutation("duplicate", root => transport.duplicateRunConfiguration(id, root));
   const remove = (id: string) => mutation("delete", root => transport.deleteRunConfiguration(id, root));
-  async function launch(restart = false, configurationId?: string) {
+  async function launch(restart = false, explicitFile?: CurrentFileRun) {
     if (operation()) return;
     const token = epoch;
     try {
       assertReady(token);
-      const configuration = configurationId ? [...catalog().configurations, ...catalog().detected.map(task => task.configuration)].find(value => value.id === configurationId) : selectedConfiguration(); const prior = selectedRun();
+      const plan = explicitFile ?? (selectedId() === CURRENT_FILE_OPTION ? currentFile() : undefined); const configuration = plan ? plan.configuration ?? undefined : selectedConfiguration(); const prior = selectedRun();
+      if (!restart && (explicitFile || selectedId() === CURRENT_FILE_OPTION) && !configuration) throw new Error(plan?.reason || "Open a file with a known runner to run it.");
       if (restart && !prior) throw new Error("Select an existing run to restart.");
       if (!restart && !configuration) throw new Error("Select a run configuration first.");
       if (!restart && running()) throw new Error("Stop the current run before starting another configuration.");
-      if (configurationId) selectConfiguration(configurationId);
+      if (explicitFile) { selectConfiguration(CURRENT_FILE_OPTION); setCurrentFile(explicitFile); }
+      if (!restart && plan && !transport.startCurrentFileRun) throw new Error("The desktop current-file runner is unavailable.");
       setOperation(restart ? "restart" : "start"); setError(""); if (!restart) setSelectedRunId(undefined); options.onReveal();
-      const result = restart ? await transport.restartRun(prior!.id, events(token)) : await transport.startRun(configuration!, options.root()!, events(token));
+      const result = restart ? await transport.restartRun(prior!.id, events(token)) : plan && transport.startCurrentFileRun ? await transport.startCurrentFileRun(plan.path, options.root()!, events(token)) : await transport.startRun(configuration!, options.root()!, events(token));
       if (live(token)) { updateRun(result); if (runs().some(run => run.id === result.id)) setSelectedRunId(result.id); }
     } catch (cause) { report(cause, token); }
     finally { if (live(token)) setOperation(undefined); }
   }
   async function launchJava(path: string, sourceReady: () => boolean = () => true) {
-    const token = epoch;
-    await reload();
+    const token = epoch; assertReady(token);
+    if (!transport.currentFileRun || !transport.startCurrentFileRun) throw new Error("The desktop current-file runner is unavailable.");
+    const plan = await transport.currentFileRun(path, options.root()!);
     if (!live(token)) return;
     if (!sourceReady()) throw new Error("The Java source changed while preparing Run. Save and review it before running again.");
-    const task = catalog().detected.find(value => value.source === path && value.configuration.id.startsWith("detected:java-main:"));
-    if (!task) throw new Error("No supported standalone Java main target is available. Save a valid conventional main method in the first top-level class and check your JDK. For project builds, review a project run configuration with its classpath and main class.");
-    await launch(false, task.configuration.id);
+    if (!plan.configuration) throw new Error(plan.reason || "No supported standalone Java main target is available.");
+    await launch(false, plan);
   }
   async function stop() {
     const run = selectedRun(); const token = epoch; if (!run || !active(run) || operation()) return;
@@ -166,6 +178,6 @@ export function createRunWorkbench(options: { generation: () => number; root: ()
     }
   }));
   onCleanup(() => { disposed = true; epoch++; });
-  return { catalog, runs, selectedId, setSelectedId: selectConfiguration, selectedRunId, selectedRun, selectedConfiguration, selectRun, outputs, loading: () => loading() || contextLoading(), operation, error, setError, running, reload, retry: async () => { setError(""); await Promise.all([reload(), retryContext()]); }, save, duplicate, remove, launch, launchJava, stop, clearOutput: () => { const id = selectedRunId(); if (id) setOutputs(previous => ({ ...previous, [id]: { chunks: [], trimmed: false } })); } };
+  return { catalog, currentFile, refreshCurrentFile: () => setCurrentFileTick(value => value + 1), runs, selectedId, setSelectedId: selectConfiguration, selectedRunId, selectedRun, selectedConfiguration, selectRun, outputs, loading: () => loading() || contextLoading(), operation, error, setError, running, reload, retry: async () => { setError(""); await Promise.all([reload(), retryContext()]); }, save, duplicate, remove, launch, launchJava, stop, clearOutput: () => { const id = selectedRunId(); if (id) setOutputs(previous => ({ ...previous, [id]: { chunks: [], trimmed: false } })); } };
 }
 export type RunWorkbench = ReturnType<typeof createRunWorkbench>;

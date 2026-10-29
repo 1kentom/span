@@ -6,8 +6,8 @@ const properties = JSON.parse(readFileSync("crates/core/settings.schema.json", "
 const settings = Object.fromEntries(Object.entries(properties as Record<string, { default?: unknown }>).filter(([key, value]) => !key.includes(".") && key !== "$schema" && "default" in value).map(([key, value]) => [key, value.default]));
 const root = "/fixture/workspace";
 const sourcePath = "src/main/java/com/kentom/todo/new-file.java";
-const configuration = { id: "detected:java-main:test", name: "Java file: Test.main()", executable: "/jdk/bin/java", args: ["./src/main/java/com/kentom/todo/new-file.java"], cwd: ".", env: {} };
-type Trace = { calls: string[]; opened: string[]; edits: { path: string; revision: number; changes: unknown[] }[]; saves: { path: string; revision: number; text: string }[]; runs: { configuration: unknown; expectedWorkspaceRoot: string }[]; output: { kind: string; text?: string; stream?: string }[]; text: string; revision: number; savedRevision: number; javaAvailable: boolean };
+const configuration = { id: "current-file", name: "Run new-file.java", executable: "java", args: ["./src/main/java/com/kentom/todo/new-file.java"], cwd: ".", env: {} };
+type Trace = { calls: string[]; opened: string[]; edits: { path: string; revision: number; changes: unknown[] }[]; saves: { path: string; revision: number; text: string }[]; runs: { path: string; expectedWorkspaceRoot: string }[]; output: { kind: string; text?: string; stream?: string }[]; text: string; revision: number; savedRevision: number; javaAvailable: boolean };
 
 async function fixture(page: Page, javaAvailable = true) {
   await page.addInitScript(({ settings, javaAvailable, root, sourcePath, configuration }) => {
@@ -32,7 +32,8 @@ async function fixture(page: Page, javaAvailable = true) {
         if (command === "query_file") return { workspaceRoot: root, generation: 1, requestId: 1, results: [{ path: sourcePath, name: "new-file.java", isDir: false }] };
         if (command === "git_context") return { workspaceRoot: root, enabled: false, repository: { id: "java-run-fixture", root, workspacePrefix: "", branch: "fixture", head: null, detached: false, unborn: true }, unavailableReason: null };
         if (command === "list_tools") return tools;
-        if (command === "run_configurations") return { workspaceRoot: root, configurations: [], detected: javaAvailable ? [{ source: sourcePath, configuration }] : [] };
+        if (command === "run_configurations") return { workspaceRoot: root, configurations: [], detected: [] };
+        if (command === "current_file_run") return { path: sourcePath, configuration: javaAvailable ? configuration : null, reason: javaAvailable ? null : "JDK required" };
         if (command === "run_context") return { workspaceRoot: root, workspaceEpoch: 1, runs: [] };
         if (command === "list_directory") return args.path ? [] : [{ path: "src", name: "src", isDir: true }];
         if (command === "list_files") return [{ path: sourcePath, name: "new-file.java", isDir: false }];
@@ -49,8 +50,8 @@ async function fixture(page: Page, javaAvailable = true) {
           trace.saves.push({ path: String(args.path), revision: trace.savedRevision, text: trace.text });
           return { path: String(args.path), text: trace.text, revision: trace.revision, savedRevision: trace.savedRevision, language: "java" };
         }
-        if (command === "start_run") {
-          trace.runs.push({ configuration: args.configuration, expectedWorkspaceRoot: String(args.expectedWorkspaceRoot) });
+        if (command === "start_current_file_run") {
+          trace.runs.push({ path: String(args.path), expectedWorkspaceRoot: String(args.expectedWorkspaceRoot) });
           const id = `fixture-run-${trace.runs.length}`;
           const event = { kind: "output", id, sequence: 1, workspaceEpoch: 1, stream: "stdout", text: "Hello World\n" };
           trace.output.push(event);
@@ -68,7 +69,7 @@ async function fixture(page: Page, javaAvailable = true) {
 
 const trace = (page: Page) => page.evaluate(() => (window as unknown as { __javaRunFixture: Trace }).__javaRunFixture);
 
-test("Java main gutter button runs only on user action with the detected JDK configuration", async ({ page }, testInfo) => {
+test("Java main gutter button runs only on user action through the shared current-file runner", async ({ page }, testInfo) => {
   await fixture(page);
   await page.goto("/");
   const run = page.getByRole("button", { name: "Run Java main", exact: true });
@@ -80,7 +81,7 @@ test("Java main gutter button runs only on user action with the detected JDK con
   await expect(run).toBeFocused();
   await page.keyboard.press("Enter");
   await expect.poll(async () => (await trace(page)).runs.length).toBe(1);
-  expect((await trace(page)).runs[0]).toEqual({ configuration, expectedWorkspaceRoot: root });
+  expect((await trace(page)).runs[0]).toEqual({ path: sourcePath, expectedWorkspaceRoot: root });
   const output = page.getByRole("region", { name: "Run output", exact: true });
   await expect(output).toBeVisible();
   await expect(output).toContainText("Hello World");
@@ -110,8 +111,8 @@ test("dirty Java source prompts before run, Cancel preserves it, Save and Run sa
   expect(state.saves).toHaveLength(1);
   expect(state.saves[0].path).toBe(sourcePath);
   expect(state.saves[0].text).toContain("// local change");
-  expect(state.runs[0]).toEqual({ configuration, expectedWorkspaceRoot: root });
-  expect(state.calls.lastIndexOf("save_buffer")).toBeLessThan(state.calls.lastIndexOf("start_run"));
+  expect(state.runs[0]).toEqual({ path: sourcePath, expectedWorkspaceRoot: root });
+  expect(state.calls.lastIndexOf("save_buffer")).toBeLessThan(state.calls.lastIndexOf("start_current_file_run"));
   await expect(page.getByRole("region", { name: "Run output", exact: true })).toContainText("Hello World");
 });
 

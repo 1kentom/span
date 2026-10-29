@@ -178,12 +178,10 @@ impl CoreWorkspace {
         ))
     }
     pub fn run_configurations(&self) -> Result<RunCatalog> {
-        let mut detected = crate::run_detection::detect_tasks(&self.root)?;
-        detected.extend(self.java_run_tasks());
         Ok(RunCatalog {
             workspace_root: self.workspace().root,
             configurations: self.load_run_file()?.configurations,
-            detected,
+            detected: crate::run_detection::detect_tasks(&self.root)?,
         })
     }
     pub fn save_run_configuration(

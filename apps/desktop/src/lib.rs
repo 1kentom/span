@@ -915,6 +915,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             runs::delete_run_configuration,
             runs::duplicate_run_configuration,
             runs::start_run,
+            runs::current_file_run,
+            runs::start_current_file_run,
             runs::stop_run,
             runs::restart_run,
             runs::list_runs,
