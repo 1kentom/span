@@ -236,6 +236,32 @@ later PR.
   process started by key when its last session closes (it ends with the
   folder), and the transcript store.
 
+## Phase 2 status (2026-10-29)
+
+The first phase 2 PR moves the app-wide state out of `agent-controller.ts`
+into `ui/src/lib/agent-stores/`, without changing behaviour:
+
+- `shared.ts`: one instance per store while anything holds it, in its own
+  reactive root, disposed with its last holder (so the sidebar and the
+  Agents page share one instance, and a new window or test starts fresh).
+- `catalog.ts`: installed agents, registry, presets, installs in flight.
+- `background.ts`: warm start (0009), health check (0010) and the
+  `agents.healthCheck` flag.
+- `limits.ts`: models that hit a usage limit, with their reset timers.
+- `history.ts`: the agent's session list, History scope, and the session
+  metadata index (0005).
+- `connection.ts`: the focused agent, its launch, connecting phases, the
+  backend session states and the background attention notice.
+- `live-sessions.ts`: `agent_live_sessions` kept fresh from
+  `AgentKeyedEvent`, and a per-key dispatch of that stream. Not started by
+  the sidebar yet; phase 3 and the thread store use it.
+
+`createAgentController` composes these stores and keeps its public shape.
+Still to do in phase 2: the per-thread store (feed, composer, queue and
+steering, requests, review, handoff and rewind, scroll), one instance per
+`SessionKey` fed from the per-key dispatch, replacing the open chat's
+signals and the background chat snapshots of `agent-chats.ts`.
+
 ## UNVERIFIED
 
 - The research findings come from public source, documentation and issue
