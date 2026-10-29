@@ -665,6 +665,8 @@ export function createWorkbench() {
   async function newFile(path: string) { return fileOperation(async assertCurrent => { const snapshot = await api.newFile(path); assertCurrent(); accepted.set(snapshot.path, snapshot); setBuffers(snapshot.path, snapshot); setDocuments(current => ({ ...current, [snapshot.path]: { document: Text.of(snapshot.text.split("\n")) } })); await refreshFiles(); await openFile(snapshot.path); return snapshot; }); }
   async function newDirectory(path: string) { return fileOperation(async assertCurrent => { const entry = await api.newDirectory(path); assertCurrent(); await refreshFiles(); await loadDirectory(entry.path); setExpanded(current => new Set([...current, entry.path])); return entry; }); }
   async function renamePath(from: string, to: string) {
+    // The backend refuses to move a path with unsaved edits, so save them first and stop if one cannot be saved.
+    for (const path of Object.keys(buffers)) if (buffers[path] && inSubtree(path, from) && dirty(path) && !await save(path)) throw new Error(`Could not save ${path}, so it was not moved.`);
     return fileOperation(async assertCurrent => {
       const entry = await api.renamePath(from, to); assertCurrent();
       const mapped = (path: string) => inSubtree(path, from) ? `${entry.path}${path.slice(from.length)}` : path;
