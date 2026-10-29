@@ -32,7 +32,7 @@ export function createTerminalTransport(cwd: string | null): TerminalTransport {
     } catch (cause) { session.active = false; throw cause; }
   }
   return {
-    create: (cols, rows, handlers, profileId) => spawn(handlers, channel => api.terminalCreate(cwd, cols, rows, channel, profileId)),
+    create: (cols, rows, handlers, profileId, directory) => spawn(handlers, channel => api.terminalCreate(directory ?? cwd, cols, rows, channel, profileId)),
     createCommand: (cols, rows, handlers, language: TerminalCommandLanguage, code) => spawn(handlers, channel => {
       if (!cwd) throw new Error("A workspace folder is required to run commands");
       return api.terminalCreateCommand(language, code, cwd, cols, rows, channel);

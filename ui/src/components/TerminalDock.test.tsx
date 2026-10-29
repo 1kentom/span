@@ -244,3 +244,12 @@ it("supports profile picker keyboard navigation, Escape focus restoration and di
   await vi.waitFor(() => expect(view.root.textContent).toContain("Shell discovery unavailable"));
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
 });
+
+it("opens a new shell in an Explorer folder and reveals the dock", async () => {
+  const view = mount();
+  view.dock().openAt("/workspace/src");
+  expect(view.shown()).toBe(true);
+  await vi.waitFor(() => expect(view.transport.create).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(view.transport.create).mock.calls[0][4]).toBe("/workspace/src");
+  expect(view.root.querySelectorAll('[role="tab"]')).toHaveLength(1);
+});

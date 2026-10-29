@@ -6,6 +6,8 @@ import { TerminalPanel, type TerminalController, type TerminalTransport } from "
 
 export interface TerminalDockController {
   send(code: string, execute: boolean, language?: string): Promise<void>;
+  /** Opens a new shell in an absolute workspace folder (Explorer "Open in Terminal"). */
+  openAt(directory: string): void;
   closeCurrent(): Promise<void>;
 }
 export interface TerminalDockProps {
@@ -30,7 +32,7 @@ export function TerminalDock(props: TerminalDockProps) {
   const [active, setActive] = createSignal<number>();
   const [closing, setClosing] = createSignal(new Set<number>());
   const [error, setError] = createSignal("");
-  const configurations = new Map<number, { command?: { language: TerminalCommandLanguage; code: string }; profileId?: string }>();
+  const configurations = new Map<number, { command?: { language: TerminalCommandLanguage; code: string }; profileId?: string; directory?: string }>();
   const [shells, setShells] = createSignal<Record<number, string>>({});
   const shellName = (shell: string) => shell.split(/[\\/]/).at(-1) || shell;
   const workspaceName = () => props.workspaceRoot.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || props.workspaceRoot || "Default directory";
@@ -40,7 +42,7 @@ export function TerminalDock(props: TerminalDockProps) {
   const waiters = new Map<number, { resolve(controller: TerminalController): void; reject(error: Error): void }[]>();
   let next = 1;
   let disposed = false;
-  function createSession(configuration: { command?: { language: TerminalCommandLanguage; code: string }; profileId?: string } = {}) { const id = next++; configurations.set(id, configuration); batch(() => { setTabs(current => [...current, id]); setActive(id); }); return id; }
+  function createSession(configuration: { command?: { language: TerminalCommandLanguage; code: string }; profileId?: string; directory?: string } = {}) { const id = next++; configurations.set(id, configuration); batch(() => { setTabs(current => [...current, id]); setActive(id); }); return id; }
   function ready(id: number, controller: TerminalController | undefined) {
     if (!controller) { controllers.delete(id); return; }
     controllers.set(id, controller); failures.delete(id);
@@ -91,6 +93,10 @@ export function TerminalDock(props: TerminalDockProps) {
       const id = active();
       if (id !== undefined) await closeSession(id);
     },
+    openAt(directory) {
+      if (disposed) throw new Error("Terminal workspace is no longer available");
+      createSession({ directory }); props.onReveal();
+    },
     async send(code, execute, requestedLanguage = "shell") {
       if (disposed) throw new Error("Terminal workspace is no longer available");
       const language: TerminalCommandLanguage = requestedLanguage === "bash" || requestedLanguage === "zsh" || requestedLanguage === "sh" ? requestedLanguage : "shell";
@@ -120,7 +126,7 @@ export function TerminalDock(props: TerminalDockProps) {
     {error() && <div role="alert" class="terminal-error">{error()}</div>}
     <For each={tabs()}>{id => {
       const visible = createMemo(() => props.visible && active() === id);
-      return <div id={panelId(id)} aria-labelledby={tabId(id)} class="terminal-dock-session" role="tabpanel" style={{ display: active() === id ? "flex" : "none" }}><TerminalPanel command={configurations.get(id)?.command} profileId={configurations.get(id)?.profileId} onShell={shell => setShells(current => ({ ...current, [id]: shell }))} onRunCommand={(code, language) => commands.send(code, true, language)} fontSize={props.fontSize} fontFamily={props.fontFamily} visible={visible()} embedded label={`Shell ${id}`} workspaceLabel={props.workspaceRoot || "the default shell directory"} transport={props.transport} onReady={value => ready(id, value)} onError={message => fail(id, message)} onHide={() => undefined} /></div>;
+      return <div id={panelId(id)} aria-labelledby={tabId(id)} class="terminal-dock-session" role="tabpanel" style={{ display: active() === id ? "flex" : "none" }}><TerminalPanel command={configurations.get(id)?.command} profileId={configurations.get(id)?.profileId} directory={configurations.get(id)?.directory} onShell={shell => setShells(current => ({ ...current, [id]: shell }))} onRunCommand={(code, language) => commands.send(code, true, language)} fontSize={props.fontSize} fontFamily={props.fontFamily} visible={visible()} embedded label={`Shell ${id}`} workspaceLabel={props.workspaceRoot || "the default shell directory"} transport={props.transport} onReady={value => ready(id, value)} onError={message => fail(id, message)} onHide={() => undefined} /></div>;
     }}</For>
   </section>;
 }
