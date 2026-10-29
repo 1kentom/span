@@ -71,6 +71,8 @@ export type ThreadState = {
   /** Scroll: following the newest output, and where the reader left it when not. */
   pinned: boolean;
   scrollTop?: number;
+  /** When the thread was last open or changed in the background, for eviction (agent-chats.ts). */
+  touchedAt?: number;
 };
 
 /** What a new thread starts with besides the defaults. `conversation` fields merge into a fresh conversation. */

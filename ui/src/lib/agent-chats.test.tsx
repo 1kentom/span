@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, AgentFeatures, SessionRuntimeState_Serialize as SessionRuntimeState, SessionStates_Serialize as SessionStates } from "../bindings";
 import { mount } from "../components/agent/test-utils";
 import { createAgentController, type AgentController } from "./agent-controller";
-import { BACKGROUND_FEED_LIMIT, attentionSessions, createChatStore, isBusyPromptError, newAttention, reduceBackground, rowStatus, type ChatSnapshot } from "./agent-chats";
+import { BACKGROUND_FEED_LIMIT, attentionSessions, evictions, isBusyPromptError, newAttention, reduceBackground, rowStatus, type ChatSnapshot } from "./agent-chats";
 import { initialAgentState } from "./agent-session";
 
 const mocks = vi.hoisted(() => {
@@ -34,6 +34,8 @@ const mocks = vi.hoisted(() => {
       openBuffer: vi.fn(),
       agentNewSession: vi.fn(async () => "s-new"),
       agentResumeSession: vi.fn(async (id: string) => id),
+      agentPermission: vi.fn(async () => undefined),
+      agentCloseSession: vi.fn(async () => undefined),
     },
   };
 });
@@ -51,9 +53,9 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const runtime = (sessionId: string, patch: Partial<SessionRuntimeState> = {}): SessionRuntimeState => ({ connectionId: "connection-1", sessionId, origin: "user", state: "idle", queued: 0, startedAtMs: null, currentTool: null, ...patch });
 const texts = (a: AgentController) => a.feed().flatMap((item) => ("text" in item ? [item.text] : []));
 
-async function connected() {
+async function connected(agentFeatures: AgentFeatures = features) {
   mocks.api.agentConnect.mockImplementationOnce(async () => {
-    mocks.emit({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] }, { kind: "session", sessionId: "s1" });
+    mocks.emit({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features: agentFeatures, authMethods: [] }, { kind: "session", sessionId: "s1" });
     return "s1";
   });
   let controller!: AgentController;
@@ -204,6 +206,90 @@ describe("per-chat state in the controller", () => {
   });
 });
 
+describe("thread per chat in the controller", () => {
+  const ask = (sessionId: string, requestId: string): AgentEvent => ({ kind: "permission", sessionId, requestId, toolCallId: "t", title: "Run tests", options: [{ optionId: "ok", name: "Allow", kind: "allow_once" }] });
+  const threadTexts = (state: { conversation: { feed: AgentController["feed"] extends () => infer F ? F : never } }) => state.conversation.feed.flatMap((item) => ("text" in item ? [item.text] : []));
+
+  it("the open chat is the focused thread, keyed by connection and session", async () => {
+    const a = await connected();
+    expect(a.focusedThread().key).toEqual({ connectionId: "connection-1", sessionId: "s1" });
+    a.setPrompt("draft");
+    expect(a.focusedThread().state().draft).toBe("draft");
+    expect(a.threadKeys()).toEqual([{ connectionId: "connection-1", sessionId: "s1" }]);
+  });
+
+  it("switching chats while a background thread streams: each thread gets only its own events, and coming back focuses the same thread", async () => {
+    mocks.api.agentPrompt.mockImplementation(() => new Promise(() => undefined));
+    const a = await connected();
+    a.setPrompt("build it");
+    await a.send();
+    const first = a.focusedThread();
+    mocks.publish({ connectionId: "connection-1", sessions: [runtime("s1", { state: "running", startedAtMs: 1 })] });
+    await a.newChat();
+    const second = a.focusedThread();
+    expect(second).not.toBe(first);
+    expect(second.key).toEqual({ connectionId: "connection-1", sessionId: "s-new" });
+    // Interleaved streaming: the background chat and the open chat each keep their own text.
+    mocks.emit({ kind: "text", sessionId: "s1", text: "background one" });
+    mocks.emit({ kind: "text", sessionId: "s-new", text: "open one" });
+    mocks.emit({ kind: "text", sessionId: "s1", text: "background two" });
+    expect(threadTexts(first.state()).join("")).toContain("background onebackground two");
+    expect(threadTexts(first.state()).join("")).not.toContain("open one");
+    expect(texts(a).join("")).toContain("open one");
+    expect(texts(a).join("")).not.toContain("background");
+    expect(first.state().conversation.running).toBe(true);
+    expect(a.running()).toBe(false);
+    mocks.publish({ connectionId: "connection-1", sessions: [runtime("s1", { state: "running", startedAtMs: 1 }), runtime("s-new")] });
+    await a.resumeChat("s1");
+    // Nothing is copied: the chat comes back as the very thread that kept streaming.
+    expect(a.focusedThread()).toBe(first);
+    expect(texts(a).join("")).toContain("background two");
+    expect(a.running()).toBe(true);
+    expect(a.threadKeys()).toHaveLength(2);
+  });
+
+  it("a permission request on a background thread waits in that thread, not on the open chat's dock", async () => {
+    const a = await connected();
+    const first = a.focusedThread();
+    await a.newChat();
+    mocks.emit(ask("s1", "r-background"));
+    expect(a.permission()).toBeUndefined();
+    expect(first.state().conversation.feed.some((item) => item.kind === "permission" && item.event.requestId === "r-background")).toBe(true);
+    mocks.publish({ connectionId: "connection-1", sessions: [runtime("s1", { state: "waitingForApproval" }), runtime("s-new")] });
+    expect(a.attentionCount()).toBe(1);
+    await a.resumeChat("s1");
+    expect(a.permission()?.event.requestId).toBe("r-background");
+    await a.answerPermission("r-background", "ok");
+    expect(mocks.api.agentPermission).toHaveBeenCalledWith("r-background", "ok");
+    expect(a.permission()).toBeUndefined();
+  });
+
+  it("closing a chat disposes its thread", async () => {
+    const a = await connected({ ...features, canCloseSessions: true });
+    const first = a.focusedThread();
+    a.setPrompt("left behind");
+    await a.closeChat("s1");
+    expect(mocks.api.agentCloseSession).toHaveBeenCalledWith("s1");
+    expect(a.state().sessionId).toBe("s-new");
+    expect(a.threadKeys()).toEqual([{ connectionId: "connection-1", sessionId: "s-new" }]);
+    // A disposed thread takes no more changes.
+    first.update((state) => ({ ...state, draft: "late" }));
+    expect(first.state().draft).toBe("left behind");
+    expect(a.prompt()).toBe("");
+  });
+
+  it("disconnecting disposes every background thread", async () => {
+    const a = await connected();
+    const first = a.focusedThread();
+    await a.newChat();
+    expect(a.threadKeys()).toHaveLength(2);
+    await a.disconnect();
+    expect(a.threadKeys()).toHaveLength(1);
+    first.update((state) => ({ ...state, draft: "late" }));
+    expect(first.state().draft).toBe("");
+  });
+});
+
 describe("chat store and row state", () => {
   const snapshot = (): ChatSnapshot => ({ conversation: { ...initialAgentState(true), sessionId: "s1" }, draft: "", attachments: [], queue: [], queueHeld: false, pinned: true, turnStart: 0, touchedAt: 0 });
 
@@ -216,12 +302,8 @@ describe("chat store and row state", () => {
   });
 
   it("evicts the oldest idle chats first and never one that is still working", () => {
-    const store = createChatStore(2);
-    store.set("a", { ...snapshot(), touchedAt: 1 });
-    store.set("b", { ...snapshot(), touchedAt: 2 });
-    store.set("c", { ...snapshot(), touchedAt: 3 });
-    store.prune((key) => key === "a");
-    expect(store.keys().sort()).toEqual(["a", "c"]);
+    const chats: [string, ChatSnapshot][] = [["a", { ...snapshot(), touchedAt: 1 }], ["b", { ...snapshot(), touchedAt: 2 }], ["c", { ...snapshot(), touchedAt: 3 }]];
+    expect(evictions(chats, 2, (key) => key === "a")).toEqual(["b"]);
   });
 
   it("describes each backend state, and nothing for a session Span does not hold", () => {

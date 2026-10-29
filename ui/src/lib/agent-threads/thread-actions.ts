@@ -31,17 +31,18 @@ export type ThreadClient = {
   delegationStatus: typeof agentDelegationStatus;
 };
 
+/** The real keyed client. Each call reads `agentSessions` when it runs, so holding a thread sends and imports nothing. */
 export const defaultThreadClient = (): ThreadClient => ({
-  prompt: agentSessions.prompt,
-  cancel: agentSessions.cancel,
-  permission: agentSessions.permission,
-  elicitation: agentSessions.elicitation,
-  setConfig: agentSessions.setConfig,
-  review: agentSessions.review,
-  reviewHunks: agentSessions.reviewHunks,
-  open: agentSessions.open,
-  childPermission: agentChildPermission,
-  delegationStatus: agentDelegationStatus,
+  prompt: (...args) => agentSessions.prompt(...args),
+  cancel: (key) => agentSessions.cancel(key),
+  permission: (...args) => agentSessions.permission(...args),
+  elicitation: (...args) => agentSessions.elicitation(...args),
+  setConfig: (...args) => agentSessions.setConfig(...args),
+  review: (...args) => agentSessions.review(...args),
+  reviewHunks: (...args) => agentSessions.reviewHunks(...args),
+  open: (options) => agentSessions.open(options),
+  childPermission: (...args) => agentChildPermission(...args),
+  delegationStatus: () => agentDelegationStatus(),
 });
 
 /** What a thread tells its owner, for the parts that live outside it (metadata, remembered options, buffers). */
