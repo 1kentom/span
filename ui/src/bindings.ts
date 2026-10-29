@@ -708,6 +708,13 @@ export type AgentSettings_Deserialize = {
 	 *  default. Honoured only from the user's own settings file.
 	 */
 	healthCheck?: boolean,
+	/**
+	 *  `agents.startMode.<agent>`: the mode a session Span starts for that
+	 *  agent (`claude`, `codex`, `gemini`, `opencode`, `generic`) begins in.
+	 *  A missing entry means [`StartMode::Approval`]. Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	startMode?: { [key in string]: StartMode },
 };
 
 /**  `agents.*` settings. */
@@ -728,6 +735,13 @@ export type AgentSettings_Serialize = {
 	 *  default. Honoured only from the user's own settings file.
 	 */
 	healthCheck: boolean,
+	/**
+	 *  `agents.startMode.<agent>`: the mode a session Span starts for that
+	 *  agent (`claude`, `codex`, `gemini`, `opencode`, `generic`) begins in.
+	 *  A missing entry means [`StartMode::Approval`]. Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	startMode?: { [key in string]: StartMode },
 };
 
 export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
@@ -3012,6 +3026,18 @@ export type SourceSnippetDto = {
 	external: boolean,
 	readOnly: boolean,
 };
+
+/**  How a session Span starts treats the agent's own default mode. */
+export type StartMode =
+/**
+ *  Start in the agent's normal approval mode, so Span's approval prompts
+ *  appear even when the agent's own configuration (for example a global
+ *  `bypassPermissions` default) would skip them. Agent tools that reach
+ *  other sessions on the machine are left out where the agent allows it.
+ */
+"approval" |
+/**  Keep whatever mode the agent's own configuration starts in. */
+"agentDefault";
 
 export type StartupFile = StartupFile_Serialize | StartupFile_Deserialize;
 

@@ -1098,3 +1098,60 @@ fn agent_run_tools_are_off_by_default_and_honoured_only_from_user_settings() {
         false
     );
 }
+
+#[test]
+fn agent_start_mode_defaults_to_approval_and_is_honoured_only_from_user_settings() {
+    use span_core::StartMode;
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert_eq!(
+        workspace.agent_start_mode("claude").unwrap(),
+        StartMode::Approval
+    );
+
+    // A workspace file cannot opt an agent out of approval prompts.
+    fs::create_dir_all(directory.path().join(".span")).unwrap();
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"startMode\": { \"claude\": \"agentDefault\" } } }",
+    )
+    .unwrap();
+    assert_eq!(
+        workspace.agent_start_mode("claude").unwrap(),
+        StartMode::Approval
+    );
+    assert!(workspace
+        .get_settings()
+        .unwrap()
+        .agents
+        .start_mode
+        .is_empty());
+
+    // The user's own file opts in per agent; other agents keep the default.
+    fs::write(
+        &user,
+        "{ \"agents\": { \"startMode\": { \"claude\": \"agentDefault\" } } }",
+    )
+    .unwrap();
+    assert_eq!(
+        workspace.agent_start_mode("claude").unwrap(),
+        StartMode::AgentDefault
+    );
+    assert_eq!(
+        workspace.agent_start_mode("codex").unwrap(),
+        StartMode::Approval
+    );
+
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    let key = &schema["properties"]["agents"]["properties"]["startMode"];
+    assert_eq!(key["default"], serde_json::json!({}));
+    assert_eq!(
+        key["additionalProperties"]["enum"],
+        serde_json::json!(["approval", "agentDefault"])
+    );
+}

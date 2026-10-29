@@ -44,7 +44,7 @@ pub use session_meta::{
 };
 pub use settings::{
     AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, RunToolsSettings,
-    Settings, SettingsScope, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
+    Settings, SettingsScope, StartMode, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
     SYNTAX_THEMES, SYNTAX_TOKEN_IDS,
 };
 pub use tools::{list_tools, ToolInfo};

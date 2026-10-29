@@ -1,5 +1,12 @@
 {
-  "quirk": "session/new answers with currentModeId bypassPermissions, so Claude never asks permission: a warning Notice with hint permissionsBypassed and noticeId span/permission-bypass is emitted, and cleared when the mode changes to a safe one (current_mode_update arrives before the set_config_option result).",
+  "quirk": "session/new answers with currentModeId bypassPermissions, so Claude never asks permission: a warning Notice with hint permissionsBypassed and noticeId span/permission-bypass is emitted, and cleared when the mode changes to a safe one (current_mode_update arrives before the set_config_option result). The user opted Claude in to its own default mode (agents.startMode.claude = agentDefault), so Span neither changes the mode at start nor sends _meta.",
+  "userSettings": {
+    "agents": {
+      "startMode": {
+        "claude": "agentDefault"
+      }
+    }
+  },
   "drive": [
     {
       "do": "newSession"
@@ -54,6 +61,14 @@
         "kind": "noticeCleared"
       },
       "count": 1
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/new",
+      "params": {
+        "_meta": {}
+      }
     }
   ]
 }
