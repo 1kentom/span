@@ -37,7 +37,7 @@ describe("repository-scoped Git workbench", () => {
     await f.git.refresh();
     expect(f.git.error()).toContain("does not recognize git_context");
     expect(f.git.error()).toContain("may be different versions");
-    expect(f.git.error()).toContain("Save your work and copy any commit draft");
+    expect(f.git.error()).toContain("Save your work and copy any unsent chat or commit drafts");
     expect(f.git.error()).toContain("fully quit Span");
     expect(f.git.error()).toContain("stop and restart its development process");
     expect(f.git.errorHelp()).toBe("https://github.com/1kentom/span/issues/154");

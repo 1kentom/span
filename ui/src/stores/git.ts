@@ -31,7 +31,7 @@ function describeGitError(cause: unknown): GitError {
   const missing = /^Command ["'`]?(git_(?:context|enable|status|diff|history|commit_diff|stage|unstage|commit))["'`]? not found\.?$/i.exec(message.trim());
   if (!missing) return { message };
   return {
-    message: `This window's backend does not recognize ${missing[1]}. The frontend and backend may be different versions. Save your work and copy any commit draft, then fully quit Span and reopen the latest app. If this is a development window, also stop and restart its development process.`,
+    message: `This window's backend does not recognize ${missing[1]}. The frontend and backend may be different versions. Save your work and copy any unsent chat or commit drafts, then fully quit Span and reopen the latest app. If this is a development window, also stop and restart its development process.`,
     helpUrl: "https://github.com/1kentom/span/issues/154",
   };
 }
