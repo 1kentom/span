@@ -76,6 +76,14 @@ export function isNearBottom(scroller: { scrollHeight: number; scrollTop: number
   return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= threshold;
 }
 
+/** Latest pill visibility with hysteresis: hidden within 48px of the bottom, shown beyond 96px, unchanged between. */
+export function pillVisible(previous: boolean, scroller: { scrollHeight: number; scrollTop: number; clientHeight: number }, hide = 48, show = 96): boolean {
+  const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  if (distance <= hide) return false;
+  if (distance >= show) return true;
+  return previous;
+}
+
 export function formatElapsed(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
   if (seconds < 60) return `${seconds}s`;

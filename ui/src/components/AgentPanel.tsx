@@ -2,7 +2,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCle
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
 import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
-import { isNearBottom, relativeTime } from "../lib/agent-feed";
+import { isNearBottom, relativeTime, pillVisible } from "../lib/agent-feed";
 import { hintText } from "../lib/agent-hint-text";
 import type { AgentHint } from "../bindings";
 import { buildAgentCatalog, curatedAgent } from "../lib/acp-catalog";
@@ -43,6 +43,9 @@ export function AgentPanel(props: AgentPanelProps) {
   /** A curated agent's local command, placed in the custom ACP row for the user to confirm. */
   const [customDraft, setCustomDraft] = createSignal<{ command: string }>();
   const [feedElement, setFeedElement] = createSignal<HTMLDivElement>();
+  /** Scrolled well away from the bottom (with hysteresis), so streaming growth never flickers the Latest pill. */
+  const [away, setAway] = createSignal(false);
+  const jumpShown = () => away() && !a.pinned() && (a.feed().length > 0 || a.view() === "logs");
   const agent = () => a.state().agent;
   const label = () => agent()?.title || agent()?.name || a.agentName();
   const brand = () => ({ id: a.agentId() ?? agent()?.name, name: label() });
@@ -238,6 +241,9 @@ export function AgentPanel(props: AgentPanelProps) {
     onCleanup(() => window.removeEventListener("keydown", keyboard));
   });
   createEffect(() => {
+    if (a.pinned()) setAway(false);
+  });
+  createEffect(() => {
     a.feed();
     a.state().logs;
     a.queue();
@@ -360,7 +366,16 @@ export function AgentPanel(props: AgentPanelProps) {
       <Show when={isDesktop && !a.online() && (a.connected() || a.queue().length > 0)}>
         <OfflineBar text={a.queue().length ? "Queued messages wait until the network is back." : "Agents that need the network will fail until you reconnect."} onRetry={() => a.setOnline(navigator.onLine !== false)} />
       </Show>
-      <div class="agent-content" ref={(element) => (a.scrollers.content = element)} onScroll={(event) => a.view() !== "history" && a.setPinned(isNearBottom(event.currentTarget))}>
+      <div class="agent-feed-region">
+      <div
+        class="agent-content"
+        ref={(element) => (a.scrollers.content = element)}
+        onScroll={(event) => {
+          if (a.view() === "history") return;
+          a.setPinned(isNearBottom(event.currentTarget));
+          setAway(pillVisible(away(), event.currentTarget));
+        }}
+      >
         <Switch>
           <Match when={body() === "logs"}>
             <div class="agent-log-note">
@@ -566,12 +581,19 @@ export function AgentPanel(props: AgentPanelProps) {
           </div>
         </Show>
       </div>
-      <Show when={!a.pinned() && (a.feed().length > 0 || a.view() === "logs")}>
-        <button class="agent-jump" aria-label="Jump to latest message" onClick={a.followLatest}>
-          <Icon name="arrow-down4" size={11} />
-          {a.running() ? "New activity" : "Latest"}
-        </button>
-      </Show>
+      <button
+        type="button"
+        class="agent-jump"
+        classList={{ shown: jumpShown() }}
+        aria-label="Jump to latest message"
+        aria-hidden={jumpShown() ? undefined : "true"}
+        tabIndex={jumpShown() ? 0 : -1}
+        onClick={a.followLatest}
+      >
+        <Icon name="arrow-down4" size={11} />
+        {a.running() ? "New activity" : "Latest"}
+      </button>
+      </div>
       <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
       <Show when={a.viewingItem()}>
         {(item) => {
