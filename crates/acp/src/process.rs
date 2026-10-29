@@ -62,7 +62,7 @@ impl<F: Future> Future for StableWake<F> {
 impl<F> Drop for StableWake<F> {
     fn drop(&mut self) {
         // A stale I/O waker must neither retain nor wake a cancelled caller.
-        self.forward.parent.take();
+        drop(self.forward.parent.take());
     }
 }
 
