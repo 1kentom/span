@@ -920,7 +920,12 @@ fn extract_artifact(
             // npm tarballs wrap everything in a single top-level `package/`.
             extract_tar(file, &mut st, 1)?;
             let name = npm_package_name(&tmp)?;
-            let dest = tree.join("node_modules").join(&name);
+            let mut dest = tree.join("node_modules");
+            if let Some(parent) = &artifact.parent {
+                // The parent was placed first; a nested copy goes inside it.
+                dest = dest.join(parent).join("node_modules");
+            }
+            let dest = dest.join(&name);
             if dest.exists() {
                 return Err(InstallError::InvalidPlan(format!(
                     "npm package {name} appears twice in the plan"
@@ -1268,6 +1273,7 @@ mod tests {
             sha256: sha(data),
             kind,
             entry: entry.into(),
+            parent: None,
         }
     }
 
@@ -1294,6 +1300,66 @@ mod tests {
     }
 
     // ---- tests ----
+
+    #[tokio::test]
+    async fn installs_a_nested_npm_copy_inside_its_parent() {
+        let srv = TestServer::start().await;
+        let top = npm_tgz("host", &[("index.js", b"top")]);
+        let nested = npm_tgz("shared", &[("index.js", b"nested")]);
+        let flat = npm_tgz("shared", &[("index.js", b"flat")]);
+        srv.serve("/host.tgz", Route::Ok(top.clone()));
+        srv.serve("/nested.tgz", Route::Ok(nested.clone()));
+        srv.serve("/flat.tgz", Route::Ok(flat.clone()));
+        let mut inside = art(
+            &srv,
+            "/nested.tgz",
+            &nested,
+            ArtifactKind::NpmTarball,
+            "node_modules/host/node_modules/shared/package.json",
+        );
+        inside.parent = Some("host".into());
+        let p = plan(
+            "1.0.0",
+            vec![
+                art(
+                    &srv,
+                    "/host.tgz",
+                    &top,
+                    ArtifactKind::NpmTarball,
+                    "node_modules/host/index.js",
+                ),
+                art(
+                    &srv,
+                    "/flat.tgz",
+                    &flat,
+                    ArtifactKind::NpmTarball,
+                    "node_modules/shared/index.js",
+                ),
+                inside,
+            ],
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let out = installer(tmp.path())
+            .install(ServerId::Json, &p, &[], None)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read(out.dir.join("node_modules/shared/index.js")).unwrap(),
+            b"flat"
+        );
+        assert_eq!(
+            fs::read(
+                out.dir
+                    .join("node_modules/host/node_modules/shared/index.js")
+            )
+            .unwrap(),
+            b"nested"
+        );
+        assert_eq!(
+            fs::read(out.dir.join("node_modules/host/index.js")).unwrap(),
+            b"top"
+        );
+    }
 
     #[tokio::test]
     async fn installs_every_artifact_kind() {
@@ -1516,6 +1582,7 @@ mod tests {
                 sha256: "0".repeat(64),
                 kind: ArtifactKind::Gz,
                 entry: "bin/x".into(),
+                parent: None,
             }],
         );
         let err = inst
@@ -1546,6 +1613,7 @@ mod tests {
                 sha256: "0".repeat(64),
                 kind: ArtifactKind::Gz,
                 entry: "x".into(),
+                parent: None,
             }],
         );
         let tmp = tempfile::tempdir().unwrap();
@@ -1938,6 +2006,7 @@ mod tests {
                 sha256: "1".repeat(64),
                 kind: ArtifactKind::TarGz,
                 entry: "bin/tool".into(),
+                parent: None,
             }],
         );
         assert!(inst
@@ -2020,6 +2089,7 @@ mod tests {
             sha256: "0".repeat(64),
             kind: ArtifactKind::Gz,
             entry: "../escape".into(),
+            parent: None,
         });
         assert!(matches!(
             inst.install(ServerId::Json, &p, &[], None).await,
