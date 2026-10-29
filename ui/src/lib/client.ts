@@ -1,5 +1,5 @@
 import type { GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
-import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest } from '../bindings';
+import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest, CurrentFileRun_Serialize as CurrentFileRun } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -225,6 +225,8 @@ export const api = {
   async duplicateRunConfiguration(id: string, expectedWorkspaceRoot: string): Promise<RunConfiguration> { if (!isDesktop) nativeRequired('Duplicating run configurations'); return commands.duplicateRunConfiguration(id, expectedWorkspaceRoot); },
   async startRun(configuration: RunConfiguration, expectedWorkspaceRoot: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Running configurations'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.startRun(configuration, expectedWorkspaceRoot, channel); },
   async stopRun(id: string): Promise<RunInfo> { if (!isDesktop) nativeRequired('Stopping processes'); return commands.stopRun(id); },
+  async currentFileRun(path: string, expectedWorkspaceRoot: string): Promise<CurrentFileRun> { if (!isDesktop) nativeRequired('Choosing a runner for the current file'); return commands.currentFileRun(path, expectedWorkspaceRoot); },
+  async startCurrentFileRun(path: string, expectedWorkspaceRoot: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Running the current file'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.startCurrentFileRun(path, expectedWorkspaceRoot, channel); },
   async restartRun(id: string, listener: (event: RunEvent) => void): Promise<RunInfo> { if (!isDesktop) nativeRequired('Restarting processes'); const channel = new Channel<RunEvent>(); channel.onmessage = listener; return commands.restartRun(id, channel); },
   async runContext(): Promise<RunContext> { if (!isDesktop) nativeRequired('Reading run workspace context'); return commands.runContext(); },
   async listRuns(): Promise<RunInfo[]> { if (!isDesktop) nativeRequired('Listing process runs'); return commands.listRuns(); },

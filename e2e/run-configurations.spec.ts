@@ -33,6 +33,7 @@ async function fixture(page: Page) {
         if (command === "stop_run") { trace.stops.push(args.id); const run = runs.find(run => run.id === args.id)!; run.status = "stopped"; state(run); return { ...run }; }
         if (command === "run_output") return { id: args.id, text: output.get(args.id) || "", truncated: false };
         if (command === "acknowledge_run") return null;
+        if (command === "current_file_run") return { path: "README.md", configuration: null, reason: "No runner for .md files." };
         if (command === "resolve_run_approval") { trace.approvals.push(args); emit("run-approvals-changed", { pending: [] }); return null; }
         if (command === "open_workspace") return { root, name: "Run IPC fixture" };
         if (command === "list_directory" || command === "list_files") return [{ path: "README.md", name: "README.md", isDir: false }];

@@ -1,0 +1,20 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Two selected icons for the run configuration dropdown: the Run current file row and the selected row check. Original SVG bytes and geometry are preserved.",
+  "processing": "Byte-identical copy. SVG XML inspected for active content and external references. Application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied from the user-provided local icon library at the user’s direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "RunCurrentFile.svg",
+      "source": "programming/iconsax-document-code-02b0e89cdddd-.svg",
+      "sourceSha256": "5c16cfb8d01ab7ef57a5a1ca0bbe1c528ed45e50adc9adce7858f1f3952fa867",
+      "assetSha256": "5c16cfb8d01ab7ef57a5a1ca0bbe1c528ed45e50adc9adce7858f1f3952fa867"
+    },
+    {
+      "asset": "RunCheck.svg",
+      "source": "arrow2/iconsax-check-mark---tick-e20b41c7f79e-.svg",
+      "sourceSha256": "5477a44a9d96f626852d009400e519e5e52ac6449f6a79e917dbfbd653935018",
+      "assetSha256": "5477a44a9d96f626852d009400e519e5e52ac6449f6a79e917dbfbd653935018"
+    }
+  ]
+}

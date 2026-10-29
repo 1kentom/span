@@ -25,6 +25,8 @@ export const commands = {
 	deleteRunConfiguration: (id: string, expectedWorkspaceRoot: string) => __TAURI_INVOKE<null>("delete_run_configuration", { id, expectedWorkspaceRoot }),
 	duplicateRunConfiguration: (id: string, expectedWorkspaceRoot: string) => __TAURI_INVOKE<RunConfiguration_Serialize>("duplicate_run_configuration", { id, expectedWorkspaceRoot }),
 	startRun: (configuration: RunConfiguration_Deserialize, expectedWorkspaceRoot: string, onEvent: Channel<RunEvent_Deserialize>) => __TAURI_INVOKE<RunInfo_Serialize>("start_run", { configuration, expectedWorkspaceRoot, onEvent }),
+	currentFileRun: (path: string, expectedWorkspaceRoot: string) => __TAURI_INVOKE<CurrentFileRun_Serialize>("current_file_run", { path, expectedWorkspaceRoot }),
+	startCurrentFileRun: (path: string, expectedWorkspaceRoot: string, onEvent: Channel<RunEvent_Deserialize>) => __TAURI_INVOKE<RunInfo_Serialize>("start_current_file_run", { path, expectedWorkspaceRoot, onEvent }),
 	stopRun: (id: string) => __TAURI_INVOKE<RunInfo_Serialize>("stop_run", { id }),
 	restartRun: (id: string, onEvent: Channel<RunEvent_Deserialize>) => __TAURI_INVOKE<RunInfo_Serialize>("restart_run", { id, onEvent }),
 	listRuns: () => __TAURI_INVOKE<RunInfo_Serialize[]>("list_runs"),
@@ -1113,6 +1115,25 @@ export type ConfigOption_Serialize = {
 	category: string | null,
 	currentValue: string,
 	groups: ConfigGroup_Serialize[],
+};
+
+/**  The runner chosen for one file, or the reason no runner applies. */
+export type CurrentFileRun = CurrentFileRun_Serialize | CurrentFileRun_Deserialize;
+
+/**  The runner chosen for one file, or the reason no runner applies. */
+export type CurrentFileRun_Deserialize = {
+	/**  Workspace relative path with forward slashes. */
+	path: string,
+	configuration?: RunConfiguration_Deserialize | null,
+	reason?: string | null,
+};
+
+/**  The runner chosen for one file, or the reason no runner applies. */
+export type CurrentFileRun_Serialize = {
+	/**  Workspace relative path with forward slashes. */
+	path: string,
+	configuration: RunConfiguration_Serialize | null,
+	reason: string | null,
 };
 
 /**  A decision the lead recorded with `record_decision` (#54). */
