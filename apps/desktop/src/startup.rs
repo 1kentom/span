@@ -69,22 +69,49 @@ pub async fn dropped_path_info(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let canonical = allowed_drop(&state, &path)?;
-        let meta = std::fs::metadata(&canonical).map_err(|error| error.to_string())?;
-        Ok(DroppedPath {
-            path: canonical
-                .to_str()
-                .ok_or("Dropped path is not valid Unicode")?
-                .to_owned(),
-            name: canonical
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            is_dir: meta.is_dir(),
-            size: if meta.is_dir() { 0 } else { meta.len() },
-        })
+        path_info(&canonical)
     })
     .await
     .map_err(|error| format!("Dropped path task failed: {error}"))?
+}
+
+/// Kind, name and size of a canonical path the caller already validated.
+pub(crate) fn path_info(canonical: &std::path::Path) -> Result<DroppedPath, String> {
+    let meta = std::fs::metadata(canonical).map_err(|error| error.to_string())?;
+    Ok(DroppedPath {
+        path: canonical
+            .to_str()
+            .ok_or("Dropped path is not valid Unicode")?
+            .to_owned(),
+        name: canonical
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        is_dir: meta.is_dir(),
+        size: if meta.is_dir() { 0 } else { meta.len() },
+    })
+}
+
+/// The canonical path when it belongs to the latest native drop or the latest OS clipboard read. Import accepts
+/// nothing else, so the frontend can never ask Rust to copy an arbitrary path into the project.
+pub(crate) fn allowed_import_source(
+    state: &DesktopState,
+    path: &str,
+) -> Result<std::path::PathBuf, String> {
+    if let Ok(canonical) = allowed_drop(state, path) {
+        return Ok(canonical);
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|_| "The copied item is no longer available".to_owned())?;
+    let clipboard = state
+        .clipboard_paths
+        .lock()
+        .map_err(|_| "Clipboard state is unavailable".to_owned())?;
+    if clipboard.iter().any(|item| item == &canonical) {
+        Ok(canonical)
+    } else {
+        Err("Only items from the latest drop or clipboard can be copied".to_owned())
+    }
 }
 
 /// Reads one file of the latest native drop as base64, refusing anything larger than `max_bytes`.

@@ -12,19 +12,43 @@ import { createInternalDrag, type InternalDragState } from "../lib/internal-drag
 import type { EditorDropTarget } from "../lib/drop-zones";
 import { currentPlatform } from "../lib/commands";
 import { fileName, parentPath } from "../lib/navigation";
+import { listenNativeDrops } from "../lib/native-drop";
+import { explorerDropFolder } from "../lib/explorer-transfer";
 import "../styles/explorer.css";
 
 type DragItem = { paths: string[]; generation: number };
 type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: EditorDropTarget } | { kind: "agent" };
 
-export function Explorer(props: { git?: JSX.Element; gitDecorations?: GitDecorations; workbench: Workbench; view: "Files" | "Search" | "Git"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void; onAgentTarget?: (x: number, y: number) => boolean; onAgentPreview?: (over: boolean) => void; onAgentDrop?: (entries: { path: string; isDir: boolean }[]) => void }) {
+export function Explorer(props: { git?: JSX.Element; gitDecorations?: GitDecorations; workbench: Workbench; view: "Files" | "Search" | "Git"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void; onAgentTarget?: (x: number, y: number) => boolean; onAgentPreview?: (over: boolean) => void; onAgentDrop?: (entries: { path: string; isDir: boolean }[]) => void; nativeDrops?: boolean }) {
   const w = props.workbench; const state = props.state;
   const preferences = () => explorerPreferences(w.settings());
   const mac = currentPlatform() === "mac";
   let treeElement!: HTMLDivElement;
   let dragPaths: string[] = [];
   const [drag, setDrag] = createSignal<InternalDragState<DragItem, DragTarget>>();
-  const dropFolder = () => { const target = drag()?.target; return target?.kind === "folder" ? target.path : undefined; };
+  // Files dragged from Finder or Explorer: the folder under the pointer, "" for the project root.
+  const [nativeFolder, setNativeFolder] = createSignal<string>();
+  const dropFolder = () => { const target = drag()?.target; return target?.kind === "folder" ? target.path : nativeFolder(); };
+  let nativeTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(nativeTimer));
+  onMount(() => {
+    if (!props.nativeDrops) return;
+    let disposed = false; let unlisten: (() => void) | undefined;
+    onCleanup(() => { disposed = true; unlisten?.(); });
+    void listenNativeDrops(drop => {
+      if (drop.kind === "leave") { clearTimeout(nativeTimer); setNativeFolder(undefined); return; }
+      const folder = props.view === "Files" && w.workspace() && !w.busy() ? explorerDropFolder(drop.point, state.isDirectory) : undefined;
+      if (drop.kind === "hover") {
+        if (folder !== nativeFolder()) {
+          setNativeFolder(folder); clearTimeout(nativeTimer);
+          if (folder) nativeTimer = setTimeout(() => { if (nativeFolder() === folder && !w.expanded().has(folder)) void w.toggleDirectory(folder); }, 700);
+        }
+        return;
+      }
+      clearTimeout(nativeTimer); setNativeFolder(undefined);
+      if (folder !== undefined && drop.paths.length) void state.importDropped(drop.paths, folder);
+    }).then(stop => { if (disposed) stop(); else unlisten = stop; }).catch(() => undefined);
+  });
   let hoverTimer: ReturnType<typeof setTimeout> | undefined; let hoverFolder: string | undefined;
   onCleanup(() => clearTimeout(hoverTimer));
   function scroller(): HTMLElement | undefined {
@@ -219,6 +243,7 @@ export function Explorer(props: { git?: JSX.Element; gitDecorations?: GitDecorat
       </Show>
     </Show>
     <Show when={state.notice()}><div class="tree-notice" role="status">{state.notice()}</div></Show>
+    <Show when={state.importing()}>{job => <div class="tree-import" role="status"><span>{`Copying to ${job().folder ? `${job().folder}/` : "the project root"}`}</span><Show when={job().progress?.totalBytes}><progress aria-label="Copy progress" max={job().progress!.totalBytes} value={job().progress!.bytes} /></Show><button class="button" onClick={() => void state.cancelImport()}>Cancel</button></div>}</Show>
     <Show when={drag()}>{current => <div class="explorer-drag-pill" role="status" aria-live="off" style={{ left: `${(current().x + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px`, top: `${(current().y + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px` }}>{current().item.paths.length > 1 ? `${current().item.paths.length} items` : fileName(current().item.paths[0])}{current().target === undefined ? " (no drop target)" : current().target!.kind === "agent" ? " (attach to AI)" : current().copy ? " (copy)" : ""}</div>}</Show>
     <Show when={props.view === "Search"}>
       <div class="search-box"><Icon name="SearchNormal1" /><input id="workspace-search" aria-label="Search workspace" placeholder="Search in files" value={query()} onInput={e => search(e.currentTarget.value)} /><Show when={query()}><button class="close-button" aria-label="Clear search" onClick={() => search("")}>×</button></Show></div>

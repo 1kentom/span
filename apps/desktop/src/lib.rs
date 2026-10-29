@@ -9,8 +9,10 @@ use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
 mod cli;
+mod clipboard_files;
 mod events;
 mod external_files;
+mod file_import;
 mod file_index;
 mod git;
 #[doc(hidden)]
@@ -57,6 +59,9 @@ pub struct DesktopState {
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
     /// Canonical paths of the latest native drop, the only ones `read_dropped_file` may read.
     pub dropped_paths: Arc<Mutex<Vec<PathBuf>>>,
+    /// Canonical file paths of the latest OS clipboard read, the only other sources `import_paths` accepts.
+    pub clipboard_paths: Arc<Mutex<Vec<PathBuf>>>,
+    pub(crate) import_job: file_import::ImportJob,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     pub formatter_jobs: FormatterJobs,
@@ -1089,6 +1094,12 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             startup::enqueue_dropped_paths,
             startup::dropped_path_info,
             startup::read_dropped_file,
+            file_import::import_paths,
+            file_import::import_progress,
+            file_import::cancel_import,
+            clipboard_files::clipboard_files,
+            clipboard_files::set_clipboard_files,
+            clipboard_files::paste_clipboard_file,
             services::open_external,
             services::read_image,
             menu::sync_native_menu,

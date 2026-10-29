@@ -214,3 +214,33 @@ Windows. JetBrains IDEs are the reference behaviour.
   Explorer") selects the file in the file manager; "Open in Terminal" opens a
   new shell tab whose working directory is the file's folder. On a folder,
   "Open in Terminal" starts in that folder.
+
+## Explorer file transfer from the OS (native pass)
+
+Covered by Rust unit tests (span-core `import_paths`) and vitest with mocked
+drops and clipboard commands. Check on macOS and on Windows:
+
+- Drag a file and a folder from Finder or Explorer over the tree: the folder
+  row under the pointer is outlined, a file row outlines its folder, the empty
+  tree area outlines the whole tree (project root); a collapsed folder expands
+  after hovering about 0.7 s. Leaving the window clears the outline.
+- Drop: the items are copied (the originals stay), selected, and a toast
+  reads "Copied N items to folder/" with Undo. Cmd+Z in the tree moves the
+  copies to the Trash.
+- Drop onto a name that exists: the dialog offers Keep Both (default, "name
+  copy.ext"), Replace (the old item goes to the Trash) and Skip, with "Apply
+  to the other clashes" when several clash. Cancel copies nothing.
+- A large folder (hundreds of MB) shows the progress bar and Cancel; Cancel
+  keeps what was already copied. Over 10,000 entries or 1 GiB is refused
+  before anything is written. Symbolic links inside a dropped folder are not
+  copied and the toast counts them.
+- Copy files in Finder, select a folder row and press Cmd+V (Ctrl+V): they are
+  copied into that folder (into the folder of a selected file, or the root).
+- Cmd+C on rows in Span, then paste in Finder or Explorer: the files appear.
+- Cmd+X in Span then Cmd+V on another folder moves the rows.
+- Copy an image (screenshot to clipboard) and press Cmd+V on the tree: a name
+  prompt offers "Pasted image.png"; text offers "Pasted text.txt". An
+  existing name is never overwritten.
+- Reveal in Finder on a folder row selects the folder.
+- Check drop hit testing on a Retina display, a scaled Windows display and
+  with the window zoomed.

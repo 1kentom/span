@@ -52,12 +52,12 @@ pub async fn open_file_with_system(
         .map_err(|error| format!("Open file task failed: {error}"))?
 }
 
-/// Shows a workspace file in Finder, Explorer or the Linux file manager.
+/// Shows a workspace file or folder in Finder, Explorer or the Linux file manager.
 #[tauri::command]
 #[specta::specta]
 pub async fn reveal_file(state: State<'_, DesktopState>, path: String) -> Result<(), String> {
     let resolved = with_workspace(state.inner().clone(), move |workspace| {
-        workspace.existing_file(&path)
+        workspace.existing_path(&path)
     })
     .await?;
     tauri::async_runtime::spawn_blocking(move || launch(&reveal_launch(Os::current(), &resolved)?))
