@@ -237,7 +237,7 @@ pub(crate) enum Os {
 }
 
 impl Os {
-    fn current() -> Self {
+    pub(crate) fn current() -> Self {
         if cfg!(target_os = "macos") {
             Os::Mac
         } else if cfg!(windows) {
@@ -346,7 +346,7 @@ pub(crate) fn open_launch(os: Os, path: &Path) -> Result<Launch, String> {
 
 /// Runs the program directly, never through a shell. A bare program name (xdg-open)
 /// is resolved on PATH here, so the launch specs stay testable on every platform.
-fn launch(spec: &Launch) -> Result<(), String> {
+pub(crate) fn launch(spec: &Launch) -> Result<(), String> {
     let program = if Path::new(&spec.program).is_absolute() || cfg!(windows) {
         PathBuf::from(&spec.program)
     } else {
