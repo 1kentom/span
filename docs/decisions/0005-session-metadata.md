@@ -238,3 +238,26 @@ overwrites, then opened in the editor.
   `cfg(unix)`).
 - Concurrency is tested with two threads in one process; two Span processes
   on one workspace rely on the same file lock but were not run.
+
+## Amendment (2026-10-29): local transcripts for agent mode
+
+ADR 0011 section a, accepted by the owner, relaxes "no prompt text, file
+contents or secrets on disk" for one new store. The metadata store above is
+unchanged and still holds no prompt text, replies, file contents, paths or
+credentials.
+
+- A separate transcript store may keep thread content (prompts, replies,
+  tool steps, diffs) in the app data folder only, one file per thread under
+  a `transcripts/` folder keyed by the same `workspace_hash`. Never inside
+  the workspace or `.span`.
+- Secrets are scrubbed before every write with the `redact_log` rules
+  (`crates/acp/src/service.rs`); the span-agents bearer token never reaches
+  disk. Prompt text the user typed is stored as typed.
+- Caps per thread and in total, with the eviction order of section 2.
+- Setting `agents.transcripts.store`, default on, honoured only from the
+  user's own settings file. Off stops new writes. A "Clear history" control
+  removes stored transcripts.
+- When the agent advertises `session/load`, the agent's replay is used and
+  the stored transcript is only a fallback.
+
+Not implemented yet (phase 1 of ADR 0011).

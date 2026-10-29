@@ -30,7 +30,7 @@ describe("fixture: hub panel", () => {
     expect(m.root.querySelector(".hub-name strong")!.textContent).toBe("Java");
     expect(m.root.querySelector(".hub-name small")!.textContent).toBe("Eclipse JDT LS 1.62");
     expect(status(m.root)).toBe("Completions, errors, hover, go to definition, references, rename, format");
-    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(7);
+    expect(m.root.querySelectorAll(".hub-row")).toHaveLength(10);
     expect(m.root.querySelector(".hub-chip")).toBeNull();
     expect(m.root.textContent).toContain("Language server settings");
   });

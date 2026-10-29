@@ -133,6 +133,8 @@ struct Delegation {
     stop_override: Option<(FailureReason, String)>,
     edit_rejected: bool,
     waiting_for_user: u32,
+    /// The task that finished last, for a usage report that arrives late.
+    last_finished: Option<String>,
 }
 
 #[derive(Default)]
@@ -148,6 +150,9 @@ struct Inner {
 pub struct TaskView {
     pub task: Task,
     pub usage: UsageReport,
+    /// Tokens the delegation spent, as its budget measures them.
+    pub spent_tokens: Option<u64>,
+    pub max_tokens: Option<u64>,
     pub waiting_for_user: u32,
 }
 
@@ -197,6 +202,7 @@ impl Registry {
                 stop_override: None,
                 edit_rejected: false,
                 waiting_for_user: 0,
+                last_finished: None,
             },
         );
     }
@@ -301,6 +307,7 @@ impl Registry {
             .filter(|task| task.status == TaskStatus::Running);
         let mut breach = None;
         let mut touched = true;
+        let mut late_usage = false;
         match (&event.event, running) {
             (AgentEvent::Text { text, .. }, Some(task)) => {
                 append(&mut task.text, text);
@@ -384,15 +391,18 @@ impl Registry {
                 task,
             ) => {
                 let meter = &mut delegation.meter;
-                meter.tokens = Some(meter.tokens.unwrap_or(0).max(*used));
-                meter.context_size = Some(*size);
+                meter.record_context(*used, *size);
                 if cost_amount.is_some() {
                     meter.cost = *cost_amount;
                     meter.currency = cost_currency.clone();
                 }
+                late_usage = task.is_none();
                 if let Some(task) = task {
                     task.events += 1;
-                    if delegation.stop_override.is_none() {
+                    // A report that arrives after the turn ended (its
+                    // completion was already seen) never stops it: the task
+                    // keeps its result and the usage shows the overrun.
+                    if delegation.stop_override.is_none() && task.stop_reason.is_none() {
                         if let Some((reason, detail)) = meter.over(&delegation.budget, second) {
                             delegation.stop_override = Some((reason, detail.clone()));
                             breach = Some((key.clone(), reason, detail));
@@ -414,10 +424,22 @@ impl Registry {
                     .and_then(|u| u.get("totalTokens"))
                     .and_then(serde_json::Value::as_u64)
                 {
-                    delegation.meter.spent_tokens += total;
+                    delegation.meter.record_turn_total(total);
                 }
             }
             _ => touched = false,
+        }
+        if late_usage && delegation.queue.is_empty() {
+            // The last turn already ended: refresh its quiet overrun note,
+            // never its status.
+            if let Some(task) = delegation
+                .last_finished
+                .as_ref()
+                .and_then(|id| tasks.get_mut(id))
+                .filter(|task| task.status == TaskStatus::Completed)
+            {
+                task.detail = delegation.meter.overrun_note(&delegation.budget);
+            }
         }
         drop(inner);
         if touched {
@@ -498,6 +520,12 @@ impl Registry {
             task.reason = Some(FailureReason::Cancelled);
             task.detail = Some(USER_CANCEL.into());
         }
+        if let Some(d) = delegations.get_mut(&task.key) {
+            if task.status == TaskStatus::Completed {
+                task.detail = d.meter.overrun_note(&d.budget);
+            }
+            d.last_finished = Some(task_id.to_owned());
+        }
         if task.events > 0 {
             task.last_progress = Some(task.activity.clone());
         }
@@ -548,11 +576,23 @@ impl Registry {
 
     /// Children with a running turn that are over their budget or timeout.
     /// Each breach is reported once.
+    /// A turn whose completion was already seen is not running any more.
     pub fn breaches(&self, second: Duration) -> Vec<(SessionKey, FailureReason, String)> {
         let mut inner = self.inner();
+        let Inner {
+            delegations, tasks, ..
+        } = &mut *inner;
         let mut found = Vec::new();
-        for (key, d) in inner.delegations.iter_mut() {
-            if d.queue.is_empty() || d.stop_override.is_some() {
+        for (key, d) in delegations.iter_mut() {
+            if d.stop_override.is_some() {
+                continue;
+            }
+            let running = d
+                .queue
+                .front()
+                .and_then(|id| tasks.get(id))
+                .is_some_and(|task| task.stop_reason.is_none());
+            if !running {
                 continue;
             }
             if let Some((reason, detail)) = d.meter.over(&d.budget, second) {
@@ -583,7 +623,9 @@ impl Registry {
         let usage = delegation
             .map(|d| UsageReport {
                 turns: d.meter.turns,
-                tokens: d.meter.used_tokens(),
+                // Context occupancy for the meter; turn totals only when the
+                // agent reports no context.
+                tokens: d.meter.tokens.or_else(|| d.meter.used_tokens()),
                 context_size: d.meter.context_size,
                 cost: d.meter.cost,
                 currency: d.meter.currency.clone(),
@@ -593,6 +635,8 @@ impl Registry {
         Some(TaskView {
             task,
             usage,
+            spent_tokens: delegation.and_then(|d| d.meter.used_tokens()),
+            max_tokens: delegation.and_then(|d| d.budget.max_tokens),
             waiting_for_user: delegation.map_or(0, |d| d.waiting_for_user),
         })
     }
@@ -669,13 +713,148 @@ mod tests {
     use super::*;
 
     fn registry() -> (Registry, SessionKey, String) {
+        registry_with(Budget::default())
+    }
+
+    fn registry_with(budget: Budget) -> (Registry, SessionKey, String) {
         let registry = Registry::default();
         let key = SessionKey::new("c", "s");
-        registry.add_delegation(key.clone(), "worker".into(), Budget::default());
+        registry.add_delegation(key.clone(), "worker".into(), budget);
         let id = registry
             .start_task(&key, None, Duration::from_secs(1))
             .unwrap();
         (registry, key, id)
+    }
+
+    const SECOND: Duration = Duration::from_secs(1);
+
+    fn event(event: AgentEvent) -> SessionEvent {
+        SessionEvent {
+            connection_id: "c".into(),
+            agent_name: "worker".into(),
+            session_id: Some("s".into()),
+            event,
+        }
+    }
+
+    fn usage(used: u64) -> SessionEvent {
+        event(AgentEvent::Usage {
+            session_id: "s".into(),
+            used,
+            size: 200_000,
+            cost_amount: None,
+            cost_currency: None,
+        })
+    }
+
+    fn complete(stop_reason: &str, total: Option<u64>) -> SessionEvent {
+        event(AgentEvent::Complete {
+            session_id: "s".into(),
+            stop_reason: stop_reason.into(),
+            usage: total.map(|t| serde_json::json!({ "totalTokens": t })),
+            meta: None,
+            hint: None,
+        })
+    }
+
+    fn small_budget() -> Budget {
+        Budget {
+            max_tokens: Some(1000),
+            ..Budget::default()
+        }
+    }
+
+    #[test]
+    fn a_fresh_childs_system_prompt_does_not_break_a_small_token_budget() {
+        let (registry, _, id) = registry_with(small_budget());
+        // A fresh session already holds about 31k tokens of prompt and tools.
+        assert!(registry
+            .observe(&usage(31_290), SECOND, |_| false)
+            .is_none());
+        assert!(registry
+            .observe(&usage(31_700), SECOND, |_| false)
+            .is_none());
+        assert!(registry.breaches(SECOND).is_empty());
+        registry.observe(&complete("end_turn", None), SECOND, |_| false);
+        registry.finish(&id, Ok(()));
+        let view = registry.view(&id, SECOND).unwrap();
+        assert_eq!(view.task.status, TaskStatus::Completed);
+        assert_eq!(view.usage.tokens, Some(31_700));
+        assert_eq!(view.spent_tokens, Some(410));
+        assert_eq!(view.max_tokens, Some(1000));
+        assert_eq!(view.task.detail, None);
+    }
+
+    #[test]
+    fn a_late_usage_report_after_the_turn_ended_keeps_the_task_completed() {
+        let (registry, _, id) = registry_with(small_budget());
+        registry.observe(&usage(25_036), SECOND, |_| false);
+        registry.observe(&complete("end_turn", None), SECOND, |_| false);
+        // The turn's completion was seen; this report lands before `finish`.
+        assert!(registry
+            .observe(&usage(28_000), SECOND, |_| false)
+            .is_none());
+        assert!(registry.breaches(SECOND).is_empty());
+        registry.finish(&id, Ok(()));
+        // And one more after it finished.
+        assert!(registry
+            .observe(&usage(29_000), SECOND, |_| false)
+            .is_none());
+        let view = registry.view(&id, SECOND).unwrap();
+        assert_eq!(view.task.status, TaskStatus::Completed);
+        assert_eq!(view.task.reason, None);
+        assert_eq!(view.spent_tokens, Some(3964));
+        assert_eq!(
+            view.task.detail.as_deref(),
+            Some("Used about 3964 tokens, over the 1000 token budget")
+        );
+    }
+
+    #[test]
+    fn a_running_child_that_really_exceeds_its_budget_is_stopped() {
+        let (registry, key, id) = registry_with(small_budget());
+        registry.observe(&usage(30_000), SECOND, |_| false);
+        let (stopped, reason, detail) = registry
+            .observe(&usage(31_500), SECOND, |_| false)
+            .expect("a breach to act on");
+        assert_eq!(stopped, key);
+        assert_eq!(reason, FailureReason::BudgetExceeded);
+        assert_eq!(
+            detail,
+            "used about 1500 tokens since it started, over the 1000 token budget"
+        );
+        // Reported once.
+        assert!(registry.breaches(SECOND).is_empty());
+        registry.observe(&complete("cancelled", None), SECOND, |_| false);
+        registry.finish(&id, Ok(()));
+        let task = registry.view(&id, SECOND).unwrap().task;
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(task.reason, Some(FailureReason::BudgetExceeded));
+        assert_eq!(task.detail.as_deref(), Some(detail.as_str()));
+    }
+
+    #[test]
+    fn a_turn_total_is_the_spend_and_gates_the_next_message() {
+        let (registry, key, id) = registry_with(small_budget());
+        registry.observe(&usage(30_000), SECOND, |_| false);
+        registry.observe(&usage(36_000), SECOND, |_| false);
+        // That growth breached while running, but the turn ended normally.
+        registry.observe(&complete("end_turn", Some(400)), SECOND, |_| false);
+        registry.finish(&id, Ok(()));
+        let view = registry.view(&id, SECOND).unwrap();
+        assert_eq!(view.task.status, TaskStatus::Completed);
+        assert_eq!(view.spent_tokens, Some(400));
+        // 400 of 1000 spent: a follow-up fits.
+        let next = registry.start_task(&key, None, SECOND).unwrap();
+        registry.observe(&complete("end_turn", Some(700)), SECOND, |_| false);
+        registry.finish(&next, Ok(()));
+        assert_eq!(
+            registry.view(&next, SECOND).unwrap().task.status,
+            TaskStatus::Completed
+        );
+        // 1100 spent now: the next one is refused with the measured spend.
+        let refused = registry.start_task(&key, None, SECOND).unwrap_err();
+        assert!(refused.contains("used about 1100 tokens"), "{refused}");
     }
 
     #[test]

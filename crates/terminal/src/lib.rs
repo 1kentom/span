@@ -1088,6 +1088,71 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn compact_real_zsh_initial_screen_has_only_basename_and_branch() {
+        let Some(profile) = terminal_profiles()
+            .into_iter()
+            .find(|profile| profile.name == "zsh")
+        else {
+            return;
+        };
+        let root = TempDir::new().unwrap();
+        let workspace = root
+            .path()
+            .join("parent-path-should-not-appear")
+            .join("span-visible");
+        std::fs::create_dir_all(&workspace).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q", "--initial-branch", "span-initial"])
+            .arg(&workspace)
+            .status()
+            .unwrap()
+            .success());
+        let manager = TerminalManager::new(&workspace).unwrap();
+        let (info, mut rx) = manager
+            .create_with_profile(".", 100, 24, Some(&profile.id))
+            .await
+            .unwrap();
+        let mut parser = vt100::Parser::new(
+            std::num::NonZeroU16::new(24).unwrap(),
+            std::num::NonZeroU16::new(100).unwrap(),
+            0,
+        );
+        timeout(Duration::from_secs(15), async {
+            loop {
+                let Some(event) = rx.recv().await else {
+                    panic!("Shell closed before initial prompt");
+                };
+                if let TerminalEvent::Output { data, .. } = event {
+                    parser.process(&data);
+                }
+                if parser.screen().contents().contains("git:(span-initial)") {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        while let Ok(Some(event)) = timeout(Duration::from_millis(150), rx.recv()).await {
+            if let TerminalEvent::Output { data, .. } = event {
+                parser.process(&data);
+            }
+        }
+        let screen = parser.screen().contents();
+        manager.close(&info.id).await.unwrap();
+        let lines = screen
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines,
+            ["→ span-visible git:(span-initial)"],
+            "The first rendered screen retained a theme prefix: {screen:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn compact_real_zsh_prompt_has_one_redraw_per_enter_and_changed_size() {
         let Some(profile) = terminal_profiles()
             .into_iter()

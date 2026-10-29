@@ -3,13 +3,14 @@ import { afterEach, expect, it, vi } from "vitest";
 import { type JSX, createRoot, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import type { GitCommit, GitCommitResult, GitContext, GitDiff, GitHistoryPage, GitStatus } from "../../bindings";
-vi.mock("../../lib/client", () => ({ api: {} }));
+const native = vi.hoisted(() => ({ openExternal: vi.fn(async () => undefined) }));
+vi.mock("../../lib/client", () => ({ api: native }));
 import { createGitWorkbench } from "../../stores/git";
 import { GitPanel } from "./GitPanel";
 import { GitDiffView } from "./GitDiffView";
 import { GitHistory } from "./GitHistory";
 const dispose: (() => void)[] = [];
-afterEach(() => { dispose.splice(0).forEach(fn => fn()); document.body.replaceChildren(); });
+afterEach(() => { dispose.splice(0).forEach(fn => fn()); document.body.replaceChildren(); vi.clearAllMocks(); });
 const context: GitContext = { workspaceRoot: "/repo/project", enabled: true, repository: { id: "repo", root: "/repo", workspacePrefix: "project", branch: "feature/test", head: "a".repeat(40), detached: false, unborn: false }, unavailableReason: null };
 const entry = { id: "outside", path: "outside/file.ts", displayPath: "outside/file.ts", oldPath: null, displayOldPath: null, indexStatus: "M", worktreeStatus: "M", untracked: false, conflicted: false, submodule: false, unsupportedReason: null };
 const status: GitStatus = { repository: context.repository!, entries: [entry], indexRevision: "index", stagedSnapshot: "tree", operation: null, truncated: false };
@@ -22,6 +23,34 @@ function fixture(available = true) {
   const mount = (node: () => JSX.Element) => dispose.push(render(node, host));
   return { git, transport, onOpenView, host, mount };
 }
+it("shows missing-command recovery help without navigating away, clearing a draft or changing the repository", async () => {
+  const f = fixture(); await f.git.refresh(); f.git.setMessage("Keep this draft");
+  f.mount(() => <GitPanel git={f.git} available />);
+  f.transport.gitContext.mockRejectedValueOnce("Command git_context not found"); await f.git.refresh();
+  const alert = f.host.querySelector('[role="alert"]')!;
+  expect(alert.textContent).toContain("may be different versions");
+  expect(alert.textContent).toContain("Save your work and copy any unsent chat or commit drafts");
+  const link = alert.querySelector<HTMLAnchorElement>("a")!;
+  expect(link.textContent).toBe("Troubleshoot Git startup");
+  expect(link.href).toBe("https://github.com/1kentom/span/issues/154");
+  expect(link.target).toBe("_blank"); expect(link.rel).toContain("noopener");
+  const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+  link.dispatchEvent(click);
+  expect(click.defaultPrevented).toBe(true);
+  await vi.waitFor(() => expect(native.openExternal).toHaveBeenCalledExactlyOnceWith("https://github.com/1kentom/span/issues/154"));
+  expect(f.host.querySelector<HTMLTextAreaElement>('[aria-label="Git commit message"]')?.value).toBe("Keep this draft");
+  expect(f.host.textContent).toContain("feature/test"); expect(f.transport.gitCommit).not.toHaveBeenCalled();
+  await f.git.refresh(); expect(f.host.querySelector('[role="alert"]')).toBeNull();
+});
+it("keeps the Git draft and exposes the public address if native troubleshooting cannot open", async () => {
+  const f = fixture(); await f.git.refresh(); f.git.setMessage("Preserve after link failure");
+  f.transport.gitContext.mockRejectedValueOnce("Command git_context not found"); await f.git.refresh();
+  native.openExternal.mockRejectedValueOnce(new Error("External opening failed"));
+  f.mount(() => <GitPanel git={f.git} available />);
+  f.host.querySelector<HTMLAnchorElement>('[role="alert"] a')!.click();
+  await vi.waitFor(() => expect(f.host.querySelector('[role="status"]')?.textContent).toContain("Open https://github.com/1kentom/span/issues/154 in your browser"));
+  expect(f.git.message()).toBe("Preserve after link failure"); expect(f.transport.gitCommit).not.toHaveBeenCalled();
+});
 it("shows repository scope and requires an explicit inline enable before exposing Git actions", async () => {
   const f = fixture(); f.transport.gitContext.mockResolvedValueOnce({ ...context, enabled: false });
   await f.git.refresh(); f.mount(() => <GitPanel git={f.git} available />);
@@ -36,7 +65,7 @@ it("does not offer file history for Git or settings virtual view identifiers", a
   const f = fixture(); await f.git.refresh();
   const [path, setPath] = createSignal("span:git:working:diff");
   f.mount(() => <GitHistory git={f.git} available active={false} filePath={path()} />);
-  const fileButton = [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Current file")!;
+  const fileButton = [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "This file")!;
   for (const virtual of ["span:git:working:diff", "span:settings", "settings://user", "settings://workspace"]) { setPath(virtual); expect(fileButton.disabled).toBe(true); }
   expect(f.transport.gitHistory).not.toHaveBeenCalled(); setPath("src/main.ts"); expect(fileButton.disabled).toBe(false);
 });

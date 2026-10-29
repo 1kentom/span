@@ -28,19 +28,19 @@ export const hubText = {
 /** Human language names, as shown in the panel header. */
 export const languageNames: Readonly<Record<LanguageServerId, string>> = {
   jdtls: "Java", vtsls: "TypeScript and JavaScript", html: "HTML", css: "CSS, SCSS and Less", json: "JSON",
-  "rust-analyzer": "Rust", basedpyright: "Python",
+  "rust-analyzer": "Rust", basedpyright: "Python", svelte: "Svelte", vue: "Vue", astro: "Astro",
 };
 /** One or two words, for the status bar, the list rows and tooltips. */
 export const shortLanguageNames: Readonly<Record<LanguageServerId, string>> = {
-  jdtls: "Java", vtsls: "TypeScript", html: "HTML", css: "CSS", json: "JSON", "rust-analyzer": "Rust", basedpyright: "Python",
+  jdtls: "Java", vtsls: "TypeScript", html: "HTML", css: "CSS", json: "JSON", "rust-analyzer": "Rust", basedpyright: "Python", svelte: "Svelte", vue: "Vue", astro: "Astro",
 };
 /** The technical name, shown small and muted under the language name. */
 export const technicalNames: Readonly<Record<LanguageServerId, string>> = {
   jdtls: "Eclipse JDT LS", vtsls: "vtsls", html: "VS Code HTML", css: "VS Code CSS",
-  json: "VS Code JSON", "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright",
+  json: "VS Code JSON", "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright", svelte: "Svelte language server", vue: "Vue language server", astro: "Astro language server",
 };
 /** The server ids in the order the "All languages" list shows them. */
-export const serverOrder: readonly LanguageServerId[] = ["jdtls", "vtsls", "html", "css", "json", "rust-analyzer", "basedpyright"];
+export const serverOrder: readonly LanguageServerId[] = ["jdtls", "vtsls", "html", "css", "json", "rust-analyzer", "basedpyright", "svelte", "vue", "astro"];
 /** Servers that run the project's own build tool, so they depend on folder trust. */
 export const projectCodeServers: ReadonlySet<LanguageServerId> = new Set<LanguageServerId>(["jdtls", "rust-analyzer"]);
 
