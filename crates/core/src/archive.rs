@@ -310,14 +310,7 @@ impl ZipBundle {
         }
 
         let root_path = &workspace.root;
-        let root_dir = Dir::open_ambient_dir(root_path, ambient_authority())
-            .map_err(|error| crate::io_error("Open workspace capability", root_path, error))?;
-        let opened_root = root_dir
-            .canonicalize(".")
-            .map_err(|error| crate::io_error("Verify workspace capability", root_path, error))?;
-        if opened_root != *root_path {
-            return Err(CoreError::OutsideWorkspace(expected_root.to_owned()));
-        }
+        let root_dir = open_workspace_root_nofollow(workspace, expected_root)?;
         // `create_dir` is atomic with respect to a competing creator. It fails
         // instead of merging into or replacing an existing directory.
         root_dir
@@ -679,6 +672,12 @@ fn create_parent_dirs<'a>(destination: &'a Dir, relative: &str) -> std::io::Resu
 }
 
 fn check_workspace_root(workspace: &CoreWorkspace, expected_root: &str) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(&workspace.root).map_err(|error| {
+        crate::io_error("Validate workspace root entry", &workspace.root, error)
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(CoreError::OutsideWorkspace(expected_root.to_owned()));
+    }
     let canonical = workspace
         .root
         .canonicalize()
@@ -694,6 +693,30 @@ fn check_workspace_root(workspace: &CoreWorkspace, expected_root: &str) -> Resul
         return Err(CoreError::OutsideWorkspace(expected_root.to_owned()));
     }
     Ok(())
+}
+
+fn open_workspace_root_nofollow(workspace: &CoreWorkspace, expected_root: &str) -> Result<Dir> {
+    check_workspace_root(workspace, expected_root)?;
+    let root_path = &workspace.root;
+    let parent_path = root_path
+        .parent()
+        .ok_or_else(|| CoreError::OutsideWorkspace(expected_root.to_owned()))?;
+    let leaf = root_path
+        .file_name()
+        .ok_or_else(|| CoreError::OutsideWorkspace(expected_root.to_owned()))?;
+    let parent = Dir::open_ambient_dir(parent_path, ambient_authority())
+        .map_err(|error| crate::io_error("Open workspace parent capability", parent_path, error))?;
+    let root = parent.open_dir_nofollow(leaf).map_err(|error| {
+        crate::io_error(
+            "Open workspace root without following links",
+            root_path,
+            error,
+        )
+    })?;
+    // Revalidate the path after obtaining the capability. The no-follow open
+    // rejects a replacement symlink at the root leaf itself.
+    check_workspace_root(workspace, expected_root)?;
+    Ok(root)
 }
 
 fn choose_destination(workspace: &CoreWorkspace) -> Result<String> {
@@ -738,4 +761,148 @@ fn validate_destination(destination: &str) -> Result<()> {
 
 fn archive_error(message: impl Into<String>) -> CoreError {
     CoreError::Upload(format!("Archive: {}", message.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ArchiveExtractOptions, ZipBundle};
+    use crate::{CancellationToken, CoreWorkspace};
+    use std::fs;
+    use std::sync::Arc;
+
+    #[test]
+    fn extracts_a_valid_stored_zip_into_a_fresh_workspace_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        let workspace = CoreWorkspace::open(&workspace_path).unwrap();
+        let expected_root = workspace.workspace().root;
+        let bundle = ZipBundle::new(Arc::new(stored_zip("notes/hello.txt", b"hello zip"))).unwrap();
+        let plan = bundle
+            .plan(&workspace, &expected_root, ArchiveExtractOptions::default())
+            .unwrap();
+
+        let result = bundle
+            .extract(
+                &workspace,
+                &expected_root,
+                &plan,
+                &CancellationToken::default(),
+                |_| {},
+            )
+            .unwrap();
+
+        assert_eq!(result.extracted, 1);
+        assert_eq!(result.error, None);
+        assert_eq!(
+            fs::read(
+                workspace_path
+                    .join(&plan.destination)
+                    .join("notes/hello.txt")
+            )
+            .unwrap(),
+            b"hello zip"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_when_workspace_root_path_is_replaced_by_a_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        let moved_path = temp.path().join("moved-workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let workspace = CoreWorkspace::open(&workspace_path).unwrap();
+        let expected_root = workspace.workspace().root;
+        let bundle = ZipBundle::new(Arc::new(stored_zip("hello.txt", b"hello"))).unwrap();
+        let plan = bundle
+            .plan(&workspace, &expected_root, ArchiveExtractOptions::default())
+            .unwrap();
+
+        fs::rename(&workspace_path, &moved_path).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &workspace_path).unwrap();
+
+        assert!(bundle
+            .extract(
+                &workspace,
+                &expected_root,
+                &plan,
+                &CancellationToken::default(),
+                |_| {},
+            )
+            .is_err());
+        assert!(!outside.path().join(&plan.destination).exists());
+    }
+
+    fn stored_zip(name: &str, contents: &[u8]) -> Vec<u8> {
+        let name = name.as_bytes();
+        let size = contents.len() as u32;
+        let crc = crc32(contents);
+        let mut zip = Vec::new();
+
+        push_u32(&mut zip, 0x0403_4b50);
+        push_u16(&mut zip, 20);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u32(&mut zip, crc);
+        push_u32(&mut zip, size);
+        push_u32(&mut zip, size);
+        push_u16(&mut zip, name.len() as u16);
+        push_u16(&mut zip, 0);
+        zip.extend_from_slice(name);
+        zip.extend_from_slice(contents);
+        let central_offset = zip.len() as u32;
+
+        push_u32(&mut zip, 0x0201_4b50);
+        push_u16(&mut zip, 20);
+        push_u16(&mut zip, 20);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u32(&mut zip, crc);
+        push_u32(&mut zip, size);
+        push_u32(&mut zip, size);
+        push_u16(&mut zip, name.len() as u16);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u32(&mut zip, 0);
+        push_u32(&mut zip, 0);
+        zip.extend_from_slice(name);
+        let central_size = zip.len() as u32 - central_offset;
+
+        push_u32(&mut zip, 0x0605_4b50);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 0);
+        push_u16(&mut zip, 1);
+        push_u16(&mut zip, 1);
+        push_u32(&mut zip, central_size);
+        push_u32(&mut zip, central_offset);
+        push_u16(&mut zip, 0);
+        zip
+    }
+
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & (0u32.wrapping_sub(crc & 1)));
+            }
+        }
+        !crc
+    }
 }
