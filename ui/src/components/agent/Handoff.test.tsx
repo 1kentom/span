@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
       agentListSessions: vi.fn(async () => []),
       agentSetConfig: vi.fn(async (_id: string, _value: string) => undefined),
       agentAuthenticate: vi.fn(async () => "s1"),
+      agentSessionStates: vi.fn(async (): Promise<{ connectionId: string | null; sessions: unknown[] }> => ({ connectionId: "c1", sessions: [] })),
     },
     agentPresets: vi.fn(async (): Promise<unknown[]> => []),
   };
@@ -44,6 +45,8 @@ beforeEach(() => {
   mocks.api.agentPrompt.mockClear();
   mocks.api.agentDisconnect.mockClear();
   mocks.api.agentSetConfig.mockClear();
+  mocks.api.agentSessionStates.mockReset();
+  mocks.api.agentSessionStates.mockImplementation(async () => ({ connectionId: "c1", sessions: [] }));
   mocks.api.agentInstalled.mockResolvedValue([agent("codex"), agent("claude")]);
 });
 
@@ -76,7 +79,8 @@ describe("switching agent in an open chat", () => {
     await tick();
     await tick();
 
-    expect(mocks.api.agentDisconnect).toHaveBeenCalledTimes(1);
+    // agent_connect closes the old agent itself, only after the new one connected (issue #87).
+    expect(mocks.api.agentDisconnect).not.toHaveBeenCalled();
     expect(a.state().sessionId).toBe("s2");
     expect(a.prompt()).toBe("half written");
     const kinds = a.feed().map((item) => item.kind);
@@ -132,6 +136,26 @@ describe("switching agent in an open chat", () => {
     expect(a.state().failure?.message).toBe("claude: command not found");
     expect(a.connecting()).toBeUndefined();
     expect(a.feed().some((item) => item.kind === "handoff")).toBe(false);
+    // The backend kept the old connection, so the chat stays on it and can go on.
+    expect(mocks.api.agentDisconnect).not.toHaveBeenCalled();
+    expect(a.state().sessionId).toBe("s1");
+    expect(a.agentName()).toBe("codex");
+    a.send();
+    await tick();
+    expect(mocks.api.agentPrompt).toHaveBeenCalledTimes(1);
+    expect(mocks.api.agentPrompt.mock.calls[0][0]).toBe("keep me");
+  });
+
+  it("does not go back to the old session when the backend no longer holds its connection", async () => {
+    const { a } = await chatWithCodex();
+    mocks.api.agentSessionStates.mockImplementation(async () => ({ connectionId: null, sessions: [] }));
+    mocks.api.agentConnect.mockRejectedValueOnce(new Error("claude: command not found"));
+    a.connectInstalled("claude");
+    await tick();
+    await tick();
+
+    expect(a.state().failure?.message).toBe("claude: command not found");
+    expect(a.state().sessionId).toBeUndefined();
   });
 
   it("starts empty with no carried context when the chat had no messages", async () => {

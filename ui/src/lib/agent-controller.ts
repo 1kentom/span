@@ -732,6 +732,8 @@ export function createAgentController(props: AgentPanelProps) {
     const leavingAgent = agentId();
     const link = carry && leaving && leavingAgent ? { agentId: leavingAgent, sessionId: leaving, name: agentLabel(), title: currentTitle() } : undefined;
     handoff = carry ? { from: agentLabel(), to: name, text: buildHandoff(state().feed, { from: agentLabel(), root: cwd }), link } : undefined;
+    // The backend keeps the old connection until the new one is up (issue #87), so a failed switch can go back to it.
+    const left = hadSession ? { name: agentName(), id: agentId(), launch: launch(), key: connectionKey(), states: sessionStates(), conversation: state(), chats: chats.keys().map((key) => [key, chats.get(key)!] as const) } : undefined;
     setRefused(undefined);
     batch(() => {
       setWorking(true);
@@ -763,8 +765,7 @@ export function createAgentController(props: AgentPanelProps) {
       resetSessionUi();
     });
     try {
-      if (hadSession) await api.agentDisconnect();
-      if (!current()) return;
+      // agent_connect replaces the active agent itself, closing the old one only after the new one connected.
       const id = await api.agentConnect(command, cwd);
       if (!current()) return;
       if (id) {
@@ -783,12 +784,39 @@ export function createAgentController(props: AgentPanelProps) {
     } catch (cause) {
       if (!current()) return;
       handoff = undefined;
+      if (left && (await keptConnection(left.key))) {
+        if (!current()) return;
+        // The old agent is still connected: back to its chat as it was, with the error card over it.
+        batch(() => {
+          setConnecting(undefined);
+          setAgentName(left.name);
+          setAgentId(left.id);
+          setLaunch(left.launch);
+          setConnectionKey(left.key);
+          for (const [key, chat] of left.chats) chats.set(key, chat);
+          bumpChats();
+          setSessionStates(left.states);
+          setState({ ...left.conversation, failure: { phase: "connect", message: errorText(cause), log: state().stderr } });
+        });
+        void refreshSessionStates();
+        return;
+      }
+      if (!current()) return;
       // A failed switch goes back to the chat it left, with the error card over it. The draft is never touched.
       if (carry) setConnecting(undefined);
       else setConnecting((previous) => (previous ? { ...previous, failed: true } : previous));
       update((previous) => ({ ...previous, status: "error", statusMessage: "Connection failed", failure: { phase: "connect", message: errorText(cause), log: previous.stderr } }));
     } finally {
       if (current()) setWorking(false);
+    }
+  }
+  /** True when the backend's active connection is still `key`, the one a failed switch left. */
+  async function keptConnection(key: string | undefined) {
+    if (!key) return false;
+    try {
+      return (await api.agentSessionStates?.())?.connectionId === key;
+    } catch {
+      return false;
     }
   }
   /** The switched-to session is ready: mark the switch in the feed and arm the carried context for its first prompt. */

@@ -109,6 +109,15 @@ let previewSession: SessionState | null = null;
 const previewWorkspace: Workspace = { name: 'intellij', root: '/preview/intellij' };
 const agentListeners = new Set<(event: AgentEvent) => void>();
 let agentGeneration = 0;
+/**
+ * The connect generation whose channel reaches the agent listeners. A failed connect hands it back to the channel
+ * before it, because the backend keeps the old connection when a switch fails (issue #87).
+ */
+let liveChannel = 0;
+/** A disconnect or a new folder: no channel delivers until the next connect. */
+const supersedeAgent = () => {
+  liveChannel = ++agentGeneration;
+};
 let searchSequence = 0;
 
 function language(path: string): string {
@@ -208,7 +217,7 @@ export const api = {
     const selected = path ?? await open({ directory: true, multiple: false, title: 'Open a folder in span' });
     if (!selected || Array.isArray(selected)) return null;
     const workspace = await commands.openWorkspace(selected);
-    agentGeneration += 1;
+    supersedeAgent();
     return workspace;
   },
   async listDirectory(path: string): Promise<FileEntry[]> {
@@ -522,13 +531,22 @@ export const api = {
   },
   async agentConnect(command: AgentCommand, cwd: string): Promise<string> {
     if (!isDesktop) nativeRequired('Connecting agents');
+    const previous = liveChannel;
     const generation = ++agentGeneration;
+    liveChannel = generation;
     const channel = new Channel<AgentEvent>();
     channel.onmessage = event => {
-      if (generation !== agentGeneration) return;
+      if (generation !== liveChannel) return;
       for (const listener of agentListeners) listener(event);
     };
-    const session = await commands.agentConnect(command, cwd, channel);
+    let session: string;
+    try {
+      session = await commands.agentConnect(command, cwd, channel);
+    } catch (cause) {
+      // The backend connects the new agent before it closes the old one, so a failed connect leaves the old one active.
+      if (generation === agentGeneration) liveChannel = previous;
+      throw cause;
+    }
     if (generation !== agentGeneration) throw new Error('Agent connection was superseded by another connection or disconnect.');
     return session;
   },
@@ -599,7 +617,7 @@ export const api = {
   },
   async agentDisconnect(): Promise<void> {
     if (!isDesktop) nativeRequired('Disconnecting agents');
-    agentGeneration += 1;
+    supersedeAgent();
     await commands.agentDisconnect();
   },
   async agentPermission(requestId: string, optionId: string | null): Promise<void> {
