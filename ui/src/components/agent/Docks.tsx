@@ -369,23 +369,6 @@ export function UrlDock(props: UrlDockProps) {
   );
 }
 
-/**
- * One line above the composer while the agent works: a shimmering label, the elapsed time and a hint.
- * Deliberately not a live region: the timer changes every second. The composer announces start and stop once.
- */
-export function ActivityBar(props: { label: string; elapsed?: string; hint?: string }) {
-  return (
-    <div class="sb-activity">
-      <span class="sb-spinner" aria-hidden="true" />
-      <span class="sb-shimmer sb-ellipsis sb-flex">
-        {props.label}
-        <Show when={props.elapsed}> · {props.elapsed}</Show>
-      </span>
-      <Show when={props.hint}><span class="sb-sub nowrap">{props.hint}</span></Show>
-    </div>
-  );
-}
-
 type RewindDockProps = DockFocusProps & {
   /** Edit puts an earlier message in the composer; restore only offers the file actions. */
   mode: "edit" | "restore";

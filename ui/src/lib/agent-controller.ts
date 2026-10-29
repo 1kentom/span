@@ -11,6 +11,7 @@ import { buildAgentCatalog, curatedAgent, removalBlockReason, type CatalogRow } 
 import { attentionSessions, busyState, chatKey, createChatStore, delegationMetaPatch, isBusyPromptError, newAttention, reduceBackground, rowStatus, subagentModelPatch, toBackground, turnMetaPatch, withConversation, type ChatSnapshot } from "./agent-chats";
 import { RUN_TEXT } from "./agent-hint-text";
 import { activityLabel, clockText, outputPreview, runningTitle, runningTool, stillRunningText } from "./agent-running";
+import { lastFinishedTool, runningTools, toolBarView } from "./agent-tool-bar";
 
 import {
   addFeedItem,
@@ -2111,6 +2112,22 @@ export function createAgentController(props: AgentPanelProps) {
     const preview = outputPreview(tool);
     return { ...runningTitle(tool), id: tool.toolCallId, elapsed: clockText(now - (times?.start ?? (turnStart() || now))), lines: preview.lines, hidden: preview.hidden, full: preview.all, still: stillRunningText(now - (times?.last ?? now)) };
   });
+  /**
+   * The single running bar above the composer: the newest running tool (with a "+N more" count), a just-finished tool
+   * while it settles, or the phase (thinking, waiting, stopping). Every timer comes from `clock` and a recorded start.
+   */
+  const toolBar = (browser = false) =>
+    toolBarView({
+      running: running() ? runningTools(feed()) : [],
+      finished: running() ? lastFinishedTool(feed()) : undefined,
+      timesOf: (event) => toolTimes.get(`${event.sessionId}:${event.toolCallId}`),
+      now: clock(),
+      turnStart: turnStart(),
+      approval: Boolean(permission() || childPermission()),
+      answer: Boolean(elicitation()) && elicitation()?.mode !== "url",
+      browser: browser || elicitation()?.mode === "url",
+      stopping: state().stopRequested,
+    });
   /** User chats in the background that wait for an approval or an answer. */
   const attentionCount = createMemo(() => attentionSessions(sessionStates(), state().sessionId).length);
   /** A session list row's state from the backend, or undefined for a session Span does not hold. */
@@ -2131,6 +2148,7 @@ export function createAgentController(props: AgentPanelProps) {
     activity,
     turnElapsed,
     runningStep,
+    toolBar,
     chatCount: () => (chatVersion(), chats.size()),
     feed,
     connected,
