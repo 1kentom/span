@@ -356,8 +356,8 @@ fn explorer_dotted_patches_reset_one_leaf_and_preserve_siblings_and_false() {
         .update_setting(SettingsScope::Workspace, "explorer.showIgnoredFiles", None)
         .unwrap();
     let saved = workspace.get_settings_jsonc().unwrap();
-    assert!(saved.contains("\"showHiddenFiles\":false"));
-    assert!(saved.contains("\"confirmDelete\":false"));
+    assert!(saved.contains("\"showHiddenFiles\": false"));
+    assert!(saved.contains("\"confirmDelete\": false"));
     assert!(saved.contains("\"futureSetting\""));
     let effective = workspace.get_settings().unwrap();
     assert!(!effective.explorer.show_hidden_files);

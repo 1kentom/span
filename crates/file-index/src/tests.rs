@@ -276,7 +276,7 @@ async fn visibility_reconfiguration_preserves_handle_but_cancels_old_scan_and_qu
 }
 
 #[tokio::test]
-async fn regular_file_named_node_modules_remains_a_source_file_in_scan_and_events() {
+async fn visibility_regular_file_named_node_modules_remains_a_source_file_in_scan_and_events() {
     let temp = tempfile::tempdir().unwrap();
     let path = write(temp.path(), "node_modules", "ordinary file");
     let (index, handle) = indexed(temp.path()).await;
