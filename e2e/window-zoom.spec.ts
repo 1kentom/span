@@ -39,7 +39,7 @@ test("window zoom scales the whole workbench and persists independently of font 
 });
 
 
-for (const factor of [1.728, 2]) {
+for (const factor of [1.728, 2, 1.2 ** 5]) {
   test(`keeps editor and terminal inside the viewport at ${factor} CSS zoom and resizes panels in logical pixels`, async ({ page }, testInfo) => {
     await ready(page);
     await page.evaluate(async factor => { const zoom = await import("/src/lib/zoom.ts"); await zoom.applyWindowZoom(factor); }, factor);
@@ -51,6 +51,9 @@ for (const factor of [1.728, 2]) {
       expect(bounds.y).toBeGreaterThanOrEqual(0); expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height + 1);
       expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width + 1);
     }
+    const mainBounds = (await page.locator(".workbench-main").boundingBox())!;
+    const terminalBounds = (await page.locator(".run-bottom-panel").boundingBox())!;
+    expect(terminalBounds.y + terminalBounds.height).toBeLessThanOrEqual(mainBounds.y + mainBounds.height + 1);
     const handle = page.getByRole("separator", { name: "Resize project panel", exact: true });
     const logicalWidth = await page.locator(".workbench-main").evaluate(node => node.clientWidth);
     expect(Number(await handle.getAttribute("aria-valuemax"))).toBeCloseTo(logicalWidth * .42, 1);
@@ -63,3 +66,19 @@ for (const factor of [1.728, 2]) {
     await page.screenshot({ path: testInfo.outputPath(`workbench-zoom${factor}.png`) });
   });
 }
+
+
+test("keeps an expanded terminal above the status bar in a small window at maximum zoom", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 700 }); await ready(page);
+  const divider = page.getByRole("separator", { name: "Resize terminal panel", exact: true });
+  for (let index = 0; index < 8; index++) await divider.press("Shift+ArrowUp");
+  await page.evaluate(async () => { const zoom = await import("/src/lib/zoom.ts"); await zoom.applyWindowZoom(1.2 ** 5); });
+  await expect.poll(async () => (await page.locator(".ide").boundingBox())!.height).toBeCloseTo(700, 0);
+  const main = (await page.locator(".workbench-main").boundingBox())!;
+  const terminal = (await page.locator(".run-bottom-panel").boundingBox())!;
+  const editor = (await page.locator(".editor-groups").boundingBox())!;
+  expect(terminal.y + terminal.height).toBeLessThanOrEqual(main.y + main.height + 1);
+  expect(editor.height / (1.2 ** 5)).toBeGreaterThanOrEqual(99.5);
+  expect((await page.locator(".statusbar").boundingBox())!.y).toBeGreaterThanOrEqual(terminal.y + terminal.height - 1);
+  await page.screenshot({ path: testInfo.outputPath("small-workbench-max-zoom.png") });
+});
