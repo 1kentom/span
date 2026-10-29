@@ -146,7 +146,7 @@ pub async fn paste_clipboard_file(
         workspace.write_new_file(&path, &bytes)
     })
     .await?;
-    crate::file_import::refresh_index(&state, &[entry.path.clone()]);
+    crate::file_import::refresh_index(&state, std::slice::from_ref(&entry.path));
     Ok(entry)
 }
 
