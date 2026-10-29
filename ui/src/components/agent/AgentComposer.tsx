@@ -8,10 +8,11 @@ import { shouldFocusDock } from "../../lib/agent-dock-focus";
 import { delegationLine, isFinished } from "../../lib/agent-delegation";
 import { type FeedItem, type PermissionEvent } from "../../lib/agent-session";
 import { isSlashQuery, leaf, permissionDetails, slashGroups, type SpanCommand } from "../../lib/agent-view";
+import { agentLimit } from "../../lib/agent-errors";
 import { api, isDesktop } from "../../lib/client";
 import { URL_COPY, parseUrlRequest, type UrlRequestView } from "../../lib/agent-url-request";
 import { ContextHint, ContextMeter, ContextPopover, createCompaction, createStaleTracker } from "./ContextMeter";
-import { compactCommand, contextPercent, meterState, showCompactHint, type LimitNote } from "../../lib/context-usage";
+import { compactCommand, contextPercent, meterState, limitNote, showCompactHint, type LimitNote } from "../../lib/context-usage";
 import type { DelegationTaskState } from "../../lib/agent-delegation";
 import { AgentStatusBar } from "./AgentStatusBar";
 import { PermissionDock, QuestionDock, RewindDock, UrlDock, focusDock } from "./Docks";
@@ -104,11 +105,15 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
     if (!command || !a.connected() || a.running()) return;
     compaction.start(command);
   };
-  /**
-   * Integration seam for the quota classifier (feature/quota-errors, ui/src/lib/agent-errors.ts and its store). It is
-   * not on main yet, so there is no limit to show. Map its last quota event for this agent into a LimitNote here.
-   */
-  const limit = (): LimitNote | undefined => undefined;
+  /** A clock for the reset countdown, ticking only while an agent limit event exists. */
+  const [limitNow, setLimitNow] = createSignal(Date.now());
+  const limit = (): LimitNote | undefined => limitNote(agentLimit(), a.agentId() ?? a.agentName(), limitNow());
+  createEffect(() => {
+    if (!agentLimit()) return;
+    setLimitNow(Date.now());
+    const timer = setInterval(() => setLimitNow(Date.now()), 15_000);
+    onCleanup(() => clearInterval(timer));
+  });
   const delegatedTasks = () => a.state().feed.flatMap((item): DelegationTaskState[] => (item.kind === "delegation" ? [item.task] : []));
   const showMeter = () => a.connected() && (Boolean(usage()) || meter() === "unreported" && !a.state().turnUsage || Boolean(compaction.run()) || Boolean(limit()));
   const hint = () => showCompactHint({ pct: usagePct(), canCompact: Boolean(compact()), dismissed: a.bannerDismissed(), running: a.running(), stale: stale(), compacting: Boolean(compaction.run()) });
@@ -415,7 +420,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
               usage={usage()}
               model={modelName()}
               limit={limit()}
-              now={a.healthNow()}
+              now={limitNow()}
               tasks={delegatedTasks()}
               compactCommand={compact()}
               busy={a.running()}

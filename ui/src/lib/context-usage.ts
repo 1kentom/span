@@ -142,12 +142,19 @@ export function compactRunText(run: CompactRun): string {
   return compactionMessage(run.before, run.after);
 }
 
+/** Limit facts for one agent, mapped from the quota classifier's AgentLimit by limitNote. */
+export type LimitNote = { provider?: string; resetsAtMs?: number; kind?: "quota" | "rate_limit" };
+
 /**
- * Limit facts for one agent, from the quota classifier. Integration seam: the classifier and its store are being
- * built on feature/quota-errors (ui/src/lib/agent-errors.ts). Until that lands nothing produces this value, and the
- * popover shows no limit line. Map its quota event into this shape; do not classify errors here.
+ * The last quota or rate-limit event as a popover note, only for the agent that hit it and only until its reset time.
+ * Success clears the source signal; other kinds (auth, overloaded) are not a limit line.
  */
-export type LimitNote = { provider?: string; resetsAtMs?: number };
+export function limitNote(event: { kind: string; provider?: string; resetAt?: number; agentId?: string } | undefined, agentId: string | undefined, now: number): LimitNote | undefined {
+  if (!event || (event.kind !== "quota" && event.kind !== "rate_limit")) return undefined;
+  if (!agentId || event.agentId !== agentId) return undefined;
+  if (event.resetAt !== undefined && event.resetAt <= now) return undefined;
+  return { kind: event.kind, provider: event.provider, resetsAtMs: event.resetAt };
+}
 
 /** "2h", "45m", "3d". Rounds up so a reset is never shown as sooner than it is. */
 export function formatWait(ms: number): string {
@@ -158,10 +165,10 @@ export function formatWait(ms: number): string {
   return `${Math.ceil(hours / 24)}d`;
 }
 
-/** "Limit reached, resets in 2h" only when the reset time is known and still ahead; otherwise just "Limit reached". */
+/** "Limit reached, resets in 2h" or "Rate limited, resets in 4m"; the reset part only when known and still ahead. */
 export function limitText(limit: LimitNote, now: number): string {
   const reset = limit.resetsAtMs !== undefined && limit.resetsAtMs > now ? `, resets in ${formatWait(limit.resetsAtMs - now)}` : "";
-  return `Limit reached${reset}`;
+  return `${limit.kind === "rate_limit" ? "Rate limited" : "Limit reached"}${reset}`;
 }
 
 /** One agent's own row in the popover. A delegated child's figures are its own delegation meter, never the lead's. */
