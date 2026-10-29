@@ -1035,7 +1035,13 @@ impl SessionManager {
             };
             (service, depth)
         };
-        let session_id = service.new_session_with(mcp_servers).await?;
+        let session_id = if parent.is_some() {
+            // Delegated children never get servers, and stay out of the
+            // agent's own history where it allows that.
+            service.new_child_session().await?
+        } else {
+            service.new_session_with(mcp_servers).await?
+        };
         let key = SessionKey::new(connection_id, session_id);
         let is_child = parent.is_some();
         let registered = {
@@ -1053,6 +1059,15 @@ impl SessionManager {
         };
         if registered {
             self.publish(connection_id);
+        }
+        if is_child {
+            // Recorded before anything else sees the id, so the child is never
+            // a History row of its own and can be ended later (ADR 0003).
+            let agent = self
+                .connection(connection_id)
+                .map(|c| c.agent_name)
+                .unwrap_or_default();
+            crate::delegated::record_delegated_session(&agent, &key.session_id);
         }
         if registered && is_child {
             service.mark_delegated(&key.session_id);
@@ -1560,6 +1575,12 @@ pub struct AgentControl {
 impl AgentControl {
     pub fn caller(&self) -> &SessionKey {
         &self.caller
+    }
+
+    /// The manager, for the tool server ending its own recorded children
+    /// after the lead is gone. Not public: agents never get it.
+    pub(crate) fn manager(&self) -> &SessionManager {
+        &self.manager
     }
 
     fn below(&self, target: &SessionKey) -> Result<(), String> {
