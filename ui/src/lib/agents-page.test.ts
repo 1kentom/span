@@ -9,6 +9,8 @@ import {
   currentThreadState,
   groupRail,
   isAgentModeChord,
+  planLimits,
+  resetText,
   railNav,
   railOrder,
   railRows,
@@ -215,5 +217,22 @@ describe("currentThreadState and railTime", () => {
     expect(railTime(NOW - 5 * 60_000, NOW)).toBe("5m");
     expect(railTime(NOW - 3 * 3_600_000, NOW)).toBe("3h");
     expect(railTime(NOW - 2 * 86_400_000, NOW)).toBe("2d");
+  });
+});
+
+describe("planLimits", () => {
+  const installed = [{ id: "claude-acp", name: "Claude Agent" }, { id: "codex-acp", name: "Codex" }, { id: "gemini", name: "Gemini CLI" }, { id: "qwen", name: "Qwen" }];
+  it("lists up to three agents, the connected one first, with what Span saw limited and the earliest reset", () => {
+    const limits = planLimits(installed, { "codex-acp\ngpt-fast": NOW + 7_200_000, "codex-acp\ngpt-deep": NOW + 3_600_000, "gemini\npro": 0 }, "codex-acp");
+    expect(limits.map((limit) => limit.id)).toEqual(["codex-acp", "claude-acp", "gemini"]);
+    expect(limits[0]).toEqual({ id: "codex-acp", name: "Codex", limited: true, resetAt: NOW + 3_600_000, models: ["gpt-fast", "gpt-deep"] });
+    expect(limits[1]).toEqual(expect.objectContaining({ limited: false, resetAt: undefined, models: [] }));
+    expect(limits[2]).toEqual(expect.objectContaining({ limited: true, resetAt: undefined, models: ["pro"] }));
+  });
+  it("says when a limit resets, or that the time is unknown", () => {
+    expect(resetText(undefined, NOW)).toBe("reset time unknown");
+    expect(resetText(NOW + 40 * 60_000, NOW)).toBe("resets in 40m");
+    expect(resetText(NOW + 125 * 60_000, NOW)).toBe("resets in 2h 5m");
+    expect(resetText(NOW + 120 * 60_000, NOW)).toBe("resets in 2h");
   });
 });

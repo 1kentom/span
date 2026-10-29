@@ -69,14 +69,14 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-function harness() {
+function harness(windowWidth = 1440) {
   const [mode, setMode] = createSignal<"editor" | "agents">("editor");
   let agent!: AgentController;
   const host = mount(() => {
     agent = createAgentController({ workspacePath: "/workspace/one" });
     return (
       <Show when={mode() === "agents"} fallback={<AgentPanel workspacePath="/workspace/one" controller={agent} />}>
-        <AgentsPage agent={agent} workspaceRoot="/workspace/one" workspaceName="one" windowWidth={1440} onOpenEditor={() => setMode("editor")} onOpenFile={() => undefined} />
+        <AgentsPage agent={agent} workspaceRoot="/workspace/one" workspaceName="one" windowWidth={windowWidth} onOpenEditor={() => setMode("editor")} onOpenFile={() => undefined} />
       </Show>
     );
   });
@@ -150,5 +150,31 @@ describe("Editor and Agents share one thread", () => {
     host.querySelector<HTMLElement>('[role="option"][data-row-id="earlier"]')!.click();
     await flush();
     expect(mocks.resumeSession).toHaveBeenCalledWith("earlier");
+  });
+
+  it("turns the rail into an overlay in a narrow window, opened from the grip strip and closed with Escape", async () => {
+    const { host, setMode } = harness(1000);
+    await flush();
+    setMode("agents");
+    await flush();
+    expect(host.querySelector(".ap-rail")).toBeNull();
+    host.querySelector<HTMLButtonElement>(".ap-rail-restore")!.click();
+    await flush();
+    const rail = host.querySelector<HTMLElement>(".ap-rail.overlay")!;
+    expect(rail).not.toBeNull();
+    rail.querySelector<HTMLInputElement>('input[aria-label="Search sessions"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await flush();
+    expect(host.querySelector(".ap-rail")).toBeNull();
+  });
+
+  it("offers the new-session picker with the installed agents before an agent is connected", async () => {
+    const { host, setMode } = harness();
+    await flush();
+    setMode("agents");
+    await flush();
+    await vi.waitFor(() => expect(host.querySelector(".ap-picker")).not.toBeNull());
+    host.querySelector<HTMLButtonElement>('button.ap-agent-card[aria-label^="Start with"]')!.click();
+    await flush();
+    expect(mocks.connect).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, createUniqueId } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, createUniqueId, type JSX } from "solid-js";
 import { groupRail, railNav, railOrder, railTime, type RailRow } from "../../lib/agents-page";
 import { BrandIcon } from "../BrandIcon";
 import { ContextMenu, type ContextMenuItem } from "../ContextMenu";
@@ -26,6 +26,16 @@ export type SessionsRailProps = {
   onClose?: (row: RailRow) => void;
   canClose?: (row: RailRow) => boolean;
   onCopyId?: (row: RailRow) => void;
+  /** Row menu actions, each shown only when the agent supports it (the History list's actions). */
+  onRename?: (row: RailRow) => void;
+  onArchive?: (row: RailRow, archived: boolean) => void;
+  onFork?: (row: RailRow) => void;
+  onExport?: (row: RailRow) => void;
+  /** Shown under the list (the Plan limits footer). */
+  footer?: JSX.Element;
+  /** Shown as an overlay over the thread (narrow windows): Escape closes it. */
+  overlay?: boolean;
+  onDismiss?: () => void;
   /** Shortcut labels for the search and New session hints. */
   searchShortcut?: string;
   newShortcut?: string;
@@ -102,6 +112,11 @@ export function SessionsRail(props: SessionsRailProps) {
     const items: ContextMenuItem[] = [
       { id: "open", label: row.current ? "Focused" : "Open session", disabled: Boolean(row.current || row.unavailable), disabledReason: row.unavailable, onSelect: () => props.onOpen(row) },
     ];
+    const listed = !row.connectionId;
+    if (props.onRename && listed) items.push({ id: "rename", label: "Rename…", onSelect: () => props.onRename?.(row) });
+    if (props.onFork && listed) items.push({ id: "fork", label: "Fork", disabled: Boolean(row.unavailable), disabledReason: row.unavailable, onSelect: () => props.onFork?.(row) });
+    if (props.onExport && listed) items.push({ id: "export", label: "Export…", onSelect: () => props.onExport?.(row) });
+    if (props.onArchive && listed) items.push({ id: "archive", label: row.archived ? "Unarchive" : "Archive", onSelect: () => props.onArchive?.(row, !row.archived) });
     if (props.onClose) items.push({ id: "close", label: "Close session", disabled: !props.canClose?.(row), disabledReason: "Only the focused session can be closed, and only when the agent supports closing", onSelect: () => props.onClose?.(row) });
     if (props.onCopyId) items.push({ id: "copy", label: "Copy session id", onSelect: () => props.onCopyId?.(row) });
     setMenu({ x, y, items, label: `${row.title} actions` });
@@ -177,7 +192,17 @@ export function SessionsRail(props: SessionsRailProps) {
     );
   };
   return (
-    <aside class="ap-rail" aria-label="Sessions">
+    <aside
+      class="ap-rail"
+      classList={{ overlay: props.overlay }}
+      aria-label="Sessions"
+      onKeyDown={(event) => {
+        if (props.overlay && event.key === "Escape" && !event.defaultPrevented && !menu()) {
+          event.preventDefault();
+          props.onDismiss?.();
+        }
+      }}
+    >
       <header class="ap-pane-head">
         <h2 class="ap-pane-title">Sessions</h2>
       </header>
@@ -283,6 +308,7 @@ export function SessionsRail(props: SessionsRailProps) {
           </div>
         </Show>
       </div>
+      {props.footer}
       <Show when={menu()}>{(open) => <ContextMenu x={open().x} y={open().y} items={open().items} label={open().label} onClose={() => setMenu(undefined)} />}</Show>
     </aside>
   );
