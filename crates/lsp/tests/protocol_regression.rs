@@ -958,7 +958,7 @@ async fn watched_files_register_filter_kinds_normalize_and_unregister_on_wire() 
             {"id":"metadata", "method":method, "registerOptions":{"watchers":[
                 {"globPattern":{"baseUri":span_lsp::path_to_uri(&root.join("config")).unwrap(),"pattern":"**/*.xml"}},
                 {"globPattern":"**/.classpath","kind":4},
-                {"globPattern":format!("{}/**/*.gradle", root.to_string_lossy())}
+                {"globPattern":format!("{}/**/*.gradle", root.to_string_lossy().replace('\\', "/"))}
             ]}}
         ]}},
         {"method":"client/unregisterCapability", "params":{"unregisterations":[
