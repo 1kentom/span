@@ -28,7 +28,7 @@ import {
   markUrlOpened,
 } from "./agent-session";
 
-import { buildPrompt, coerceAnswer, configViews, currentChoice, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
+import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
 import { bytesToBase64, createFileAttachment, createFolderAttachment, folderOutline, isInWorkspace, needsStoredLink, planAttachment, redactPaths, type Attachment, type PromptCapabilities } from "./attachments";
 import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
 import { feedTurns } from "./agent-handoff";
@@ -1382,6 +1382,11 @@ export function createAgentController(props: AgentPanelProps) {
    * Every agent involved in the open chat: the lead, the agents it delegated to and the agents of earlier segments of
    * this thread. The strip shows only when there is more than one.
    */
+  /** The lead's current model name, for the Active agents card. Tolerates an option that lists no groups. */
+  const leadModel = () => {
+    const option = state().config.find((candidate) => candidate.category === "model");
+    return (option?.groups ?? []).flatMap((group) => group.choices ?? []).find((choice) => choice.value === option?.currentValue)?.name;
+  };
   const liveAgents = createMemo(() => {
     const current = state().sessionId;
     if (!connected() || !current) return [];
@@ -1390,7 +1395,7 @@ export function createAgentController(props: AgentPanelProps) {
       .segments.filter((segment) => !(segment.sessionId === current && (!id || segment.agentId === id)))
       .map((segment) => ({ id: segment.agentId, name: segment.connectionName || registryName(segment.agentId) || segment.agentId }));
     return liveAgentsOf({
-      lead: { id, name: (id && registryName(id)) || agentLabel(), state: leadState(), detail: currentChoice(configViews(state().config).find((option) => option.category === "model"))?.name },
+      lead: { id, name: (id && registryName(id)) || agentLabel(), state: leadState(), detail: leadModel() },
       tasks: state().feed.flatMap((item) => (item.kind === "delegation" ? [item.task] : [])),
       waiting: (task) => childPermissionList().some((entry) => permissionWaitsOn(entry, task)),
       earlier,
