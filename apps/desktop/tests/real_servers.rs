@@ -1271,6 +1271,93 @@ async fn python_family() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn svelte_family() {
+    let id = ServerId::Svelte;
+    let mut env = Env::start(&[
+        ("package.json", "{\"name\":\"demo\"}\n"),
+        ("App.svelte", "<p>hi</p>\n"),
+    ])
+    .await;
+    env.open("App.svelte");
+    let svelte = "<script lang=\"ts\">\n  let count: number = 0;\n  const label: string = count;\n</script>\n<button on:click={() => count++}>{count}</button>\n";
+    env.replace("App.svelte", svelte);
+    assert_eq!(env.disk("App.svelte"), "<p>hi</p>\n");
+    env.wait_ready(id).await;
+    env.hover_until(id, "App.svelte", before(svelte, "count++"), |t| {
+        t.contains("count")
+    })
+    .await;
+    let mark = env.mark();
+    let rev = env.replace("App.svelte", svelte);
+    let d = env
+        .diagnostics(id, "App.svelte", mark, "type error", |d| {
+            fresh(d, rev.revision) && has_message(&d.diagnostics, "not assignable")
+        })
+        .await;
+    assert_eq!(
+        d.diagnostics
+            .iter()
+            .filter(|x| x.message.contains("not assignable"))
+            .count(),
+        1
+    );
+    env.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vue_family() {
+    let id = ServerId::Vue;
+    let mut env = Env::start(&[
+        ("package.json", "{\"name\":\"demo\"}\n"),
+        ("App.vue", "<p>hi</p>\n"),
+    ])
+    .await;
+    env.open("App.vue");
+    let src = "<script setup lang=\"ts\">\nconst count: number = 0\nconst label: string = count\n</script>\n<template><p>{{ label }}</p></template>\n";
+    env.replace("App.vue", src);
+    assert_eq!(env.disk("App.vue"), "<p>hi</p>\n");
+    env.wait_ready(id).await;
+    let mark = env.mark();
+    let rev = env.replace("App.vue", src);
+    env.diagnostics(id, "App.vue", mark, "type error", |d| {
+        fresh(d, rev.revision) && has_message(&d.diagnostics, "not assignable")
+    })
+    .await;
+    env.hover_until(id, "App.vue", before(src, "count\n"), |t| {
+        t.contains("count")
+    })
+    .await;
+    env.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn astro_family() {
+    let id = ServerId::Astro;
+    let mut env = Env::start(&[
+        ("package.json", "{\"name\":\"demo\"}\n"),
+        ("Page.astro", "<p>hi</p>\n"),
+    ])
+    .await;
+    env.open("Page.astro");
+    let src =
+        "---\nconst count: number = 0;\nconst label: string = count;\n---\n<h1>{label}</h1>\n";
+    env.replace("Page.astro", src);
+    assert_eq!(env.disk("Page.astro"), "<p>hi</p>\n");
+    env.wait_ready(id).await;
+    let mark = env.mark();
+    let rev = env.replace("Page.astro", src);
+    env.diagnostics(id, "Page.astro", mark, "type error", |d| {
+        fresh(d, rev.revision) && has_message(&d.diagnostics, "not assignable")
+    })
+    .await;
+    env.hover_until(id, "Page.astro", before(src, "count;\n---"), |t| {
+        t.contains("count")
+    })
+    .await;
+    env.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rust_family() {
     let id = ServerId::RustAnalyzer;
     let mut env = Env::start(&[

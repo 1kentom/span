@@ -160,6 +160,12 @@
   font-size:12px;
   overflow-wrap:anywhere
 }
+.git-error a {
+  display:block;
+  margin-top:4px;
+  color:inherit;
+  text-underline-offset:2px
+}
 .git-success {
   padding:7px 10px;
   color:#72b88b;

@@ -49,6 +49,8 @@ export type AgentPanelProps = {
   workspaceGeneration?: number;
   activePath?: string;
   selectionContext?: { path: string; text: string; startLine?: number; endLine?: number };
+  /** Text another part of the app wants in the composer, for example the problems of a file. A new `id` appends it. */
+  incomingPrompt?: { id: number; text: string };
   onBufferChanged?: (path: string, snapshot?: BufferSnapshot) => void;
   onOpenSettings?: () => void;
   /** Removes an installed agent from Span, and with `uninstall` also deletes its managed adapter files. */
@@ -124,6 +126,7 @@ export function createAgentController(props: AgentPanelProps) {
   const running = createMemo(() => state().running);
 
   const [prompt, setPrompt] = createSignal("");
+  createEffect(on(() => props.incomingPrompt?.id, () => { const incoming = props.incomingPrompt; if (incoming?.text) { setView("session"); setPrompt(current => (current.trim() ? `${current}\n\n${incoming.text}` : incoming.text)); } }, { defer: true }));
   const [view, setView] = createSignal<View>("session");
   const [menu, setMenu] = createSignal<Menu>(null);
   const [working, setWorking] = createSignal(false);
