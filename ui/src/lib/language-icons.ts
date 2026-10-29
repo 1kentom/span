@@ -46,6 +46,15 @@ const SERVER_LANGUAGE: Readonly<Partial<Record<LanguageServerId, string>>> = {
 /** The language id a server's list row draws. A new server with a language-shaped id needs no entry here. */
 export const serverLanguage = (id: LanguageServerId): string => SERVER_LANGUAGE[id] ?? id;
 
+/**
+ * The language to name and draw for a file. A buffer still marked plain text (detection pending, or the
+ * browser preview) takes the language of the server that serves it, so Controller.java never reads "Plain text".
+ */
+export function fileLanguage(bufferLanguage: string | undefined | null, server: LanguageServerId | undefined): string {
+  const lang = (bufferLanguage ?? "").trim();
+  return lang && lang !== "text" ? lang : server ? serverLanguage(server) : "text";
+}
+
 /** Every devicon name that ships, for the provenance test. */
 export const languageLogoKeys = Object.keys(LOGOS);
 

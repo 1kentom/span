@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { LANGUAGE_FALLBACK_ICON, languageIconFor, languageIconRender, languageLogoKeys, serverLanguage } from "./language-icons";
+import { LANGUAGE_FALLBACK_ICON, fileLanguage, languageIconFor, languageIconRender, languageLogoKeys, serverLanguage } from "./language-icons";
 import { bestContrast, contrast, paintedColors, parseColor, MIN_LOGO_CONTRAST } from "./svg-paint";
 import { iconAssetPath } from "./menuIcons";
 import { serverOrder } from "./language-intelligence-copy";
@@ -47,6 +47,13 @@ describe("language icon lookup", () => {
     expect(languageIconFor(undefined)).toBeUndefined();
     expect(languageIconFor("__proto__")).toBeUndefined();
     expect(iconAssetPath(LANGUAGE_FALLBACK_ICON)).toBe("/icons/language-unknown.svg");
+  });
+  it("names a plain text buffer after the server that serves it", () => {
+    expect(fileLanguage("text", "jdtls")).toBe("java");
+    expect(fileLanguage(undefined, "rust-analyzer")).toBe("rust");
+    expect(fileLanguage("javascript", "vtsls")).toBe("javascript");
+    expect(fileLanguage("markdown", undefined)).toBe("markdown");
+    expect(fileLanguage("", undefined)).toBe("text");
   });
   it("draws the dark rendering on the purple theme", () => {
     const rust = languageIconFor("rust")!;

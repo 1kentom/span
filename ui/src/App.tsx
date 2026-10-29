@@ -67,6 +67,7 @@ import { LanguageServerStatus } from "./components/LanguageServerStatus";
 import { LanguageServerSettings } from "./components/LanguageServerSettings";
 import { useLanguageServers } from "./stores/language-servers";
 import { createLanguageIntelligence } from "./stores/language-intelligence";
+import { fileLanguage } from "./lib/language-icons";
 import { LanguageIntelligencePanel } from "./components/LanguageIntelligencePanel";
 import { LanguageIntelligenceButton } from "./components/LanguageIntelligenceButton";
 import { TrustBanner } from "./components/TrustBanner";
@@ -104,7 +105,7 @@ export default function App() {
   const hub = createLanguageIntelligence({ servers: languageServers, activePath: () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? path : undefined; }, workspaceRoot: () => w.workspace()?.root, autoInstall: () => w.settings().languageServers?.autoInstall ?? true, preview: !isDesktop, setUserSetting: (key, value) => w.updateSettingKey(key, value, "user"), pickPath: hubPort.pickPath, openSettings: () => openSettings() });
   const [hubOpen, setHubOpen] = createSignal(false);
   const [hubPlacement, setHubPlacement] = createSignal<"top" | "bottom">("top");
-  const activeLanguage = () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? w.buffers[path]?.language || "text" : undefined; };
+  const activeLanguage = () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? fileLanguage(w.buffers[path]?.language, hub.view().card?.server) : undefined; };
   let hubTrigger: HTMLElement | undefined;
   const closeHub = (restoreFocus = true) => { setHubOpen(false); if (restoreFocus) hubTrigger?.focus(); };
   const toggleHub = (trigger: HTMLElement) => { if (hubOpen()) closeHub(); else { hubTrigger = trigger; setHubPlacement(trigger.closest(".statusbar") ? "bottom" : "top"); setHubOpen(true); const prompt = hub.view().banner; if (prompt) hub.dismissBanner(prompt.root); } };
