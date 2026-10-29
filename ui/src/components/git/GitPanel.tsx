@@ -156,7 +156,10 @@ export function GitPanel(props: GitPanelProps) {
       <Show when={props.available && !g.hasWorkspace()}>
         <div class="git-empty"><strong>No folder open</strong><span>Open a folder inside a Git repository to review changes.</span></div>
       </Show>
-      <Show when={g.error()}><div class="git-error" role="alert">{g.error()}</div></Show>
+      <Show when={g.error()}><div class="git-error" role="alert">
+        {g.error()}
+        <Show when={g.errorHelp()}>{url => <a href={url()} target="_blank" rel="noopener noreferrer">Troubleshoot Git startup</a>}</Show>
+      </div></Show>
       <Show when={g.warning()}><div class="git-warning" role="status">Commit completed with a warning: {g.warning()}</div></Show>
       <Show when={g.notice()}><div class="git-success" role="status">{g.notice()}</div></Show>
       <Show when={props.available && g.context() && !g.context()?.repository}>

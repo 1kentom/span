@@ -25,13 +25,27 @@ export function workspaceGitPath(context: GitContext | undefined, path: string):
   return path.startsWith(`${prefix}/`) ? path.slice(prefix.length + 1) : undefined;
 }
 
+type GitError = { message: string; helpUrl?: string };
+function describeGitError(cause: unknown): GitError {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const missing = /^Command ["'`]?(git_(?:context|enable|status|diff|history|commit_diff|stage|unstage|commit))["'`]? not found\.?$/i.exec(message.trim());
+  if (!missing) return { message };
+  return {
+    message: `This window's backend does not recognize ${missing[1]}. The frontend and backend may be different versions. Save your work and copy any commit draft, then fully quit Span and reopen the latest app. If this is a development window, also stop and restart its development process.`,
+    helpUrl: "https://github.com/1kentom/span/issues/154",
+  };
+}
+
 export function createGitWorkbench(options: { root: () => string | undefined; generation: () => number; active: () => boolean; blocked: () => boolean; available: boolean; onOpenView: (key: string, title: string) => void; transport?: GitTransport }) {
   const transport = options.transport ?? api;
   const [context, setContext] = createSignal<GitContext>();
   const [status, setStatus] = createSignal<GitStatus>();
   const [loading, setLoading] = createSignal(false);
   const [operation, setOperation] = createSignal<string>();
-  const [error, setError] = createSignal("");
+  const [errorState, setErrorState] = createSignal<GitError>({ message: "" });
+  const error = () => errorState().message;
+  const errorHelp = () => errorState().helpUrl;
+  const setError = (cause: unknown) => setErrorState(describeGitError(cause));
   const [notice, setNotice] = createSignal("");
   const [warning, setWarning] = createSignal("");
   const [message, setMessageState] = createSignal("");
@@ -46,7 +60,7 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
   let refreshPending: Promise<void> | undefined;
   const viewRequests = new Map<string, number>();
   const live = (token: number) => !disposed && epoch === token;
-  const report = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
+  const report = (cause: unknown) => describeGitError(cause).message;
   const changed = () => status()?.entries.filter(workingChange) || [];
   const staged = () => status()?.entries.filter(stagedChange) || [];
   const mutable = (entry: GitChange) => !!entry.path && !entry.unsupportedReason && !entry.conflicted && !entry.submodule;
@@ -76,7 +90,7 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
         if (!live(token) || request !== contextRequest) return;
         if (snapshot.repository.id !== next.repository.id) throw new Error("The Git repository changed. Refresh to review the current repository.");
         setStatus(snapshot); setError("");
-      } catch (cause) { if (live(token) && request === contextRequest) setError(report(cause)); }
+      } catch (cause) { if (live(token) && request === contextRequest) setError(cause); }
       finally { if (live(token) && request === contextRequest) setLoading(false); }
     })();
     refreshPending = task;
@@ -94,7 +108,7 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
       if (snapshot.repository.id !== ctx.repository.id) throw new Error("The repository changed before Git was enabled. Refresh and review its location.");
       batch(() => { setContext({ ...ctx, enabled: true, repository: snapshot.repository }); setStatus(snapshot); });
       return true;
-    } catch (cause) { if (live(token)) setError(report(cause)); return false; }
+    } catch (cause) { if (live(token)) setError(cause); return false; }
     finally { if (live(token)) setOperation(undefined); }
   }
   async function mutate(kind: "stage" | "unstage" | "commit", entries: GitChange[] = []) {
@@ -126,7 +140,7 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
         }
       });
       return true;
-    } catch (cause) { if (live(token)) setError(report(cause)); return false; }
+    } catch (cause) { if (live(token)) setError(cause); return false; }
     finally { if (live(token)) { setOperation(undefined); if (refreshAfterCommit) void refresh(); } }
   }
   async function loadHistory(path: string | null | undefined = historyPath(), more = false) {
@@ -187,6 +201,6 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
     onCleanup(() => clearInterval(timer));
   });
   onCleanup(() => { disposed = true; epoch++; });
-  return { hasWorkspace: () => !!options.root(), context, status, loading, operation, error, notice, warning, message, setMessage, staged, changed, mutable, ready, canCommit, refresh, enable, stage: (entries: GitChange[]) => mutate("stage", entries), unstage: (entries: GitChange[]) => mutate("unstage", entries), commit: () => mutate("commit"), history, historyLoading, historyError, historyPath, loadHistory, views, openDiff, refreshView, retainViews };
+  return { hasWorkspace: () => !!options.root(), context, status, loading, operation, error, errorHelp, notice, warning, message, setMessage, staged, changed, mutable, ready, canCommit, refresh, enable, stage: (entries: GitChange[]) => mutate("stage", entries), unstage: (entries: GitChange[]) => mutate("unstage", entries), commit: () => mutate("commit"), history, historyLoading, historyError, historyPath, loadHistory, views, openDiff, refreshView, retainViews };
 }
 export type GitWorkbench = ReturnType<typeof createGitWorkbench>;

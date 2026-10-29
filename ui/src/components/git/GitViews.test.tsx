@@ -22,6 +22,21 @@ function fixture(available = true) {
   const mount = (node: () => JSX.Element) => dispose.push(render(node, host));
   return { git, transport, onOpenView, host, mount };
 }
+it("shows missing-command recovery help without navigating away, clearing a draft or changing the repository", async () => {
+  const f = fixture(); await f.git.refresh(); f.git.setMessage("Keep this draft");
+  f.mount(() => <GitPanel git={f.git} available />);
+  f.transport.gitContext.mockRejectedValueOnce("Command git_context not found"); await f.git.refresh();
+  const alert = f.host.querySelector('[role="alert"]')!;
+  expect(alert.textContent).toContain("may be different versions");
+  expect(alert.textContent).toContain("Save your work and copy any commit draft");
+  const link = alert.querySelector<HTMLAnchorElement>("a")!;
+  expect(link.textContent).toBe("Troubleshoot Git startup");
+  expect(link.href).toBe("https://github.com/1kentom/span/issues/154");
+  expect(link.target).toBe("_blank"); expect(link.rel).toContain("noopener");
+  expect(f.host.querySelector<HTMLTextAreaElement>('[aria-label="Git commit message"]')?.value).toBe("Keep this draft");
+  expect(f.host.textContent).toContain("feature/test"); expect(f.transport.gitCommit).not.toHaveBeenCalled();
+  await f.git.refresh(); expect(f.host.querySelector('[role="alert"]')).toBeNull();
+});
 it("shows repository scope and requires an explicit inline enable before exposing Git actions", async () => {
   const f = fixture(); f.transport.gitContext.mockResolvedValueOnce({ ...context, enabled: false });
   await f.git.refresh(); f.mount(() => <GitPanel git={f.git} available />);

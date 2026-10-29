@@ -31,6 +31,56 @@ function fixture(available = true) {
 }
 
 describe("repository-scoped Git workbench", () => {
+  it.each(["Command git_context not found", new Error("Command git_context not found")])("explains an unavailable native Git command without clearing the commit draft (%s)", async cause => {
+    const f = fixture(); f.git.setMessage("Unsent commit draft");
+    f.transport.gitContext.mockRejectedValueOnce(cause);
+    await f.git.refresh();
+    expect(f.git.error()).toContain("does not recognize git_context");
+    expect(f.git.error()).toContain("may be different versions");
+    expect(f.git.error()).toContain("Save your work and copy any commit draft");
+    expect(f.git.error()).toContain("fully quit Span");
+    expect(f.git.error()).toContain("stop and restart its development process");
+    expect(f.git.errorHelp()).toBe("https://github.com/1kentom/span/issues/154");
+    expect(f.git.message()).toBe("Unsent commit draft");
+    expect(f.git.context()).toBeUndefined(); expect(f.git.status()).toBeUndefined();
+    expect(f.transport.gitStatus).not.toHaveBeenCalled(); expect(f.transport.gitCommit).not.toHaveBeenCalled();
+    expect(f.transport.gitEnable).not.toHaveBeenCalled(); expect(f.transport.gitStage).not.toHaveBeenCalled();
+    await f.git.refresh();
+    expect(f.git.error()).toBe(""); expect(f.git.errorHelp()).toBeUndefined();
+    expect(f.git.message()).toBe("Unsent commit draft");
+  });
+  it("preserves reviewed Git context, history and comparisons when context refresh finds an unavailable command", async () => {
+    const f = fixture(); await f.git.refresh(); await f.git.loadHistory();
+    f.git.openDiff("outside/file.ts", "working");
+    await vi.waitFor(() => expect(Object.values(f.git.views())[0]?.diff?.patch).toBe("patch"));
+    f.git.setMessage("Keep this reviewed commit draft");
+    const before = { context: f.git.context(), status: f.git.status(), history: f.git.history(), views: f.git.views() };
+    f.transport.gitContext.mockRejectedValueOnce("Command git_context not found"); await f.git.refresh();
+    expect(f.git.context()).toBe(before.context); expect(f.git.status()).toBe(before.status);
+    expect(f.git.history()).toBe(before.history); expect(f.git.views()).toBe(before.views);
+    expect(f.git.message()).toBe("Keep this reviewed commit draft");
+    expect(f.transport.gitCommit).not.toHaveBeenCalled(); expect(f.transport.gitStage).not.toHaveBeenCalled();
+    expect(f.git.loading()).toBe(false);
+  });
+  it("keeps a rejected commit and its reviewed index available when the native commit command is missing", async () => {
+    const f = fixture(); await f.git.refresh(); f.git.setMessage("Retain on missing command");
+    f.transport.gitCommit.mockRejectedValueOnce("Command git_commit not found");
+    expect(await f.git.commit()).toBe(false);
+    expect(f.git.error()).toContain("does not recognize git_commit");
+    expect(f.git.message()).toBe("Retain on missing command"); expect(f.git.status()?.indexRevision).toBe("index-1");
+    expect(f.git.operation()).toBeUndefined(); expect(f.transport.gitStage).not.toHaveBeenCalled();
+  });
+  it.each(["Git hook output: Command git_context not found", "Git executable not found", "Command open_workspace not found", "Permission denied"])("preserves ordinary Git failures without diagnosing backend versions (%s)", async message => {
+    const f = fixture(); f.transport.gitContext.mockRejectedValueOnce(new Error(message)); await f.git.refresh();
+    expect(f.git.error()).toBe(message); expect(f.git.errorHelp()).toBeUndefined();
+  });
+  it("ignores an old missing-command reply after switching workspaces", async () => {
+    const f = fixture(); const old = deferred<GitContext>(); f.transport.gitContext.mockReturnValueOnce(old.promise);
+    const pending = f.git.refresh(); f.setRoot("/repo/other"); f.setGeneration(2); await f.git.refresh();
+    f.git.setMessage("New workspace draft"); old.reject("Command git_context not found"); await pending;
+    expect(f.git.error()).toBe(""); expect(f.git.errorHelp()).toBeUndefined();
+    expect(f.git.context()?.repository?.id).toBe("repo-b"); expect(f.git.message()).toBe("New workspace draft");
+  });
   it("does not run status, history, diffs, polling or mutations before explicit session enablement", async () => {
     const f = fixture(); f.transport.gitContext.mockResolvedValue({ ...context(), enabled: false });
     vi.useFakeTimers(); f.setActive(true);
