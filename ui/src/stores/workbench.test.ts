@@ -767,6 +767,15 @@ describe("file operations reconcile editor state", () => {
     workbench.applyHistory("src/renamed.ts"); await vi.waitFor(() => expect(workbench.buffers["src/renamed.ts"].revision).toBe(3));
     expect(workbench.documents()["src/renamed.ts"].document.toString()).toBe(initial().text);
   });
+  it("saves unsaved edits before renaming so the move is not refused", async () => {
+    const workbench = await setup(); append(workbench, "// unsaved\n"); await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
+    const order: string[] = [];
+    client.saveBuffer.mockImplementation(async (path: string, revision: number) => { order.push("save"); const old = server.get(path)!; const saved = { ...old, revision: Math.max(old.revision, revision), savedRevision: Math.max(old.revision, revision) }; server.set(path, saved); return saved; });
+    client.renamePath.mockImplementation(async (from: string, to: string) => { order.push("rename"); const old = server.get(from)!; server.delete(from); server.set(to, { ...old, path: to }); return { path: to, name: "renamed.ts", isDir: false }; });
+    await workbench.renamePath("src/file.ts", "src/renamed.ts");
+    expect(order).toEqual(["save", "rename"]);
+    expect(workbench.activePath()).toBe("src/renamed.ts");
+  });
   it("preserves a dirty file when the backend refuses its rename", async () => {
     const workbench = await setup(); append(workbench, "// unsaved\n"); await vi.waitFor(() => expect(workbench.buffers["src/file.ts"].revision).toBe(1));
     client.renamePath.mockRejectedValue(new Error("Save or discard unsaved changes first"));

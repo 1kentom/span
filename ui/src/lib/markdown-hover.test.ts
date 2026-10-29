@@ -203,3 +203,14 @@ describe("links", () => {
     expect(root.textContent).toBe("ok bad");
   });
 });
+
+describe("jdt nested list", () => {
+  it("renders a fully indented list section as a list, not code, and keeps a jdt link as its label", () => {
+    const md = "must be specified.\n\n     * **Returns:**\n       * the API to convert the [ButtonType](jdt://contents/a.jar/B.java?=x) that the user clicked on";
+    const { root } = render(md);
+    expect(root.querySelector(".cm-lsp-code")).toBeNull();
+    expect(root.querySelectorAll("li").length).toBe(2);
+    expect(root.textContent).toContain("the API to convert the ButtonType that the user clicked on");
+    expect(root.querySelector("a")).toBeNull();
+  });
+});
