@@ -1564,8 +1564,13 @@ fn remove_jsonc_key(text: &str, path: &[&str]) -> Result<String> {
     let Some((key, rest)) = path.split_first() else {
         return Err(CoreError::Settings("Empty preference path".into()));
     };
-    let Some((start, value_start, value_end, delimiter, previous_comma)) =
-        jsonc_member_span(text, key)?
+    let Some(JsoncMemberSpan {
+        start,
+        value_start,
+        value_end,
+        delimiter,
+        previous_comma,
+    }) = jsonc_member_span(text, key)?
     else {
         return Ok(text.to_owned());
     };
@@ -1588,11 +1593,16 @@ fn remove_jsonc_key(text: &str, path: &[&str]) -> Result<String> {
     Ok(patched)
 }
 
+struct JsoncMemberSpan {
+    start: usize,
+    value_start: usize,
+    value_end: usize,
+    delimiter: Option<usize>,
+    previous_comma: Option<usize>,
+}
+
 /// Returns the key/value spans and its separator in one object, respecting JSONC comments.
-fn jsonc_member_span(
-    text: &str,
-    key: &str,
-) -> Result<Option<(usize, usize, usize, Option<usize>, Option<usize>)>> {
+fn jsonc_member_span(text: &str, key: &str) -> Result<Option<JsoncMemberSpan>> {
     parse(text)?;
     let mask = comment_mask(text);
     let mut index = skip_space(&mask, 0) + 1;
@@ -1634,13 +1644,13 @@ fn jsonc_member_span(
             None
         };
         if member_key == key {
-            return Ok(Some((
+            return Ok(Some(JsoncMemberSpan {
                 start,
                 value_start,
                 value_end,
                 delimiter,
                 previous_comma,
-            )));
+            }));
         }
         if delimiter.is_some() {
             previous_comma = delimiter;

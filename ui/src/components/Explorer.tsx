@@ -131,7 +131,15 @@ export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view:
   // Compact folder chains: one row per chain, identified by its deepest directory.
   const [pending, setPending] = createSignal<ReadonlySet<string>>(new Set());
   const attempted = new Set<string>();
-  const markPending = (path: string, on: boolean) => setPending(current => { const next = new Set(current); if (on) next.add(path); else next.delete(path); return next; });
+  const pendingRequests = new Map<string, number>();
+  let nextPendingRequest = 0;
+  const attemptKey = (path: string, generation = w.workspaceGeneration(), revision = w.discoveryRevision()) => `${generation}\0${revision}\0${path}`;
+  const markPending = (path: string, request: number, on: boolean) => {
+    if (on) pendingRequests.set(path, request);
+    else if (pendingRequests.get(path) !== request) return;
+    else pendingRequests.delete(path);
+    setPending(current => { const next = new Set(current); if (on) next.add(path); else next.delete(path); return next; });
+  };
   async function toggleChain(paths: string[]) {
     const deepest = paths[paths.length - 1];
     if (w.expanded().has(deepest)) { await w.toggleDirectory(deepest); return; }
@@ -139,13 +147,15 @@ export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view:
   }
   /** Load the only child directory of an expanded chain so the chain can continue. Reuses the cached lazy listing. */
   async function extendChain(parent: string, child: string) {
-    const generation = w.workspaceGeneration(); attempted.add(`${generation}\0${child}`);
-    markPending(child, true);
+    const generation = w.workspaceGeneration(); const revision = w.discoveryRevision();
+    const request = ++nextPendingRequest;
+    attempted.add(attemptKey(child, generation, revision));
+    markPending(child, request, true);
     try {
       await w.loadDirectory(child);
-      if (generation !== w.workspaceGeneration() || !w.directories[child] || !w.expanded().has(parent)) return;
+      if (generation !== w.workspaceGeneration() || revision !== w.discoveryRevision() || !w.directories[child] || !w.expanded().has(parent)) return;
       if (!w.expanded().has(child)) await w.toggleDirectory(child);
-    } finally { markPending(child, false); }
+    } finally { markPending(child, request, false); }
   }
   const TreeRows = (rowProps: { path: string; depth: number }) => <><Show when={state.edit()?.mode === "create" && state.edit()!.parent === rowProps.path}><EditRow depth={rowProps.depth} /></Show><For each={w.directories[rowProps.path] || []}>{entry => <TreeRow entry={entry} depth={rowProps.depth} />}</For></>;
   const TreeRow = (rowProps: { entry: FileEntry; depth: number }) => {
@@ -153,22 +163,23 @@ export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view:
     const chain = createMemo(() => entry.isDir && preferences().compactFolders ? compactChain(entry.path, w.directories) : undefined);
     const target = () => chain()?.deepest ?? entry.path;
     /** A tail directory discovered below an expanded parent whose listing has not arrived yet. It is shown open so the row does not flip. */
-    const awaitingTail = () => { const current = chain(); if (!current || current.segments.length < 2 || w.directories[current.deepest]) return false; return w.expanded().has(current.segments[current.segments.length - 2].path) && !attempted.has(`${w.workspaceGeneration()}\0${current.deepest}`) || pending().has(current.deepest); };
+    const awaitingTail = () => { w.discoveryRevision(); const current = chain(); if (!current || current.segments.length < 2 || w.directories[current.deepest]) return false; return w.expanded().has(current.segments[current.segments.length - 2].path) && !attempted.has(attemptKey(current.deepest)) || pending().has(current.deepest); };
     const expanded = () => entry.isDir && (w.expanded().has(target()) || pending().has(target()) || awaitingTail());
     const merged = () => (chain()?.segments.length ?? 1) > 1;
     createEffect(() => {
+      w.discoveryRevision();
       const current = chain();
       if (!current || current.segments.length > MAX_CHAIN_DEPTH) return;
       const tail = current.segments[current.segments.length - 1].path;
       const previous = current.segments[current.segments.length - 2]?.path;
       // Case 1: the tail was just discovered below an expanded directory, so load and open it.
-      if (previous !== undefined && !w.directories[tail] && w.expanded().has(previous) && !attempted.has(`${w.workspaceGeneration()}\0${tail}`)) { void extendChain(previous, tail); return; }
+      if (previous !== undefined && !w.directories[tail] && w.expanded().has(previous) && !attempted.has(attemptKey(tail))) { void extendChain(previous, tail); return; }
       // Case 2: the open tail lists exactly one directory, so continue the chain.
       if (!expanded() || current.segments.length >= MAX_CHAIN_DEPTH) return;
       const listing = w.directories[current.deepest];
       if (!listing || listing.length !== 1 || !listing[0].isDir) return;
       const child = listing[0].path;
-      if (isSourceRoot(child) || w.directories[child] || attempted.has(`${w.workspaceGeneration()}\0${child}`)) return;
+      if (isSourceRoot(child) || w.directories[child] || attempted.has(attemptKey(child))) return;
       void extendChain(current.deepest, child);
     });
     const toggle = () => void toggleChain(chain()?.segments.map(segment => segment.path) ?? [entry.path]);

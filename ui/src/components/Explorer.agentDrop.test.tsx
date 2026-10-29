@@ -22,7 +22,7 @@ function mount() {
   const [expanded] = createSignal<Set<string>>(new Set([""]));
   const [generation] = createSignal(0);
   const settings = () => ({ explorer: { showHiddenFiles: true, showIgnoredFiles: false, compactFolders: true, autoReveal: true, confirmDelete: true } } as unknown as Settings);
-  const workbench = { directories, expanded, settings, loadDirectory: async () => {}, toggleDirectory: async () => {}, activePath: () => "", dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, busy: () => false, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
+  const workbench = { directories, expanded, settings, discoveryRevision: () => 0, loadDirectory: async () => {}, toggleDirectory: async () => {}, activePath: () => "", dirty: () => false, workspace: () => ({ name: "ws", root: "/ws" }), workspaceGeneration: generation, busy: () => false, requestWorkspace: () => {}, search: async () => {}, searching: () => false, searchResults: () => [], indexStatus: () => null, indexError: () => "", loadingDirectories: () => new Set<string>() };
   const root = document.createElement("div"); document.body.append(root);
   const state = createExplorerState(workbench as never);
   const onAgentDrop = vi.fn(); const onAgentPreview = vi.fn(); const onEditorDrop = vi.fn();
