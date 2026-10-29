@@ -1459,6 +1459,15 @@ export type DiagnosticDto_Deserialize = {
 	range: RangeDto,
 	source?: string | null,
 	code?: string | null,
+	/**
+	 * The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+	 * dims it, and the problems list counts it as a warning, as IntelliJ does.
+	 */
+	unnecessary?: boolean,
+	/**
+	 * The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`).
+	 */
+	deprecated?: boolean,
 };
 
 export type DiagnosticDto_Serialize = {
@@ -1467,6 +1476,15 @@ export type DiagnosticDto_Serialize = {
 	range: RangeDto,
 	source: string | null,
 	code: string | null,
+	/**
+	 * The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+	 * dims it, and the problems list counts it as a warning, as IntelliJ does.
+	 */
+	unnecessary: boolean,
+	/**
+	 * The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`).
+	 */
+	deprecated: boolean,
 };
 
 export type DiagnosticSeverityDto = "error" | "warning" | "information" | "hint";

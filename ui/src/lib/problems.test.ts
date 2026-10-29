@@ -23,3 +23,15 @@ describe("problems", () => {
     expect(agentPrompt("a.ts", toProblems([d("error", 0, "x"), d("warning", 1, "y")]), "explain")).toContain("Explain these problems");
   });
 });
+
+describe("unused code", () => {
+  it("counts a hint tagged unnecessary as a warning and keeps plain hints out", () => {
+    const list = toProblems([
+      { severity: "hint", message: "'x' is declared but its value is never read.", range: { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } }, unnecessary: true },
+      { severity: "hint", message: "just a hint", range: { start: { line: 2, character: 0 }, end: { line: 2, character: 1 } } },
+    ]);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ severity: "warning", unused: true });
+    expect(summarize(list).label).toBe("1 warning. Open problems");
+  });
+});
