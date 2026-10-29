@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Span Preview",
+  "identifier": "dev.span.editor.dev",
+  "app": {
+    "windows": [
+      {
+        "title": "Span Preview",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 920,
+        "minHeight": 600,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "visible": false,
+        "backgroundColor": "#090909"
+      }
+    ]
+  }
+}
