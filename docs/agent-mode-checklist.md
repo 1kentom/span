@@ -98,3 +98,36 @@ Mostly invisible; check that nothing regressed.
 - VoiceOver: rail items, thread messages, tabs and permission prompts are
   announced with names and states.
 - Reduce motion on: no animated dots or transitions.
+
+## Drag and drop (native pass)
+
+Covered by vitest with mocked Tauri drag-drop events; none of this has been
+exercised in a native window yet. Check on macOS and on Windows (WebView2):
+
+- Finder or Explorer file onto the AI panel (anywhere on it, not only the
+  prompt box): the full panel "Drop to attach" overlay shows while hovering
+  the panel and hides when the pointer moves over the editor or leaves.
+- Drop several files at once: one chip each, with icon, name and size;
+  clicking a chip opens the shared viewer; the remove button works.
+- A file from inside the open project becomes a workspace chip (no copy in
+  Uploads after sending); a file from elsewhere is kept in Uploads on send.
+- A folder from inside the project attaches as an outline; a folder from
+  elsewhere attaches as a path only and is not listed.
+- Hit testing on a Retina display, a 100% Windows display, and a scaled
+  Windows display (125% or 150%), and with the window zoomed in and out:
+  drops just inside the panel's left edge attach, drops just outside do not.
+- A Finder file dropped on the editor area: a file inside the project opens
+  in the group under the pointer; a file outside the project, or with no
+  project open, shows a notice and never switches the project, opens its
+  folder, prompts, or adds it to recent projects, even with unsaved edits.
+- A single folder dropped on the editor asks about unsaved changes before
+  switching, the same as Open Folder.
+- Explorer row (file or folder) and an editor tab dragged onto the AI panel:
+  the drag label reads "attach to AI" and release adds a chip; the tab stays
+  open in its group.
+- Selected editor text dragged onto the prompt box inserts at the drop
+  position; onto the rest of the panel it is appended; long text becomes a
+  "Pasted text" chip. On Windows, HTML text dragging may stay blocked by the
+  native drop handler (see docs/internal-dragging.md); note the result.
+- An image dragged from Finder, from a browser, and from Span's own image
+  viewer attaches as an image chip.

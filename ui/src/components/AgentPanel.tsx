@@ -14,6 +14,7 @@ import { BrandIcon } from "./BrandIcon";
 import { Icon } from "./Icon";
 import { AttachmentViewer, DropOverlay, attachmentBlockReason, type AttachmentTabView } from "./attachments";
 import type { Attachment } from "../lib/attachments";
+import { listenNativeDrops, pointInside } from "../lib/native-drop";
 import { AgentCatalog, catalogPreset } from "./agent/AgentCatalog";
 import { AgentComposer } from "./agent/AgentComposer";
 import { AgentFeed } from "./agent/AgentFeed";
@@ -236,6 +237,21 @@ export function AgentPanel(props: AgentPanelProps) {
   };
 
   let panel: HTMLElement | undefined;
+  /** True while files from Finder or Explorer hover the panel. Native drops never fire HTML drag events here. */
+  const [nativeOver, setNativeOver] = createSignal(false);
+  onMount(() => {
+    if (!isDesktop) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenNativeDrops((drop) => {
+      if (drop.kind === "leave") { setNativeOver(false); return; }
+      const inside = pointInside(panel, drop.point);
+      if (drop.kind === "hover") { setNativeOver(inside); return; }
+      setNativeOver(false);
+      if (inside) void a.attachDroppedPaths(drop.paths);
+    }).then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch(() => undefined);
+    onCleanup(() => { disposed = true; unlisten?.(); });
+  });
   onMount(() => {
     const keyboard = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === ".") {
@@ -685,7 +701,7 @@ export function AgentPanel(props: AgentPanelProps) {
           );
         }}
       </Show>
-      <DropOverlay visible={a.intake.dragging()} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
+      <DropOverlay visible={a.intake.dragging() || nativeOver() || Boolean(props.dropHover)} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
       <EditorToast name={a.toast()} onDismiss={a.clearToast} />
       <OpenRefusal refusal={a.openRefusal()} onCopy={(path) => api.writeClipboard(path)} onDismiss={a.clearOpenRefusal} />
     </section>

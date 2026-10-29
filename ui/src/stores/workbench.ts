@@ -369,7 +369,9 @@ export function createWorkbench() {
   async function initialize(onStartup?: (request: StartupRequest) => Promise<void>) {
     if (!isDesktop) await openWorkspace();
     else {
-      try { const requests = await api.takeStartupRequests(); if (requests.length && onStartup) { for (const request of requests) await onStartup(request); } else { const saved = await api.getSession(); if (saved) await openWorkspace(saved.workspaceRoot, saved); else setSettings(await api.getSettings()); } }
+      // A request that names a folder opens it. Requests that only name files never pick their folder as the
+      // project, so the saved session is restored first and the files open inside it when they belong to it.
+      try { const requests = await api.takeStartupRequests(); if (requests.length && onStartup && requests.some(request => !request.impliedRoot)) { for (const request of requests) await onStartup(request); } else { const saved = await api.getSession(); if (saved) await openWorkspace(saved.workspaceRoot, saved); else setSettings(await api.getSettings()); if (onStartup) for (const request of requests) await onStartup(request); } }
       catch (e) { report(e); }
     }
     if (!workspace()) try { await refreshSettingsScope("user"); } catch (error) { report(error); }

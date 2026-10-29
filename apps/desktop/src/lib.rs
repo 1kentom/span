@@ -51,6 +51,8 @@ pub struct DesktopState {
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
+    /// Canonical paths of the latest native drop, the only ones `read_dropped_file` may read.
+    pub dropped_paths: Arc<Mutex<Vec<PathBuf>>>,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     pub formatter_jobs: FormatterJobs,
@@ -1014,6 +1016,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             services::write_clipboard,
             startup::take_startup_requests,
             startup::enqueue_dropped_paths,
+            startup::dropped_path_info,
+            startup::read_dropped_file,
             services::open_external,
             services::read_image,
             menu::sync_native_menu,
@@ -1179,12 +1183,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             window::log_window_created();
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
+                // Native drops only record their paths. The frontend routes them by where they landed: the
+                // agent panel attaches them, the editor opens files inside the project, a lone folder asks to
+                // open as a project. A dropped file never switches the project to its parent folder.
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
                         paths, ..
                     }) = event
                     {
-                        startup::receive_drop(handle.clone(), paths.clone());
+                        startup::record_drop(&handle.state::<DesktopState>(), paths);
                     }
                 });
             }
