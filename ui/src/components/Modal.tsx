@@ -12,6 +12,7 @@ export type ModalProps = {
   onSubmitError?: (error: unknown) => void;
   defaultAction?: string;
   busy?: boolean;
+  preventCloseWhileBusy?: boolean;
   allowGlobalShortcut?: (event: KeyboardEvent) => boolean;
 };
 
@@ -52,6 +53,7 @@ export function Modal(props: ModalProps) {
     (target || dialog).focus();
   };
   const cancel = () => {
+    if (busy() && props.preventCloseWhileBusy) return;
     submitGeneration += 1; setSubmitting(false); setError(""); props.onClose();
   };
   const defaultButton = () => dialog.querySelector<HTMLButtonElement>(props.defaultAction || "[data-modal-default]");

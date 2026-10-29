@@ -28,6 +28,7 @@ async function fixture(page: Page, javaAvailable = true) {
         if (command === "get_settings_jsonc" || command === "get_settings_jsonc_for_scope") return "{}";
         if (command === "run_tools_enabled") return false;
         if (command === "open_workspace") return { root, name: "Java run fixture" };
+        if (command === "check_external_files") return { workspaceRoot: root, revision: 0, directoriesChanged: false, states: [] };
         if (command === "file_index_status") return { workspaceRoot: root, generation: 1, status: "ready", scannedEntries: 1, indexedFiles: 1, errorCount: 0, lastError: null, watcherReady: true, watcherError: null };
         if (command === "query_file") return { workspaceRoot: root, generation: 1, requestId: 1, results: [{ path: sourcePath, name: "new-file.java", isDir: false }] };
         if (command === "git_context") return { workspaceRoot: root, enabled: false, repository: { id: "java-run-fixture", root, workspacePrefix: "", branch: "fixture", head: null, detached: false, unborn: true }, unavailableReason: null };
