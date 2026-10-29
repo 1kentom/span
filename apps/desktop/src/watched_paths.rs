@@ -118,7 +118,28 @@ pub(crate) fn watched_batch(
                 continue;
             }
             _ => {
-                result.incomplete = true;
+                // Unsupported kinds only lose useful information when an endpoint
+                // could be visible. FSEvents reports unclassified Git metadata
+                // renames during ordinary index updates.
+                if event.paths.is_empty() {
+                    result.incomplete = true;
+                }
+                for path in &event.paths {
+                    if paths_examined >= MAX_INPUT {
+                        result.incomplete = true;
+                        break;
+                    }
+                    paths_examined += 1;
+                    match scoped_path(&canonical_root, root, path) {
+                        Ok(None) => {}
+                        Ok(Some(path)) => {
+                            if policy.visible_kind(&path.path, path.is_dir) != Ok(false) {
+                                result.incomplete = true;
+                            }
+                        }
+                        Err(_) => result.incomplete = true,
+                    }
+                }
                 continue;
             }
         };
@@ -829,6 +850,111 @@ mod tests {
             result.changes,
             vec![actual(&root, "node_modules", FileChangeType::DELETED)]
         );
+    }
+
+    #[test]
+    fn unclassified_git_metadata_renames_are_complete_and_empty() {
+        let temp = root();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join(".git/index"), "index").unwrap();
+        let result = watched_batch(
+            &root,
+            &[
+                event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                    &[&root.join(".git/index.lock")],
+                ),
+                event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                    &[&root.join(".git/index")],
+                ),
+            ],
+            false,
+        );
+        assert!(result.changes.is_empty());
+        assert!(!result.incomplete);
+    }
+
+    #[test]
+    fn unsupported_events_require_every_endpoint_to_be_proven_excluded() {
+        let temp = root();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join(".ignore"), "*.ignored\n").unwrap();
+        let outside = root.parent().unwrap().join("outside.java");
+        for kind in [
+            EventKind::Any,
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::Other)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+        ] {
+            let excluded = watched_batch(
+                &root,
+                &[
+                    event(kind, &[Path::new(".git/index")]),
+                    event(kind, &[Path::new("deleted.ignored")]),
+                    event(kind, &[&outside]),
+                ],
+                false,
+            );
+            assert!(excluded.changes.is_empty());
+            assert!(!excluded.incomplete, "{kind:?}");
+        }
+        for paths in [
+            vec![],
+            vec![Path::new("visible.java")],
+            vec![Path::new("node_modules")],
+            vec![Path::new(".git/index"), Path::new("visible.java")],
+            vec![Path::new("visible.java"), Path::new(".git/index")],
+        ] {
+            let result = watched_batch(
+                &root,
+                &[event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                    &paths,
+                )],
+                false,
+            );
+            assert!(result.changes.is_empty());
+            assert!(result.incomplete, "{paths:?}");
+        }
+        fs::write(root.join(".ignore"), "x".repeat(MAX_IGNORE_BYTES + 1)).unwrap();
+        let uncertain = watched_batch(
+            &root,
+            &[event(EventKind::Any, &[Path::new("unknown.java")])],
+            false,
+        );
+        assert!(uncertain.changes.is_empty());
+        assert!(uncertain.incomplete);
+    }
+
+    #[test]
+    fn excluded_unsupported_events_preserve_global_loss_and_path_limits() {
+        let temp = root();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let excluded = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any)))
+            .add_path(root.join(".git/index"));
+        for (batch, overflow) in [
+            (vec![Ok(excluded.clone())], true),
+            (vec![Ok(excluded.clone().set_flag(Flag::Rescan))], false),
+            (
+                vec![
+                    Ok(excluded.clone()),
+                    Err(notify::Error::generic("watch failed")),
+                ],
+                false,
+            ),
+        ] {
+            let result = watched_batch(&root, &batch, overflow);
+            assert!(result.changes.is_empty());
+            assert!(result.incomplete);
+        }
+        let oversized = (0..MAX_INPUT).fold(excluded, |event, _| {
+            event.add_path(root.join(".git/index.lock"))
+        });
+        let result = watched_batch(&root, &[Ok(oversized)], false);
+        assert!(result.changes.is_empty());
+        assert!(result.incomplete);
     }
 
     #[test]
