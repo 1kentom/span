@@ -18,7 +18,7 @@ pub use adapter::agent_presets;
 pub use background::{BackgroundAgents, BackgroundState, Ensured, LaunchFn, LaunchFuture};
 pub use health::{
     AgentHealth, HealthEnabled, HealthMonitor, HealthPolicy, HealthSink, HealthState, HealthTarget,
-    HealthTargets, HEALTH_CHECK_INTERVAL, HEALTH_PROMPT,
+    HealthTargets, HEALTH_CHECK_INTERVAL, HEALTH_PROMPT, HEALTH_TITLE_PREFIX,
 };
 pub use managed::remove_installed_agent;
 pub use manager::{
@@ -28,5 +28,7 @@ pub use manager::{
     Subscription, DEPTH_EXCEEDED, PROMPT_ALREADY_RUNNING,
 };
 pub use registry::{fetch_registry, install_registry_agent, list_installed_agents};
-pub use service::{is_hidden_session, AgentService, EventSink};
+pub use service::{
+    is_health_title, is_hidden_session, remember_hidden_sessions, AgentService, EventSink,
+};
 pub use types::*;
