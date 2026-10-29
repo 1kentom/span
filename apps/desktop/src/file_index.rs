@@ -774,6 +774,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_changes_from_the_real_watcher_reload_a_clean_core_buffer() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        write(&root, "file.txt", "original");
+        let mut workspace = span_core::CoreWorkspace::open(&root).unwrap();
+        workspace.open_buffer("file.txt").unwrap();
+        let runtime = FileIndexRuntime::default();
+        runtime.activate(root.clone()).await.unwrap();
+        wait_until_ready(&runtime, &root).await;
+        let before = runtime.change_revision();
+        write(&root, "file.txt", "external text");
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while runtime.change_revision() == before {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the real file change must reach the existing watcher");
+        let change = workspace
+            .check_external_files(&[span_core::ExternalFileCheck {
+                path: "file.txt".into(),
+                expected_revision: 0,
+                allow_reload: true,
+            }])
+            .unwrap()
+            .remove(0);
+        assert_eq!(change.kind, span_core::ExternalFileKind::Reloaded);
+        assert_eq!(change.snapshot.unwrap().text, "external text");
+        runtime.shutdown();
+    }
+
+    #[tokio::test]
     async fn real_watcher_replays_scan_deltas_and_reconciles_deletes_renames_ignores_and_directory_moves(
     ) {
         let directory = tempfile::tempdir().unwrap();

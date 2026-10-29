@@ -403,10 +403,15 @@ mod tests {
         fs::write(&target, "outside private").unwrap();
         fs::remove_file(directory.path().join("file.txt")).unwrap();
         std::os::unix::fs::symlink(&target, directory.path().join("file.txt")).unwrap();
-        assert_eq!(
-            check(&mut workspace, true).kind,
-            ExternalFileKind::Unavailable
-        );
+        let change = workspace
+            .check_external_files(&[ExternalFileCheck {
+                path: "file.txt".into(),
+                expected_revision: 0,
+                allow_reload: true,
+            }])
+            .unwrap()
+            .remove(0);
+        assert_eq!(change.kind, ExternalFileKind::Unavailable);
         workspace.abandon_external_file("file.txt", 0).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "outside private");
         assert!(workspace
