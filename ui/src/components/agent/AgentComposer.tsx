@@ -317,6 +317,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             autoFocus={dockFocusProps.autoFocus}
             onFocusChange={dockFocusProps.onFocusChange}
             onChoose={(optionId) => void a.answerPermission(request.event.requestId, optionId)}
+            onCopy={(text) => api.writeClipboard(text)}
           />
         )}
       </Show>
@@ -331,6 +332,7 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             autoFocus={dockFocusProps.autoFocus}
             onFocusChange={dockFocusProps.onFocusChange}
             onChoose={(optionId) => void a.answerChildPermission(request, optionId)}
+            onCopy={(text) => api.writeClipboard(text)}
           />
         )}
       </Show>
