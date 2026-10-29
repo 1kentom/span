@@ -11,6 +11,7 @@ import {
   formatCost,
   formatTokens,
   formatWait,
+  limitNote,
   limitText,
   meterAria,
   meterLabel,
@@ -144,6 +145,24 @@ describe("limits", () => {
     expect(limitText({ provider: "Anthropic", resetsAtMs: 2 * 3_600_000 }, 0)).toBe("Limit reached, resets in 2h");
     expect(limitText({ provider: "Anthropic" }, 0)).toBe("Limit reached");
     expect(limitText({ resetsAtMs: 10 }, 20)).toBe("Limit reached");
+    expect(limitText({ kind: "rate_limit", resetsAtMs: 4 * 60_000 }, 0)).toBe("Rate limited, resets in 4m");
+    expect(limitText({ kind: "rate_limit" }, 0)).toBe("Rate limited");
+  });
+  it("formats waits rounded up", () => {
+    expect(formatWait(1)).toBe("1m");
+    expect(formatWait(61_000)).toBe("2m");
+    expect(formatWait(90 * 60_000)).toBe("2h");
+    expect(formatWait(3 * 86_400_000)).toBe("3d");
+  });
+  it("maps a quota event to a note only for its own agent, kind and time", () => {
+    const quota = { kind: "quota", provider: "Anthropic", resetAt: 100, agentId: "claude" };
+    expect(limitNote(quota, "claude", 50)).toEqual({ kind: "quota", provider: "Anthropic", resetsAtMs: 100 });
+    expect(limitNote(quota, "codex", 50)).toBeUndefined();
+    expect(limitNote(quota, undefined, 50)).toBeUndefined();
+    expect(limitNote(quota, "claude", 100)).toBeUndefined();
+    expect(limitNote({ ...quota, resetAt: undefined }, "claude", 1e12)).toMatchObject({ kind: "quota" });
+    expect(limitNote({ ...quota, kind: "overloaded" }, "claude", 50)).toBeUndefined();
+    expect(limitNote(undefined, "claude", 50)).toBeUndefined();
   });
 });
 
