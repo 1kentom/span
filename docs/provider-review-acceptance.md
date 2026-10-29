@@ -1,0 +1,13 @@
+# Bounded real-provider review acceptance
+
+Tracks [#13](https://github.com/1kentom/span/issues/13). The live run remains pending in this source snapshot.
+
+The opt-in `provider_turn_smoke` example is a native Rust ACP client and `CoreWorkspace` host. It creates one temporary folder containing `greeting.txt`, opens a fresh agent session, rejects one exact write proposal, then accepts one exact write proposal and explicitly saves the buffer. It never uses the app's active user session or a private workspace. The runner must first confirm the authorized managed Claude launch and its existing OAuth route using nonsecret metadata. The harness does not read authentication files, submit credentials, open sign-in pages or configure a gateway.
+
+The harness requires the managed `claude-acp` identity. It selects an advertised Sonnet 4.5 choice and confirms the latest full model/mode snapshot before sending a turn. The session must be in the normal `default` approval mode. Model and mode changes apply only to this isolated session.
+
+There are at most two model turns under one shared 90-second prompt deadline. Deadline checks precede task creation and dispatch. Permission is allowed once only for read/edit requests naming the owned greeting file; unknown paths, other files and execution requests stop the smoke. Rejected review must preserve buffer text, revision, saved revision and disk bytes. Accepted review must first leave an unsaved buffer with unchanged disk bytes; explicit Save must then persist the exact accepted text and clean revision. Unexpected proposals are rejected. The example awaits owned process shutdown on both exercise success and failure.
+
+A dedicated deterministic peer and example tests cover both review outcomes plus zero dispatched prompts after a reverted model, reverted approval mode or expired deadline. These tests use no provider or credentials. Pre-live independent review found and corrected two harness defects: accumulated model confirmation could hide a later wrong snapshot, and an expired deadline could race task dispatch. Final deterministic test and live results must be recorded before claiming acceptance.
+
+A successful live run can establish reuse of existing provider authentication, actual provider ACP callbacks, client review acceptance/rejection and real temporary-file effects through Rust `CoreWorkspace`. It does not establish interactive Span sign-in, packaged review UI clicks, other models/providers, gateway interoperability or general production readiness. Keep those boundaries explicit in the run record and do not close unrelated ACP gates.
