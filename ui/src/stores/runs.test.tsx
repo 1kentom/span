@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import type { RunCatalog_Serialize as RunCatalog, RunConfiguration_Serialize as RunConfiguration, RunEvent_Deserialize as RunEvent, RunInfo_Serialize as RunInfo } from "../bindings";
-import { createRunWorkbench } from "./runs";
+import { CURRENT_FILE_OPTION, createRunWorkbench } from "./runs";
 import { RunOutput } from "../components/RunOutput";
 const disposers: (() => void)[] = [];
 beforeEach(() => { const values = new Map<string, string>(); vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key), clear: () => values.clear() }); });
@@ -33,6 +33,22 @@ describe("run workbench", () => {
     view.store.setSelectedId("second"); expect(localStorage.getItem("span:run-selected:/workspace")).toBe("second");
     await view.store.launch(); expect(view.transport.startRun).toHaveBeenCalledWith(expect.objectContaining({ id: "second", args: ["app.js"] }), "/workspace", expect.any(Function)); expect(view.reveal).toHaveBeenCalledOnce();
     const second = setup(); await settle(); expect(second.store.selectedId()).toBe("second");
+  });
+  it("runs the current file by path through the run channel and explains files without a runner", async () => {
+    const [file, setFile] = createSignal<string | undefined>("/workspace/tool.py"); let listener: ((event: RunEvent) => void) | undefined;
+    const base = setup().transport;
+    const transport = { ...base,
+      currentFileRun: vi.fn(async (path: string, _root: string) => path.endsWith(".py") ? { path: "tool.py", configuration: { id: "current-file", name: "Run tool.py", executable: "python3", args: ["tool.py"], cwd: ".", env: {} }, reason: null } : { path: "README.md", configuration: null, reason: "No runner for .md files." }),
+      startCurrentFileRun: vi.fn(async (_path: string, _root: string, callback: (event: RunEvent) => void) => { listener = callback; return info("file-run"); }),
+    };
+    const reveal = vi.fn(); const store = createRoot(dispose => { disposers.push(dispose); return createRunWorkbench({ generation: () => 1, root: () => "/workspace", blocked: () => false, available: true, onReveal: reveal, transport, activeFile: file }); });
+    await settle(); expect(transport.currentFileRun).toHaveBeenCalledWith("/workspace/tool.py", "/workspace");
+    store.setSelectedId(CURRENT_FILE_OPTION); await store.launch();
+    expect(transport.startCurrentFileRun).toHaveBeenCalledWith("tool.py", "/workspace", expect.any(Function)); expect(transport.startRun).not.toHaveBeenCalled();
+    expect(listener).toBeDefined(); expect(store.selectedRun()?.id).toBe("file-run");
+    await store.stop(); setFile("/workspace/README.md"); await settle();
+    await store.launch(); expect(store.error()).toBe("No runner for .md files."); expect(transport.startCurrentFileRun).toHaveBeenCalledOnce();
+    await store.reload(); expect(store.selectedId()).toBe(CURRENT_FILE_OPTION);
   });
   it("single-flights Start and preserves early output and terminal state before its response", async () => {
     const view = setup(); await settle(); let release!: (value: RunInfo) => void; let event!: (value: RunEvent) => void;
