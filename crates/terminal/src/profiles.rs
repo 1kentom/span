@@ -211,6 +211,7 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use tempfile::TempDir;
 
     #[cfg(unix)]
