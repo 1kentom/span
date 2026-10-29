@@ -97,6 +97,9 @@ export const commands = {
 	writeClipboard: (text: string) => __TAURI_INVOKE<null>("write_clipboard", { text }),
 	takeStartupRequests: () => __TAURI_INVOKE<StartupRequest_Serialize[]>("take_startup_requests"),
 	enqueueDroppedPaths: (paths: string[], cwd: string | null) => __TAURI_INVOKE<null>("enqueue_dropped_paths", { paths, cwd }),
+	droppedPathInfo: (path: string) => __TAURI_INVOKE<DroppedPath>("dropped_path_info", { path }),
+	/**  Reads one file of the latest native drop as base64, refusing anything larger than `max_bytes`. */
+	readDroppedFile: (path: string, maxBytes: number) => __TAURI_INVOKE<string>("read_dropped_file", { path, maxBytes }),
 	openExternal: (url: string) => __TAURI_INVOKE<null>("open_external", { url }),
 	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
@@ -1505,6 +1508,13 @@ export type DocumentHighlightDto = {
 };
 
 export type DocumentHighlightKindDto = "text" | "read" | "write";
+
+export type DroppedPath = {
+	path: string,
+	name: string,
+	isDir: boolean,
+	size: number,
+};
 
 export type EditProposal = {
 	id: string,
