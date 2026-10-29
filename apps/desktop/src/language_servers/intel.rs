@@ -326,6 +326,7 @@ pub fn display_name(server: ServerId) -> &'static str {
         ServerId::Json => "JSON",
         ServerId::RustAnalyzer => "Rust (rust-analyzer)",
         ServerId::Basedpyright => "Python (basedpyright)",
+        ServerId::Svelte => "Svelte",
     }
 }
 
@@ -338,6 +339,7 @@ pub fn languages(server: ServerId) -> Vec<String> {
         ServerId::Json => &["JSON", "JSON with comments"],
         ServerId::RustAnalyzer => &["Rust"],
         ServerId::Basedpyright => &["Python"],
+        ServerId::Svelte => &["Svelte"],
     };
     names.iter().map(|n| (*n).to_owned()).collect()
 }

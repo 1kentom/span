@@ -29,6 +29,7 @@ const servers: { id: LanguageServerId; files: string }[] = [
   { id: "rust-analyzer", files: "Rust" },
   { id: "basedpyright", files: "Python" },
   { id: "jdtls", files: "Java (needs JDK 25 or newer)" },
+  { id: "svelte", files: "Svelte" },
 ];
 
 export function LanguageServerSettings(props: LanguageServerSettingsProps) {

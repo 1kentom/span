@@ -13,6 +13,7 @@ pub enum ServerId {
     RustAnalyzer,
     Basedpyright,
     Jdtls,
+    Svelte,
 }
 
 /// A runtime a server needs on the host.
@@ -49,6 +50,8 @@ pub struct Artifact {
     pub kind: ArtifactKind,
     /// Path of the entry point relative to the extraction directory.
     pub entry: String,
+    /// npm only: place the package under `node_modules/<parent>/node_modules/`.
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -27,6 +27,12 @@ const legacy = (parser: () => Promise<StreamParser<any>>) => async () => StreamL
 const extra = async () => import("./language-extra");
 
 /** Single source of truth for detection and grammars. Every id in the Rust table (crates/core/src/buffer.rs) has an entry here or is listed in `noHighlightingYet`. */
+const loadHtml = async () => {
+  const [{ html }, { emmetSupport }] = await Promise.all([import("@codemirror/lang-html"), import("./emmet")]);
+  const support = html();
+  return new LanguageSupport(support.language, [support.support, emmetSupport("html")]);
+};
+
 const languageTable = {
   typescript: { extensions: ["ts", "tsx", "mts", "cts"], load: async ({ jsx }) => withTokenTags((await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx }), "typescript") },
   javascript: { extensions: ["js", "jsx", "mjs", "cjs"], load: async ({ jsx }) => withTokenTags((await import("@codemirror/lang-javascript")).javascript({ jsx }), "typescript") },
@@ -46,14 +52,9 @@ const languageTable = {
   dotenv: { extensions: ["env"], aliases: ["dotenv"], load: async () => dotenvLanguage },
   toml: { extensions: ["toml"], filenames: ["cargo.lock", "poetry.lock", "uv.lock"], load: legacy(async () => (await import("@codemirror/legacy-modes/mode/toml")).toml) },
   yaml: { extensions: ["yaml", "yml"], load: legacy(async () => (await import("@codemirror/legacy-modes/mode/yaml")).yaml) },
-  html: {
-    extensions: ["html", "htm", "svg"],
-    load: async () => {
-      const [{ html }, { emmetSupport }] = await Promise.all([import("@codemirror/lang-html"), import("./emmet")]);
-      const support = html();
-      return new LanguageSupport(support.language, [support.support, emmetSupport("html")]);
-    },
-  },
+  html: { extensions: ["html", "htm", "svg"], load: loadHtml },
+  // Svelte markup is HTML with embedded script and style blocks, so it borrows the HTML grammar until it has its own.
+  svelte: { extensions: ["svelte"], load: loadHtml },
   css: {
     extensions: ["css", "scss"],
     aliases: ["scss"],
@@ -112,7 +113,7 @@ const entries = languageTable as Record<LanguageId, LanguageEntry>;
 export const languageIds = Object.keys(languageTable) as LanguageId[];
 
 /** Ids the Rust detector can produce that have no grammar yet. */
-export const noHighlightingYet: readonly string[] = ["vue", "svelte"];
+export const noHighlightingYet: readonly string[] = ["vue"];
 
 /** Whether an id has a grammar loader. */
 export const hasGrammar = (id: string): boolean => Object.hasOwn(entries, id) && typeof entries[id as LanguageId].load === "function";

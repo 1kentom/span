@@ -45,6 +45,7 @@ pub fn server_slug(id: ServerId) -> &'static str {
         ServerId::RustAnalyzer => "rust-analyzer",
         ServerId::Basedpyright => "basedpyright",
         ServerId::Jdtls => "jdtls",
+        ServerId::Svelte => "svelte",
     }
 }
 
@@ -322,6 +323,7 @@ mod tests {
                 sha256: sha.into(),
                 kind: ArtifactKind::TarGz,
                 entry: "bin/tool".into(),
+                parent: None,
             }],
         }
     }

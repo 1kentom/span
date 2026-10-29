@@ -1906,6 +1906,7 @@ async fn status_rows_describe_the_server_and_its_runtime() {
         (LanguageServerId::Json, "JSON"),
         (LanguageServerId::RustAnalyzer, "Rust (rust-analyzer)"),
         (LanguageServerId::Basedpyright, "Python (basedpyright)"),
+        (LanguageServerId::Svelte, "Svelte"),
     ] {
         assert!(names.contains(&(id, name)), "{id:?}");
     }

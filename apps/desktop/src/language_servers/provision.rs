@@ -65,6 +65,7 @@ pub fn approximate_download_size(id: ServerId) -> u64 {
         ServerId::RustAnalyzer => 20_000_000,
         ServerId::Basedpyright => 20_000_000,
         ServerId::Jdtls => 60_000_000,
+        ServerId::Svelte => 12_000_000,
     }
 }
 

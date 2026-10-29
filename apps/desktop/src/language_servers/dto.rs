@@ -21,6 +21,7 @@ pub enum LanguageServerId {
     RustAnalyzer,
     Basedpyright,
     Jdtls,
+    Svelte,
 }
 
 impl From<ServerId> for LanguageServerId {
@@ -33,6 +34,7 @@ impl From<ServerId> for LanguageServerId {
             ServerId::RustAnalyzer => Self::RustAnalyzer,
             ServerId::Basedpyright => Self::Basedpyright,
             ServerId::Jdtls => Self::Jdtls,
+            ServerId::Svelte => Self::Svelte,
         }
     }
 }
@@ -47,6 +49,7 @@ impl From<LanguageServerId> for ServerId {
             LanguageServerId::RustAnalyzer => Self::RustAnalyzer,
             LanguageServerId::Basedpyright => Self::Basedpyright,
             LanguageServerId::Jdtls => Self::Jdtls,
+            LanguageServerId::Svelte => Self::Svelte,
         }
     }
 }
@@ -61,6 +64,7 @@ pub fn settings_key(id: ServerId) -> &'static str {
         ServerId::RustAnalyzer => "rust-analyzer",
         ServerId::Basedpyright => "basedpyright",
         ServerId::Jdtls => "jdtls",
+        ServerId::Svelte => "svelte",
     }
 }
 
