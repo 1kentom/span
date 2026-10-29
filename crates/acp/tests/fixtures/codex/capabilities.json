@@ -1,0 +1,18 @@
+{
+  "quirk": "Codex ACP 2.3.0 approves native app-server writes, so Ready must not promise Span edit review.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "ready",
+      "features": {
+        "adapter": "codex",
+        "editsBypassReview": true,
+        "doubleApproval": false
+      }
+    }
+  ]
+}

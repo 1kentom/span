@@ -1,6 +1,6 @@
 //! Claude Code (claude-agent-acp 0.98.0, read from source; the interruption
 //! marker was seen in a live capture).
-use super::{annotate, text, Quirks, SessionState};
+use super::{annotate, text, Profile, Quirks, SessionState};
 use crate::AgentHint;
 use serde_json::{json, Value};
 
@@ -14,6 +14,15 @@ const INTERRUPTED: &str = "[Request interrupted by user]";
 const PEER_SESSION_TOOLS: &[&str] = &["ListAgents"];
 
 impl Quirks for Claude {
+    /// Since 0.18.0 Claude uses built-in filesystem tools rather than client
+    /// filesystem callbacks. Its permission prompt does not stage a Span buffer.
+    fn profile(&self) -> Profile {
+        Profile {
+            edits_bypass_review: true,
+            ..Profile::default()
+        }
+    }
+
     /// claude-agent-acp merges `_meta.claudeCode.options.disallowedTools`
     /// into the SDK options (0.98.0 source). `ListAgents` lists the other
     /// Claude Code sessions on the machine. `SendMessage` stays: Claude also

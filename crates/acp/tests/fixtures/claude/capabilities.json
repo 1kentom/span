@@ -1,0 +1,18 @@
+{
+  "quirk": "Claude ACP 0.98.0 uses native filesystem tools, so Ready must not promise Span edit review.",
+  "drive": [
+    {
+      "do": "newSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "ready",
+      "features": {
+        "adapter": "claude",
+        "editsBypassReview": true,
+        "doubleApproval": false
+      }
+    }
+  ]
+}

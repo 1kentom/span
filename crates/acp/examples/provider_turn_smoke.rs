@@ -17,6 +17,40 @@ const REJECTED: &str = "hello rejected\n";
 const ACCEPTED: &str = "hello span\n";
 type Result<T> = std::result::Result<T, String>;
 
+#[derive(Default)]
+struct ReplyExcerpt {
+    text: String,
+    truncated: bool,
+}
+
+impl ReplyExcerpt {
+    fn push(&mut self, text: &str) {
+        const LIMIT: usize = 8192;
+        let remaining = LIMIT.saturating_sub(self.text.chars().count());
+        self.text.extend(text.chars().take(remaining));
+        self.truncated |= text.chars().count() > remaining;
+    }
+
+    fn redacted(&self, path: &Path) -> String {
+        let mut text = self.text.clone();
+        if self.truncated {
+            // Discard a cut-off token, which might contain an incomplete path.
+            text.truncate(text.rfind(char::is_whitespace).unwrap_or(0));
+        }
+        if let Some(root) = path.parent().and_then(Path::to_str) {
+            text = text.replace(root, "<owned-workspace>");
+            if let Some(alias) = root.strip_prefix("/private") {
+                text = text.replace(alias, "<owned-workspace>");
+            }
+        }
+        let mut excerpt: String = text.chars().take(2048).collect();
+        if self.truncated || text.chars().count() > 2048 {
+            excerpt.push_str(" [reply truncated]");
+        }
+        format!("{excerpt:?}")
+    }
+}
+
 struct SelectedModel {
     config_id: String,
     value: String,
@@ -130,11 +164,29 @@ async fn turn(
     let timeout = tokio::time::sleep_until(deadline);
     tokio::pin!(timeout);
     let mut reviewed = false;
+    let mut expected_snapshot = workspace
+        .lock()
+        .map_err(|_| "Workspace lock poisoned")?
+        .agent_read("greeting.txt")
+        .map_err(|error| error.to_string())?;
+    let mut reply = ReplyExcerpt::default();
     let result = async {
         loop {
             tokio::select! {
                 response = &mut prompt => {
-                    if !reviewed { return Err("Provider completed without the expected ACP write proposal".into()); }
+                    // Notifications preceding the response may still be queued.
+                    for _ in 0..256 {
+                        let Ok(event) = events.try_recv() else { break; };
+                        if let AgentEvent::Text { session_id, text, .. } = event {
+                            if session_id == session { reply.push(&text); }
+                        }
+                    }
+                    let snapshot = workspace.lock().map_err(|_| "Workspace lock poisoned")?.agent_read("greeting.txt").map_err(|error| error.to_string())?;
+                    let expected_disk = if reviewed && accept { ACCEPTED } else { ORIGINAL };
+                    if snapshot.text != expected_snapshot.text || snapshot.revision != expected_snapshot.revision || snapshot.saved_revision != expected_snapshot.saved_revision || std::fs::read_to_string(path).map_err(|error| error.to_string())? != expected_disk {
+                        return Err(format!("Provider changed the owned file outside the verified review/Save state; provider reply: {}", reply.redacted(path)));
+                    }
+                    if !reviewed { return Err(format!("Provider completed without the expected ACP write proposal; owned buffer and disk unchanged; provider reply: {}", reply.redacted(path))); }
                     return match response {
                         Ok(Ok(())) => Ok(()),
                         _ => Err("Provider did not finish the accepted turn successfully".into()),
@@ -163,15 +215,18 @@ async fn turn(
                                 workspace.lock().map_err(|_| "Workspace lock poisoned")?.save_buffer("greeting.txt", snapshot.revision).map_err(|error| error.to_string())?;
                                 let saved = workspace.lock().map_err(|_| "Workspace lock poisoned")?.agent_read("greeting.txt").map_err(|error| error.to_string())?;
                                 if std::fs::read_to_string(path).map_err(|error| error.to_string())? != ACCEPTED || saved.saved_revision != saved.revision { return Err("Explicit Save did not persist the accepted edit".into()); }
+                                expected_snapshot = saved;
                                 println!("Verified accepted ACP proposal, unsaved buffer and explicit Save");
                             } else {
                                 if snapshot.text != before.text || snapshot.revision != before.revision || snapshot.saved_revision != before.saved_revision { return Err("Rejected proposal changed the editor buffer".into()); }
+                                expected_snapshot = snapshot;
                                 println!("Verified rejected ACP proposal preserved editor buffer and disk");
                             }
                             reviewed = true;
                         }
                         AgentEvent::AuthRequired { .. } => return Err("Existing provider authentication was not accepted; no sign-in was attempted".into()),
                         AgentEvent::Elicitation { .. } => return Err("Provider requested unexpected interactive input".into()),
+                        AgentEvent::Text { session_id, text, .. } if session_id == session => reply.push(&text),
                         _ => {},
                     }
                 }
@@ -280,6 +335,55 @@ async fn exercise(
     Ok(())
 }
 
+#[tokio::main]
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args().skip(1);
+    let manifest = args.next().ok_or("Installed agent manifest required")?;
+    let allow_current_sonnet = match args.next().as_deref() {
+        None => false,
+        Some("--allow-current-sonnet") => true,
+        _ => return Err("Unknown provider acceptance argument".into()),
+    };
+    if args.next().is_some() {
+        return Err("Too many provider acceptance arguments".into());
+    }
+    let installed: InstalledAgent = serde_json::from_slice(&std::fs::read(manifest)?)?;
+    if installed.id != "claude-acp" {
+        return Err("This bounded acceptance run requires the managed Claude ACP adapter".into());
+    }
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().canonicalize()?;
+    let path: PathBuf = root.join("greeting.txt");
+    std::fs::write(&path, ORIGINAL)?;
+    let workspace = Arc::new(Mutex::new(
+        CoreWorkspace::open(&root)?.with_user_settings(None),
+    ));
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let service = AgentService::start(
+        installed.launch,
+        root.to_string_lossy().into_owned(),
+        workspace.clone(),
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    )
+    .await
+    .map_err(|_| "Provider process did not initialize for the isolated smoke")?;
+    let result = exercise(
+        &service,
+        &mut events,
+        &workspace,
+        &path,
+        allow_current_sonnet,
+    )
+    .await;
+    let cleanup = service.shutdown_and_wait().await;
+    result?;
+    cleanup?;
+    println!("Live provider accept/reject review smoke passed; owned process shutdown completed");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +421,23 @@ mod tests {
             }],
             &path
         ));
+    }
+
+    #[test]
+    fn reply_excerpt_redacts_streamed_paths_and_bounds_diagnostics() {
+        let path = Path::new("/private/tmp/span-owned-fixture/greeting.txt");
+        let mut reply = ReplyExcerpt::default();
+        reply.push("Unavailable at /private/tmp/span-");
+        reply.push("owned-fixture/greeting.txt or /tmp/span-owned-fixture/greeting.txt\n");
+        let excerpt = reply.redacted(path);
+        assert!(excerpt.contains("<owned-workspace>/greeting.txt"));
+        assert!(!excerpt.contains("/private/tmp"));
+        assert!(!excerpt.contains("/tmp/span"));
+        reply.push(&"bounded ".repeat(2000));
+        reply.push("/private/tmp/span-owned-fixture");
+        assert!(reply.text.len() <= 8192);
+        assert!(reply.redacted(path).len() < 2200);
+        assert!(reply.redacted(path).contains("reply truncated"));
     }
 
     #[test]
@@ -443,6 +564,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_missing_callback_reports_redacted_provider_reply_and_stops_after_one_turn() {
+        let mut fixture = Fixture::start(Some("--no-callbacks")).await;
+        let result = exercise(
+            &fixture.service,
+            &mut fixture.events,
+            &fixture.workspace,
+            &fixture.path,
+            false,
+        )
+        .await;
+        fixture.service.shutdown_and_wait().await.unwrap();
+        let error = result.unwrap_err();
+        assert!(error.contains("ACP filesystem callbacks are unavailable"));
+        assert!(error.contains("<owned-workspace>/greeting.txt"));
+        assert!(error.contains("owned buffer and disk unchanged"));
+        assert!(!error.contains(fixture.path.parent().unwrap().to_str().unwrap()));
+        assert_eq!(fixture.prompts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read_to_string(&fixture.path).unwrap(), ORIGINAL);
+    }
+
+    #[tokio::test]
+    async fn a_direct_write_cannot_be_reported_as_an_unchanged_missing_proposal() {
+        let mut fixture = Fixture::start(Some("--direct-write")).await;
+        let result = exercise(
+            &fixture.service,
+            &mut fixture.events,
+            &fixture.workspace,
+            &fixture.path,
+            false,
+        )
+        .await;
+        fixture.service.shutdown_and_wait().await.unwrap();
+        assert!(result
+            .unwrap_err()
+            .contains("outside the verified review/Save state"));
+        assert_eq!(fixture.prompts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn native_write_profiles_send_no_review_smoke_prompt() {
+        for flag in ["--claude-native", "--codex-native"] {
+            let mut fixture = Fixture::start(Some(flag)).await;
+            let result = exercise(
+                &fixture.service,
+                &mut fixture.events,
+                &fixture.workspace,
+                &fixture.path,
+                false,
+            )
+            .await;
+            fixture.service.shutdown_and_wait().await.unwrap();
+            assert!(result.unwrap_err().contains("writes outside client review"));
+            assert_eq!(fixture.prompts.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(std::fs::read_to_string(&fixture.path).unwrap(), ORIGINAL);
+        }
+    }
+
+    #[tokio::test]
     async fn current_sonnet_process_peer_requires_explicit_fallback_authorization() {
         for allowed in [false, true] {
             let mut fixture = Fixture::start(Some("--current-sonnet")).await;
@@ -512,53 +691,4 @@ mod tests {
         assert_eq!(fixture.prompts.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(std::fs::read_to_string(&fixture.path).unwrap(), ORIGINAL);
     }
-}
-
-#[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
-    let manifest = args.next().ok_or("Installed agent manifest required")?;
-    let allow_current_sonnet = match args.next().as_deref() {
-        None => false,
-        Some("--allow-current-sonnet") => true,
-        _ => return Err("Unknown provider acceptance argument".into()),
-    };
-    if args.next().is_some() {
-        return Err("Too many provider acceptance arguments".into());
-    }
-    let installed: InstalledAgent = serde_json::from_slice(&std::fs::read(manifest)?)?;
-    if installed.id != "claude-acp" {
-        return Err("This bounded acceptance run requires the managed Claude ACP adapter".into());
-    }
-    let directory = tempfile::tempdir()?;
-    let root = directory.path().canonicalize()?;
-    let path: PathBuf = root.join("greeting.txt");
-    std::fs::write(&path, ORIGINAL)?;
-    let workspace = Arc::new(Mutex::new(
-        CoreWorkspace::open(&root)?.with_user_settings(None),
-    ));
-    let (tx, mut events) = mpsc::unbounded_channel();
-    let service = AgentService::start(
-        installed.launch,
-        root.to_string_lossy().into_owned(),
-        workspace.clone(),
-        Arc::new(move |event| {
-            let _ = tx.send(event);
-        }),
-    )
-    .await
-    .map_err(|_| "Provider process did not initialize for the isolated smoke")?;
-    let result = exercise(
-        &service,
-        &mut events,
-        &workspace,
-        &path,
-        allow_current_sonnet,
-    )
-    .await;
-    let cleanup = service.shutdown_and_wait().await;
-    result?;
-    cleanup?;
-    println!("Live provider accept/reject review smoke passed; owned process shutdown completed");
-    Ok(())
 }

@@ -1,5 +1,6 @@
-// Deterministic peer for the opt-in provider review harness. No provider or disk access.
+// Deterministic peer for the opt-in review harness. Only the direct-write fault touches its owned file.
 import readline from 'node:readline';
+import { writeFile } from 'node:fs/promises';
 const input = readline.createInterface({ input: process.stdin });
 const callbacks = new Map();
 let sequence = 100;
@@ -23,6 +24,21 @@ async function prompt(message) {
   if (++prompts > 2) throw new Error('Smoke sent more than two turns');
   const sessionId = message.params.sessionId;
   const path = `${cwd}/greeting.txt`;
+  if (process.argv.includes('--direct-write')) {
+    await writeFile(path, 'unreviewed native write\n');
+    result(message.id, { stopReason: 'end_turn' });
+    return;
+  }
+  if (process.argv.includes('--no-callbacks')) {
+    const text = `ACP filesystem callbacks are unavailable for ${path}. No file was changed.`;
+    // Split the private path across chunks to exercise whole-reply redaction.
+    const middle = text.indexOf(cwd) + Math.floor(cwd.length / 2);
+    for (const chunk of [text.slice(0, middle), text.slice(middle)]) {
+      send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } } } });
+    }
+    result(message.id, { stopReason: 'end_turn' });
+    return;
+  }
   const content = prompts === 1 ? 'hello rejected\n' : 'hello span\n';
   const read = await call('fs/read_text_file', { sessionId, path });
   if (read.content !== 'hello\n') throw new Error('Unexpected editor buffer before review');
@@ -44,7 +60,7 @@ input.on('line', line => {
     if (callback) message.error ? callback.reject(message.error) : callback.resolve(message.result);
     return;
   }
-  if (message.method === 'initialize') result(message.id, { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'span-provider-review-fixture', version: '1.0.0' } });
+  if (message.method === 'initialize') result(message.id, { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: process.argv.includes('--claude-native') ? 'claude-acp' : process.argv.includes('--codex-native') ? 'codex-acp' : 'span-provider-review-fixture', version: '1.0.0' } });
   else if (message.method === 'session/new') { cwd = message.params.cwd; result(message.id, { sessionId: 'review-smoke', configOptions: options() }); }
   else if (message.method === 'session/set_config_option') {
     if (message.params.configId === 'model') model = message.params.value;
