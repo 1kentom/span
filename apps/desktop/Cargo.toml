@@ -39,6 +39,10 @@ tauri = { version = "2.12.5", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-clipboard-manager = "2"
+# File lists and images on the OS clipboard. Already built by the clipboard manager plugin.
+arboard = "3.7"
+# Encodes a pasted clipboard image. Already in the dependency graph.
+png = "0.18"
 base64 = "0.22"
 tauri-specta = { version = "=2.0.0-rc.26", features = ["derive", "typescript"] }
 specta-typescript = "0.0.13"

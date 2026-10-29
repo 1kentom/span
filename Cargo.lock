@@ -4618,11 +4618,13 @@ dependencies = [
 name = "span-desktop"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "base64 0.22.1",
  "embed-resource",
  "ignore",
  "libc",
  "notify",
+ "png",
  "serde",
  "serde_json",
  "span-acp",

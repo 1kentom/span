@@ -18,6 +18,10 @@ The gesture captures its workspace generation and source group/path. Both source
 
 Explorer rows are buttons in a `role="tree"` container. WebKit does not focus a button on a mouse click, so the row click handler focuses the row and a click on the empty tree area focuses the tree container (`tabindex="-1"`); the tree's key handler then receives Cmd/Ctrl+C, X, V, D, Z, A, F2, Enter, Cmd/Ctrl+Down, the arrow keys, Delete and Escape. Alt at release of an internal row drag copies instead of moving, as in JetBrains IDEs and VS Code.
 
+## Files from the OS into the Explorer
+
+A native drop over the Explorer is routed to the tree instead of the editor: the Explorer listens to the same Tauri drag-drop events (physical pixels converted to CSS pixels) and hit tests the row under the pointer, so a folder row, the folder of a file row or the project root receives the drop. Rust copies only paths recorded from the latest drop or the latest OS clipboard read (`apps/desktop/src/file_import.rs`, `clipboard_files.rs`), through `CoreWorkspace::import_paths`, which keeps the target inside the workspace, refuses symlinked targets and `.git`, refuses copying a folder into itself, skips nested symbolic links, caps entries and bytes before writing, and never overwrites without an explicit Replace (which moves the old item to the Trash).
+
 ## Verification boundary
 
 A failing-first Chromium regression blocked every HTML `dragstart`, then reproduced the old failed tab movement. The pointer implementation passes that same scenario, including Explorer-to-group opening. Helper tests cover threshold and primary-pointer rules, capture, copy modifiers, click suppression, stale sources/targets, cancellation, and listener cleanup. Browser checks cover dirty shared text, cancellation and ordinary click/close interaction.
