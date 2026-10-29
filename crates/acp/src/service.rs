@@ -1923,7 +1923,7 @@ mod tests {
         .unwrap();
         let session = service.new_session().await.unwrap();
         service
-            .prompt(session, "echo".into(), vec![])
+            .prompt(session.clone(), "echo".into(), vec![])
             .await
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1935,6 +1935,11 @@ mod tests {
             .runtime_polls
             .load(std::sync::atomic::Ordering::Relaxed)
             - before;
+        // Readiness must still deliver the next request after the idle window.
+        service
+            .prompt(session, "echo".into(), vec![])
+            .await
+            .unwrap();
         service.shutdown_and_wait().await.unwrap();
         assert!(
             polls < 100,
