@@ -347,6 +347,7 @@ async fn delegation_config(
         .then(|| crate::run_tools::backend(app.clone(), state.clone(), workspace.clone()));
     Ok(Some(ToolServerConfig {
         workspace,
+        editor_tools: None,
         policy: ToolPolicy::default(),
         delegation_enabled,
         run_tools,

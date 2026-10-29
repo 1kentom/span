@@ -1,3 +1,4 @@
+mod editor;
 use crate::adapter::{map::config_options_value, Adapter, AgentKind, ConfigRoute, McpCaps};
 use crate::{
     AgentCommand, AgentEvent, AgentFeatures, AgentHint, AuthCredential, AuthInput, AuthMethodInfo,
@@ -5,6 +6,7 @@ use crate::{
 };
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo, UntypedMessage};
+pub use editor::{EditorEdit, EditorRead, EditorToolAccess, EditorTools, EDITOR_TOOL_MAX_BYTES};
 use serde_json::{json, Value};
 use span_core::{CoreWorkspace, StartMode};
 use std::collections::{HashMap, HashSet};
@@ -20,6 +22,7 @@ pub struct AgentService {
     state: Arc<Mutex<Bridge>>,
     workspace: Arc<Mutex<CoreWorkspace>>,
     completion: watch::Receiver<bool>,
+    emit: EventSink,
     #[cfg(test)]
     runtime_polls: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -27,7 +30,7 @@ pub struct AgentService {
 enum Command {
     /// MCP servers, and whether the session is a hidden Span session (see
     /// [`AgentService::new_hidden_session`]).
-    NewSession(Vec<Value>, bool, Reply<String>),
+    NewSession(Vec<Value>, bool, bool, Reply<String>),
     Prompt(String, Vec<ContentBlock>, Reply<()>),
     Authenticate(String, Option<Meta>, Reply<()>),
     Cancel(String),
@@ -55,17 +58,20 @@ struct Proposal {
     path: String,
     hunk_ids: Vec<String>,
     reply: oneshot::Sender<ReviewDecision>,
+    access: Option<EditorToolAccess>,
 }
 #[derive(Default)]
 struct ReviewDecision {
     applied: bool,
     complete: bool,
+    revision: u64,
 }
 #[derive(Default)]
 struct Bridge {
     sequence: u64,
     closed: bool,
     sessions: HashSet<String>,
+    review_sessions: HashSet<String>,
     running: HashSet<String>,
     cancelled: HashSet<String>,
     /// Sessions Span started for a lead. A Stop that one of these ignores
@@ -298,6 +304,7 @@ impl AgentService {
         let (completion_tx, completion_rx) = watch::channel(false);
         let shared = state.clone();
         let service_workspace = workspace.clone();
+        let service_emit = emit.clone();
         #[cfg(test)]
         let runtime_polls = Arc::new(std::sync::atomic::AtomicU64::new(0));
         #[cfg(test)]
@@ -359,6 +366,7 @@ impl AgentService {
             state,
             workspace: service_workspace,
             completion: completion_rx,
+            emit: service_emit,
             #[cfg(test)]
             runtime_polls,
         })
@@ -382,10 +390,29 @@ impl AgentService {
     pub async fn new_session_with(&self, mcp_servers: Vec<Value>) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(mcp_servers, false, tx))
+            .send(Command::NewSession(mcp_servers, false, false, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
+    /// Explicit fresh Claude chat with only the supplied owned review server.
+    /// Tool restrictions are session configuration, not an OS sandbox.
+    pub(crate) async fn new_review_session_with(
+        &self,
+        mcp_server: Value,
+    ) -> Result<String, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::NewSession(vec![mcp_server], false, true, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+
+    pub fn is_review_session(&self, session: &str) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|bridge| bridge.review_sessions.contains(session))
+    }
+
     /// Create a hidden Span session (no MCP servers). Its events, from the
     /// `Session` event on, go only to the sink set with
     /// [`Self::set_hidden_sink`]; it is left out of [`Self::list_sessions`];
@@ -395,7 +422,7 @@ impl AgentService {
     pub async fn new_hidden_session(&self) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(Vec::new(), true, tx))
+            .send(Command::NewSession(Vec::new(), true, false, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -798,6 +825,20 @@ impl AgentService {
         }
         let selected = selection.unwrap_or_else(|| pending.hunk_ids.clone());
         let complete = pending.hunk_ids.iter().all(|id| selected.contains(id));
+        if !selected.is_empty()
+            && pending
+                .access
+                .as_ref()
+                .is_some_and(|access| !access.allowed())
+        {
+            let discarded = editor::discard(&mut bridge, &self.workspace, &proposal_id);
+            drop(bridge);
+            if let Some(proposal) = discarded {
+                editor::notify_discarded(proposal_id, proposal, &self.emit);
+            }
+            return Err("Editor tools consent or workspace trust was revoked".into());
+        }
+
         let snapshot = self
             .workspace
             .lock()
@@ -815,9 +856,16 @@ impl AgentService {
             (proposal.session.clone(), snapshot.path.clone()),
             snapshot.revision,
         );
+        drop(bridge);
+        (self.emit)(AgentEvent::ProposalResolved {
+            session_id: proposal.session.clone(),
+            proposal_id,
+            accepted: !selected.is_empty(),
+        });
         let _ = proposal.reply.send(ReviewDecision {
             applied: !selected.is_empty(),
             complete,
+            revision: snapshot.revision,
         });
         Ok(snapshot)
     }
@@ -958,12 +1006,8 @@ async fn run(
         }, agent_client_protocol::on_receive_request!())
         .on_receive_request(async move |request: ReadTextFileRequest, responder, _cx| {
             let result = (|| -> Result<String, String> {
-                let session = request.session_id.to_string();
-                let mut bridge = read_state.lock().map_err(|_| "Agent state lock poisoned")?;
-                if bridge.closed || !bridge.sessions.contains(&session) || bridge.cancelled.contains(&session) { return Err("Unknown or cancelled session".into()); }
                 if request.line == Some(0) { return Err("Read line must be 1-based".into()); }
-                let snapshot = read_workspace.lock().map_err(|_| "Workspace lock poisoned")?.agent_read(&request.path.to_string_lossy()).map_err(|e| e.to_string())?;
-                bridge.revisions.insert((session, snapshot.path.clone()), snapshot.revision);
+                let snapshot = editor::read(&read_state, &read_workspace, &request.session_id.to_string(), &request.path.to_string_lossy())?;
                 if request.line.is_none() && request.limit.is_none() { return Ok(snapshot.text); }
                 Ok(snapshot.text.split_inclusive('\n').skip(request.line.unwrap_or(1).saturating_sub(1) as usize)
                     .take(request.limit.map(|n| n as usize).unwrap_or(usize::MAX)).collect())
@@ -973,35 +1017,10 @@ async fn run(
         .on_receive_request(async move |request: WriteTextFileRequest, responder, cx| {
             let state = write_state.clone(); let workspace = write_workspace.clone(); let emit = write_emit.clone();
             cx.spawn(async move {
-                let session = request.session_id.to_string();
-                let staged = (|| -> Result<Option<(span_core::EditProposal, oneshot::Receiver<ReviewDecision>)>, String> {
-                    let mut bridge = state.lock().map_err(|_| "Agent state lock poisoned")?;
-                    if bridge.closed || !bridge.sessions.contains(&session) || bridge.cancelled.contains(&session) { return Err("Unknown or cancelled session".into()); }
-                    let mut workspace = workspace.lock().map_err(|_| "Workspace lock poisoned")?;
-                    let snapshot = workspace.agent_read(&request.path.to_string_lossy()).map_err(|e| e.to_string())?;
-                    let revision = bridge.revisions.get(&(session.clone(), snapshot.path.clone())).copied().unwrap_or(snapshot.revision);
-                    let proposal = workspace.stage_proposal(&snapshot.path, revision, request.content).map_err(|e| e.to_string())?;
-                    if proposal.hunks.is_empty() {
-                        workspace.resolve_proposal(&proposal.id, false, snapshot.revision).map_err(|error| error.to_string())?;
-                        return Ok(None);
-                    }
-                    let (tx, rx) = oneshot::channel();
-                    let hunk_ids = proposal.hunks.iter().map(|hunk| hunk.id.clone()).collect();
-                    bridge.proposals.insert(proposal.id.clone(), Proposal { session: session.clone(), path: proposal.path.clone(), hunk_ids, reply: tx });
-                    Ok(Some((proposal, rx)))
-                })();
-                let (proposal, decision) = match staged {
-                    Ok(Some(value)) => value,
-                    Ok(None) => return responder.respond(WriteTextFileResponse::new()),
-                    Err(error) => return responder.respond_with_internal_error(error),
-                };
-                let id = proposal.id.clone();
-                emit(AgentEvent::Proposal { session_id: session.clone(), proposal });
-                let decision = decision.await.unwrap_or_default();
-                emit(AgentEvent::ProposalResolved { session_id: session, proposal_id: id, accepted: decision.applied });
-                if decision.complete { responder.respond(WriteTextFileResponse::new()) }
-                else if decision.applied { responder.respond_with_internal_error("Only selected edit hunks were accepted. Other changes were rejected. Read the editor buffer again before continuing.") }
-                else { responder.respond_with_internal_error("User rejected or cancelled the proposed editor edit") }
+                match editor::propose(&state, &workspace, &emit, &request.session_id.to_string(), &request.path.to_string_lossy(), request.content, None).await {
+                    Ok(_) => responder.respond(WriteTextFileResponse::new()),
+                    Err(error) => responder.respond_with_internal_error(error),
+                }
             })
         }, agent_client_protocol::on_receive_request!())
         .connect_with(crate::process::Process(agent), async move |cx: ConnectionTo<Agent>| {
@@ -1073,13 +1092,24 @@ async fn run(
                     },
                 };
                 match command {
-                    Command::NewSession(servers, hidden, reply) => {
+                    Command::NewSession(servers, hidden, review_only, reply) => {
                         // The start mode is read from the user's settings only. If it
                         // cannot be read the session starts in the approval mode.
-                        let approval = workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
+                        let approval = review_only || workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
                         let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { params["_meta"] = meta; }
+                        if review_only {
+                            if adapter.kind() != AgentKind::Claude || servers.len() != 1 || !approval {
+                                let _ = reply.send(Err("Review-only chats require Claude, normal approval mode and the single owned editor server".into()));
+                                continue;
+                            }
+                            params["_meta"] = json!({"claudeCode":{"options":{
+                                "tools": [], "settingSources": [], "strictMcpConfig": true, "plugins": [],
+                                "skills": [], "promptSuggestions": false,
+                                "disallowedTools": ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Shell", "Agent", "Task", "Skill", "ListAgents", "SendMessage", "WebFetch", "WebSearch", "mcp__computer__*"]
+                            }}});
+                        }
                         let result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)).await;
                         let result = match result {
                             Ok(result) => result,
@@ -1105,7 +1135,7 @@ async fn run(
                                 let set = state.lock().map(|mut bridge| { bridge.delegated.insert(id.clone()); bridge.hidden.clone() });
                                 if let Ok(set) = set { if let Ok(mut set) = set.lock() { set.ids.insert(id.clone()); } }
                             }
-                            if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
+                            if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); if review_only { bridge.review_sessions.insert(id.clone()); } }
                             emit(AgentEvent::Session { session_id: id.clone() });
                             let options = adapter.session_config(&id, &response);
                             (id, options)
@@ -1113,8 +1143,15 @@ async fn run(
                         let result = match result {
                             Ok((id, options)) => {
                                 let options = if approval { apply_start_mode(&cx, &adapter, &id, options, &emit).await } else { options };
+                                let normal = options.iter().any(|option| option.category.as_deref() == Some("mode") && option.current_value == "default");
                                 if !options.is_empty() { emit_config(&emit, &adapter, &id, options); }
-                                Ok(id)
+                                if review_only && !normal {
+                                    if state.lock().is_ok_and(|bridge| bridge.can_close) {
+                                        let _ = raw_request(&cx, "session/close", json!({"sessionId":id})).await;
+                                    }
+                                    if let Ok(mut bridge) = state.lock() { bridge.sessions.remove(&id); }
+                                    Err("The provider did not confirm normal approval mode for the review chat".into())
+                                } else { Ok(id) }
                             }
                             Err(error) => Err(error),
                         };
@@ -1228,6 +1265,11 @@ async fn run(
                         })?;
                     }
                     Command::LoadSession(id, servers, reply) => {
+                        if state.lock().is_ok_and(|bridge| bridge.review_sessions.contains(&id)) {
+                            let _ = reply.send(Err("Review-only chats cannot be restored as ordinary chats. Start a fresh review chat.".into()));
+                            continue;
+                        }
+
                         if !can_load { let _ = reply.send(Err("This agent cannot restore earlier sessions".into())); continue; }
                         if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                         let load_cx = cx.clone(); let load_emit = emit.clone(); let load_cwd = cwd.clone(); let load_state = state.clone(); let load_adapter = adapter.clone();
@@ -1614,6 +1656,7 @@ fn cancel_pending(
     emit: &EventSink,
     session: Option<&str>,
 ) {
+    let mut discarded = Vec::new();
     if let Ok(mut bridge) = state.lock() {
         let permissions: Vec<_> = bridge
             .permissions
@@ -1633,13 +1676,8 @@ fn cancel_pending(
             .map(|(id, _)| id.clone())
             .collect();
         for id in proposals {
-            if let Some(p) = bridge.proposals.remove(&id) {
-                if let Ok(mut workspace) = workspace.lock() {
-                    if let Ok(snapshot) = workspace.agent_read(&p.path) {
-                        let _ = workspace.resolve_proposal(&id, false, snapshot.revision);
-                    }
-                }
-                let _ = p.reply.send(ReviewDecision::default());
+            if let Some(proposal) = editor::discard(&mut bridge, workspace, &id) {
+                discarded.push((id, proposal));
             }
         }
         let elicitations: Vec<_> = bridge
@@ -1658,7 +1696,9 @@ fn cancel_pending(
             bridge.remembered.clear();
         }
     }
-    let _ = emit;
+    for (id, proposal) in discarded {
+        editor::notify_discarded(id, proposal, emit);
+    }
 }
 
 fn scope_parts(scope: &ElicitationScope) -> (Option<String>, Option<String>) {

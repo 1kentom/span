@@ -229,6 +229,8 @@ pub type DelegationEventSink = Arc<dyn Fn(DelegationEvent) + Send + Sync>;
 #[derive(Clone)]
 pub struct ToolServerConfig {
     pub workspace: Arc<Mutex<CoreWorkspace>>,
+    /// Only an explicitly created review chat gets editor read/propose tools.
+    pub editor_tools: Option<crate::EditorToolAccess>,
     pub policy: ToolPolicy,
     /// Whether this session was explicitly opted in for agent delegation.
     /// Run tools do not imply delegation and vice versa.

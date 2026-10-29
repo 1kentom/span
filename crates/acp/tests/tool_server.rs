@@ -91,6 +91,7 @@ impl Harness {
         let sink = self.tool_events.clone();
         ToolServerConfig {
             workspace: self.workspace.clone(),
+            editor_tools: None,
             policy,
             delegation_enabled: true,
             run_tools: None,

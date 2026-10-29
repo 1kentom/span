@@ -685,6 +685,7 @@ mod tests {
             &connection,
             span_acp::tools::ToolServerConfig {
                 workspace: workspace.clone(),
+                editor_tools: None,
                 policy: span_acp::tools::ToolPolicy::default(),
                 delegation_enabled: false,
                 run_tools: Some(backend),

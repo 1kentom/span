@@ -450,6 +450,55 @@ impl CoreWorkspace {
         self.open_buffer(path)
     }
 
+    /// Editor tools initially support existing regular text files only. An open
+    /// unsaved buffer is authoritative, but both disk and buffer reads are bounded.
+    pub fn agent_read_existing_bounded(
+        &mut self,
+        path: &str,
+        max_bytes: usize,
+    ) -> Result<BufferSnapshot> {
+        use std::io::Read;
+        let resolved = self.resolve(path)?;
+        let relative = self.relative(&resolved)?;
+        let file = fs::File::open(&resolved)
+            .map_err(|e| io_error("Read existing editor file", &resolved, e))?;
+        if !file
+            .metadata()
+            .map_err(|e| io_error("Inspect editor file", &resolved, e))?
+            .is_file()
+        {
+            return Err(CoreError::InvalidEdit(
+                "Editor tools require an existing regular text file".into(),
+            ));
+        }
+        if self.buffers.contains_key(&relative) {
+            return self.buffer_snapshot_bounded(&relative, max_bytes);
+        }
+        let mut bytes = Vec::new();
+        file.take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| io_error("Read editor file", &resolved, e))?;
+        if bytes.len() > max_bytes {
+            return Err(CoreError::InvalidEdit(format!(
+                "Editor file exceeds {max_bytes} byte limit"
+            )));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| CoreError::InvalidEdit("Editor tools require valid UTF-8 text".into()))?;
+        if text.contains('\0') {
+            return Err(CoreError::InvalidEdit(
+                "Editor tools do not support binary files".into(),
+            ));
+        }
+        let mut buffer = Buffer::new(text, true);
+        if let Some(revision) = self.abandoned_revisions.remove(&relative) {
+            buffer.revision = revision;
+            buffer.saved_revision = revision;
+        }
+        self.buffers.insert(relative.clone(), buffer);
+        self.snapshot(&relative)
+    }
+
     pub fn stage_proposal(
         &mut self,
         path: &str,

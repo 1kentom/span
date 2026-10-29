@@ -28,5 +28,8 @@ pub use manager::{
     Subscription, DEPTH_EXCEEDED, PROMPT_ALREADY_RUNNING,
 };
 pub use registry::{fetch_registry, install_registry_agent, list_installed_agents};
-pub use service::{is_hidden_session, AgentService, EventSink};
+pub use service::{
+    is_hidden_session, AgentService, EditorEdit, EditorRead, EditorToolAccess, EditorTools,
+    EventSink, EDITOR_TOOL_MAX_BYTES,
+};
 pub use types::*;
