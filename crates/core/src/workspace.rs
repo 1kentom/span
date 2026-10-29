@@ -33,6 +33,7 @@ pub struct FileEntry {
 pub struct CoreWorkspace {
     pub(crate) root: PathBuf,
     pub(crate) buffers: HashMap<String, Buffer>,
+    pub(crate) abandoned_revisions: HashMap<String, u64>,
     pub(crate) proposals: HashMap<String, EditProposal>,
     next_proposal: u64,
     user_settings: Option<PathBuf>,
@@ -57,6 +58,7 @@ impl CoreWorkspace {
         Ok(Self {
             root,
             buffers: HashMap::new(),
+            abandoned_revisions: HashMap::new(),
             proposals: HashMap::new(),
             next_proposal: 1,
             user_settings,
@@ -77,6 +79,7 @@ impl CoreWorkspace {
         Ok(Self {
             root: PathBuf::new(),
             buffers: HashMap::new(),
+            abandoned_revisions: HashMap::new(),
             proposals: HashMap::new(),
             next_proposal: 1,
             user_settings: Some(user),
@@ -91,6 +94,7 @@ impl CoreWorkspace {
             workspace: Self {
                 root: self.root.clone(),
                 buffers: self.buffers.clone(),
+                abandoned_revisions: self.abandoned_revisions.clone(),
                 proposals: HashMap::new(),
                 next_proposal: 1,
                 user_settings: None,
@@ -250,8 +254,12 @@ impl CoreWorkspace {
             } else {
                 String::new()
             };
-            self.buffers
-                .insert(relative.clone(), Buffer::new(text, exists));
+            let mut buffer = Buffer::new(text, exists);
+            if let Some(revision) = self.abandoned_revisions.remove(&relative) {
+                buffer.revision = revision;
+                buffer.saved_revision = revision;
+            }
+            self.buffers.insert(relative.clone(), buffer);
         }
         self.snapshot(&relative)
     }
@@ -355,6 +363,22 @@ impl CoreWorkspace {
     }
 
     pub fn save_buffer(&mut self, path: &str, expected_revision: u64) -> Result<BufferSnapshot> {
+        self.save_buffer_with_review(path, expected_revision, None)
+    }
+    pub(crate) fn save_buffer_reviewed(
+        &mut self,
+        path: &str,
+        expected_revision: u64,
+        disk_token: &str,
+    ) -> Result<BufferSnapshot> {
+        self.save_buffer_with_review(path, expected_revision, Some(disk_token))
+    }
+    fn save_buffer_with_review(
+        &mut self,
+        path: &str,
+        expected_revision: u64,
+        reviewed: Option<&str>,
+    ) -> Result<BufferSnapshot> {
         let resolved = self.resolve(path)?;
         let relative = self.relative(&resolved)?;
         let settings_user = (relative == ".span/settings.jsonc")
@@ -365,12 +389,16 @@ impl CoreWorkspace {
             .get_mut(&relative)
             .ok_or_else(|| CoreError::BufferNotOpen(path.into()))?;
         buffer.check_revision(expected_revision)?;
-        let disk_signature = match fs::read(&resolved) {
-            Ok(bytes) => Some(signature(&bytes)),
+        let disk_bytes = match fs::read(&resolved) {
+            Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(io_error("Check file before save", &resolved, e)),
         };
-        if disk_signature != buffer.disk_signature {
+        let disk_signature = disk_bytes.as_ref().map(|bytes| signature(bytes));
+        if reviewed.map_or_else(
+            || disk_signature != buffer.disk_signature,
+            |token| crate::external_changes::disk_token(disk_bytes.as_deref()) != token,
+        ) {
             return Err(CoreError::SaveConflict(relative));
         }
         let text = buffer.rope.to_string();

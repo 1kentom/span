@@ -278,6 +278,18 @@ export const api = {
     if (isDesktop) return commands.fileIndexStatus();
     return { workspaceRoot: previewWorkspace.root, generation: 1, status: 'ready', scannedEntries: Object.keys(fixture).length, indexedFiles: Object.keys(fixture).length, errorCount: 0, lastError: null, watcherReady: false, watcherError: null };
   },
+  async checkExternalFiles(checks: import('../bindings').ExternalFileCheck[], expectedWorkspaceRoot: string, sinceRevision: number | null): Promise<import('../bindings').ExternalFilesUpdate> {
+    if (!isDesktop) nativeRequired('Checking external file changes');
+    return commands.checkExternalFiles(checks, expectedWorkspaceRoot, sinceRevision);
+  },
+  async resolveExternalFile(path: string, expectedRevision: number, reviewedDiskToken: string, resolution: import('../bindings').ExternalFileResolution, expectedWorkspaceRoot: string): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Resolving external file changes');
+    return commands.resolveExternalFile(path, expectedRevision, reviewedDiskToken, resolution, expectedWorkspaceRoot);
+  },
+  async abandonExternalFile(path: string, expectedRevision: number, expectedWorkspaceRoot: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Discarding an unavailable editor buffer');
+    await commands.abandonExternalFile(path, expectedRevision, expectedWorkspaceRoot);
+  },
   async queryFile(query: string, limit = 100): Promise<FileIndexQueryResponse> {
     if (isDesktop) return commands.queryFile(query, Math.max(1, Math.min(100, limit)));
     const files = Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));

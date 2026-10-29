@@ -4,7 +4,7 @@ import { ChangeSet } from "@codemirror/state";
 import type { BufferSnapshot, FileIndexStatus, TextEdit, SessionState_Serialize as SessionState, Settings_Serialize as Settings } from "../bindings";
 
 const client = vi.hoisted(() => ({
-  openWorkspace: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
+  openWorkspace: vi.fn(), checkExternalFiles: vi.fn(), resolveExternalFile: vi.fn(), abandonExternalFile: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
   openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
@@ -42,6 +42,7 @@ beforeEach(() => {
   client.listDirectory.mockResolvedValue([]);
   client.listFiles.mockResolvedValue([]);
   client.fileIndexStatus.mockResolvedValue(null);
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 0, states: [], directoriesChanged: false });
   client.queryFile.mockResolvedValue({ workspaceRoot: "/workspace", generation: 1, requestId: 1, results: [] });
   client.getSettings.mockResolvedValue(preferences);
   client.getSettingsForScope.mockResolvedValue(preferences);
@@ -965,4 +966,96 @@ describe("read-only Git workspace tabs", () => {
     await workbench.openFile(tab); expect(client.openBuffer.mock.calls.map(([path]) => path)).toEqual(["src/file.ts"]);
     await workbench.openWorkspace("/other"); expect(workbench.groups().flatMap(group => group.tabs)).not.toContain(tab);
   });
+});
+
+
+describe("external file synchronization", () => {
+  it("reloads a clean buffer after a watcher change without saving over the new disk content", async () => {
+    vi.useFakeTimers();
+    try {
+      const workbench = await setup();
+      const snapshot = { ...initial(), text: "const external = true;\n", revision: 1, savedRevision: 1 };
+      client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: true, states: [{ path: "src/file.ts", revision: 0, kind: "reloaded", snapshot, disk: null, error: null }] });
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(workbench.documents()["src/file.ts"].document.toString()).toBe(snapshot.text);
+      expect(client.saveBuffer).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+
+it("retains dirty external conflicts, freezes the reviewed disk token, and never auto-overwrites", async () => {
+  const workbench = await setup(); append(workbench, "// draft\n"); await vi.waitFor(() => expect(workbench.synchronized("src/file.ts")).toBe(true));
+  const conflict = (token: string) => ({ path: "src/file.ts", revision: workbench.buffers["src/file.ts"].revision, kind: "conflict", snapshot: null, disk: { token, exists: true, text: "outside", truncated: false }, error: null });
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [conflict("reviewed")] });
+  await workbench.checkExternalChanges(true); workbench.reviewExternalFile("src/file.ts");
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 2, directoriesChanged: false, states: [conflict("newer")] });
+  await workbench.checkExternalChanges(true);
+  expect(workbench.externalReview()?.disk?.token).toBe("reviewed");
+  expect(workbench.documents()["src/file.ts"].document.toString()).toContain("// draft");
+  expect(await workbench.save("src/file.ts", true)).toBe(false); expect(client.saveBuffer).not.toHaveBeenCalled();
+  // Review the frozen version again before an explicit resolution. The backend
+  // rejects its old disk token, preserving the editor draft and newer disk.
+  client.resolveExternalFile.mockRejectedValue(new Error("File changed on disk"));
+  await expect(workbench.resolveExternalChange("src/file.ts", "overwrite")).rejects.toThrow("changed on disk");
+  expect(client.resolveExternalFile).toHaveBeenCalledWith("src/file.ts", expect.any(Number), "reviewed", "overwrite", "/workspace");
+  expect(workbench.documents()["src/file.ts"].document.toString()).toContain("// draft");
+});
+
+it("preserves renderer edits racing a clean reload and requires comparison before saving them", async () => {
+  const workbench = await setup(); const pending = deferred<any>();
+  client.checkExternalFiles.mockReturnValueOnce(pending.promise);
+  const checking = workbench.checkExternalChanges(true);
+  const snapshot = { ...initial(), text: "external\n", revision: 1, savedRevision: 1 };
+  server.set("src/file.ts", snapshot); append(workbench, "// arriving draft\n");
+  pending.resolve({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 0, kind: "reloaded", snapshot, disk: { token: "external-token", exists: true, text: snapshot.text, truncated: false }, error: null }] });
+  await checking;
+  expect(workbench.documents()["src/file.ts"].document.toString()).toContain("// arriving draft");
+  expect(workbench.externalChanges()["src/file.ts"].disk?.token).toBe("external-token");
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 2, kind: "unchanged", snapshot: null, disk: null, error: null }] });
+  await workbench.checkExternalChanges(true);
+  expect(workbench.externalChanges()["src/file.ts"]).toBeDefined();
+  expect(await workbench.save("src/file.ts")).toBe(false); expect(client.saveBuffer).not.toHaveBeenCalled();
+});
+
+it("ignores late external reloads from a workspace that has been replaced", async () => {
+  const workbench = await setup(); const pending = deferred<any>();
+  client.checkExternalFiles.mockReturnValueOnce(pending.promise);
+  const checking = workbench.checkExternalChanges(true);
+  await workbench.openWorkspace("/other");
+  pending.resolve({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: true, states: [{ path: "src/file.ts", revision: 0, kind: "reloaded", snapshot: { ...initial(), text: "stale" }, disk: null, error: null }] });
+  await checking;
+  expect(workbench.workspace()?.root).toBe("/other"); expect(workbench.documents()["src/file.ts"]).toBeUndefined(); expect(workbench.externalChanges()).toEqual({});
+});
+
+
+it("never writes an older backend buffer when the reviewed editor draft failed to synchronize", async () => {
+  const workbench = await setup(); client.editBuffer.mockRejectedValue(new Error("edit sync failed"));
+  append(workbench, "// unsynchronized\n"); await vi.waitFor(() => expect(workbench.failed().has("src/file.ts")).toBe(true));
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 0, kind: "conflict", snapshot: null, disk: { token: "reviewed", exists: true, text: "outside", truncated: false }, error: null }] });
+  await workbench.checkExternalChanges(true); workbench.reviewExternalFile("src/file.ts");
+  await expect(workbench.resolveExternalChange("src/file.ts", "overwrite")).rejects.toThrow("not synchronized");
+  expect(client.resolveExternalFile).not.toHaveBeenCalled(); expect(workbench.documents()["src/file.ts"].document.toString()).toContain("// unsynchronized");
+});
+
+it("explicitly discards and closes an unavailable retained buffer without rereading the disk", async () => {
+  const workbench = await setup();
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 0, kind: "unavailable", snapshot: null, disk: null, error: "permission denied" }] });
+  await workbench.checkExternalChanges(true);
+  await workbench.closeTab("src/file.ts", workbench.activeGroup()); expect(workbench.pendingClose()?.path).toBe("src/file.ts");
+  await workbench.confirmClose("discard");
+  expect(client.abandonExternalFile).toHaveBeenCalledWith("src/file.ts", 0, "/workspace"); expect(client.discardBuffer).not.toHaveBeenCalled();
+  expect(workbench.groups().flatMap(group => group.tabs)).not.toContain("src/file.ts"); expect(workbench.hasDirty()).toBe(false);
+});
+
+
+it("finishes an explicitly approved unavailable discard before allowing cancel", async () => {
+  const workbench = await setup(); const pending = deferred<void>();
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 0, kind: "unavailable", snapshot: null, disk: null, error: "permission denied" }] });
+  await workbench.checkExternalChanges(true); await workbench.closeTab("src/file.ts", workbench.activeGroup());
+  client.abandonExternalFile.mockReturnValue(pending.promise);
+  const closing = workbench.confirmClose("discard"); await vi.waitFor(() => expect(client.abandonExternalFile).toHaveBeenCalled());
+  await workbench.confirmClose("cancel"); expect(workbench.pendingClose()?.path).toBe("src/file.ts"); expect(workbench.externalAbandoning()).toBe(true);
+  pending.resolve(); await closing;
+  expect(workbench.groups().flatMap(group => group.tabs)).not.toContain("src/file.ts"); expect(workbench.documents()["src/file.ts"]).toBeUndefined();
 });
