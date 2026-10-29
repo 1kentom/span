@@ -243,6 +243,10 @@ pub struct ResultInput<'a> {
     pub text: &'a str,
     pub artifacts: Vec<(Artifact, Vec<u8>)>,
     pub usage: Option<UsageReport>,
+    /// Tokens the delegation spent as its budget measures them, and that
+    /// budget. Added to `usage` for the lead; `usage.tokens` is context.
+    pub spent_tokens: Option<u64>,
+    pub max_tokens: Option<u64>,
     pub progress: Option<Value>,
     /// Inline image previews are only sent when the lead accepts images.
     pub lead_accepts_images: bool,
@@ -320,6 +324,10 @@ pub fn tool_result(input: ResultInput<'_>) -> Value {
     });
     if let Some(usage) = &input.usage {
         structured["usage"] = serde_json::to_value(usage).unwrap_or(Value::Null);
+        if let Some(fields) = structured["usage"].as_object_mut() {
+            fields.insert("spentTokens".into(), json!(input.spent_tokens));
+            fields.insert("maxTokens".into(), json!(input.max_tokens));
+        }
     }
     if let Some(reason) = input.reason {
         structured["reason"] = json!(reason.as_str());

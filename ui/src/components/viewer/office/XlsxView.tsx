@@ -5,7 +5,8 @@ import { ViewerState } from '../ViewerStates';
 import { OfficeFailure, createParse, plural, type DocumentViewProps } from './shared';
 import '../../../styles/office.css';
 
-export const XLSX_MAX_BYTES = 64 * 1024 * 1024;
+import { XLSX_MAX_BYTES } from '../../../lib/office/limits';
+export { XLSX_MAX_BYTES };
 const ROW_HEIGHT = 26;
 const HEADER_HEIGHT = 24;
 const PAGE_ROWS = 20;
