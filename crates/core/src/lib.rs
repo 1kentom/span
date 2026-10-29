@@ -20,6 +20,7 @@ mod search;
 mod session;
 mod session_meta;
 mod settings;
+mod text_file;
 mod tools;
 mod transcript_export;
 mod uploads;
@@ -60,6 +61,10 @@ pub use settings::{
     Settings, SettingsScope, StartMode, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
     SYNTAX_THEMES, SYNTAX_TOKEN_IDS,
 };
+pub use text_file::{
+    has_binary_extension, looks_binary, FileContentKind, FileProbe, BINARY_SNIFF_BYTES,
+    MAX_VIEWER_READ_BYTES, NOT_TEXT_MESSAGE,
+};
 pub use tools::{list_tools, ToolInfo};
 pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};
 pub use uploads::{
@@ -80,6 +85,10 @@ pub enum CoreError {
         path: String,
         source: std::io::Error,
     },
+    /// The file is binary or not UTF-8. The message is the one shown to users; `detail` is
+    /// for logs only.
+    #[error("This file isn't text, so it can't be opened in the editor.")]
+    NotText { path: String, detail: String },
     #[error("Path is outside the workspace: {0}")]
     OutsideWorkspace(String),
     #[error("This is library source, not a file in your project: {0}")]
@@ -113,7 +122,15 @@ pub enum CoreError {
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
+/// The one place an I/O failure becomes a [`CoreError`]. `InvalidData` is what
+/// `read_to_string` reports for bytes that are not UTF-8, so it becomes [`CoreError::NotText`].
 fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> CoreError {
+    if source.kind() == std::io::ErrorKind::InvalidData {
+        return CoreError::NotText {
+            path: path.display().to_string(),
+            detail: format!("{operation}: {source}"),
+        };
+    }
     CoreError::Io {
         operation,
         path: path.display().to_string(),

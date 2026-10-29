@@ -285,7 +285,7 @@ impl CoreWorkspace {
         if !self.buffers.contains_key(&relative) {
             let exists = resolved.exists();
             let text = if exists {
-                fs::read_to_string(&resolved).map_err(|e| io_error("Read file", &resolved, e))?
+                crate::text_file::read_text("Read file", &resolved)?
             } else {
                 String::new()
             };
@@ -310,7 +310,7 @@ impl CoreWorkspace {
         }
         let exists = resolved.exists();
         let text = if exists {
-            fs::read_to_string(&resolved).map_err(|e| io_error("Read file", &resolved, e))?
+            crate::text_file::read_text("Read file", &resolved)?
         } else {
             String::new()
         };
@@ -386,7 +386,7 @@ impl CoreWorkspace {
             .ok_or_else(|| CoreError::InvalidEdit("revision counter exhausted".into()))?;
         let exists = resolved.exists();
         let text = if exists {
-            fs::read_to_string(&resolved).map_err(|e| io_error("Reload file", &resolved, e))?
+            crate::text_file::read_text("Reload file", &resolved)?
         } else {
             String::new()
         };

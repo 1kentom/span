@@ -27,6 +27,7 @@ mod terminals;
 mod uploads;
 mod watched_paths;
 mod window;
+mod workspace_files;
 
 /// The authoritative workspace is only accessed by blocking workers.
 type FormatterJobs =
@@ -78,7 +79,13 @@ where
         let mut workspace = workspace
             .lock()
             .map_err(|_| "Workspace state is unavailable".to_owned())?;
-        operation(&mut workspace).map_err(|error| error.to_string())
+        operation(&mut workspace).map_err(|error| {
+            // Users see one plain sentence; the technical cause goes to the log only.
+            if let span_core::CoreError::NotText { path, detail } = &error {
+                eprintln!("Not a text file: {path}: {detail}");
+            }
+            error.to_string()
+        })
     })
     .await
     .map_err(|error| format!("Workspace task failed: {error}"))?
@@ -1017,6 +1024,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             trash_path,
             open_buffer,
             peek_buffer,
+            workspace_files::probe_file,
+            workspace_files::read_file_bytes,
+            workspace_files::open_file_with_system,
+            workspace_files::reveal_file,
             buffer_released,
             edit_buffer_delta,
             save_buffer,

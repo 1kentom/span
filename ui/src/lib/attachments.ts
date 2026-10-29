@@ -1,4 +1,5 @@
 import { MAX_IMAGE_BYTES, formatAssetBytes } from './asset-preview';
+import { isLikelyBinary } from './viewer';
 
 export type AttachmentKind = 'image' | 'audio' | 'text-paste' | 'file' | 'selection' | 'folder';
 export type AttachmentSource = 'picked' | 'pasted' | 'dropped' | 'workspace-file' | 'editor-selection';
@@ -113,7 +114,8 @@ export function createFileAttachment(input: { name: string; mime: string; bytes:
   const mime = resolveMime(input.name, input.mime);
   const kind = classifyFile(input.name, mime);
   const item: Attachment = { id: input.id ?? newAttachmentId(), kind, name: input.name, mime, size: input.bytes.length, source: input.source, bytes: input.bytes, status: 'ready' };
-  if (isTextLike(input.name, mime)) {
+  // A text name is not proof of text: NUL bytes or invalid UTF-8 keep the item a binary upload, never garbage text.
+  if (isTextLike(input.name, mime) && !isLikelyBinary(input.bytes)) {
     try { item.text = new TextDecoder('utf-8', { fatal: true }).decode(input.bytes); } catch { /* binary content stays as bytes */ }
   }
   return item;

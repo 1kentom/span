@@ -61,6 +61,20 @@ export const commands = {
 	 *  and never reaches the language servers, so highlighting a file starts nothing.
 	 */
 	peekBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("peek_buffer", { path }),
+	/**  Name, size and text or binary kind of a workspace file, without opening a buffer. */
+	probeFile: (path: string) => __TAURI_INVOKE<FileProbe>("probe_file", { path }),
+	/**
+	 *  Raw bytes of a workspace file for the file viewer, as base64. A file larger than `max_bytes`
+	 *  (capped by the core viewer limit) is refused rather than truncated.
+	 */
+	readFileBytes: (path: string, maxBytes: number) => __TAURI_INVOKE<string>("read_file_bytes", { path, maxBytes }),
+	/**
+	 *  Opens a workspace file with the system default app. Programs and scripts are refused, with
+	 *  the same rules as uploads.
+	 */
+	openFileWithSystem: (path: string) => __TAURI_INVOKE<null>("open_file_with_system", { path }),
+	/**  Shows a workspace file in Finder, Explorer or the Linux file manager. */
+	revealFile: (path: string) => __TAURI_INVOKE<null>("reveal_file", { path }),
 	/**
 	 *  The last editor showing `path` closed or was evicted: close the document in the language
 	 *  servers so they stop tracking (and holding memory for) a file nobody is looking at. The
@@ -1757,6 +1771,9 @@ export type ExternalFilesUpdate_Serialize = {
 /**  Why a delegation failed. Closed set: the lead can branch on it. */
 export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout";
 
+/**  What a file holds, as far as the editor is concerned. */
+export type FileContentKind = "text" | "binary" | "missing" | "directory";
+
 /**  Edits of one file, in UTF-16 positions of the file as the server saw it. */
 export type FileEditsDto = {
 	/**  Workspace relative, or absolute / server URI when `external`. */
@@ -1822,6 +1839,15 @@ export type FileIndexStatus_Serialize = {
 	lastError: string | null,
 	watcherReady: boolean,
 	watcherError: string | null,
+};
+
+/**  Name, size and kind of a workspace file, read without opening a buffer. */
+export type FileProbe = {
+	/**  Workspace relative path. */
+	path: string,
+	name: string,
+	size: number,
+	kind: FileContentKind,
 };
 
 export type FoldRange = {
