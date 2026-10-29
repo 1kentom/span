@@ -18,10 +18,10 @@ describe("terminal shortcut ownership", () => {
     expect(menu.quickOpen).toEqual([]);
     expect(menu.toggleFiles).toEqual(["Meta+E"]);
     expect(menu.closeTab).toEqual(["Meta+W"]);
-    expect(Object.values(menu).flat().every(key => key.startsWith("Meta+") && !key.includes("Ctrl+"))).toBe(true);
+    expect(Object.entries(menu).filter(([action]) => action !== "showSourceControl").flatMap(([, keys]) => keys).every(key => key.startsWith("Meta+") && !key.includes("Ctrl+"))).toBe(true);
     expect(menuBindingsForFocus(keys, "mac", false, false).quickOpen).toEqual(["Ctrl+P"]);
     expect(menuBindingsForFocus(keys, "mac", true, true)).toEqual({});
-    expect(menuBindingsForFocus(resolveKeybindings({}, "windows"), "windows", true, false)).toEqual({});
+    expect(menuBindingsForFocus(resolveKeybindings({}, "windows"), "windows", true, false)).toEqual({ showSourceControl: ["Ctrl+Shift+G"] });
   });
 
   it("dispatches CmdE/P/J/W once from xterm while CtrlP/W/C remain unhandled", () => {
@@ -38,4 +38,17 @@ describe("terminal shortcut ownership", () => {
       expect(event.defaultPrevented).toBe(false);
     }
   });
+});
+
+
+it("routes the configured Source Control action from terminal without consuming plain Control readline keys", () => {
+  for (const platform of ["mac", "windows", "linux"] as const) {
+    const bindings = resolveKeybindings({}, platform);
+    expect(terminalAllowsAppShortcut(new KeyboardEvent("keydown", { key: "G", ctrlKey: true, shiftKey: true }), platform, bindings)).toBe(true);
+    expect(menuBindingsForFocus(bindings, platform, true, false).showSourceControl).toEqual(["Ctrl+Shift+G"]);
+    for (const key of ["g", "p", "w", "c"]) expect(terminalAllowsAppShortcut(new KeyboardEvent("keydown", { key, ctrlKey: true }), platform, bindings)).toBe(false);
+    const custom = resolveKeybindings({ showSourceControl: ["Ctrl+Alt+G"], goToLine: [] }, platform);
+    expect(terminalAllowsAppShortcut(new KeyboardEvent("keydown", { key: "G", ctrlKey: true, shiftKey: true }), platform, custom)).toBe(false);
+    expect(terminalAllowsAppShortcut(new KeyboardEvent("keydown", { key: "g", ctrlKey: true, altKey: true }), platform, custom)).toBe(true);
+  }
 });

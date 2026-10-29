@@ -991,7 +991,8 @@ async fn run(
             let initialized = tokio::time::timeout(std::time::Duration::from_secs(40), cx.send_request(InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
                 ClientCapabilities::new().fs(FileSystemCapabilities::new().read_text_file(true).write_text_file(true)).terminal(false)
                     .session(ClientSessionCapabilities::new().notices(NoticeCapabilities::new()).compaction(CompactionCapabilities::new()))
-                    .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()).url(ElicitationUrlCapabilities::new()))))
+                    .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()).url(ElicitationUrlCapabilities::new()))
+                    .auth(gateway_auth_capabilities())))
                 .block_task()).await;
             let initialized = match initialized {
                 Ok(result) => result,
@@ -1575,6 +1576,32 @@ fn scope_parts(scope: &ElicitationScope) -> (Option<String>, Option<String>) {
 }
 
 /// Build the `Ready` event and the auth method list from the initialize response.
+/// `auth._meta.gateway = true`: the client can send a gateway base URL and
+/// headers in `authenticate` `_meta`, so Claude Code and Codex offer their
+/// `gateway` sign-in methods. The values are typed by the user, passed once and
+/// never stored by Span.
+fn gateway_auth_capabilities() -> AuthCapabilities {
+    let mut meta = Meta::new();
+    meta.insert("gateway".into(), json!(true));
+    AuthCapabilities::new().meta(meta)
+}
+
+/// A method with `_meta.gateway` takes a gateway base URL and headers, from
+/// any agent. Its `protocol`, when given, names what the gateway must speak.
+fn gateway_method(method: &mut AuthMethodInfo, meta: Option<&Value>) {
+    let Some(gateway) = meta.and_then(|meta| meta.get("gateway")) else {
+        return;
+    };
+    if gateway.is_null() {
+        return;
+    }
+    method.input = Some(AuthInput::Gateway);
+    method.gateway_protocol = gateway
+        .get("protocol")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+}
+
 fn ready_event(
     response: &InitializeResponse,
     adapter: &Adapter,
@@ -1589,6 +1616,7 @@ fn ready_event(
                 kind: kind.into(),
                 supported,
                 input: None,
+                gateway_protocol: None,
                 hint: None,
             }
         };
@@ -1605,6 +1633,7 @@ fn ready_event(
                     true,
                 );
                 let meta = m.meta.as_ref().map(|meta| Value::Object(meta.clone()));
+                gateway_method(&mut method, meta.as_ref());
                 adapter.auth_method(&mut method, meta.as_ref());
                 method
             }
@@ -1772,6 +1801,47 @@ mod tests {
     use super::*;
 
     const SECRET: &str = "s3cr3t-token-value";
+
+    /// Claude Code and Codex offer their gateway methods only when the client
+    /// sets `clientCapabilities.auth._meta.gateway` to true.
+    #[test]
+    fn initialize_advertises_gateway_auth() {
+        let caps = ClientCapabilities::new().auth(gateway_auth_capabilities());
+        let value = serde_json::to_value(&caps).unwrap();
+        assert_eq!(value.pointer("/auth/_meta/gateway"), Some(&json!(true)));
+    }
+
+    /// Captured method shapes: Claude Code 0.98.0 `gateway` (anthropic) and
+    /// `gateway-bedrock`, Codex `gateway` (openai).
+    #[test]
+    fn gateway_methods_take_a_gateway_and_keep_the_protocol() {
+        let method = |meta: Value| {
+            let mut info = AuthMethodInfo {
+                id: "gateway".into(),
+                name: "Custom model gateway".into(),
+                description: None,
+                kind: "agent".into(),
+                supported: true,
+                input: None,
+                gateway_protocol: None,
+                hint: None,
+            };
+            gateway_method(&mut info, Some(&meta));
+            info
+        };
+        for protocol in ["anthropic", "bedrock", "openai"] {
+            let info =
+                method(json!({"gateway": {"protocol": protocol, "restartRequired": "false"}}));
+            assert_eq!(info.input, Some(AuthInput::Gateway));
+            assert_eq!(info.gateway_protocol.as_deref(), Some(protocol));
+        }
+        let bare = method(json!({"gateway": {}}));
+        assert_eq!(bare.input, Some(AuthInput::Gateway));
+        assert_eq!(bare.gateway_protocol, None);
+        let other = method(json!({"api-key": {"provider": "openai"}}));
+        assert_eq!(other.input, None);
+        assert_eq!(method(json!({"gateway": null})).input, None);
+    }
 
     fn servers() -> Value {
         json!([

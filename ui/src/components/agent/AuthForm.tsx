@@ -1,5 +1,6 @@
 import { For, Show, createSignal, onCleanup } from "solid-js";
 import { Icon } from "../Icon";
+import { gatewayPresets, presetHeaders } from "../../lib/sign-in-copy";
 import type { AuthInputKind, AuthSecret } from "./types";
 
 type Header = { id: number; name: string; value: string };
@@ -7,6 +8,8 @@ type Header = { id: number; name: string; value: string };
 type AuthFormProps = {
   kind: AuthInputKind;
   methodName: string;
+  /** For a gateway, the protocol the agent expects. Known providers for it are offered as presets. */
+  protocol?: string;
   busy?: boolean;
   /** Receives the typed secret once. The form clears its own fields before this runs. */
   onSubmit: (secret: AuthSecret) => void;
@@ -23,16 +26,35 @@ export function parseGatewayUrl(value: string): string | undefined {
   }
 }
 
+/** The custom gateway row of the provider chooser. */
+const CUSTOM = "custom";
+
+/** The index a key moves to in a radio group of `count` rows, wrapping at both ends, or undefined for other keys. */
+function stepFor(key: string, index: number, count: number): number | undefined {
+  if (key === "ArrowDown" || key === "ArrowRight") return (index + 1) % count;
+  if (key === "ArrowUp" || key === "ArrowLeft") return (index - 1 + count) % count;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  return undefined;
+}
+
 /**
  * Collects an API key, or a gateway base URL and headers, for a sign-in method.
  * The values live only in this component's signals. They are cleared on submit and on unmount, never written
  * to feed or session state, never rendered back, and every header value is a password field.
+ * A gateway whose protocol has a known provider opens on that provider: a custom chooser (a radio group, not a
+ * native select) between the provider and a custom gateway, and for the provider only its key is typed.
  */
 export function AuthForm(props: AuthFormProps) {
   const [key, setKey] = createSignal("");
   const [baseUrl, setBaseUrl] = createSignal("");
   const [headers, setHeaders] = createSignal<Header[]>([]);
   const [error, setError] = createSignal("");
+  const presets = gatewayPresets(props.kind === "gateway" ? props.protocol : undefined);
+  const choices = [...presets.map((preset) => ({ id: preset.id, name: preset.name, detail: preset.baseUrl })), { id: CUSTOM, name: "Custom gateway", detail: "Any base URL and headers" }];
+  const [choice, setChoice] = createSignal(presets[0]?.id ?? CUSTOM);
+  const preset = () => presets.find((entry) => entry.id === choice());
+  let chooser: HTMLDivElement | undefined;
   let counter = 0;
   let form: HTMLFormElement | undefined;
   const clear = () => {
@@ -44,12 +66,27 @@ export function AuthForm(props: AuthFormProps) {
   };
   onCleanup(clear);
   const patchHeader = (id: number, change: Partial<Header>) => setHeaders((list) => list.map((header) => (header.id === id ? { ...header, ...change } : header)));
-  const ready = () => (props.kind === "apiKey" ? key().trim().length > 0 : baseUrl().trim().length > 0);
+  const ready = () => (props.kind === "apiKey" || preset() ? key().trim().length > 0 : baseUrl().trim().length > 0);
+  const pick = (id: string) => {
+    if (id === choice()) return;
+    clear();
+    setError("");
+    setChoice(id);
+  };
+  const onChooserKey = (event: KeyboardEvent, index: number) => {
+    const to = stepFor(event.key, index, choices.length);
+    if (to === undefined) return;
+    event.preventDefault();
+    pick(choices[to].id);
+    chooser?.querySelectorAll<HTMLElement>("[role='radio']")[to]?.focus();
+  };
   const submit = (event: Event) => {
     event.preventDefault();
     if (props.busy || !ready()) return;
     let secret: AuthSecret;
+    const chosen = preset();
     if (props.kind === "apiKey") secret = { kind: "apiKey", key: key().trim() };
+    else if (chosen) secret = { kind: "gateway", baseUrl: chosen.baseUrl, headers: presetHeaders(key()) };
     else {
       const url = parseGatewayUrl(baseUrl());
       if (!url) return setError("Enter a base URL that starts with https:// or http://");
@@ -62,13 +99,40 @@ export function AuthForm(props: AuthFormProps) {
   };
   return (
     <form ref={form} class="sb-auth-form" onSubmit={submit} aria-label={`${props.methodName} credentials`} autocomplete="off">
+      <Show when={presets.length}>
+        <div class="sb-gateway-chooser" role="radiogroup" aria-label="Gateway provider" ref={chooser}>
+          <For each={choices}>
+            {(entry, index) => (
+              <button
+                type="button"
+                class="sb-option sb-fallback-row sb-gateway-choice"
+                role="radio"
+                aria-checked={choice() === entry.id}
+                tabIndex={choice() === entry.id ? 0 : -1}
+                disabled={props.busy}
+                onClick={() => pick(entry.id)}
+                onKeyDown={(event) => onChooserKey(event, index())}
+              >
+                <span class="sb-option-text">
+                  <span class="sb-option-name">{entry.name}</span>
+                  <span class="sb-gateway-detail sb-mono sb-ellipsis" title={entry.detail}>{entry.detail}</span>
+                </span>
+                <span class="sb-radio-mark" aria-hidden="true" />
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
       <Show
-        when={props.kind === "gateway"}
+        when={props.kind === "gateway" && !preset()}
         fallback={
-          <label class="sb-field-label">
-            <span>API key</span>
-            <input class="sb-input mono" type="password" name="span-agent-api-key" autocomplete="off" spellcheck={false} autocapitalize="off" value={key()} disabled={props.busy} onInput={(event) => setKey(event.currentTarget.value)} />
-          </label>
+          <>
+            <label class="sb-field-label">
+              <span>{preset()?.keyLabel ?? "API key"}</span>
+              <input class="sb-input mono" type="password" name="span-agent-api-key" autocomplete="off" spellcheck={false} autocapitalize="off" value={key()} disabled={props.busy} onInput={(event) => setKey(event.currentTarget.value)} />
+            </label>
+            <Show when={preset()}>{(chosen) => <p class="sb-fine sb-gateway-note" role="note">{chosen().note}</p>}</Show>
+          </>
         }
       >
         <label class="sb-field-label">

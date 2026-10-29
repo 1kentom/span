@@ -124,6 +124,12 @@ pub struct AuthMethodInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub input: Option<AuthInput>,
+    /// For a gateway method, the wire protocol the agent expects from the
+    /// gateway (`_meta.gateway.protocol`), for example `anthropic`,
+    /// `bedrock` or `openai`. The UI offers provider presets by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub gateway_protocol: Option<String>,
     /// Set when the method cannot run from Span and the user must act instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]

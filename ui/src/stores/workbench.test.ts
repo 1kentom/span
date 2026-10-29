@@ -8,7 +8,7 @@ const client = vi.hoisted(() => ({
   openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
-import { createWorkbench, settleIntent, SETTINGS_TAB, tabName } from "./workbench";
+import { createWorkbench, settleIntent, SETTINGS_TAB, isGitTab, tabName } from "./workbench";
 import { viewerTabPath } from "../lib/viewer-tabs";
 
 const initial = (): BufferSnapshot => ({ path: "src/file.ts", text: "const value = 1;\n", revision: 0, savedRevision: 0, language: "typescript" });
@@ -744,7 +744,8 @@ describe("scoped settings and auto save integration", () => {
     await vi.waitFor(() => expect(client.editSettingsBuffer).toHaveBeenCalledWith("user", 0, changes));
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(client.saveSettingsBuffer).not.toHaveBeenCalled(); expect(workbench.dirty(base.path)).toBe(true);
-    await workbench.save(base.path); expect(client.saveSettingsBuffer).toHaveBeenCalledWith("user", 1);
+    expect(workbench.activePath()).toBe(base.path);
+    await workbench.save(); expect(client.saveSettingsBuffer).toHaveBeenCalledWith("user", 1);
     expect(client.openBuffer).not.toHaveBeenCalledWith(base.path);
   });
 });
@@ -914,5 +915,45 @@ describe("editor layout directions and drop zones", () => {
     client.getSession.mockResolvedValue(session);
     const workbench = testWorkbench(); await workbench.initialize();
     expect(workbench.groups()).toHaveLength(2); expect(workbench.splitVertical()).toBe(true);
+  });
+});
+
+
+describe("read-only Git workspace tabs", () => {
+  it("counts clean comparisons toward the tab limit while protecting dirty editor content", async () => {
+    client.getSettings.mockResolvedValue({ ...preferences, tabLimit: 2 });
+    const workbench = await setup(); append(workbench, "// keep this draft\n");
+    const first = workbench.openGitTab("working:first", "First comparison")!;
+    const second = workbench.openGitTab("working:second", "Second comparison")!;
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts", second]);
+    expect(workbench.groups()[0].tabs).not.toContain(first);
+    expect(workbench.dirty("src/file.ts")).toBe(true);
+  });
+
+  it("opens and closes comparisons without reading a filesystem buffer or losing the editor draft/history", async () => {
+    const workbench = await setup();
+    append(workbench, "// retained draft\n");
+    const draft = workbench.documents()["src/file.ts"].document;
+    const opens = client.openBuffer.mock.calls.length;
+    const tab = workbench.openGitTab("working:src/file.ts", "file.ts (Working changes)")!;
+    expect(isGitTab(tab)).toBe(true); expect(tabName(tab)).toBe("file.ts (Working changes)");
+    expect(workbench.activeTab()).toBe(tab); expect(workbench.activePath()).toBeUndefined();
+    expect(await workbench.save()).toBe(false); expect(client.openBuffer).toHaveBeenCalledTimes(opens);
+    workbench.closeTab(tab, workbench.activeGroup());
+    expect(workbench.documents()["src/file.ts"].document).toBe(draft);
+    expect(workbench.dirty("src/file.ts")).toBe(true);
+    workbench.applyHistory("src/file.ts");
+    expect(workbench.documents()["src/file.ts"].document.toString()).toBe(initial().text);
+    expect(client.releaseBuffer.mock.calls.some(([path]) => isGitTab(path))).toBe(false);
+  });
+  it("does not persist virtual Git tabs or send them to native buffer IPC", async () => {
+    const workbench = testWorkbench(); await workbench.initialize();
+    await workbench.openWorkspace("/workspace"); await workbench.openFile("src/file.ts");
+    const tab = workbench.openGitTab("history:abc123", "Commit abc123")!;
+    await workbench.persistSession();
+    const saved = client.saveSession.mock.calls.at(-1)![0];
+    expect(saved.groups[0].paths).toEqual(["src/file.ts"]); expect(saved.groups[0].activePath).toBe("src/file.ts");
+    await workbench.openFile(tab); expect(client.openBuffer.mock.calls.map(([path]) => path)).toEqual(["src/file.ts"]);
+    await workbench.openWorkspace("/other"); expect(workbench.groups().flatMap(group => group.tabs)).not.toContain(tab);
   });
 });

@@ -6,6 +6,7 @@ mod folder_outline;
 mod format;
 mod format_native;
 mod fs_ops;
+mod git;
 mod images;
 mod pdf_pages;
 mod proposal_diff;
@@ -28,6 +29,10 @@ pub use folder_outline::{FolderOutline, FOLDER_OUTLINE_LIMIT, MAX_FOLDER_OUTLINE
 pub use format::{
     native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
     FormatResult,
+};
+pub use git::{
+    GitChange, GitCommit, GitCommitResult, GitContext, GitDiff, GitDiffSide, GitHistoryPage,
+    GitHistoryQuery, GitRepository, GitService, GitStatus,
 };
 pub use images::RasterImage;
 pub use pdf_pages::pdf_page_count;
@@ -88,6 +93,8 @@ pub enum CoreError {
     Formatter(String),
     #[error("Run configuration: {0}")]
     RunConfiguration(String),
+    #[error("Git: {0}")]
+    Git(String),
     #[error("Search: {0}")]
     Search(String),
     #[error("Attachment rejected: {0}")]

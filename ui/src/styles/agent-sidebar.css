@@ -455,6 +455,11 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-auth-form { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; border: 1px solid var(--sb-border); border-radius: 7px; background: var(--sb-raised); }
 .sb-field-label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--sb-dim); }
 .sb-header-row { display: flex; gap: 4px; align-items: center; }
+/* Gateway provider chooser: the model fallback's radio rows, with the base URL on one line under each name. */
+.sb-gateway-chooser { --sb-ring: var(--sb-field); display: flex; flex-direction: column; gap: 1px; padding: 3px; border-radius: 7px; background: var(--sb-field); }
+.sb-gateway-choice { --sb-ring: var(--sb-field); }
+.sb-gateway-detail { font-size: 10.5px; color: var(--sb-faint); }
+.sb-gateway-note { margin: 0; }
 .sb-header-row .sb-input { flex: 1; min-width: 0; }
 .sb-auth-hint code, .sb-fine code { padding: 0 4px; border-radius: 3px; background: var(--sb-field); color: var(--sb-fg); font-size: 11px; }
 /* A launch command on one line that fills the text column. No border: the field background marks it. */
