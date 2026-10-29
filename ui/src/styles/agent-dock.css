@@ -1,0 +1,66 @@
+/*
+ * Inside the permission, question and URL docks (Docks.tsx, DockClamp.tsx). The dock surface, border, radius and inset
+ * come from the shared stack rule in agent.css and the .sb-dock rule in agent-sidebar.css: the same neutral raised bar
+ * as the activity bar and the limit card. Attention lives only in the small warning icon; no tinted fill, no tinted border.
+ */
+
+/* Header row: short title, then the kind chip and the agent mark, both small and muted. */
+.sb-dock .sb-dock-head { gap: 8px; min-width: 0; }
+.sb-dock .sb-dock-glyph { flex: none; }
+.sb-dock .sb-dock-title { min-width: 0; font-size: 13px; font-weight: 500; line-height: 18px; color: var(--sb-fg); }
+.sb-dock .sb-dock-title.muted { color: var(--sb-dim); font-weight: 400; }
+.sb-dock .sb-kind { flex: none; padding: 0 5px; border: 0; border-radius: 4px; background: var(--sb-field); color: var(--sb-dim); font-size: 10px; line-height: 16px; }
+.sb-dock-mark { display: inline-grid; place-items: center; flex: none; opacity: 0.7; }
+
+/* A block clamped to three lines, with Show more / Show less and Copy under it. */
+.sb-clamp { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sb-clamp-body { min-width: 0; }
+.sb-clamp:not(.mono) .sb-clamp-body { overflow-wrap: break-word; }
+.sb-clamp-body.sb-clamped:not(.sb-dock-diff) {
+  display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--sb-clamp-lines, 3); line-clamp: var(--sb-clamp-lines, 3);
+}
+.sb-clamp-body.sb-expanded:not(.sb-dock-diff) { max-height: calc(12lh + 2px); overflow-y: auto; overscroll-behavior: contain; }
+
+/* The command: monospace, the only place that may break anywhere, with the "$ " prompt kept. */
+/* The block inset is a border in the field colour, not padding, so a clamped fourth line never shows in the inset. */
+.sb-dock .sb-code.sb-dock-command { margin: 0; padding: 0 10px; border: 0; border-block: 7px solid var(--sb-field); border-radius: 6px; font: 11px/17px "JetBrains Mono", ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sb-dock .sb-dock-command.sb-clamped { max-height: calc(3 * 17px + 14px); }
+.sb-dock .sb-dock-command.sb-expanded { max-height: calc(12 * 17px + 14px); }
+.sb-dock .sb-dock-command .sb-prompt { color: var(--sb-dim); user-select: none; }
+
+/* A diff preview shows three rows, then up to twelve when expanded. */
+.sb-dock-diff.sb-clamped .sb-diff-body { max-height: calc(3 * 18px); overflow: hidden; }
+.sb-dock-diff.sb-expanded .sb-diff-body { max-height: calc(12 * 18px); overflow: auto; overscroll-behavior: contain; }
+
+.sb-clamp-bar { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sb-clamp-toggle {
+  display: inline-flex; align-items: center; gap: 4px; flex: none; height: 20px; padding: 0 6px 0 4px; border: 0; border-radius: 4px;
+  background: none; color: var(--sb-dim); font: 500 10.5px/1 Inter, system-ui, sans-serif; cursor: pointer;
+}
+.sb-clamp-toggle:hover { background: var(--sb-hover); color: var(--sb-fg); }
+.sb-clamp-toggle:focus-visible { outline: 2px solid var(--sb-accent); outline-offset: 1px; }
+.sb-clamp-bar .sb-copy-status { font-size: 10.5px; }
+
+/* Question options with long labels: two lines each, the full text in the tooltip. */
+.sb-dock .sb-clamp-2 { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: break-word; }
+.sb-dock .sb-urlbox .sb-mono.sb-url-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+
+/* Key hints as small key caps, the same as the composer hints. */
+.sb-dock .sb-dock-tabhint .sb-hint-key { margin: 0 2px; vertical-align: 1px; }
+.sb-dock .sb-hotkey {
+  display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 3px; border: 1px solid var(--sb-control-border);
+  border-radius: 3px; background: var(--sb-field); color: var(--sb-dim); font: 10px/1 "JetBrains Mono", ui-monospace, monospace; opacity: 1;
+}
+
+/* Answer buttons: the quiet accent-outline primary of the limit card, a quiet secondary, danger only on the label on hover or focus. */
+.sb-dock .sb-actions { gap: 6px; }
+.sb-dock .sb-actions > .sb-btn { height: 26px; padding: 0 6px 0 10px; border-radius: 6px; border-color: var(--sb-control-border); background: transparent; color: var(--sb-fg); font: 500 12px/1 Inter, system-ui, sans-serif; }
+.sb-dock .sb-actions > .sb-btn:not(:has(.sb-hotkey)) { padding-right: 10px; }
+.sb-dock .sb-actions > .sb-btn:hover:not(:disabled) { background: var(--sb-hover); }
+.sb-dock .sb-actions > .sb-btn.primary { border-color: var(--sb-accent-border); background: var(--sb-control); color: var(--sb-fg); }
+.sb-dock .sb-actions > .sb-btn.primary:hover:not(:disabled) { background: var(--sb-accent-surface); }
+.sb-dock .sb-actions > .sb-btn.danger { color: var(--sb-fg); }
+.sb-dock .sb-actions > .sb-btn.danger:is(:hover, :focus-visible):not(:disabled) { color: var(--sb-error); }
+.sb-dock .sb-q-text > .sb-btn.primary { border-color: var(--sb-accent-border); background: var(--sb-control); color: var(--sb-fg); }
+.sb-dock .sb-q-text > .sb-btn.primary:hover:not(:disabled) { background: var(--sb-accent-surface); }

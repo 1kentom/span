@@ -424,8 +424,9 @@
   border-radius: 12px 12px 0 0;
 }
 .agent-footer > :is(.sb-dock, .sb-activity) {
-  border: 1px solid var(--sb-accent-border);
+  border: 1px solid var(--sb-border);
   border-bottom: 0;
+  background: var(--sb-raised);
 }
 /* A long question never grows past the panel: it scrolls inside the dock and the prompt box stays in view. */
 .agent-footer > .sb-dock {
