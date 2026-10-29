@@ -34,7 +34,15 @@ export function createPickers(a: AgentController, props: { brand: Brand; label: 
   };
   const modelTrait = () => overlayTrait(currentModelTraits(config()));
   const busy = () => a.pendingAction().startsWith("config:") || a.working() || a.running();
-  const select = (id: string, value: string) => void a.setConfig(id, value);
+  const select = (id: string, value: string) => {
+    // Opened from the limit card: picking a model resends the refused turn with it (the existing retry path).
+    if (a.resendArmed() === "model" && a.limitTurn() && config().find((option) => option.id === id)?.category === "model") {
+      close();
+      void a.retryWithModel(value);
+      return;
+    }
+    void a.setConfig(id, value);
+  };
   const presets = () => a.presets().filter((preset) => !a.installed().some((entry) => entry.id === preset.id)).map((preset) => ({ id: preset.id, name: preset.name, description: preset.description }));
 
   let agentChip: HTMLButtonElement | undefined;
@@ -64,7 +72,17 @@ export function createPickers(a: AgentController, props: { brand: Brand; label: 
     return (
       <>
         <Show when={a.menu() === "model"}>
-          <ModelPopover agentName={props.label} brand={props.brand} options={config()} busy={busy()} onSelect={select} onOpenAgents={() => a.setMenu("agents")} onClose={close} />
+          <ModelPopover
+            agentName={props.label}
+            brand={props.brand}
+            options={config()}
+            busy={busy()}
+            limited={a.limitedModelValues()}
+            freeOnly={a.resendArmed() === "model" && a.limitTurn()?.freeTier ? false : undefined}
+            onSelect={select}
+            onOpenAgents={() => (a.resendArmed() ? a.openResendPicker("agents") : a.setMenu("agents"))}
+            onClose={close}
+          />
         </Show>
         <Show when={a.menu() === "mode"}>
           <ModePopover agentName={props.label} options={config()} busy={busy()} onSelect={select} onClose={close} />
@@ -81,7 +99,11 @@ export function createPickers(a: AgentController, props: { brand: Brand; label: 
             checkingUpdates={agentUpdatesBusy()}
             updateError={agentUpdateError()}
             busy={a.working()}
-            onSelect={(id) => switchTo(() => a.connectInstalled(id))}
+            onSelect={(id) => {
+              // Opened from the limit card: the refused turn goes to the new agent through the switch and handoff path.
+              const resend = a.resendArmed() === "agents" && Boolean(a.limitTurn());
+              switchTo(() => (resend ? void a.switchAgentAndResend(id) : a.connectInstalled(id)));
+            }}
             onPreset={(id) => switchTo(() => a.connectPreset(id))}
             onCheckUpdates={() => void checkAgentUpdates(true)}
             onAdd={() => {

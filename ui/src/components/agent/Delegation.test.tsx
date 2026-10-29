@@ -173,3 +173,65 @@ describe("DelegationCard cancel", () => {
     expect(mount(() => <DelegationCard agent="Codex" status="running" taskId="t7" />).querySelector(".sb-delegation-actions")).toBeNull();
   });
 });
+
+describe("opening the child session from its card", () => {
+  afterEach(() => vi.useRealTimers());
+  const flush = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+  const transcript = (text: string, status = "completed") => ({
+    text,
+    task: { taskId: "task-1", lead: { connectionId: "c1", sessionId: "lead" }, child: { connectionId: "c2", sessionId: "child-session-1234" }, agentName: "Codex", status, stopReason: null, reason: null, detail: null, startedAtMs: 1, finishedAtMs: 2, progressText: null, resultSummary: null, artifacts: [], budgetUsed: { turns: 1, tokens: null, contextSize: null, cost: null, currency: null, elapsedSeconds: 1 } },
+  }) as never;
+
+  it("offers Open session only with a task id and a reader, and not while starting", () => {
+    const load = vi.fn();
+    expect(mount(() => <DelegationCard agent="Codex" status="completed" onOpenSession={load} />).querySelector(".sb-delegation-open")).toBeNull();
+    expect(mount(() => <DelegationCard agent="Codex" status="completed" taskId="task-1" />).querySelector(".sb-delegation-open")).toBeNull();
+    expect(mount(() => <DelegationCard agent="Codex" status="starting" taskId="task-1" onOpenSession={load} />).querySelector(".sb-delegation-open")).toBeNull();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("opens the child's full text read only, and closes again", async () => {
+    const load = vi.fn(async () => transcript("Wrote **out.txt** and checked it."));
+    const host = mount(() => <DelegationCard agent="Codex" status="completed" taskId="task-1" onOpenSession={load} />);
+    const toggle = host.querySelector<HTMLButtonElement>(".sb-delegation-open")!;
+    expect(text(toggle)).toBe("Open session");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    toggle.click();
+    await flush();
+    expect(load).toHaveBeenCalledWith("task-1");
+    const view = host.querySelector(".sb-child-session")!;
+    expect(view.getAttribute("aria-label")).toBe("Codex session");
+    expect(text(view.querySelector(".sb-child-session-head"))).toContain("Session child-sessio on Codex. Read only");
+    expect(text(view.querySelector(".sb-child-session-text"))).toBe("Wrote **out.txt** and checked it.");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(text(toggle)).toBe("Close session");
+    toggle.click();
+    expect(host.querySelector(".sb-child-session")).toBeNull();
+  });
+
+  it("renders through the given renderer and says when nothing was written", async () => {
+    const host = mount(() => <DelegationCard agent="Codex" status="completed" taskId="task-1" onOpenSession={async () => transcript("  ")} renderText={(value) => <em>{value}</em>} />);
+    host.querySelector<HTMLButtonElement>(".sb-delegation-open")!.click();
+    await flush();
+    expect(text(host.querySelector(".sb-child-session"))).toContain("The agent wrote no text for this task.");
+    const rendered = mount(() => <DelegationCard agent="Codex" status="completed" taskId="task-1" onOpenSession={async () => transcript("done")} renderText={(value) => <em>{value}</em>} />);
+    rendered.querySelector<HTMLButtonElement>(".sb-delegation-open")!.click();
+    await flush();
+    expect(rendered.querySelector(".sb-child-session-text em")?.textContent).toBe("done");
+  });
+
+  it("refreshes while the task runs and shows a read failure", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const load = vi.fn(async () => { calls += 1; if (calls === 3) throw new Error("Unknown task"); return transcript(`part ${calls}`, "running"); });
+    const host = mount(() => <DelegationCard agent="Codex" status="running" taskId="task-1" onOpenSession={load} />);
+    host.querySelector<HTMLButtonElement>(".sb-delegation-open")!.click();
+    await flush();
+    expect(text(host.querySelector(".sb-child-session-text"))).toBe("part 1");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(text(host.querySelector(".sb-child-session-text"))).toBe("part 2");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(text(host.querySelector(".sb-child-session [role=alert]"))).toBe("Could not open the session: Unknown task");
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+});

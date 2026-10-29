@@ -186,6 +186,8 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
               budget={budgetText(task().budgetUsed)}
               onCancel={a.cancelTask}
               onOpenArtifact={(path) => a.openInEditor(path)}
+              onOpenSession={a.openTaskSession}
+              renderText={(text) => <AgentMarkdown text={text} workspaceRoot={a.props.workspacePath || ""} onOpenFile={openFile} onOpenExternal={a.props.onOpenExternal} />}
             />
           );
         })()}

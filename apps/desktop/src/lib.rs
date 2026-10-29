@@ -234,6 +234,40 @@ async fn list_directory(
     .await
 }
 
+/// Bounded outline of a workspace folder for a folder attachment: one call
+/// instead of one listing per folder. Paths in the text are folder-relative.
+#[tauri::command]
+#[specta::specta]
+async fn folder_outline(
+    state: State<'_, DesktopState>,
+    path: String,
+    limit: u32,
+) -> Result<span_core::FolderOutline, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        workspace.folder_outline(&path, limit as usize)
+    })
+    .await
+}
+
+/// Page count of a PDF the viewer's library could not open, or `None` when it
+/// cannot be read reliably. The bytes come from an attachment the user added.
+#[tauri::command]
+#[specta::specta]
+async fn pdf_page_count(data_base64: String) -> Result<Option<u32>, String> {
+    use base64::Engine;
+    if (data_base64.len() / 4 * 3) as u64 > span_core::MAX_UPLOAD_BYTES + 3 {
+        return Err("PDF is too large to count pages.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_base64.as_bytes())
+            .map_err(|_| "PDF data is not valid base64.".to_string())?;
+        Ok(span_core::pdf_page_count(&bytes))
+    })
+    .await
+    .map_err(|error| format!("Page count failed: {error}"))?
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn list_files(state: State<'_, DesktopState>) -> Result<Vec<FileEntry>, String> {
@@ -1045,6 +1079,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_delegation_status,
             agents::agent_child_permission,
             agents::agent_cancel_task,
+            agents::agent_task_transcript,
             agents::agent_warm_start,
             agents::agent_health,
             uploads::uploads_list,
@@ -1058,6 +1093,11 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             uploads::uploads_copy_path,
             uploads::uploads_reveal,
             uploads::uploads_open,
+            uploads::uploads_folder,
+            uploads::uploads_reveal_folder,
+            uploads::uploads_clear,
+            folder_outline,
+            pdf_page_count,
             window::report_startup_timings,
             window::show_main_window
         ])

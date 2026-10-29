@@ -1695,6 +1695,12 @@ async fn tasks_report_timing_progress_summary_artifacts_and_usage() {
     assert_eq!(done.budget_used.turns, 1);
     // The agent reported no usage, so none is made up.
     assert_eq!(done.budget_used.tokens, None);
+
+    // Opening the child session from its card reads the same task and its full text.
+    let transcript = server.transcript(&task).expect("the task has a transcript");
+    assert_eq!(&transcript.task, done);
+    assert!(transcript.text.contains("wrote out/result.txt"));
+    assert!(server.transcript("task-99").is_none(), "unknown task");
 }
 
 #[tokio::test]

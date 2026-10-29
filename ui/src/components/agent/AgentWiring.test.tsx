@@ -31,10 +31,11 @@ const mocks = vi.hoisted(() => {
     agentAuthenticateWith: vi.fn(async () => "s-auth"),
     agentChildPermission: vi.fn(async (..._args: unknown[]) => undefined),
     agentCancelTask: vi.fn(async (..._args: unknown[]) => undefined),
+    agentTaskTranscript: vi.fn(async (..._args: unknown[]) => ({ text: "Child reply text", task: { taskId: "t1", child: { connectionId: "c2", sessionId: "child-1" } } }) as never),
     agentDelegationStatus: vi.fn(async () => ({ enabled: true, available: true, reason: null, lead: null, attached: true, tasks: [], decisions: [] })),
   };
 });
-vi.mock("../../lib/client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith, agentChildPermission: mocks.agentChildPermission, agentCancelTask: mocks.agentCancelTask, agentDelegationStatus: mocks.agentDelegationStatus }));
+vi.mock("../../lib/client", () => ({ isDesktop: true, api: mocks.api, agentPresets: mocks.agentPresets, agentAuthenticateWith: mocks.agentAuthenticateWith, agentChildPermission: mocks.agentChildPermission, agentCancelTask: mocks.agentCancelTask, agentTaskTranscript: mocks.agentTaskTranscript, agentDelegationStatus: mocks.agentDelegationStatus }));
 
 const features = (patch: Partial<AgentFeatures> = {}): AgentFeatures => ({ loadSession: false, image: true, audio: false, embeddedContext: true, mcpHttp: false, mcpSse: false, canListSessions: false, canResumeSessions: false, canCloseSessions: false, canDeleteSessions: false, ...patch });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -323,6 +324,11 @@ describe("typed child events and cancel in the sidebar", () => {
     mocks.emit({ kind: "delegation", event: { kind: "taskFinished", lead, child, taskId: "t1", status: "failed", reason: "cancelled" } });
     expect(host.querySelector(".sb-delegation-actions")).toBeNull();
     expect(text(host.querySelector(".sb-delegation-status"))).toBe("Cancelled");
+    // The finished task's child session still opens from the card, through the user-only read command.
+    host.querySelector<HTMLButtonElement>(".sb-delegation-open")!.click();
+    await tick();
+    expect(mocks.agentTaskTranscript).toHaveBeenCalledWith("t1");
+    expect(text(host.querySelector(".sb-child-session-text"))).toContain("Child reply text");
   });
 });
 

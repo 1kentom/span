@@ -44,13 +44,17 @@ function encode(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** Store record to panel entry. Session titles are not in the store, so a short id stands in until one is known. */
+/**
+ * Store record to panel entry. The session is named by the live lookup first, then by the chat title the store
+ * recorded with the file, and only then by a short id.
+ */
 export function uploadEntry(upload: Upload_Serialize, sessionTitle?: (id: string) => string | undefined): UploadEntry {
   const { sessionId, agentId, origin } = upload.source;
+  const stored = upload.source.sessionTitle?.trim() || undefined;
   return {
     id: upload.id, name: upload.name, size: upload.size, mime: upload.mime || undefined, createdAt: upload.createdMs,
     origin: origin === 'agent-generated' ? 'generated' : 'sent',
-    ...(sessionId ? { session: { id: sessionId, title: sessionTitle?.(sessionId) ?? `Chat ${sessionId.slice(0, 8)}` } } : {}),
+    ...(sessionId ? { session: { id: sessionId, title: sessionTitle?.(sessionId) ?? stored ?? `Chat ${sessionId.slice(0, 8)}` } } : {}),
     ...(agentId ? { agent: { id: agentId } } : {}),
   };
 }

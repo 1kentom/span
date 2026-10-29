@@ -6,7 +6,10 @@
 //! is bound to the session once the agent returns its id. The server stops
 //! when the session leaves the manager (close, delete, disconnect, process
 //! exit).
-use super::{transport_for, DecisionRecord, DelegationEvent, DelegationStatus, DelegationTask};
+use super::{
+    transport_for, DecisionRecord, DelegationEvent, DelegationStatus, DelegationTask,
+    DelegationTranscript,
+};
 use super::{ToolServer, ToolServerConfig};
 use crate::{SessionKey, SessionManager, SessionOrigin};
 use std::collections::HashMap;
@@ -199,6 +202,28 @@ impl LeadServers {
             return Err("Several sessions have this task id".into());
         }
         server.cancel_task(task_id)
+    }
+
+    /// The task and its child's text so far, searched like `cancel_task`.
+    /// Read only: the user opens it from the task's card.
+    pub fn transcript(
+        &self,
+        lead: Option<&SessionKey>,
+        task_id: &str,
+    ) -> Result<DelegationTranscript, String> {
+        let servers = self.servers();
+        let mut found = servers
+            .iter()
+            .filter(|(key, _)| lead.is_none_or(|l| l == *key))
+            .map(|(_, server)| server)
+            .filter(|server| server.has_task(task_id));
+        let server = found.next().ok_or("Unknown task")?;
+        if found.next().is_some() {
+            return Err("Several sessions have this task id".into());
+        }
+        server
+            .transcript(task_id)
+            .ok_or_else(|| "Unknown task".into())
     }
 
     /// Decisions one lead recorded.
