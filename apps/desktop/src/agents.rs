@@ -3,9 +3,9 @@ use serde::Serialize;
 use span_acp::tools::{DelegationEventSink, DelegationStatus, ToolPolicy, ToolServerConfig};
 use span_acp::{
     AgentCommand, AgentEvent, AgentHealth, AgentPreset, AgentService, AuthCredential,
-    BackgroundAgents, EventSink, HealthMonitor, HealthPolicy, InstalledAgent, PromptAttachment,
-    PromptError, RegistryAgent, SessionActivity, SessionKey, SessionOrigin, SessionStates,
-    PROMPT_ALREADY_RUNNING,
+    BackgroundAgents, BackgroundState, EventSink, HealthMonitor, HealthPolicy, InstalledAgent,
+    PromptAttachment, PromptError, RegistryAgent, SessionActivity, SessionKey, SessionOrigin,
+    SessionStates, PROMPT_ALREADY_RUNNING,
 };
 use span_core::{BufferSnapshot, CoreWorkspace};
 use specta::Type;
@@ -311,14 +311,59 @@ pub async fn disconnect_and_wait(state: &DesktopState) -> Result<(), String> {
         .lock()
         .map_err(|_| "Agent state is unavailable".to_owned())?
         .take();
-    if let Some(active) = active {
-        // End the connection's sessions and delegated children in the
-        // session manager, then wait for the process and its callbacks.
-        state.run_approvals.cancel_connection(&active.connection);
-        let _ = state.sessions.disconnect(&active.connection);
-        active.service.shutdown_and_wait().await?;
+    match active {
+        Some(active) => end_connection(state, active).await,
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// End the connection's sessions and delegated children in the session
+/// manager, then wait for the process and its callbacks.
+async fn end_connection(state: &DesktopState, agent: ActiveAgent) -> Result<(), String> {
+    state.run_approvals.cancel_connection(&agent.connection);
+    let _ = state.sessions.disconnect(&agent.connection);
+    agent.service.shutdown_and_wait().await
+}
+
+/// Switch the active agent to the one `connect` opens (issue #87). The new
+/// agent connects first while the old one stays active; only once it is
+/// connected does it become the active agent and the old connection close.
+/// A failed connect leaves the old connection and the active agent as they
+/// were, so the UI can go back to the chat it left. `connect` cleans up its
+/// own connection when it fails. Returns the new session id, empty while the
+/// new agent waits for sign-in.
+async fn connect_then_replace<F>(state: &DesktopState, connect: F) -> Result<String, String>
+where
+    F: std::future::Future<Output = Result<ActiveAgent, String>>,
+{
+    let agent = connect.await?;
+    let session = agent.session.clone();
+    let connection = agent.connection.clone();
+    let previous = state
+        .agent
+        .lock()
+        .map_err(|_| "Agent state is unavailable".to_owned())?
+        .replace(agent);
+    if let Some(previous) = previous.filter(|previous| previous.connection != connection) {
+        // The switch is done: a slow or failed shutdown of the old process
+        // must not fail it.
+        let _ = end_connection(state, previous).await;
+    }
+    Ok(session)
+}
+
+/// True when connecting `installed` would reuse the active agent's own
+/// connection from the background map: a reconnect to the same agent, not a
+/// switch. That one still closes the old process first so it starts fresh.
+fn reuses_active(
+    state: &DesktopState,
+    background: &BackgroundAgents,
+    installed: &InstalledAgent,
+) -> bool {
+    let BackgroundState::Connected(connection) = background.state(&installed.id) else {
+        return false;
+    };
+    active(state).is_ok_and(|agent| agent.connection == connection)
 }
 
 #[tauri::command]
@@ -394,26 +439,59 @@ pub async fn agent_connect(
     let state = state.inner().clone();
     let _gate = state.connection_gate.lock().await;
     let workspace = workspace(&state)?;
-    disconnect_and_wait(&state).await?;
-    let delegation_events: DelegationEventSink = {
-        let channel = on_event.clone();
-        Arc::new(move |event| {
-            let _ = channel.send(AgentEvent::Delegation { event });
-        })
-    };
+    let background = background(&state);
+    let installed = installed_agents(&app)
+        .await
+        .into_iter()
+        .find(|agent| same_command(&agent.launch, &command));
+    if installed
+        .as_ref()
+        .is_some_and(|installed| reuses_active(&state, &background, installed))
+    {
+        disconnect_and_wait(&state).await?;
+    }
     let ui: EventSink = {
         let channel = on_event.clone();
         Arc::new(move |event| {
             let _ = channel.send(event);
         })
     };
-    let background = background(&state);
+    let opening = open_agent(
+        &app,
+        &state,
+        &background,
+        installed,
+        command,
+        cwd,
+        workspace,
+        on_event,
+        ui.clone(),
+    );
+    let session = connect_then_replace(&state, opening).await?;
     // Requests of delegated children on background agents reach this chat.
-    background.set_child_sink(Some(ui.clone()));
-    let installed = installed_agents(&app)
-        .await
-        .into_iter()
-        .find(|agent| same_command(&agent.launch, &command));
+    // Set only once the switch is done, so a failed one leaves them with the
+    // chat that is still active.
+    background.set_child_sink(Some(ui));
+    Ok(session)
+}
+
+/// Connect `command` and open its lead session, without touching the active
+/// agent. On failure the new connection is closed again.
+#[allow(clippy::too_many_arguments)]
+async fn open_agent(
+    app: &tauri::AppHandle,
+    state: &DesktopState,
+    background: &BackgroundAgents,
+    installed: Option<InstalledAgent>,
+    command: AgentCommand,
+    cwd: String,
+    workspace: Arc<Mutex<CoreWorkspace>>,
+    on_event: Channel<AgentEvent>,
+    ui: EventSink,
+) -> Result<ActiveAgent, String> {
+    let delegation_events: DelegationEventSink = Arc::new(move |event| {
+        let _ = on_event.send(AgentEvent::Delegation { event });
+    });
     let connection = match installed {
         // An installed agent runs through the background map, so a warm or
         // delegated process is reused and never started twice.
@@ -444,7 +522,7 @@ pub async fn agent_connect(
     };
     let session = match tokio::time::timeout(
         std::time::Duration::from_secs(45),
-        open_lead(&app, &state, &agent),
+        open_lead(app, state, &agent),
     )
     .await
     {
@@ -452,11 +530,7 @@ pub async fn agent_connect(
         Ok(Err(_)) if service.auth_required() => {
             // Keep the process alive. The UI gets an AuthRequired event and
             // calls agent_authenticate, which creates the session.
-            *state
-                .agent
-                .lock()
-                .map_err(|_| "Agent state is unavailable".to_owned())? = Some(agent);
-            return Ok(String::new());
+            return Ok(agent);
         }
         result => {
             let _ = state.sessions.disconnect(&connection);
@@ -467,12 +541,8 @@ pub async fn agent_connect(
             });
         }
     };
-    agent.session = session.clone();
-    *state
-        .agent
-        .lock()
-        .map_err(|_| "Agent state is unavailable".to_owned())? = Some(agent);
-    Ok(session)
+    agent.session = session;
+    Ok(agent)
 }
 
 /// Warm start (ADR 0009): start installed agents in the background so a
@@ -1054,5 +1124,82 @@ mod session_tests {
         assert_eq!(active(&state).unwrap().session, "valid-result");
         old.shutdown_and_wait().await.unwrap();
         current.shutdown_and_wait().await.unwrap();
+    }
+
+    /// Connect the fixture agent through the state's session manager and
+    /// describe it as an active agent with `session`.
+    async fn fixture_agent(
+        state: &DesktopState,
+        directory: &std::path::Path,
+        session: &str,
+    ) -> ActiveAgent {
+        let workspace = Arc::new(Mutex::new(
+            span_core::CoreWorkspace::open(directory)
+                .unwrap()
+                .with_user_settings(None),
+        ));
+        let command = AgentCommand {
+            command: "node".into(),
+            args: vec![format!(
+                "{}/../../crates/acp/tests/fixtures/agent.mjs",
+                env!("CARGO_MANIFEST_DIR")
+            )],
+            env: BTreeMap::new(),
+        };
+        let connection = state
+            .sessions
+            .connect(
+                command,
+                directory.to_string_lossy().into_owned(),
+                workspace,
+                Some(Arc::new(|_| {})),
+            )
+            .await
+            .unwrap();
+        ActiveAgent {
+            service: state.sessions.service(&connection).unwrap(),
+            connection,
+            session: session.into(),
+            delegation_events: Arc::new(|_| {}),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_switch_connects_first_and_keeps_the_old_connection_when_it_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DesktopState::default();
+        let old = fixture_agent(&state, directory.path(), "old-session").await;
+        let old_connection = old.connection.clone();
+        *state.agent.lock().unwrap() = Some(old);
+
+        // A failed switch: the old agent stays active and its process alive.
+        let failed = connect_then_replace(&state, async {
+            assert!(state.sessions.service(&old_connection).is_some());
+            Err::<ActiveAgent, String>("new agent: command not found".into())
+        })
+        .await;
+        assert_eq!(failed.unwrap_err(), "new agent: command not found");
+        let still = active(&state).unwrap();
+        assert_eq!(still.connection, old_connection);
+        assert_eq!(still.session, "old-session");
+        assert!(state.sessions.service(&old_connection).is_some());
+
+        // A successful switch: the old connection is still open while the new
+        // agent connects, and closed once the new one is active.
+        let switched = connect_then_replace(&state, async {
+            assert!(state.sessions.service(&old_connection).is_some());
+            Ok(fixture_agent(&state, directory.path(), "new-session").await)
+        })
+        .await
+        .unwrap();
+        assert_eq!(switched, "new-session");
+        let current = active(&state).unwrap();
+        assert_ne!(current.connection, old_connection);
+        assert_eq!(current.session, "new-session");
+        assert!(state.sessions.service(&old_connection).is_none());
+        assert!(state.sessions.service(&current.connection).is_some());
+
+        disconnect_and_wait(&state).await.unwrap();
+        assert!(state.sessions.service(&current.connection).is_none());
     }
 }
