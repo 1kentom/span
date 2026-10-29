@@ -149,6 +149,24 @@ pub enum DelegationEvent {
     },
 }
 
+impl DelegationEvent {
+    /// The lead session the event belongs to. `None` for `Unavailable`,
+    /// which concerns a whole connection.
+    pub fn lead(&self) -> Option<&SessionKey> {
+        match self {
+            DelegationEvent::Decision { lead, .. }
+            | DelegationEvent::Delegated { lead, .. }
+            | DelegationEvent::TaskFinished { lead, .. }
+            | DelegationEvent::ChildPermission { lead, .. }
+            | DelegationEvent::Attached { lead, .. }
+            | DelegationEvent::Detached { lead }
+            | DelegationEvent::Starting { lead, .. }
+            | DelegationEvent::StartFinished { lead, .. } => Some(lead),
+            DelegationEvent::Unavailable { .. } => None,
+        }
+    }
+}
+
 /// Delegation state of the active connection and lead session, for the UI.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 #[serde(rename_all = "camelCase")]
