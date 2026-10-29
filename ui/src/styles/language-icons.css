@@ -1,0 +1,8 @@
+/* Language logos. Each theme shows the color image or the currentColor mask, as measured in provenance.json. */
+.language-icon{display:inline-flex;flex:none;align-items:center;justify-content:center;position:relative;color:inherit;vertical-align:middle}
+.language-icon>img,.language-icon>.language-icon-mono{display:block;width:100%;height:100%}
+.language-icon>img{object-fit:contain;user-select:none}
+.language-icon-mono{background:currentColor;-webkit-mask:var(--language-mask) center/contain no-repeat;mask:var(--language-mask) center/contain no-repeat}
+.language-icon[data-dark=color]>.language-icon-mono,.language-icon[data-dark=mono]>.language-icon-color{display:none}
+.theme-light .language-icon[data-light=color]>.language-icon-color,.theme-light .language-icon[data-light=mono]>.language-icon-mono{display:block}
+.theme-light .language-icon[data-light=color]>.language-icon-mono,.theme-light .language-icon[data-light=mono]>.language-icon-color{display:none}

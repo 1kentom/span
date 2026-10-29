@@ -4,8 +4,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Editor, type EditorCommands, type EditorCursor } from "./components/Editor";
 import AgentPanel from "./components/AgentPanel";
 import { createGitWorkbench, workspaceGitPath } from "./stores/git";
-import { GitPanel } from "./components/git/GitPanel";
-import { GitHistory } from "./components/git/GitHistory";
+import { GitSourceControl } from "./components/git/GitSourceControl";
+import { createGitView } from "./stores/git-view";
 import { GitDiffView } from "./components/git/GitDiffView";
 import { Explorer } from "./components/Explorer";
 import { NewPopup } from "./components/NewPopup";
@@ -67,9 +67,9 @@ import { autoReveal, compactFolders, setAutoReveal, setCompactFolders } from "./
 import { api, hubPort, isDesktop, lspPort, previewNotice } from "./lib/client";
 import { LanguageServerStatus } from "./components/LanguageServerStatus";
 import { LanguageServerSettings } from "./components/LanguageServerSettings";
-import { languageDisplayName } from "./editor/language-names";
 import { useLanguageServers } from "./stores/language-servers";
 import { createLanguageIntelligence } from "./stores/language-intelligence";
+import { fileLanguage } from "./lib/language-icons";
 import { LanguageIntelligencePanel } from "./components/LanguageIntelligencePanel";
 import { LanguageIntelligenceButton } from "./components/LanguageIntelligenceButton";
 import { TrustBanner } from "./components/TrustBanner";
@@ -108,9 +108,11 @@ export default function App() {
   const languageServers = useLanguageServers(lspPort, { onError: message => w.setError(message), hub: hubPort });
   const hub = createLanguageIntelligence({ servers: languageServers, activePath: () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? path : undefined; }, workspaceRoot: () => w.workspace()?.root, autoInstall: () => w.settings().languageServers?.autoInstall ?? true, preview: !isDesktop, setUserSetting: (key, value) => w.updateSettingKey(key, value, "user"), pickPath: hubPort.pickPath, openSettings: () => openSettings() });
   const [hubOpen, setHubOpen] = createSignal(false);
+  const [hubPlacement, setHubPlacement] = createSignal<"top" | "bottom">("top");
+  const activeLanguage = () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? fileLanguage(w.buffers[path]?.language, hub.view().card?.server) : undefined; };
   let hubTrigger: HTMLElement | undefined;
   const closeHub = (restoreFocus = true) => { setHubOpen(false); if (restoreFocus) hubTrigger?.focus(); };
-  const toggleHub = (trigger: HTMLElement) => { if (hubOpen()) closeHub(); else { hubTrigger = trigger; setHubOpen(true); const prompt = hub.view().banner; if (prompt) hub.dismissBanner(prompt.root); } };
+  const toggleHub = (trigger: HTMLElement) => { if (hubOpen()) closeHub(); else { hubTrigger = trigger; setHubPlacement(trigger.closest(".statusbar") ? "bottom" : "top"); setHubOpen(true); const prompt = hub.view().banner; if (prompt) hub.dismissBanner(prompt.root); } };
   const hubAction: Parameters<typeof LanguageIntelligencePanel>[0]["onAction"] = (action, server) => { if (action === "settings") setHubOpen(false); void hub.perform(action, server).catch(error => w.setError(error instanceof Error ? error.message : String(error))); };
   const hubToggleServer = (server: Parameters<typeof hub.setEnabled>[0], enabled: boolean) => { void hub.setEnabled(server, enabled).catch(error => w.setError(error instanceof Error ? error.message : String(error))); };
   createEffect(on(w.workspaceGeneration, () => { languageServers.pruneDiagnostics(); pruneProblems(); void languageServers.refresh(); }, { defer: true }));
@@ -160,8 +162,9 @@ export default function App() {
   const [centerWidth, setCenterWidth] = createSignal(Math.round(window.innerWidth * .48));
   const [splitFraction, setSplitFraction] = createSignal(.5);
   let centerElement!: HTMLDivElement;
-  const [leftView, setLeftView] = createSignal<"Files" | "Search" | "Git" | "History" | "Uploads">("Files");
-  const git = createGitWorkbench({ root: () => w.workspace()?.root, generation: w.workspaceGeneration, active: () => showLeft() && (leftView() === "Git" || leftView() === "History") || isGitTab(w.activeTab() || ""), blocked: w.busy, available: isDesktop, onOpenView: (key, title) => { w.openGitTab(key, title); } });
+  const [leftView, setLeftView] = createSignal<"Files" | "Search" | "Git" | "Uploads">("Files");
+  const gitView = createGitView();
+  const git = createGitWorkbench({ root: () => w.workspace()?.root, generation: w.workspaceGeneration, active: () => showLeft() && leftView() === "Git" || isGitTab(w.activeTab() || ""), blocked: w.busy, available: isDesktop, onOpenView: (key, title) => { w.openGitTab(key, title); } });
   createEffect(() => { const keys = w.groups().flatMap(group => group.tabs).filter(isGitTab).map(gitTabKey).filter((key): key is string => !!key); git.retainViews(keys); });
   /** The Uploads workspace takes the project panel and editor area; its Explorer tab returns. */
   const uploadsOpen = () => showLeft() && leftView() === "Uploads";
@@ -435,7 +438,7 @@ export default function App() {
     if (directory) items.push({ id: "toggle", label: w.expanded().has(path) ? "Collapse folder" : "Expand folder", icon: "menu-folder", onSelect: () => { void w.toggleDirectory(path); } });
     else items.push({ id: "open", label: many ? `Open ${picked.length} Files` : "Open", icon: "menu-file", onSelect: () => { for (const item of picked.filter(entry => !explorer.isDirectory(entry))) navigate(item); } }, { id: "split", label: "Open to the Side", icon: "split-editor", shortcut: mac ? "\u2318\u21b5" : "Ctrl+Enter", disabled: many, onSelect: () => { void w.openToSide(path); } });
     items.push({ id: "new-file", label: "New File…", icon: "menu-newFile", separator: true, disabled: many, shortcut: shortcut("newFile"), onSelect: () => { void explorer.startCreate("file", folder); } }, { id: "new", label: "New", icon: "menu-newFile", disabled: many, shortcut: shortcut("newFromTemplate"), onSelect: () => { explorer.setTemplateRequest({ folder, x: at.x, y: at.y }); } }, { id: "new-folder", label: "New Folder…", icon: "menu-newFolder", disabled: many, shortcut: shortcut("newFolder"), onSelect: () => { void explorer.startCreate("folder", folder); } });
-    if (!directory) items.push({ id: "reveal", label: "Reveal in Files View", icon: "menu-folder", separator: true, onSelect: () => { void explorer.reveal(path); } });
+    if (!directory) items.push({ id: "reveal", label: "Reveal in Files View", icon: "menu-folder", separator: true, onSelect: () => { void explorer.reveal(path); } }, { id: "file-history", label: "Show file history", icon: "Hierarchy", disabled: many || !isDesktop, disabledReason: many ? "Select a single file" : "Requires the desktop app", onSelect: () => showFileHistory(path) });
     if (directory) items.push({ id: "compact-folders", label: compactFolders() ? "Show folders separately" : "Compact single-child folders", icon: "menu-folder", separator: true, onSelect: () => setCompactFolders(!compactFolders()) }, { id: "collapse-all", label: "Collapse All", icon: "menu-folder", shortcut: key("-"), onSelect: () => explorer.collapseAll() }, { id: "auto-reveal", label: autoReveal() ? "Stop revealing the active file" : "Reveal the active file automatically", icon: "menu-folder", onSelect: () => setAutoReveal(!autoReveal()) });
     const clipboard = explorer.clipboard();
     items.push({ id: "cut-file", label: "Cut", icon: "menu-cut", separator: true, shortcut: key("X"), onSelect: () => explorer.setClip(true) }, { id: "copy-file", label: "Copy", icon: "menu-copy", shortcut: key("C"), onSelect: () => explorer.setClip(false) }, { id: "paste-file", label: "Paste", icon: "menu-paste", shortcut: key("V"), disabled: !clipboard, onSelect: () => { void explorer.paste(folder); } }, { id: "duplicate", label: "Duplicate", icon: "menu-duplicate", disabled: many, onSelect: () => { void explorer.duplicate(path); } });
@@ -467,7 +470,7 @@ export default function App() {
       const clipboard = fileClipboard(); const folder = directory ? path : parentPath(path);
       if (kind !== "editor") items.push({ id: "new", label: "New", icon: "menu-newFile", separator: true, children: [{ id: "new-file", label: "New file…", icon: "menu-newFile", disabled: !isDesktop, disabledReason: "Requires the desktop app", onSelect: () => requestFileAction("newFile", path, directory) }, { id: "new-folder", label: "New folder…", icon: "menu-newFolder", disabled: !isDesktop, disabledReason: "Requires the desktop app", onSelect: () => requestFileAction("newFolder", path, directory) }] }, { id: "rename", label: "Rename…", icon: "ActionRename", disabled: !isDesktop || !path, onSelect: () => requestFileAction("rename", path, directory) }, { id: "duplicate", label: "Duplicate…", icon: "menu-duplicate", disabled: !isDesktop || !path, onSelect: () => requestFileAction("duplicate", path, directory) }, { id: "cut-file", label: "Cut file", icon: "menu-cut", separator: true, disabled: !isDesktop || !path, onSelect: () => setFileClipboard({ path, directory, workspace: w.workspace()?.root || "", cut: true }) }, { id: "copy-file", label: "Copy file", icon: "menu-copy", disabled: !isDesktop || !path, onSelect: () => setFileClipboard({ path, directory, workspace: w.workspace()?.root || "", cut: false }) }, { id: "paste-file", label: "Paste file…", icon: "menu-paste", disabled: !isDesktop || !clipboard || clipboard.workspace !== w.workspace()?.root, onSelect: () => { if (clipboard) setFileAction({ kind: clipboard.cut ? "rename" : "duplicate", source: clipboard.path, directory: clipboard.directory, initial: `${folder ? `${folder}/` : ""}${fileName(clipboard.path)}` }); } });
       items.push({ id: "paths", label: "Copy path", icon: "menu-path", separator: true, children: [{ id: "copy-name", label: "Copy filename", icon: "menu-copy", onSelect: () => { void copyText(fileName(path || w.workspace()?.root || "")); } }, { id: "copy-relative", label: "Copy relative path", icon: "menu-path", onSelect: () => copyPath(path) }, { id: "copy-absolute", label: "Copy absolute path", icon: "menu-path", onSelect: () => copyPath(path, true) }] });
-      if (!directory) items.push({ id: "reveal", label: "Reveal in project", icon: "menu-folder", onSelect: () => void revealPath(path) });
+      if (!directory) items.push({ id: "reveal", label: "Reveal in project", icon: "menu-folder", onSelect: () => void revealPath(path) }, { id: "file-history", label: "Show file history", icon: "Hierarchy", disabled: !isDesktop, disabledReason: "Requires the desktop app", onSelect: () => showFileHistory(path) });
       if (kind !== "editor") items.push({ id: "trash", label: "Move to Trash…", icon: "menu-trash", separator: true, disabled: !isDesktop || !path, onSelect: () => requestFileAction("trash", path, directory) });
     }
     setContext({ ...position, items, label: kind === "editor" ? "Editor actions" : "File actions" });
@@ -487,13 +490,15 @@ export default function App() {
     const key = shortcut("showSourceControl");
     return key ? `Show Source Control (${key})` : "Show Source Control";
   }
+  /** File context menus and editor actions open Git History scoped to that file. */
+  function showFileHistory(path: string) { gitView.showFileHistory(relativePath(path, w.workspace()?.root)); showSourceControl(); }
   function showSourceControl() {
     setShowLeft(true);
     setLeftView("Git");
     queueMicrotask(() => {
-      const target = document.querySelector<HTMLElement>('.git-panel [aria-label="Enable Git"]:not(:disabled), .git-panel [aria-label="Git commit message"]:not(:disabled)')
-        || document.querySelector<HTMLElement>('.git-panel [aria-label="Refresh Git"]:not(:disabled)')
-        || document.querySelector<HTMLElement>(".git-panel");
+      const target = document.querySelector<HTMLElement>('.git-source-control [aria-label="Enable Git"]:not(:disabled), .git-source-control [aria-label="Git commit message"]:not(:disabled)')
+        || document.querySelector<HTMLElement>('.git-source-control [aria-label="Refresh Git"]:not(:disabled)')
+        || document.querySelector<HTMLElement>(".git-source-control");
       target?.focus();
     });
   }
@@ -737,11 +742,11 @@ export default function App() {
     <div class="workbench-main" ref={layoutElement}>
       <aside class="panel explorer-panel" style={{ width: `${leftWidth()}px`, display: showLeft() && !uploadsOpen() ? "flex" : "none" }} aria-label="Project" onContextMenu={treeContext} onKeyDown={treeContext}>
         <div class="panel-header explorer-header">
-          <For each={["Files", "Search", "Git", "History", "Uploads"] as const}>{view => <button class={`panel-tab ${leftView() === view ? "selected" : ""}`} aria-pressed={leftView() === view} title={view === "Git" ? sourceControlTitle() : undefined} onClick={() => { if (view === "Git") showSourceControl(); else { setLeftView(view); if (view === "Search") openSearch(); } }}>{view}</button>}</For>
+          <For each={["Files", "Search", "Git", "Uploads"] as const}>{view => <button class={`panel-tab ${leftView() === view ? "selected" : ""}`} aria-pressed={leftView() === view} title={view === "Git" ? sourceControlTitle() : undefined} onClick={() => { if (view === "Git") showSourceControl(); else { setLeftView(view); if (view === "Search") openSearch(); } }}>{view}</button>}</For>
           <button class="icon-button" aria-label="New file" title="New file" disabled={!w.workspace()} onClick={() => void withFiles(() => explorer.startCreate("file"))}><MenuIcon name="newFile" /></button>
           <button class="icon-button" aria-label="New folder" title="New folder" disabled={!w.workspace()} onClick={() => void withFiles(() => explorer.startCreate("folder"))}><MenuIcon name="newFolder" /></button>
         </div>
-        <Explorer git={<GitPanel git={git} available={isDesktop} />} history={<GitHistory git={git} available={isDesktop} active={showLeft() && leftView() === "History"} filePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} />} workbench={w} state={explorer} view={leftView() === "Uploads" ? "Files" : leftView() as "Files" | "Search" | "Git" | "History"} onNavigate={navigate} onOpenToSide={path => { void w.openToSide(path); }} onEditorTarget={editorTargetAt} onEditorPreview={setExplorerDropTarget} onEditorDrop={dropFilesOnEditor} />
+        <Explorer git={<GitSourceControl git={git} view={gitView} available={isDesktop} active={showLeft() && leftView() === "Git"} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} />} workbench={w} state={explorer} view={leftView() === "Uploads" ? "Files" : leftView() as "Files" | "Search" | "Git"} onNavigate={navigate} onOpenToSide={path => { void w.openToSide(path); }} onEditorTarget={editorTargetAt} onEditorPreview={setExplorerDropTarget} onEditorDrop={dropFilesOnEditor} />
       </aside>
       <PanelHandle label="Resize project panel" restoreLabel="Restore project panel" shortcut={shortcut("toggleProject")} direction="horizontal" value={leftWidth()} min={200} max={Math.min(1000, windowWidth() * .42)} collapsed={!showLeft()} onResize={setLeftWidth} onShown={setShowLeft} />
       <div class="center-area" ref={centerElement}><Show when={hubOpen() ? undefined : hub.view().banner}>{banner => <TrustBanner banner={banner()} onTrust={() => hubAction("trust", banner().server)} onDismiss={() => hub.dismissBanner(banner().root)} />}</Show><div class={`editor-groups ${stacked() ? "stacked" : ""}`} ref={groupsElement}><For each={w.groups().map(group => group.id)}>{(id, index) => <><Show when={index() > 0}><ResizeHandle label="Resize editor groups" direction={stacked() ? "vertical" : "horizontal"} value={groupsExtent() * splitFraction()} min={groupsExtent() * .2} max={groupsExtent() * .8} onResize={size => setSplitFraction(size / groupsExtent())} /></Show><EditorPane group={w.groups().find(group => group.id === id)!} width={w.groups().length > 1 && index() === 0 ? groupsExtent() * splitFraction() - 4 : undefined} /></>}</For><Show when={uploadsOpen()}><div class="uploads-view-layer"><UploadsWorkspace api={uploadsApi} platform={platform} onShowExplorer={() => setLeftView("Files")} /></div></Show><LibraryViewer /><div class="settings-view-layer" style={settingsLayerStyle()} onFocusIn={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }} onPointerDown={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }}><SettingsDocument /></div></div>
@@ -752,8 +757,8 @@ export default function App() {
     </div>
     <Show when={runManagerOpen()}><RunConfigurationManager catalog={runs.catalog()} selectedId={runs.selectedId()} available={isDesktop && !!w.workspace()} onSave={runs.save} onDuplicate={runs.duplicate} onDelete={runs.remove} onSelect={runs.setSelectedId} onClose={() => setRunManagerOpen(false)} onDirtyChange={setRunDraftDirty} onSaveReady={save => { saveRunDraft = save; }} agentTools={<RunToolsPreference approvals={runApprovals} available={isDesktop} />} /></Show>
     <Show when={!w.busy() && runApprovals.pending()[0]}>{request => <RunApprovalModal request={request()} queued={runApprovals.pending().length} busy={!!runApprovals.resolving()} error={runApprovals.error()} onResolve={(id, allow) => void runApprovals.resolve(id, allow)} />}</Show>
-    <footer class="statusbar"><div class="breadcrumbs"><Show when={w.activePath()} fallback={<span>{w.activeTab() === SETTINGS_TAB ? "Workspace settings" : isViewerTab(w.activeTab() || "") ? "Attachment preview" : w.busy() ? "Opening folder…" : "Ready"}</span>}><Breadcrumbs path={w.activePath()} workspace={w.workspace()} symbols={symbolCrumbs()} onSymbol={symbol => openSymbol(symbol)} focusRequest={breadcrumbFocus()} listDirectory={api.listDirectory} onOpen={path => navigate(path)} onReveal={path => void revealPath(path)} onContextMenu={(event, path, directory) => showContext(event, path, directory ? "directory" : "file")} /></Show></div><div class="status-right"><Show when={!isDesktop}><span class="preview-label" title={previewNotice}>Browser preview</span></Show><span>{cursor().line}:{cursor().column}</span><Show when={w.autoSaveFailures().length}><button title="Review Auto Save error" onClick={() => w.setError(w.autoSaveFailures()[0].message)}>Auto Save failed</button></Show><LanguageServerStatus view={hub.view()} open={hubOpen()} onToggle={toggleHub} /><NotificationBell /><span>UTF-8</span><span>{languageDisplayName(w.buffers[w.activePath() || ""]?.language || "text")}</span><span class="version-label">span 0.1.0</span></div></footer>
-    <Show when={hubOpen()}><LanguageIntelligencePanel view={hub.view()} onAction={hubAction} onToggleServer={hubToggleServer} onClose={closeHub} onOpenSettings={openSettings} onCopy={text => api.writeClipboard(text)} /></Show>
+    <footer class="statusbar"><div class="breadcrumbs"><Show when={w.activePath()} fallback={<span>{w.activeTab() === SETTINGS_TAB ? "Workspace settings" : isViewerTab(w.activeTab() || "") ? "Attachment preview" : w.busy() ? "Opening folder…" : "Ready"}</span>}><Breadcrumbs path={w.activePath()} workspace={w.workspace()} symbols={symbolCrumbs()} onSymbol={symbol => openSymbol(symbol)} focusRequest={breadcrumbFocus()} listDirectory={api.listDirectory} onOpen={path => navigate(path)} onReveal={path => void revealPath(path)} onContextMenu={(event, path, directory) => showContext(event, path, directory ? "directory" : "file")} /></Show></div><div class="status-right"><Show when={!isDesktop}><span class="preview-label" title={previewNotice}>Browser preview</span></Show><span>{cursor().line}:{cursor().column}</span><Show when={w.autoSaveFailures().length}><button title="Review Auto Save error" onClick={() => w.setError(w.autoSaveFailures()[0].message)}>Auto Save failed</button></Show><LanguageServerStatus view={hub.view()} language={activeLanguage()} open={hubOpen()} onToggle={toggleHub} /><NotificationBell /><span>UTF-8</span><span class="version-label">span 0.1.0</span></div></footer>
+    <Show when={hubOpen()}><LanguageIntelligencePanel view={hub.view()} fileLanguage={activeLanguage()} placement={hubPlacement()} onAction={hubAction} onToggleServer={hubToggleServer} onClose={closeHub} onOpenSettings={openSettings} onCopy={text => api.writeClipboard(text)} /></Show>
     <ToastStack />
     <Show when={quickOpen()}><QuickOpen initialQuery={quickOpenQuery()} symbols={createSymbolSource()} onQueryFiles={w.queryFiles} indexStatus={w.indexStatus()} indexError={w.indexError()} workspaceGeneration={w.workspaceGeneration()} files={w.files()} onOpen={navigate} onClose={() => setQuickOpen(false)} onOpenFolder={requestWorkspace} workspace={w.workspace()} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} recentPaths={w.recentPaths()} handlers={handlers} bindings={bindings()} onPreview={async path => { const document = w.documents()[path]?.document; if (document) return document.sliceString(0, 64 * 1024); if (isBinaryAssetPath(path)) return "Image preview is available when opened."; return (await api.peekBuffer(path)).text.slice(0, 64 * 1024); }} onSearch={api.search} /></Show>
     <NavigationLayer line={cursor().line} column={cursor().column} />

@@ -12,6 +12,9 @@ const statusButton = (page: Page) => page.locator(".statusbar .lsp-status-button
 const panel = (page: Page) => page.getByRole("dialog", { name: "Language intelligence", exact: true });
 const card = (page: Page) => panel(page);
 const statusLine = (page: Page) => panel(page).locator(".hub-status-text");
+const statusItem = (page: Page) => page.locator(".statusbar .lsp-status");
+/** The merged status bar item speaks "Java, Eclipse JDT LS 1.62, ready". */
+const statusLabel = (word: string) => new RegExp(`^Java, Eclipse JDT LS[^,]*, ${word}\\. Show language support$`);
 
 async function setup(page: Page, scenario: Scenario) {
   await ready(page);
@@ -36,7 +39,7 @@ async function surfaces(page: Page) {
     const text = (selector: string) => document.querySelector(selector)?.textContent ?? null;
     const attr = (selector: string, name: string) => document.querySelector(selector)?.getAttribute(name) ?? null;
     return {
-      label: attr(".top-right .hub-button", "aria-label"), ring: attr(".top-right .hub-button", "data-percent"), status: text(".statusbar .lsp-status-text"),
+      label: attr(".top-right .hub-button", "aria-label"), ring: attr(".top-right .hub-button", "data-percent"), status: attr(".statusbar .lsp-status-button", "aria-label"),
       bar: attr(".hub-panel [role=progressbar]", "aria-valuenow"), percentText: text("[data-testid=hub-percent]"), headline: text(".hub-panel .hub-status-text"),
       titles: document.querySelectorAll(".top-right .hub-button[title], .statusbar .lsp-status-button[title], .hub-panel [title]").length,
     };
@@ -47,7 +50,8 @@ test("a needs-install file walks through download, checks, start, indexing and r
   await setup(page, "needs-install");
   await expect(topButton(page)).toHaveAttribute("aria-label", "Language intelligence. Java is not installed.");
   await expect(topButton(page)).toHaveAttribute("data-badge", "attention");
-  await expect(statusButton(page)).toHaveText("Java · Install");
+  await expect(statusButton(page)).toHaveAttribute("aria-label", statusLabel("not installed"));
+  await expect(statusItem(page)).toHaveAttribute("data-state", "off");
   await openPanel(page);
   await expect(panel(page).locator(".hub-name small")).toHaveText("Eclipse JDT LS 1.62 · preview");
   await expect(statusLine(page)).toHaveText("Install for completions and errors (about 120 MB)");
@@ -56,7 +60,7 @@ test("a needs-install file walks through download, checks, start, indexing and r
     const w = window as any; w.__hubSamples = [];
     const read = () => {
       const q = (s: string) => document.querySelector(s);
-      w.__hubSamples.push({ bar: q(".hub-panel [role=progressbar]")?.getAttribute("aria-valuenow") ?? null, label: q(".top-right .hub-button")?.getAttribute("aria-label"), status: q(".statusbar .lsp-status-text")?.textContent, headline: q(".hub-panel .hub-status-text")?.textContent, pct: q("[data-testid=hub-percent]")?.textContent, ring: q(".top-right .hub-button")?.getAttribute("data-percent"), size: (() => { const r = q(".hub-panel")?.getBoundingClientRect(); return r ? `${r.width}x${r.height}` : null; })() });
+      w.__hubSamples.push({ bar: q(".hub-panel [role=progressbar]")?.getAttribute("aria-valuenow") ?? null, label: q(".top-right .hub-button")?.getAttribute("aria-label"), status: q(".statusbar .lsp-status-button")?.getAttribute("aria-label"), headline: q(".hub-panel .hub-status-text")?.textContent, pct: q("[data-testid=hub-percent]")?.textContent, ring: q(".top-right .hub-button")?.getAttribute("data-percent"), size: (() => { const r = q(".hub-panel")?.getBoundingClientRect(); return r ? `${r.width}@${r.x},${r.y}` : null; })() });
     };
     w.__hubTimer = setInterval(read, 8);
   });
@@ -68,18 +72,20 @@ test("a needs-install file walks through download, checks, start, indexing and r
   const mid = await surfaces(page);
   const percent = Number(mid.bar);
   expect(mid.label).toBe(`Language intelligence. Installing Java (${percent}%).`);
-  expect(mid.status).toBe(`Java ${percent}%`);
+  expect(mid.status).toContain(`installing ${percent}%`);
   expect(mid.ring).toBe(String(percent));
   expect(mid.percentText).toBe(`${percent}%`);
   expect(mid.titles).toBe(0);
   await expect(panel(page)).toHaveAttribute("data-kind", "ready", { timeout: 20_000 });
   await expect(topButton(page)).toHaveAttribute("data-badge", "");
   await expect(topButton(page)).toHaveAttribute("data-ring", "none");
-  await expect(statusLine(page)).toHaveText("Completions, errors, hover, go to definition, references, rename, format");
-  await expect(statusButton(page)).toHaveText("Java");
+  await expect(statusLine(page)).toHaveCount(0);
+  await expect(panel(page).locator('.hub-chip[data-on="true"]')).toHaveCount(7);
+  await expect(statusButton(page)).toHaveAttribute("aria-label", statusLabel("ready"));
+  await expect(statusItem(page)).toHaveAttribute("data-state", "ready");
   await shot(page, "ready-after-install", "dark");
   const samples = await page.evaluate(() => { const w = window as any; clearInterval(w.__hubTimer); return w.__hubSamples as { bar: string | null; label: string; status: string; headline: string; pct: string; ring: string | null; size: string | null }[]; });
-  // The whole walk, from needs install to ready, never changes the panel size.
+  // The whole walk, from needs install to ready, never changes the panel width or moves it. Only its height follows the content.
   expect([...new Set(samples.map(sample => sample.size))]).toHaveLength(1);
   const headlines = new Set(samples.map(sample => sample.headline));
   for (const phase of ["Checking the download", "Unpacking", "Finishing", "The first start can take a minute", "Reading classes and dependencies"]) expect([...headlines], `saw "${phase}"`).toContain(phase);
@@ -96,14 +102,14 @@ test("a needs-install file walks through download, checks, start, indexing and r
     if (!match) continue;
     checked++;
     expect(sample.bar, "button and panel agree").toBe(match[1]);
-    expect(sample.status).toBe(`Java ${match[1]}%`);
+    expect(sample.status).toContain(`installing ${match[1]}%`);
     expect(sample.ring).toBe(match[1]);
     expect(sample.pct).toBe(`${match[1]}%`);
   }
   expect(checked).toBeGreaterThan(8);
   const indexing = samples.filter(sample => sample.headline === "Reading classes and dependencies" && sample.bar === "35");
   expect(indexing.length).toBeGreaterThan(0);
-  for (const sample of indexing) { expect(sample.label).toContain("(35%)"); expect(sample.status).toBe("Java 35%"); expect(sample.pct).toBe("35%"); }
+  for (const sample of indexing) { expect(sample.label).toContain("(35%)"); expect(sample.status).toContain("indexing 35%"); expect(sample.pct).toBe("35%"); }
 });
 
 test("cancelling an install returns to needs install without an error", async ({ page }) => {
@@ -125,30 +131,32 @@ for (const theme of ["dark", "light"] as const) {
     if (theme === "light") await useLightTheme(page);
     await page.evaluate(() => (window as any).__spanHubPreview.set("ready"));
     await openPanel(page);
-    const cases: { scenario: Scenario; label: string; status: string; text: string; badge?: string; button?: string }[] = [
-      { scenario: "needs-install", label: "Language intelligence. Java is not installed.", status: "Java · Install", text: "Install for completions and errors (about 120 MB)", badge: "attention", button: "Install" },
-      { scenario: "installing", label: "Language intelligence. Installing Java (40%).", status: "Java 40%", text: "Downloading 128 of 320 MB", button: "Cancel" },
-      { scenario: "starting", label: "Language intelligence. Starting Java.", status: "Java · Starting", text: "The first start can take a minute" },
-      { scenario: "runtime-missing", label: "Language intelligence. Java needs JDK.", status: "Java · JDK", text: "Needs JDK 25 or newer. Found JDK 21", badge: "attention", button: "Choose JDK" },
-      { scenario: "install-failed", label: "Language intelligence. Java did not install.", status: "Java · Failed", text: "Couldn't install. Check your connection", badge: "attention", button: "Retry" },
-      { scenario: "crashed", label: "Language intelligence. Java stopped unexpectedly.", status: "Java · Stopped", text: "Stopped unexpectedly", badge: "attention", button: "Restart" },
-      { scenario: "needs-trust", label: "Language intelligence. Java is ready, folder not trusted.", status: "Java · Trust", text: "Completions, errors, hover", badge: "restricted", button: "Trust folder" },
-      { scenario: "ready", label: "Language intelligence. Java is ready.", status: "Java", text: "Completions, errors, hover, go to definition, references, rename, format", button: "Restart" },
-      { scenario: "disabled", label: "Language intelligence. Java is off.", status: "Java · Off", text: "Turn on for completions and errors", button: "Turn on" },
+    const cases: { scenario: Scenario; label: string; word: string; state: string; pill: string; text?: string; badge?: string; button?: string }[] = [
+      { scenario: "needs-install", label: "Language intelligence. Java is not installed.", word: "not installed", state: "off", pill: "Not installed", text: "Install for completions and errors (about 120 MB)", badge: "attention", button: "Install" },
+      { scenario: "installing", label: "Language intelligence. Installing Java (40%).", word: "installing 40%", state: "starting", pill: "Installing", text: "Downloading 128 of 320 MB", button: "Cancel" },
+      { scenario: "starting", label: "Language intelligence. Starting Java.", word: "starting", state: "starting", pill: "Starting", text: "The first start can take a minute" },
+      { scenario: "runtime-missing", label: "Language intelligence. Java needs JDK.", word: "needs runtime", state: "error", pill: "Needs runtime", text: "Needs JDK 25 or newer. Found JDK 21", badge: "attention", button: "Choose JDK" },
+      { scenario: "install-failed", label: "Language intelligence. Java did not install.", word: "install failed", state: "error", pill: "Install failed", text: "Couldn't install. Check your connection", badge: "attention", button: "Retry" },
+      { scenario: "crashed", label: "Language intelligence. Java stopped unexpectedly.", word: "stopped", state: "error", pill: "Stopped", text: "Stopped unexpectedly", badge: "attention", button: "Restart" },
+      { scenario: "needs-trust", label: "Language intelligence. Java is ready, folder not trusted.", word: "needs trust", state: "needs-trust", pill: "Needs trust", badge: "restricted", button: "Trust" },
+      { scenario: "ready", label: "Language intelligence. Java is ready.", word: "ready", state: "ready", pill: "Ready", button: "More actions" },
+      { scenario: "disabled", label: "Language intelligence. Java is off.", word: "off", state: "off", pill: "Off", text: "Turn on for completions and errors", button: "Turn on" },
     ];
     for (const item of cases) {
       await page.evaluate(name => (window as any).__spanHubPreview.set(name), item.scenario);
       await expect(topButton(page)).toHaveAttribute("aria-label", item.label);
-      await expect(statusButton(page)).toHaveText(item.status);
-      await expect(statusButton(page)).toHaveAttribute("aria-label", item.label);
-      await expect(statusLine(page)).toContainText(item.text);
+      await expect(statusButton(page)).toHaveAttribute("aria-label", statusLabel(item.word));
+      await expect(statusItem(page)).toHaveAttribute("data-state", item.state);
+      await expect(panel(page).locator(".hub-pill")).toHaveText(item.pill);
+      if (item.text) await expect(statusLine(page)).toContainText(item.text);
+      else await expect(statusLine(page)).toHaveCount(0);
       if (item.button) await expect(card(page).getByRole("button", { name: item.button, exact: true })).toBeVisible();
       await expect(topButton(page)).toHaveAttribute("data-badge", item.badge ?? "");
       if (item.scenario === "installing") {
         const now = await surfaces(page);
         expect([now.bar, now.ring, now.percentText?.replace("%", "")]).toEqual(["40", "40", "40"]);
         expect(now.label).toContain("(40%)");
-        expect(now.status).toBe("Java 40%");
+        expect(now.status).toContain("installing 40%");
       }
       expect((await surfaces(page)).titles).toBe(0);
       await shot(page, item.scenario, theme);
@@ -184,6 +192,7 @@ test("a failed install shows a short line, keeps the reason in the tooltip, offe
   await expect(statusLine(page)).toHaveText("Couldn't install. Check your connection");
   await expect(card(page).locator(".hub-status")).toHaveAttribute("data-tip", /Java support could not be downloaded\. Check your internet connection and try again\. GET .*connection reset by peer/);
   await expect(panel(page).locator("details")).toHaveCount(0);
+  await expect(panel(page).getByRole("alert")).toContainText("Java support could not be downloaded.");
   await expect(card(page).getByRole("button", { name: "Copy details", exact: true })).toBeVisible();
   await shot(page, "install-failed-details", "dark");
   await card(page).getByRole("button", { name: "Retry", exact: true }).click();
@@ -220,9 +229,9 @@ test("folder trust: prompt, not now, hover hint and trusting restarts with proje
   await banner.getByRole("button", { name: "Not now", exact: true }).click();
   await expect(banner).toHaveCount(0);
   await openPanel(page);
-  await expect(card(page).locator(".hub-trust")).toHaveText("Untrusted folderWhy?");
+  await expect(card(page).locator(".hub-trust")).toHaveText("Untrusted folder");
   await expect(card(page).locator(".hub-trust")).toHaveAttribute("data-tip", /Only trust folders from a source you trust\./);
-  await expect(card(page).getByRole("button", { name: "Trust folder", exact: true })).toBeVisible();
+  await expect(card(page).getByRole("button", { name: "Trust", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   // Only until the next app start.
   await page.reload();
@@ -239,7 +248,7 @@ test("folder trust: prompt, not now, hover hint and trusting restarts with proje
   await expect(card(page).locator(".hub-trust")).toHaveText("Trusted folder");
   await card(page).getByRole("button", { name: "Stop trusting", exact: true }).click();
   // Opening the panel used up the prompt for this folder, so the footer is where the state shows.
-  await expect(card(page).locator(".hub-trust")).toHaveText("Untrusted folderWhy?", { timeout: 15_000 });
+  await expect(card(page).locator(".hub-trust")).toHaveText("Untrusted folder", { timeout: 15_000 });
   await expect(topButton(page)).toHaveAttribute("data-badge", "restricted");
 });
 
@@ -259,21 +268,24 @@ test("keyboard: open with Enter, Escape closes and returns focus to the button",
   await expect(statusButton(page)).toBeFocused();
 });
 
-test("the panel is reused in Settings, and a file without a language server is neutral", async ({ page }) => {
+test("the panel is reused in Settings, and a file without a language server explains what is missing", async ({ page }) => {
   await setup(page, "ready");
   await openSettings(page);
   await page.getByRole("button", { name: "Language servers", exact: true }).click();
   const region = page.getByRole("region", { name: "Language intelligence", exact: true });
   await expect(region).toBeVisible();
-  await expect(region.getByRole("switch", { name: "Java on or off" })).toHaveAttribute("aria-checked", "true");
+  await expect(region.getByRole("switch", { name: "Java language support" })).toHaveAttribute("aria-checked", "true");
   await shot(page, "settings", "dark");
   await page.getByRole("button", { name: "Close Settings", exact: true }).click();
   await openFile(page, "README.md");
   await expect(topButton(page)).toHaveAttribute("data-tone", "off");
   await expect(topButton(page)).toHaveAttribute("aria-label", "Language intelligence. No language support for this file.");
-  await expect(statusButton(page)).toHaveCount(0);
+  // The status bar still names the file's language with its logo, without a state dot.
+  await expect(statusButton(page)).toHaveAttribute("aria-label", "Markdown, no language support. Show language support");
+  await expect(statusButton(page).locator(".lsp-status-dot")).toHaveCount(0);
+  await expect(statusButton(page).locator(".language-icon")).toHaveAttribute("data-language", "markdown");
   await openPanel(page);
-  await expect(panel(page)).toContainText("No language support for this file type.");
+  await expect(panel(page)).toContainText("No completions or error checking for Markdown. Editing works as usual.");
 });
 
 test("the Go to group of the editor menu uses code and layer icons", async ({ page }) => {
