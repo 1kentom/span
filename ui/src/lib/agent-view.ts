@@ -2,6 +2,7 @@ import type { AgentFeatures, ConfigOption_Deserialize as ConfigOption, PromptAtt
 import type { AgentHint } from "../bindings";
 import type { Capability, ChangedFile, ChildStep, ConfigOptionView, DiffLine, PermissionDetails, PermissionDiff, PermissionLocation, QuestionOption, SlashGroup, SlashItem, StepImage, StepKind, StepStatus, StepView, TermLine } from "../components/agent/types";
 import { agentFailureMessage } from "./acp-catalog";
+import { classifyAgentError, isLimitKind, limitTitle, type AgentErrorInfo } from "./agent-errors";
 import { isNestedTool, subagentChildren, toolTarget } from "./agent-feed";
 import { hintText } from "./agent-hint-text";
 import type { Failure, FeedItem, PermissionEvent, ToolEvent } from "./agent-session";
@@ -529,19 +530,26 @@ export function stopView(reason: string, hint?: AgentHint | null): StopView | un
   return view;
 }
 
-export type FailureView = { level: "error" | "warn"; kind: "missing-binary" | "protocol" | "auth" | "timeout" | "exit" | "provider" | "workspace" | "other"; title: string; text: string };
+export type FailureView = {
+  level: "error" | "warn";
+  kind: "missing-binary" | "protocol" | "auth" | "timeout" | "exit" | "provider" | "workspace" | "other";
+  title: string;
+  text: string;
+  /** The agent error classification (agent-errors.ts). A quota, rate limit or overload gets the limit card. */
+  error: AgentErrorInfo;
+};
 
 /** Names a failure from the real message the backend or agent reported. The raw message is always kept. */
-export function classifyFailure(failure: Failure): FailureView {
+export function classifyFailure(failure: Failure, agent?: string, now = Date.now()): FailureView {
   const message = failure.message.trim() || "No details were reported.";
+  const error = classifyAgentError({ message, agent }, now);
   // A command that answers without ACP session support gets a plain explanation instead of the JSON-RPC error.
-  const view = (kind: FailureView["kind"], title: string, level: FailureView["level"] = "error"): FailureView => ({ level, kind, title, text: agentFailureMessage(message) });
+  const view = (kind: FailureView["kind"], title: string, level: FailureView["level"] = "error"): FailureView => ({ level, kind, title, text: agentFailureMessage(message), error });
   if (/executable was not found|no such file or directory|command not found|ENOENT/i.test(message)) return view("missing-binary", "Agent executable not found");
   if (/unsupported protocol version/i.test(message)) return view("protocol", "Incompatible ACP protocol version");
   if (/open a folder|open a workspace|cwd must match/i.test(message)) return view("workspace", "Open a folder first", "warn");
-  if (failure.phase === "auth" || /authentication required|unauthori[sz]ed|invalid api key|not logged in|\b401\b/i.test(message)) return view("auth", failure.phase === "auth" ? "Sign-in failed" : "Sign-in needed");
-  if (/rate limit|too many requests|\b429\b/i.test(message)) return view("provider", "Provider rate limit reached", "warn");
-  if (/overloaded|\b529\b|\b503\b|service unavailable/i.test(message)) return view("provider", "Provider is unavailable", "warn");
+  if (failure.phase === "auth" || error.kind === "auth") return view("auth", failure.phase === "auth" ? "Sign-in failed" : "Sign-in needed");
+  if (isLimitKind(error.kind)) return view("provider", limitTitle(error, now), "warn");
   if (/timed out|did not respond|within \d+ seconds/i.test(message)) return view("timeout", "The agent did not respond");
   if (failure.phase === "exit" || /exited before initialization|process disconnected|connection was terminated/i.test(message)) return view("exit", "Agent process exited");
   if (failure.phase === "connect") return view("other", "Could not connect the agent");
