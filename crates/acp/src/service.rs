@@ -72,6 +72,7 @@ struct Bridge {
     closed: bool,
     sessions: HashSet<String>,
     review_sessions: HashSet<String>,
+    editor_epochs: HashMap<String, u64>,
     running: HashSet<String>,
     cancelled: HashSet<String>,
     /// Sessions Span started for a lead. A Stop that one of these ignores
@@ -700,6 +701,7 @@ impl AgentService {
             if bridge.closed || !bridge.sessions.contains(&session_id) {
                 return Err("Unknown or disconnected session".into());
             }
+            *bridge.editor_epochs.entry(session_id.clone()).or_default() += 1;
             bridge.cancelled.insert(session_id.clone());
         }
         self.tx

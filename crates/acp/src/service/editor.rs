@@ -56,7 +56,7 @@ pub struct EditorTools {
     service: AgentService,
     session: String,
     access: EditorToolAccess,
-    reads: Mutex<HashMap<String, (String, u64)>>,
+    reads: Mutex<HashMap<String, (String, u64, u64)>>,
 }
 
 impl EditorTools {
@@ -85,14 +85,21 @@ impl EditorTools {
             .reads
             .lock()
             .map_err(|_| "Editor read tokens unavailable")?;
-        reads.retain(|_, (path, _)| path != &snapshot.path);
+        reads.retain(|_, (path, _, _)| path != &snapshot.path);
         if reads.len() >= MAX_READS {
             return Err("Too many outstanding editor reads".into());
         }
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes).map_err(|_| "Editor token randomness unavailable")?;
         let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        reads.insert(token.clone(), (snapshot.path.clone(), snapshot.revision));
+        reads.insert(
+            token.clone(),
+            (
+                snapshot.path.clone(),
+                snapshot.revision,
+                *bridge.editor_epochs.get(&self.session).unwrap_or(&0),
+            ),
+        );
         bridge.revisions.insert(
             (self.session.clone(), snapshot.path.clone()),
             snapshot.revision,
@@ -123,7 +130,7 @@ impl EditorTools {
             .ok_or("Unknown, expired or already consumed editor read token")?;
         // The normalized path returned by read_buffer is mandatory. This binds
         // aliases, revision and token without accepting a caller session id.
-        if expected != (path.to_owned(), revision) {
+        if expected.0 != path || expected.1 != revision {
             return Err("Editor read token does not match the path and revision".into());
         }
         propose(
@@ -133,7 +140,7 @@ impl EditorTools {
             &self.session,
             path,
             content,
-            Some((revision, self.access.clone())),
+            Some((revision, self.access.clone(), expected.2)),
         )
         .await
     }
@@ -266,12 +273,15 @@ pub(super) async fn propose(
     session: &str,
     path: &str,
     content: String,
-    guard: Option<(u64, EditorToolAccess)>,
+    guard: Option<(u64, EditorToolAccess, u64)>,
 ) -> Result<EditorEdit, String> {
     let staged = {
         let mut bridge = state.lock().map_err(|_| "Agent state lock poisoned")?;
         check_session(&bridge, session)?;
-        if let Some((_, access)) = &guard {
+        if let Some((_, access, epoch)) = &guard {
+            if *epoch != *bridge.editor_epochs.get(session).unwrap_or(&0) {
+                return Err("Editor read token expired when the session was cancelled".into());
+            }
             if !access.allowed() {
                 return Err("Editor tools consent or workspace trust was revoked".into());
             }
@@ -294,7 +304,7 @@ pub(super) async fn propose(
         .map_err(|e| e.to_string())?;
         let revision = guard
             .as_ref()
-            .map(|(revision, _)| *revision)
+            .map(|(revision, _, _)| *revision)
             .or_else(|| {
                 bridge
                     .revisions
@@ -322,7 +332,7 @@ pub(super) async fn propose(
                 path: proposal.path.clone(),
                 hunk_ids: proposal.hunks.iter().map(|h| h.id.clone()).collect(),
                 reply: tx,
-                access: guard.map(|(_, a)| a),
+                access: guard.map(|(_, a, _)| a),
             },
         );
         (proposal, rx)
