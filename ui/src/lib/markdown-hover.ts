@@ -82,6 +82,20 @@ export function cleanHoverMarkdown(markdown: string): string {
     if (!fence && isSyntheticNoiseLine(raw)) continue;
     kept.push(raw);
   }
+  // JDT indents whole list sections by four or more spaces, which markdown reads as a code block. A run of
+  // indented lines that opens with a list marker is a list: take off the indent they all share.
+  fence = undefined;
+  for (let i = 0; i < kept.length; i++) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(kept[i])?.[1];
+    if (marker) { if (!fence) fence = marker; else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined; continue; }
+    if (fence || !/^ {4,}(?:[*+-]|\d+[.)])\s/.test(kept[i]) || (i > 0 && kept[i - 1].trim() && /^ {4,}/.test(kept[i - 1]))) continue;
+    let end = i;
+    while (end < kept.length && (!kept[end].trim() || /^ {4,}/.test(kept[end]))) end++;
+    const run = kept.slice(i, end);
+    const shared = Math.min(...run.filter(line => line.trim()).map(line => /^ */.exec(line)![0].length));
+    for (let k = i; k < end; k++) kept[k] = kept[k].slice(Math.min(shared, kept[k].length));
+    i = end - 1;
+  }
   // Collapse structure that has nothing left to separate or introduce.
   const result: string[] = [];
   fence = undefined;
