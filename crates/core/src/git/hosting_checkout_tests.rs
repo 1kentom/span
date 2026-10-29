@@ -18,7 +18,11 @@ fn git(root: &Path, args: &[&str]) -> String {
     assert!(
         output.status.success(),
         "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
+        if args.first() == Some(&"init") {
+        git(root, &["config", "--local", "core.autocrlf", "false"]);
+        git(root, &["config", "--local", "core.eol", "lf"]);
+    }
+    String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap().trim_end().into()
 }

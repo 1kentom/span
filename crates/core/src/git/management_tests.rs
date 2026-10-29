@@ -11,7 +11,11 @@ fn run(root: &Path, args: &[&str]) -> String {
     assert!(
         out.status.success(),
         "{}",
-        String::from_utf8_lossy(&out.stderr)
+        if args.first() == Some(&"init") {
+        run(root, &["config", "--local", "core.autocrlf", "false"]);
+        run(root, &["config", "--local", "core.eol", "lf"]);
+    }
+    String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout)
         .trim_end_matches(['\r', '\n'])
