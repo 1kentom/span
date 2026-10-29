@@ -909,6 +909,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             runs::run_output,
             runs::acknowledge_run,
             terminals::terminal_create,
+            terminals::terminal_create_command,
+            terminals::terminal_profiles,
             terminals::terminal_write,
             terminals::terminal_resize,
             terminals::terminal_interrupt,

@@ -15,6 +15,10 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+mod profiles;
+use profiles::{profile_program, shell_program};
+pub use profiles::{terminal_profiles, TerminalProfile};
+
 const EVENT_CAPACITY: usize = 64;
 const CHUNK_BYTES: usize = 8192;
 const SCROLLBACK_BYTES: usize = 256 * 1024;
@@ -48,6 +52,16 @@ pub struct TerminalInfo {
     pub process_id: Option<u32>,
     pub exit_code: Option<u32>,
     pub exited: bool,
+}
+
+/// Explicit Markdown execution languages. Source is passed as one argv value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalCommandLanguage {
+    Bash,
+    Sh,
+    Zsh,
+    Shell,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -277,7 +291,73 @@ impl TerminalManager {
         cols: u16,
         rows: u16,
     ) -> Result<(TerminalInfo, mpsc::Receiver<TerminalEvent>), TerminalError> {
-        let cwd = self.resolve_cwd(cwd.as_ref())?;
+        self.create_with_profile(cwd, cols, rows, None).await
+    }
+
+    pub async fn create_with_profile(
+        &self,
+        cwd: impl AsRef<Path>,
+        cols: u16,
+        rows: u16,
+        profile_id: Option<&str>,
+    ) -> Result<(TerminalInfo, mpsc::Receiver<TerminalEvent>), TerminalError> {
+        let shell = match profile_id {
+            Some(id) => profile_program(id)?,
+            None => shell_program(),
+        };
+        self.create_process(cwd.as_ref(), cols, rows, shell, None)
+            .await
+    }
+
+    /// Execute one explicitly requested snippet in a fresh PTY. Non-interactive
+    /// parsing keeps multiline source atomic and avoids prompt/paste behavior.
+    pub async fn create_command(
+        &self,
+        language: TerminalCommandLanguage,
+        code: String,
+        expected_workspace_root: &Path,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(TerminalInfo, mpsc::Receiver<TerminalEvent>), TerminalError> {
+        if code.len() > 64 * 1024 || code.contains('\0') {
+            return Err(operation(
+                "Terminal command must be at most 64 KiB and contain no NUL bytes",
+            ));
+        }
+        if !expected_workspace_root.is_absolute()
+            || expected_workspace_root.canonicalize().ok().as_ref() != Some(&self.workspace)
+        {
+            return Err(operation(
+                "The workspace changed before the command could start",
+            ));
+        }
+        let shell = match language {
+            TerminalCommandLanguage::Shell => shell_program(),
+            explicit => {
+                let name = match explicit {
+                    TerminalCommandLanguage::Bash => "bash",
+                    TerminalCommandLanguage::Sh => "sh",
+                    TerminalCommandLanguage::Zsh => "zsh",
+                    TerminalCommandLanguage::Shell => unreachable!(),
+                };
+                terminal_profiles().into_iter().find(|profile| profile.name == name)
+                    .map(|profile| PathBuf::from(profile.path))
+                    .ok_or_else(|| operation(format!("The {name} interpreter is not installed. Choose Send to review this snippet in your terminal.")))?
+            }
+        };
+        self.create_process(&self.workspace, cols, rows, shell, Some((language, code)))
+            .await
+    }
+
+    async fn create_process(
+        &self,
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+        shell: PathBuf,
+        command: Option<(TerminalCommandLanguage, String)>,
+    ) -> Result<(TerminalInfo, mpsc::Receiver<TerminalEvent>), TerminalError> {
+        let cwd = self.resolve_cwd(cwd)?;
         size(cols, rows)?;
         if checked_lock(&self.sessions, "terminal sessions")?.len() >= MAX_SESSIONS {
             return Err(TerminalError::SessionLimit);
@@ -285,7 +365,7 @@ impl TerminalManager {
         let id = format!("terminal-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         // PTY allocation and process spawning happen on Tokio's blocking pool.
         let (session, rx) =
-            tokio::task::spawn_blocking(move || spawn(id, cwd, cols, rows, shell_program()))
+            tokio::task::spawn_blocking(move || spawn_process(id, cwd, cols, rows, shell, command))
                 .await
                 .map_err(operation)??;
         let info = match checked_lock(&session.info, "terminal session info") {
@@ -489,33 +569,6 @@ fn create_windows_job(child: &dyn Child) -> Result<WindowsJob, TerminalError> {
     }
 }
 
-fn shell_program() -> PathBuf {
-    #[cfg(windows)]
-    {
-        match std::env::var_os("COMSPEC")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute() && p.is_file())
-        {
-            Some(shell) => shell,
-            None => PathBuf::from(r"C:\Windows\System32\cmd.exe"),
-        }
-    }
-    #[cfg(unix)]
-    {
-        match std::env::var_os("SHELL")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute() && p.is_file())
-            .or_else(|| {
-                ["/bin/zsh", "/bin/bash", "/bin/sh"]
-                    .into_iter()
-                    .map(PathBuf::from)
-                    .find(|p| p.is_file())
-            }) {
-            Some(shell) => shell,
-            None => PathBuf::from("/bin/sh"),
-        }
-    }
-}
 fn child_path() -> std::ffi::OsString {
     let mut paths: Vec<PathBuf> = match std::env::var_os("PATH") {
         Some(path) => std::env::split_paths(&path).collect(),
@@ -544,12 +597,24 @@ fn child_path() -> std::ffi::OsString {
         Err(_) => std::ffi::OsString::new(),
     }
 }
+#[cfg(test)]
 fn spawn(
     id: String,
     cwd: PathBuf,
     cols: u16,
     rows: u16,
     shell: PathBuf,
+) -> Result<(Arc<Session>, mpsc::Receiver<TerminalEvent>), TerminalError> {
+    spawn_process(id, cwd, cols, rows, shell, None)
+}
+
+fn spawn_process(
+    id: String,
+    cwd: PathBuf,
+    cols: u16,
+    rows: u16,
+    shell: PathBuf,
+    source: Option<(TerminalCommandLanguage, String)>,
 ) -> Result<(Arc<Session>, mpsc::Receiver<TerminalEvent>), TerminalError> {
     let pair = native_pty_system()
         .openpty(size(cols, rows)?)
@@ -559,9 +624,36 @@ fn spawn(
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command.env("PATH", child_path());
-    #[cfg(unix)]
-    command.arg("-i");
-    // No shell command string or cwd interpolation is involved in starting a PTY.
+    if let Some((language, code)) = source {
+        #[cfg(windows)]
+        let is_cmd = shell
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("cmd"));
+        #[cfg(windows)]
+        if is_cmd {
+            command.args(["/D", "/S", "/C"]);
+            command.arg(code);
+        } else {
+            if language == TerminalCommandLanguage::Bash {
+                command.args(["--noprofile", "--norc"]);
+            }
+            command.arg("-c");
+            command.arg(code);
+        }
+        #[cfg(unix)]
+        {
+            if language == TerminalCommandLanguage::Bash {
+                command.args(["--noprofile", "--norc"]);
+            }
+            command.arg("-c");
+            command.arg(code);
+        }
+    } else {
+        #[cfg(unix)]
+        command.arg("-i");
+    }
+    // The executable, cwd, and optional source argv are passed separately.
     let mut reader = pair.master.try_clone_reader().map_err(operation)?;
     let writer = pair.master.take_writer().map_err(operation)?;
     let child = pair.slave.spawn_command(command).map_err(operation)?;
@@ -855,6 +947,94 @@ mod tests {
             output_until(&mut receiver, "SPAN_UTF8_READY").await;
         }
         (info, receiver)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_runs_multiline_bash_atomically_and_delivers_output_before_exit() {
+        let root = TempDir::new().unwrap();
+        let manager = TerminalManager::new(root.path()).unwrap();
+        let code = "values=(first '日本語🌱')\nfor value in \"${values[@]}\"; do\n  printf 'SPAN_ATOMIC:%s\\n' \"$value\"\ndone\ncat <<'SPAN_LITERAL'\n$(this is literal); 'quotes' \"double\"\nSPAN_LITERAL\nprintf 'CWD:%s\\n' \"$PWD\"\nexit 7";
+        let (info, mut rx) = manager
+            .create_command(
+                TerminalCommandLanguage::Bash,
+                code.to_owned(),
+                root.path(),
+                80,
+                24,
+            )
+            .await
+            .unwrap();
+        assert_eq!(Path::new(&info.shell).file_stem().unwrap(), "bash");
+        let (output, exit) = timeout(Duration::from_secs(10), async {
+            let mut output = Vec::new();
+            while let Some(event) = rx.recv().await {
+                match event {
+                    TerminalEvent::Output { data, .. } => output.extend(data),
+                    TerminalEvent::Exit { code, .. } => {
+                        return (String::from_utf8(output).unwrap(), code)
+                    }
+                    TerminalEvent::Error { message, .. } => panic!("{message}"),
+                }
+            }
+            panic!("Missing command exit");
+        })
+        .await
+        .unwrap();
+        assert_eq!(exit, Some(7));
+        assert!(output.contains("SPAN_ATOMIC:first"));
+        assert!(output.contains("SPAN_ATOMIC:日本語🌱"));
+        assert!(output.contains("$(this is literal); 'quotes' \"double\""));
+        assert!(output.contains(&format!(
+            "CWD:{}",
+            root.path().canonicalize().unwrap().display()
+        )));
+        assert!(
+            !output.contains("for value"),
+            "Source must not be echoed as terminal input"
+        );
+        manager.close(&info.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn command_validation_rejects_stale_roots_oversized_source_and_nul_without_spawning() {
+        let root = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let manager = TerminalManager::new(root.path()).unwrap();
+        for (code, expected_root) in [
+            ("echo stale".to_owned(), other.path()),
+            ("echo relative".to_owned(), Path::new(".")),
+            ("x".repeat(64 * 1024 + 1), root.path()),
+            ("echo\0nul".to_owned(), root.path()),
+        ] {
+            assert!(manager
+                .create_command(TerminalCommandLanguage::Shell, code, expected_root, 80, 24)
+                .await
+                .is_err());
+            assert!(manager.list().is_empty());
+        }
+        assert!(manager
+            .create_with_profile(".", 80, 24, Some("shell:/not-installed"))
+            .await
+            .is_err());
+        assert!(manager.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn selected_profile_launches_the_reported_shell() {
+        let root = TempDir::new().unwrap();
+        let manager = TerminalManager::new(root.path()).unwrap();
+        let profiles = terminal_profiles();
+        let profile = profiles
+            .iter()
+            .find(|profile| profile.is_default)
+            .expect("A default executable shell is installed");
+        let (info, _receiver) = manager
+            .create_with_profile(".", 80, 24, Some(&profile.id))
+            .await
+            .unwrap();
+        assert_eq!(info.shell, profile.path);
+        manager.close(&info.id).await.unwrap();
     }
 
     #[tokio::test]

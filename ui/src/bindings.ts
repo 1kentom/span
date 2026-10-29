@@ -21,7 +21,9 @@ export const commands = {
 	listRuns: () => __TAURI_INVOKE<RunInfo_Serialize[]>("list_runs"),
 	runOutput: (id: string) => __TAURI_INVOKE<RunOutput>("run_output", { id }),
 	acknowledgeRun: (id: string, sequence: number) => __TAURI_INVOKE<null>("acknowledge_run", { id, sequence }),
-	terminalCreate: (cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent_Deserialize>) => __TAURI_INVOKE<TerminalInfo_Serialize>("terminal_create", { cwd, cols, rows, onEvent }),
+	terminalCreate: (cwd: string | null, cols: number, rows: number, onEvent: Channel<TerminalEvent_Deserialize>, profileId: string | null) => __TAURI_INVOKE<TerminalInfo_Serialize>("terminal_create", { cwd, cols, rows, onEvent, profileId }),
+	terminalCreateCommand: (language: TerminalCommandLanguage, code: string, expectedWorkspaceRoot: string, cols: number, rows: number, onEvent: Channel<TerminalEvent_Deserialize>) => __TAURI_INVOKE<TerminalInfo_Serialize>("terminal_create_command", { language, code, expectedWorkspaceRoot, cols, rows, onEvent }),
+	terminalProfiles: () => __TAURI_INVOKE<TerminalProfile[]>("terminal_profiles"),
 	terminalWrite: (id: string, data: number[]) => __TAURI_INVOKE<null>("terminal_write", { id, data }),
 	terminalResize: (id: string, cols: number, rows: number) => __TAURI_INVOKE<null>("terminal_resize", { id, cols, rows }),
 	terminalInterrupt: (id: string) => __TAURI_INVOKE<null>("terminal_interrupt", { id }),
@@ -2908,6 +2910,9 @@ export type SyntaxSnapshot = {
 	truncated: boolean,
 };
 
+/**  Explicit Markdown execution languages. Source is passed as one argv value. */
+export type TerminalCommandLanguage = "bash" | "sh" | "zsh" | "shell";
+
 export type TerminalEvent = TerminalEvent_Serialize | TerminalEvent_Deserialize;
 
 export type TerminalEvent_Deserialize = { kind: "output"; id: string; data: number[]; sequence: number } | { kind: "exit"; id: string; code?: number | null } | { kind: "error"; id: string; message: string };
@@ -2936,6 +2941,13 @@ export type TerminalInfo_Serialize = {
 	processId: number | null,
 	exitCode: number | null,
 	exited: boolean,
+};
+
+export type TerminalProfile = {
+	id: string,
+	name: string,
+	path: string,
+	isDefault: boolean,
 };
 
 /**  Offsets are UTF-16 code units in the pre-transaction document, as in CodeMirror. */
