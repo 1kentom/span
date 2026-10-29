@@ -1,7 +1,8 @@
-import { For, Show } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 import type { GitChange } from "../../bindings";
 import type { GitWorkbench } from "../../stores/git";
 import Icon, { FileIcon, MenuIcon } from "../Icon";
+import { api } from "../../lib/client";
 import "../../styles/git.css";
 
 type GitPanelProps = { git: GitWorkbench; available: boolean };
@@ -139,6 +140,12 @@ function GitChanges(props: { git: GitWorkbench; staged: boolean }) {
 
 export function GitPanel(props: GitPanelViewProps) {
   const g = props.git;
+  const [helpError, setHelpError] = createSignal("");
+  const openHelp = (event: MouseEvent, url: string) => {
+    event.preventDefault();
+    setHelpError("");
+    void api.openExternal(url).catch(() => setHelpError(`Could not open troubleshooting. Open ${url} in your browser.`));
+  };
   const commitShortcut = (event: KeyboardEvent) => {
     if (event.defaultPrevented || event.isComposing || event.repeat) return;
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -158,7 +165,13 @@ export function GitPanel(props: GitPanelViewProps) {
       <Show when={props.available && !g.hasWorkspace()}>
         <div class="git-empty"><strong>No folder open</strong><span>Open a folder inside a Git repository to review changes.</span></div>
       </Show>
-      <Show when={g.error()}><div class="git-error" role="alert">{g.error()}</div></Show>
+      <Show when={g.error()}><div class="git-error" role="alert">
+        {g.error()}
+        <Show when={g.errorHelp()}>{url => <>
+          <a href={url()} target="_blank" rel="noopener noreferrer" onClick={event => openHelp(event, url())}>Troubleshoot Git startup</a>
+          <Show when={helpError()}><span role="status">{helpError()}</span></Show>
+        </>}</Show>
+      </div></Show>
       <Show when={g.warning()}><div class="git-warning" role="status">Commit completed with a warning: {g.warning()}</div></Show>
       <Show when={g.notice()}><div class="git-success" role="status">{g.notice()}</div></Show>
       <Show when={props.available && g.context() && !g.context()?.repository}>
