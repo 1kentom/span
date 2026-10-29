@@ -98,7 +98,7 @@ export const commands = {
 	takeStartupRequests: () => __TAURI_INVOKE<StartupRequest_Serialize[]>("take_startup_requests"),
 	enqueueDroppedPaths: (paths: string[], cwd: string | null) => __TAURI_INVOKE<null>("enqueue_dropped_paths", { paths, cwd }),
 	openExternal: (url: string) => __TAURI_INVOKE<null>("open_external", { url }),
-	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
+	readImage: (path: string, expectedWorkspaceRoot: string | null) => __TAURI_INVOKE<ImageSource>("read_image", { path, expectedWorkspaceRoot }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
 	syntax: (path: string) => __TAURI_INVOKE<SyntaxSnapshot>("syntax", { path }),
 	/**
