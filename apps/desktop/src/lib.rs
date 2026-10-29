@@ -15,6 +15,8 @@ mod external_files;
 mod file_import;
 mod file_index;
 mod git;
+mod git_management;
+mod github;
 #[doc(hidden)]
 pub mod language_servers;
 mod menu;
@@ -980,6 +982,25 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             open_workspace,
             git::git_context,
+            git_management::git_checkout_pull_request,
+            git_management::git_initialize_repository,
+            git_management::git_clone_repository,
+            git_management::git_configure_remote,
+            git_management::git_manage_branch,
+            git_management::git_fetch_background,
+            git_management::git_worktree_prune_review,
+            git_management::git_worktree_prune,
+            git_management::git_worktree_set_locked,
+            git_management::git_worktree_create,
+            git_management::git_integration_start,
+            git_management::git_integration_control,
+            git_management::git_conflict_resource,
+            git_management::git_save_conflict_resolution,
+            github::github_repositories,
+            github::github_status,
+            github::github_read,
+            github::github_create_pull_request,
+            github::github_review_pull_request,
             git::git_enable,
             git::git_status,
             git::git_diff,

@@ -37,7 +37,7 @@ describe("Git source control view", () => {
     f.mount(() => <GitSourceControl git={f.git} view={f.view} available active activePath="src/main.ts" />);
     const list = f.host.querySelector('[role="tablist"]')!;
     expect(list.getAttribute("aria-label")).toBe("Source control view");
-    expect(tabs(f.host).map(tab => [tab.textContent, tab.getAttribute("aria-selected")])).toEqual([["Changes", "true"], ["History", "false"], ["Branches", "false"], ["Stash", "false"], ["Worktrees", "false"]]);
+    expect(tabs(f.host).map(tab => [tab.textContent, tab.getAttribute("aria-selected")])).toEqual([["Changes", "true"], ["History", "false"], ["Branches", "false"], ["Stash", "false"], ["Worktrees", "false"], ["GitHub", "false"]]);
     expect(f.host.querySelectorAll('[aria-label="Refresh Git"]')).toHaveLength(1);
     expect(f.host.querySelector('[aria-label="Git commit message"]')).not.toBeNull();
     expect(f.host.querySelector('[aria-label="Git history"]')).toBeNull();
@@ -58,7 +58,7 @@ describe("Git source control view", () => {
     history.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
     expect(f.view.subView()).toBe("changes"); expect(document.activeElement).toBe(changes);
     changes.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
-    expect(f.view.subView()).toBe("worktrees");
+    expect(f.view.subView()).toBe("github");
   });
 
   it("remembers the last sub-view and still renders when storage throws", () => {

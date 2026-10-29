@@ -1,8 +1,8 @@
-import { batch, createEffect, createSignal, on, onCleanup } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import type { GitChange, GitCommit, GitContext, GitDiff, GitDiffSide, GitHistoryPage, GitStatus, GitBranch, GitStash, GitWorktree, GitCommitDetails, GitRemoteAction, GitStashAction, GitHunkDiff, GitTag, GitIntegrationState, GitIntegrationResult, GitRebaseAction, GitRemotes } from "../bindings";
 import { api } from "../lib/client";
 
-type GitTransport = Pick<typeof api, "gitContext" | "gitEnable" | "gitStatus" | "gitDiff" | "gitHistory" | "gitCommitDiff" | "gitStage" | "gitUnstage" | "gitCommit"> & Partial<Pick<typeof api, "gitBranches" | "gitCheckout" | "gitRemote" | "gitStashes" | "gitStash" | "gitWorktrees" | "gitWorktreeAdd" | "gitWorktreeRemove" | "gitCommitDetails" | "gitHunkDiff" | "gitApplyHunk" | "gitTags" | "gitCreateTag" | "gitDeleteTag" | "gitMergeFastForward" | "gitIntegrationState" | "gitRebase" | "gitRebaseControl" | "gitMarkResolved" | "gitRemotes" | "gitDiscardFile">>;
+type GitTransport = Pick<typeof api, "gitContext" | "gitEnable" | "gitStatus" | "gitDiff" | "gitHistory" | "gitCommitDiff" | "gitStage" | "gitUnstage" | "gitCommit"> & Partial<Pick<typeof api, "gitBranches" | "gitCheckout" | "gitRemote" | "gitStashes" | "gitStash" | "gitWorktrees" | "gitWorktreeAdd" | "gitWorktreeRemove" | "gitCommitDetails" | "gitHunkDiff" | "gitApplyHunk" | "gitTags" | "gitCreateTag" | "gitDeleteTag" | "gitMergeFastForward" | "gitIntegrationState" | "gitRebase" | "gitRebaseControl" | "gitMarkResolved" | "gitRemotes" | "gitDiscardFile" | "gitInitializeRepository" | "gitCloneRepository" | "gitConfigureRemote" | "gitManageBranch" | "gitWorktreePruneReview" | "gitWorktreePrune" | "gitWorktreeSetLocked" | "gitWorktreeCreate" | "gitCheckoutPullRequest" | "gitFetchBackground" | "gitIntegrationStart" | "gitIntegrationControl" | "gitConflictResource" | "gitSaveConflictResolution">>;
 export type GitView = {
   key: string;
   title: string;
@@ -37,12 +37,13 @@ function describeGitError(cause: unknown): GitError {
   };
 }
 
-export function createGitWorkbench(options: { root: () => string | undefined; generation: () => number; active: () => boolean; blocked: () => boolean; available: boolean; onOpenView: (key: string, title: string) => void; onOpenFile?: (repositoryPath: string) => void; onWorkingTreeChange?: () => void | Promise<void>; beforeWorkingTreeChange?: (action: string) => boolean; transport?: GitTransport }) {
+export function createGitWorkbench(options: { root: () => string | undefined; generation: () => number; active: () => boolean; blocked: () => boolean; available: boolean; onOpenView: (key: string, title: string) => void; onOpenFile?: (repositoryPath: string) => void; onOpenWorkspace?: (path: string) => void | Promise<void>; onWorkingTreeChange?: () => void | Promise<void>; beforeWorkingTreeChange?: (action: string) => boolean; transport?: GitTransport }) {
   const transport = options.transport ?? api;
   const [context, setContext] = createSignal<GitContext>();
   const [status, setStatus] = createSignal<GitStatus>();
   const [loading, setLoading] = createSignal(false);
   const [operation, setOperation] = createSignal<string>();
+  const [autoFetching, setAutoFetching] = createSignal(false);
   const [errorState, setErrorState] = createSignal<GitError>({ message: "" });
   const error = () => errorState().message;
   const errorHelp = () => errorState().helpUrl;
@@ -87,15 +88,53 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
   const changed = () => status()?.entries.filter(workingChange) || [];
   const staged = () => status()?.entries.filter(stagedChange) || [];
   const mutable = (entry: GitChange) => !!entry.path && !entry.unsupportedReason && !entry.conflicted && !entry.submodule;
-  const ready = () => !!context()?.enabled && !!context()?.repository && !!status() && status()?.repository.id === context()?.repository?.id && !operation() && !status()?.operation && !status()?.truncated && !options.blocked();
+  const ready = () => !!context()?.enabled && !!context()?.repository && !!status() && status()?.repository.id === context()?.repository?.id && !operation() && !autoFetching() && !status()?.operation && !status()?.truncated && !options.blocked();
   const canCommit = () => ready() && !!message().trim() && !!staged().length && !status()?.truncated && !status()?.operation && !status()?.entries.some(entry => entry.conflicted);
 
+  const autoFetchPreferences = new Map<string, { enabled: boolean; minutes: number }>();
+  const [autoFetchEnabled, setAutoFetchEnabledState] = createSignal(false);
+  const [autoFetchMinutes, setAutoFetchMinutesState] = createSignal(5);
+  const [lastFetch, setLastFetch] = createSignal<number>();
+  const [autoFetchError, setAutoFetchError] = createSignal("");
+  function setAutoFetchEnabled(enabled: boolean) {
+    const id = context()?.repository?.root; if (!id) return;
+    autoFetchPreferences.set(id, { enabled, minutes: autoFetchMinutes() }); setAutoFetchEnabledState(enabled); setAutoFetchError("");
+  }
+  function setAutoFetchMinutes(minutes: number) {
+    if (!Number.isFinite(minutes)) return;
+    minutes = Math.max(1, Math.min(1440, Math.round(minutes)));
+    setAutoFetchMinutesState(minutes);
+    const id = context()?.repository?.root; if (id) autoFetchPreferences.set(id, { enabled: autoFetchEnabled(), minutes });
+  }
+  const preferenceRoot = createMemo(() => context()?.repository?.root);
+  createEffect(on(preferenceRoot, root => {
+    const preference = root ? autoFetchPreferences.get(root) : undefined;
+    setAutoFetchEnabledState(preference?.enabled ?? false); setAutoFetchMinutesState(preference?.minutes ?? 5); setLastFetch(undefined); setAutoFetchError("");
+  }));
+  const autoFetchSchedule = createMemo(() => `${autoFetchEnabled()}:${autoFetchMinutes()}:${context()?.enabled}:${context()?.repository?.id}:${options.root()}:${options.generation()}`);
+  createEffect(on(autoFetchSchedule, () => {
+    if (!autoFetchEnabled() || !context()?.enabled || !transport.gitFetchBackground) return;
+    const delay = autoFetchMinutes() * 60_000; const root = options.root(); const token = epoch;
+    const timer = setInterval(async () => {
+      if (!live(token) || root !== options.root() || !autoFetchEnabled() || !context()?.enabled || document.visibilityState === "hidden" || navigator.onLine === false || !ready() || !remotes()?.remotes.length) return;
+      const ctx = context()!; const fingerprint = remotes()!.configFingerprint;
+      beginMutation(); setAutoFetching(true);
+      try {
+        const result = await transport.gitFetchBackground!(ctx, fingerprint);
+        if (!live(token) || context()?.repository?.id !== ctx.repository!.id || !autoFetchEnabled()) return;
+        if (result.status.repository.id !== ctx.repository!.id) throw new Error("The repository changed during fetch.");
+        setStatus(result.status); setBranches(undefined); setLastFetch(Date.now()); setAutoFetchError("");
+      } catch (cause) { if (live(token)) { setAutoFetchEnabled(false); setAutoFetchError(report(cause)); } }
+      finally { if (live(token)) setAutoFetching(false); }
+    }, delay);
+    onCleanup(() => clearInterval(timer));
+  }));
   function beginMutation() { contextRequest++; refreshPending = undefined; setLoading(false); }
   function refreshMutableViews() {
     for (const [key, view] of Object.entries(views())) if (view.side !== "commit") void fetchView(key);
   }
   async function refresh() {
-    if (!options.available || !options.root() || options.blocked() || operation()) return;
+    if (!options.available || !options.root() || options.blocked() || operation() || autoFetching()) return;
     if (refreshPending) return refreshPending;
     const token = epoch; const request = ++contextRequest; const root = options.root();
     setLoading(true);
@@ -135,7 +174,7 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
   }
   async function enable() {
     const ctx = context();
-    if (!options.available || !ctx?.repository || ctx.enabled || loading() || operation() || options.blocked()) return false;
+    if (!options.available || !ctx?.repository || ctx.enabled || loading() || operation() || autoFetching() || options.blocked()) return false;
     const token = epoch;
     beginMutation(); setOperation("enable"); setError("");
     try {
@@ -232,7 +271,7 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
   }
   async function repositoryAction(kind: string, action: (ctx: GitContext, before: GitStatus) => Promise<{ status: GitStatus; output?: string; summary?: string }>) {
     if (!ready() || status()?.operation || status()?.truncated) return false;
-    const changesDisk = ["checkout", "create branch", "pull", "stash save", "stash apply", "stash pop", "merge"].includes(kind);
+    const changesDisk = ["checkout", "create branch", "pull", "stash save", "stash apply", "stash pop", "merge", "checkout pull request"].includes(kind);
     if (changesDisk && options.beforeWorkingTreeChange?.(kind) === false) return false;
     const ctx = context()!; const before = status()!; const token = epoch;
     beginMutation(); setOperation(kind); setError(""); setWarning(""); setNotice("");
@@ -252,6 +291,10 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
     } catch (cause) { if (live(token)) setError(cause, true); return false; }
     finally { if (live(token)) setOperation(undefined); }
   }
+  const checkoutPullRequest = (remoteName: string, number: number, expectedHead: string, localBranch: string) => repositoryAction("checkout pull request", async (ctx, before) => {
+    if (!transport.gitCheckoutPullRequest || !remotes()) throw new Error("Review repository remotes before checking out a pull request.");
+    return transport.gitCheckoutPullRequest(ctx, remoteName, number, expectedHead, localBranch, before.indexRevision, remotes()!.configFingerprint);
+  });
   const checkout = (branch: string, create = false) => repositoryAction(create ? "create branch" : "checkout", async (ctx, before) => {
     if (!transport.gitCheckout) throw new Error("Branch management is unavailable in this backend.");
     return { status: await transport.gitCheckout(ctx, branch, create, before.indexRevision) };
@@ -272,6 +315,10 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
     if (!transport.gitWorktreeAdd) throw new Error("Worktree management is unavailable in this backend.");
     return transport.gitWorktreeAdd(ctx, path, branch);
   });
+  const createWorktree = (path: string, mode: "newBranch" | "detached", branch: string) => repositoryAction("create worktree", async (ctx, before) => {
+    if (!transport.gitWorktreeCreate || !before.repository.head) throw new Error("Create a commit before adding this worktree.");
+    return transport.gitWorktreeCreate(ctx, path, mode, mode === "newBranch" ? branch : null, before.repository.head);
+  });
   const removeWorktree = (path: string) => repositoryAction("remove worktree", async ctx => {
     if (!transport.gitWorktreeRemove) throw new Error("Worktree management is unavailable in this backend.");
     return transport.gitWorktreeRemove(ctx, path);
@@ -280,6 +327,57 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
     if (!transport.gitMergeFastForward) throw new Error("Fast-forward merge is unavailable in this backend.");
     return transport.gitMergeFastForward(ctx, target, before.indexRevision);
   });
+  const configureRemote = async (action: "add" | "setUrl" | "remove", name: string, url?: string) => {
+    if (!ready() || !remotes()) return false;
+    const ctx = context()!; const token = epoch; const fingerprint = remotes()!.configFingerprint;
+    beginMutation(); setOperation("configure remote"); setError("");
+    try {
+      if (!transport.gitConfigureRemote) throw new Error("Remote configuration is unavailable.");
+      const result = await transport.gitConfigureRemote(ctx, action, name, url ?? null, fingerprint);
+      if (!live(token)) return false;
+      setRemotes(result); setBranches(undefined); setNotice("Remote configuration updated."); return true;
+    } catch (cause) { if (live(token)) setError(cause, true); return false; }
+    finally { if (live(token)) setOperation(undefined); }
+  };
+  const manageBranch = (action: "rename" | "delete" | "setUpstream" | "unsetUpstream", branch: GitBranch, value?: string) => repositoryAction(`${action} branch`, async ctx => {
+    if (!transport.gitManageBranch || !remotes()) throw new Error("Review remotes before changing branch configuration.");
+    return transport.gitManageBranch(ctx, action, branch.name, value ?? null, branch.commitId, status()?.repository.head ?? null, remotes()!.configFingerprint);
+  });
+  const [pruneReview, setPruneReview] = createSignal<Awaited<ReturnType<NonNullable<GitTransport["gitWorktreePruneReview"]>>>>();
+  async function reviewPrune() {
+    const ctx = context(); const token = epoch;
+    if (!ready() || !ctx || !transport.gitWorktreePruneReview) return;
+    try { const result = await transport.gitWorktreePruneReview(ctx); if (live(token)) setPruneReview(result); }
+    catch (cause) { if (live(token)) setError(cause, true); }
+  }
+  const pruneWorktrees = () => repositoryAction("prune worktrees", async ctx => {
+    if (!transport.gitWorktreePrune || !pruneReview()) throw new Error("Review stale worktree metadata before pruning.");
+    const result = await transport.gitWorktreePrune(ctx, pruneReview()!.snapshot); setPruneReview(undefined); return result;
+  });
+  const lockWorktree = (path: string, locked: boolean) => repositoryAction(locked ? "lock worktree" : "unlock worktree", async ctx => {
+    if (!transport.gitWorktreeSetLocked || !transport.gitWorktreePruneReview) throw new Error("Worktree locking is unavailable.");
+    const review = await transport.gitWorktreePruneReview(ctx);
+    return transport.gitWorktreeSetLocked(ctx, path, locked, review.snapshot);
+  });
+  async function setupRepository(source?: string, destination?: string) {
+    if (!options.available || !options.root() || options.blocked() || loading() || operation() || autoFetching()) return false;
+    const token = epoch; beginMutation(); setOperation(source ? "clone repository" : "initialize repository"); setError("");
+    try {
+      if (source) {
+        if (!transport.gitCloneRepository || !destination) throw new Error("Repository cloning is unavailable.");
+        const result = await transport.gitCloneRepository(source, destination);
+        if (!live(token)) return false;
+        setNotice(`Cloned repository to ${result.path}.`); await options.onOpenWorkspace?.(result.path);
+      } else {
+        if (!transport.gitInitializeRepository) throw new Error("Repository initialization is unavailable.");
+        const result = await transport.gitInitializeRepository();
+        if (!live(token)) return false;
+        setContext(result); setNotice("Repository initialized. Enable Git to review it.");
+      }
+      return true;
+    } catch (cause) { if (live(token)) setError(cause, true); return false; }
+    finally { if (live(token)) setOperation(undefined); }
+  }
   async function tagAction(name: string, target: string, remove: boolean) {
     if (!ready()) return false;
     const ctx = context()!; const token = epoch;
@@ -305,7 +403,7 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
     } catch (cause) { if (live(token)) setError(cause, true); return false; }
     finally { if (live(token)) setOperation(undefined); }
   }
-  const integrationReady = () => !!context()?.enabled && !!context()?.repository && !!status() && status()?.repository.id === context()?.repository?.id && !operation() && !status()?.truncated && !options.blocked();
+  const integrationReady = () => !!context()?.enabled && !!context()?.repository && !!status() && status()?.repository.id === context()?.repository?.id && !operation() && !autoFetching() && !status()?.truncated && !options.blocked();
   async function loadIntegrationState() {
     const ctx = context(); if (!ctx?.enabled || !ctx.repository || options.blocked() || !transport.gitIntegrationState) return;
     const token = epoch; const request = ++integrationRequest;
@@ -337,6 +435,30 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
     } catch (cause) { if (live(token)) setError(cause, true); return false; }
     finally { if (live(token)) setOperation(undefined); }
   }
+  const integrationStart = (kind: "merge" | "cherryPick" | "revert", target: string) => {
+    if (!ready()) return Promise.resolve(false);
+    return integrationAction(kind, async (ctx, before) => {
+      if (!transport.gitIntegrationStart) throw new Error("This integration is unavailable in this backend.");
+      return transport.gitIntegrationStart(ctx, kind, target, before.indexRevision);
+    });
+  };
+  const integrationControl = (kind: "merge" | "cherryPick" | "revert", action: GitRebaseAction) => integrationAction(`${kind} ${action}`, async ctx => {
+    if (!transport.gitIntegrationControl) throw new Error("Integration controls are unavailable in this backend.");
+    const reviewed = reviewedIntegration();
+    return transport.gitIntegrationControl(ctx, kind, action, reviewed.status.indexRevision, reviewed.worktreeSnapshot);
+  });
+  async function readConflict(path: string) {
+    const ctx = context(); const before = status(); const token = epoch;
+    if (!ctx?.enabled || !ctx.repository || !before || options.blocked() || !transport.gitConflictResource) throw new Error("Conflict review is unavailable.");
+    const result = await transport.gitConflictResource(ctx, path, before.indexRevision);
+    if (!live(token) || context()?.repository?.id !== ctx.repository.id) throw new Error("The workspace changed while reading this conflict.");
+    return result;
+  }
+  const saveConflict = (path: string, content: string, index: string, snapshot: string) => integrationAction("save conflict resolution", async ctx => {
+    if (!transport.gitSaveConflictResolution) throw new Error("Conflict editing is unavailable.");
+    const state = await transport.gitSaveConflictResolution(ctx, path, content, index, snapshot);
+    return { state, completed: !state.status.operation, output: `Saved resolution for ${path}. Review it, then mark resolved.` };
+  });
   const rebase = (target: string) => {
     if (!ready()) return Promise.resolve(false);
     return integrationAction("rebase", async (ctx, before) => {
@@ -344,21 +466,25 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
       return transport.gitRebase(ctx, target, before.indexRevision);
     });
   };
+  function reviewedIntegration(reviewed = integrationState()) {
+    if (!reviewed || reviewed.status.repository.id !== context()?.repository?.id) throw new Error("Refresh conflict state and review the current saved files before this action.");
+    return reviewed;
+  }
   const rebaseControl = (action: GitRebaseAction) => integrationAction(`rebase ${action}`, async ctx => {
-    if (!transport.gitRebaseControl || !transport.gitIntegrationState) throw new Error("Rebase controls are unavailable in this backend.");
-    const fresh = await transport.gitIntegrationState(ctx);
-    return transport.gitRebaseControl(ctx, action, fresh.status.indexRevision, fresh.worktreeSnapshot);
+    if (!transport.gitRebaseControl) throw new Error("Rebase controls are unavailable in this backend.");
+    const reviewed = reviewedIntegration();
+    return transport.gitRebaseControl(ctx, action, reviewed.status.indexRevision, reviewed.worktreeSnapshot);
   });
-  const markResolved = (path: string) => integrationAction("mark resolved", async ctx => {
-    if (!transport.gitMarkResolved || !transport.gitIntegrationState) throw new Error("Conflict resolution is unavailable in this backend.");
-    const fresh = await transport.gitIntegrationState(ctx);
-    const state = await transport.gitMarkResolved(ctx, path, fresh.status.indexRevision, fresh.worktreeSnapshot);
+  const markResolved = (path: string, reviewed?: GitIntegrationState) => integrationAction("mark resolved", async ctx => {
+    if (!transport.gitMarkResolved) throw new Error("Conflict resolution is unavailable in this backend.");
+    const snapshot = reviewedIntegration(reviewed);
+    const state = await transport.gitMarkResolved(ctx, path, snapshot.status.indexRevision, snapshot.worktreeSnapshot);
     return { state, completed: !state.status.operation, output: `Marked ${path} resolved.` };
   });
-  const discardFile = (path: string) => integrationAction("discard file", async ctx => {
-    if (!transport.gitDiscardFile || !transport.gitIntegrationState) throw new Error("Recoverable file discard is unavailable in this backend.");
-    const fresh = await transport.gitIntegrationState(ctx);
-    const result = await transport.gitDiscardFile(ctx, path, fresh.status.indexRevision, fresh.worktreeSnapshot);
+  const discardFile = (path: string, reviewed?: GitIntegrationState) => integrationAction("discard file", async ctx => {
+    if (!transport.gitDiscardFile) throw new Error("Recoverable file discard is unavailable in this backend.");
+    const snapshot = reviewedIntegration(reviewed);
+    const result = await transport.gitDiscardFile(ctx, path, snapshot.status.indexRevision, snapshot.worktreeSnapshot);
     return { state: result.state, completed: true, output: `Discarded saved changes in ${path}. Original bytes saved at ${result.recoveryPath}` };
   });
   async function loadCommitDetails(commit: GitCommit) {
@@ -405,8 +531,8 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
   function retainViews(keys: string[]) { const keep = new Set(keys); setViews(current => Object.fromEntries(Object.entries(current).filter(([key]) => keep.has(key)))); }
   createEffect(on(() => [options.root(), options.generation()] as const, () => {
     draftRoot = options.root(); messageVersion++;
-    epoch++; contextRequest++; historyRequest++; resetResources(); refreshPending = undefined; viewRequests.clear();
-    batch(() => { setContext(undefined); setStatus(undefined); setLoading(false); setOperation(undefined); setError(""); setNotice(""); setWarning(""); setMessageState(draftRoot ? drafts.get(draftRoot) || "" : ""); setHistory(undefined); setHistoryPath(undefined); setHistoryLoading(false); setHistoryError(""); setViews({}); });
+    epoch++; contextRequest++; historyRequest++; setPruneReview(undefined); resetResources(); refreshPending = undefined; viewRequests.clear();
+    batch(() => { setContext(undefined); setStatus(undefined); setLoading(false); setOperation(undefined); setAutoFetching(false); setError(""); setNotice(""); setWarning(""); setMessageState(draftRoot ? drafts.get(draftRoot) || "" : ""); setHistory(undefined); setHistoryPath(undefined); setHistoryLoading(false); setHistoryError(""); setViews({}); });
   }));
   createEffect(() => {
     if ((!options.active() && !context()?.enabled) || options.blocked() || !options.available || !options.root()) return;
@@ -416,6 +542,6 @@ export function createGitWorkbench(options: { root: () => string | undefined; ge
     onCleanup(() => clearInterval(timer));
   });
   onCleanup(() => { disposed = true; epoch++; });
-  return { discardFile, supportsDiscard: () => !!transport.gitDiscardFile, remotes, integrationState, integrationLoading, integrationError, integrationReady, loadIntegrationState, rebase, rebaseControl, markResolved, openWorkingFile: (path: string) => options.onOpenFile?.(path), canOpenWorkingFile: () => !!options.onOpenFile, tags, createTag: (name: string, target: string) => tagAction(name, target, false), deleteTag: (name: string, objectId: string) => tagAction(name, objectId, true), mergeFastForward, applyHunk, branches, stashes, worktrees, resourceLoading, resourceErrors, loadResource, checkout, remote, stash, addWorktree, removeWorktree, commitDetails, detailsLoading, detailsError, loadCommitDetails, hasWorkspace: () => !!options.root(), context, status, loading, operation, error, errorHelp, notice, noticeOutput, warning, message, setMessage, staged, changed, mutable, ready, canCommit, refresh, enable, stage: (entries: GitChange[]) => mutate("stage", entries), unstage: (entries: GitChange[]) => mutate("unstage", entries), commit: () => mutate("commit"), history, historyLoading, historyError, historyPath, loadHistory, views, openDiff, refreshView, retainViews };
+  return { autoFetching, autoFetchEnabled, setAutoFetchEnabled, autoFetchMinutes, setAutoFetchMinutes, lastFetch, autoFetchError, initializeRepository: () => setupRepository(), cloneRepository: (source: string, destination: string) => setupRepository(source, destination), configureRemote, manageBranch, pruneReview, reviewPrune, pruneWorktrees, lockWorktree, openWorktree: (path: string) => options.onOpenWorkspace?.(path), canOpenWorktree: () => !!options.onOpenWorkspace, integrationStart, integrationControl, readConflict, saveConflict, discardFile, supportsDiscard: () => !!transport.gitDiscardFile, remotes, integrationState, integrationLoading, integrationError, integrationReady, loadIntegrationState, rebase, rebaseControl, markResolved, openWorkingFile: (path: string) => options.onOpenFile?.(path), canOpenWorkingFile: () => !!options.onOpenFile, tags, createTag: (name: string, target: string) => tagAction(name, target, false), deleteTag: (name: string, objectId: string) => tagAction(name, objectId, true), mergeFastForward, applyHunk, branches, stashes, worktrees, resourceLoading, resourceErrors, loadResource, checkout, checkoutPullRequest, remote, stash, addWorktree, createWorktree, removeWorktree, commitDetails, detailsLoading, detailsError, loadCommitDetails, hasWorkspace: () => !!options.root(), context, status, loading, operation, error, errorHelp, notice, noticeOutput, warning, message, setMessage, staged, changed, mutable, ready, canCommit, refresh, enable, stage: (entries: GitChange[]) => mutate("stage", entries), unstage: (entries: GitChange[]) => mutate("unstage", entries), commit: () => mutate("commit"), history, historyLoading, historyError, historyPath, loadHistory, views, openDiff, refreshView, retainViews };
 }
 export type GitWorkbench = ReturnType<typeof createGitWorkbench>;

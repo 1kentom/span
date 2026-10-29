@@ -19,6 +19,7 @@ import { selectionPointer } from "../editor/selection-pointer";
 import { lineSelection } from "../editor/line-selection";
 import { markdownFiles, urlPasteSpec, type MarkdownFilePort } from "../editor/markdown-paste";
 import { gitInlineBlame, setGitBlame, type GitBlameConfig } from "../editor/git-blame";
+import { gitStagedGutter, setGitStagedBaseline, type GitStagedBaseline } from "../editor/git-staged-gutter";
 import { gitGutter, navigateGitChange, setGitBaseline } from "../editor/git-gutter";
 import Icon from "./Icon";
 import "../styles/git-decorations.css";
@@ -313,6 +314,8 @@ export default function Editor(props: EditorProps) {
   let historyOrigin = {};
   let proposalId: string | undefined;
   let proposalGeneration = 0;
+  let appliedStagedBaseline: GitStagedBaseline;
+  const stagedBaseline = (): GitStagedBaseline => props.gitBaseline && !props.gitBaseline.binary && !props.gitBaseline.truncated ? { head: props.gitBaseline.headText ?? "", index: props.gitBaseline.indexText ?? "" } : undefined;
   let appliedGitBaseline: string | undefined;
   let appliedGitBlame: GitBlameConfig | undefined;
   const gitBlameConfig = (): GitBlameConfig => ({ enabled: props.gitBlameEnabled ?? true, baseline: props.gitBaseline && !props.gitBaseline.binary && !props.gitBaseline.truncated ? props.gitBaseline.headText ?? undefined : undefined, blame: props.gitBlame });
@@ -407,7 +410,7 @@ export default function Editor(props: EditorProps) {
       // Tooltips may only use the editor itself. The default is the whole window, which puts a tall hover under the tab bar.
       tooltips({ tooltipSpace: view => { const box = view.scrollDOM.getBoundingClientRect(); return { top: box.top, left: box.left, bottom: box.bottom, right: box.right }; } }),
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), activeLineLayer(), drawSelection(), selectionPointer(), lineSelection(), indentationSupport(),
-      javaRun.of(javaRunExtensions()), gitGutter(appliedGitBaseline = gitBaseline(), setGitChangeCount), gitInlineBlame(appliedGitBlame = gitBlameConfig()),
+      javaRun.of(javaRunExtensions()), gitStagedGutter(appliedStagedBaseline = stagedBaseline()), gitGutter(appliedGitBaseline = gitBaseline(), setGitChangeCount), gitInlineBlame(appliedGitBlame = gitBlameConfig()),
       props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),
       closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
         const marker = document.createElement("span");
@@ -472,6 +475,7 @@ export default function Editor(props: EditorProps) {
     const snapshot = { path: props.buffer.path, language: props.buffer.language, text: props.buffer.text, revision: props.buffer.revision };
     const syntax = props.syntax;
     const baseline = gitBaseline();
+    const staged = stagedBaseline();
     const blame = gitBlameConfig();
     const nextDocument = props.document;
     const transition = props.change;
@@ -505,6 +509,7 @@ export default function Editor(props: EditorProps) {
         : persistentDocumentChange(view.state.doc, wanted);
       const effects: StateEffect<unknown>[] = [];
       if (appliedGitBlame?.enabled !== blame.enabled || appliedGitBlame?.baseline !== blame.baseline || appliedGitBlame?.blame !== blame.blame) { appliedGitBlame = blame; effects.push(setGitBlame.of(blame)); }
+      if (appliedStagedBaseline?.head !== staged?.head || appliedStagedBaseline?.index !== staged?.index) { appliedStagedBaseline = staged; effects.push(setGitStagedBaseline.of(staged)); }
       if (appliedGitBaseline !== baseline) { appliedGitBaseline = baseline; effects.push(setGitBaseline.of(baseline)); }
       if (canRunJava !== javaRunEnabled) { javaRunEnabled = canRunJava; effects.push(javaRun.reconfigure(canRunJava ? javaRunGutter(() => props.onJavaRun?.()) : [])); }
       if (snapshot.language !== currentLanguage) {

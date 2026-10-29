@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
-// Explicit IPC fixture: these browser tests never execute Git or change a repository.
+// Explicit IPC fixture: browser tests never execute Git, change a repository, or contact hosting services.
 const schema = JSON.parse(readFileSync("crates/core/settings.schema.json", "utf8")).properties;
 const defaults = Object.fromEntries(Object.entries(schema as Record<string, { default?: unknown }>).filter(([key, value]) => !key.includes(".") && key !== "$schema" && "default" in value).map(([key, value]) => [key, value.default]));
 
@@ -14,7 +14,8 @@ async function fixture(page: Page, clean = false) {
     let enabled = false;
     const root = "/fixture/repository/project";
     const repo = { id: "git-fixture-session", root: "/fixture/repository", workspacePrefix: "project", branch: "feature/review", head: "b".repeat(40), detached: false, unborn: false };
-    const trace = { baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false };
+    const trace = { baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false, hosting: [] as any[], conflictReads: [] as any[], conflictSaves: [] as any[], failCreate: true, failReview: true };
+    let treeRevision = 1;
     const text = "const value = 3;\nconst stable = true;\nconst other = 4;\nconst tail = true;\n";
     const indexText = "const value = 2;\nconst stable = true;\nconst other = 3;\nconst tail = true;\n";
     let operation: string | null = null;
@@ -43,8 +44,25 @@ async function fixture(page: Page, clean = false) {
         transformCallback: () => ++callback,
         unregisterCallback: () => undefined,
         invoke: async (command: string, args: Record<string, any> = {}) => {
-          if (command.startsWith("git_") && !["git_context", "git_enable"].includes(command) && !enabled) throw new Error("Git read or mutation ran before activation");
-          if (command === "git_file_baseline") { trace.baseline.push(args); return { repositoryId: repo.id, path: args.path, indexRevision: `index-${revision}`, headText: indexText, indexText, binary: false, truncated: false }; }
+          if ((command.startsWith("github_") || command.startsWith("git_")) && !["git_context", "git_enable"].includes(command) && !enabled) throw new Error("Git read or mutation ran before activation");
+          if (command.startsWith("github_")) {
+            trace.hosting.push({ command, ...args });
+            const repository = { host: "github.com", owner: "fixture", name: "project", remoteName: "origin" };
+            if (command !== "github_repositories" && (args.expectedRepository?.host !== repository.host || args.expectedRepository?.owner !== repository.owner || args.expectedRepository?.name !== repository.name || args.expectedRepository?.remoteName !== repository.remoteName)) throw new Error("Reviewed GitHub repository changed");
+            const item = { number: 42, title: "Fixture pull request", body: "Review this literal <script>fixture</script> body.", state: "OPEN", url: "https://github.com/fixture/project/pull/42", author: { login: "fixture-author" }, baseRefName: "main", headRefName: "feature/review", headRefOid: "f".repeat(40), isDraft: false, reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [{ name: "Fixture CI", context: "", status: "COMPLETED", conclusion: "SUCCESS", state: "", detailsUrl: "https://example.test/check", targetUrl: "" }], reviews: [], comments: [], files: [], changedFiles: 1, additions: 1, deletions: 1, nameWithOwner: "fixture/project", description: null, isPrivate: true, filename: "", patch: null, previous_filename: null };
+            if (command === "github_repositories") return [repository];
+            if (command === "github_status") return { available: true, authenticated: true, message: "Authenticated fixture CLI. No hosted requests are executed.", repository };
+            if (command === "github_create_pull_request") { if (trace.failCreate) throw new Error("Fixture create failed. Pull request draft retained."); return "https://github.com/fixture/project/pull/43"; }
+            if (command === "github_review_pull_request") { if (trace.failReview) throw new Error("Fixture review failed. No review published."); return "Fixture review submitted."; }
+            if (command === "github_read") return { items: args.request.kind === "pullRequestFiles" ? [{ ...item, filename: "project/src/file.ts", patch: "@@ -1 +1 @@\n-before\n+<script>literal patch</script>" }] : [item] };
+          }
+          if (command === "git_checkout_pull_request") { trace.checkout.push({ command, ...args }); if (args.expectedHead !== "f".repeat(40) || args.expectedConfigFingerprint !== "reviewed-config-1" || args.expectedIndexRevision !== `index-${revision}`) throw new Error("Reviewed PR snapshot changed"); repo.branch = args.localBranch; repo.head = args.expectedHead; revision++; return { status: status(), output: "Checked out pinned fixture PR." }; }
+          if (command === "git_worktree_create") { trace.worktrees.push({ command, ...args }); if (args.expectedHead !== repo.head) throw new Error("HEAD changed"); worktrees.push({ path: args.path, branch: args.mode === "newBranch" ? args.branch : null, head: repo.head, bare: false, locked: false, prunable: false }); treeRevision++; return { status: status(), output: "Created fixture worktree." }; }
+          if (command === "git_worktree_prune_review") { trace.worktrees.push({ command, ...args }); return { snapshot: `worktrees-${treeRevision}`, output: "Fixture stale metadata: /fixture/stale. No working directories will be removed." }; }
+          if (command === "git_worktree_set_locked" || command === "git_worktree_prune") { trace.worktrees.push({ command, ...args }); if (args.expectedSnapshot !== `worktrees-${treeRevision}`) throw new Error("Worktree review changed"); if (command === "git_worktree_set_locked") worktrees.find(tree => tree.path === args.path)!.locked = args.locked; treeRevision++; return { status: status(), output: "Updated fixture worktree metadata." }; }
+          if (command === "git_conflict_resource") { trace.conflictReads.push(args); if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Conflict index changed"); return { path: args.path, base: "const value = 1;\n", ours: "const value = 2;\n", theirs: "const value = 3;\n", working: buffer.text, state: { status: status(), worktreeSnapshot: `disk-${revision}` } }; }
+          if (command === "git_save_conflict_resolution") { trace.conflictSaves.push(args); if (args.expectedIndexRevision !== `index-${revision}` || args.expectedWorktreeSnapshot !== `disk-${revision}`) throw new Error("Reviewed conflict changed"); buffer.text = args.content; buffer.revision++; buffer.savedRevision = buffer.revision; revision++; return { status: status(), worktreeSnapshot: `disk-${revision}` }; }
+          if (command === "git_file_baseline") { trace.baseline.push(args); return { repositoryId: repo.id, path: args.path, indexRevision: `index-${revision}`, headText: clean ? text : indexText, indexText: clean ? text : indexText, binary: false, truncated: false }; }
           if (command === "git_blame") { trace.blame.push(args); return { repositoryId: repo.id, path: args.path, head: repo.head, lines: [1, 2, 3, 4, 5].map(line => ({ line, originalLine: line, commitId: repo.head, author: "Fixture author", authorEmail: "fixture@example.test", timestamp: commit.timestamp, summary: "Initial fixture" })) }; }
           if (command === "git_branches") return [{ name: repo.branch, commitId: repo.head, remote: false, current: true, upstream: "origin/feature/review", ahead: 1, behind: 0 }, { name: "main", commitId: "c".repeat(40), remote: false, current: false, upstream: null, ahead: 0, behind: 0 }];
           if (command === "git_checkout") { trace.checkout.push(args); if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Index changed"); repo.branch = args.branch; revision++; return status(); }
@@ -113,7 +131,7 @@ async function fixture(page: Page, clean = false) {
   await expect(page.getByRole("main", { name: "span editor", exact: true })).toHaveAttribute("aria-busy", "false");
   return errors;
 }
-const trace = (page: Page) => page.evaluate(() => (window as unknown as { __gitFixture: { enables: number; statusReads: number; stage: any[]; unstage: any[]; commits: any[]; diffs: any[]; history: any[]; diskSaves: number; baseline: any[]; blame: any[]; checkout: any[]; stashes: any[]; tags: any[]; worktrees: any[]; remotes: any[]; hunk: any[]; integration: any[]; remoteConfigChanged: boolean } }).__gitFixture);
+const trace = (page: Page) => page.evaluate(() => (window as unknown as { __gitFixture: { enables: number; statusReads: number; stage: any[]; unstage: any[]; commits: any[]; diffs: any[]; history: any[]; diskSaves: number; baseline: any[]; blame: any[]; checkout: any[]; stashes: any[]; tags: any[]; worktrees: any[]; remotes: any[]; hunk: any[]; integration: any[]; remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean } }).__gitFixture);
 
 test("repository-wide saved/index diffs preserve a dirty editor and constrain outside-file opens", async ({ page }, info) => {
   const errors = await fixture(page);
@@ -135,7 +153,7 @@ test("repository-wide saved/index diffs preserve a dirty editor and constrain ou
   const outside = comparison.filter({ hasText: "outside.md" });
   await expect(outside.getByRole("button", { name: "Open working file", exact: true })).toBeDisabled();
   await expect(outside).toContainText("outside the opened folder");
-  await page.screenshot({ path: info.outputPath("git-repository-diff.png") });
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-repository-diff.png") });
   await page.getByRole("tab", { name: "file.ts", exact: true }).click();
   await expect(editor).toContainText("unsaved editor draft"); await editor.press("ControlOrMeta+z"); await expect(editor).not.toContainText("unsaved editor draft");
   expect((await trace(page)).diskSaves).toBe(0); expect(errors).toEqual([]);
@@ -179,9 +197,9 @@ test("repository/file history opens safe read-only commit details and respects n
   expect(await comparison.locator("script").count()).toBe(0); await comparison.locator("summary").click(); await expect(comparison).toContainText("Full commit details");
   for (const theme of ["light", "purple"]) {
     await page.locator(".ide").evaluate((node, value) => { node.classList.remove("theme-dark", "theme-light", "theme-purple"); node.classList.add(`theme-${value}`); }, theme);
-    await page.screenshot({ path: info.outputPath(`git-history-${theme}.png`) });
+    await page.screenshot({ animations: "disabled", path: info.outputPath(`git-history-${theme}.png`) });
   }
-  await page.setViewportSize({ width: 720, height: 700 }); await expect(comparison).toBeVisible(); await page.screenshot({ path: info.outputPath("git-history-narrow.png") });
+  await page.setViewportSize({ width: 720, height: 700 }); await expect(comparison).toBeVisible(); await page.screenshot({ animations: "disabled", path: info.outputPath("git-history-narrow.png") });
   expect((await trace(page)).commits).toHaveLength(0); expect(errors).toEqual([]);
 });
 
@@ -209,14 +227,14 @@ test("consent gates explorer, tab, gutter and authorship decorations for live un
   await expect(editor).toBeVisible();
   await page.getByRole("button", { name: "Enable Git", exact: true }).click();
   await expect(page.getByRole("button", { name: "Source control", exact: true }).getByLabel("2 changed files", { exact: true })).toBeVisible();
-  await page.screenshot({ path: info.outputPath("git-agent-mode-return.png") });
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-agent-mode-return.png") });
   await expect(page.locator(".file-tab[data-git-status='modified']")).toHaveCount(1);
   await expect(page.locator(".cm-git-marker.cm-git-modified")).toHaveCount(2);
   await editor.click(); await editor.press("ControlOrMeta+Home"); await editor.press("ArrowDown");
-  await expect(page.getByRole("button", { name: "Git authorship: Fixture author. Open file history", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Git authorship: Fixture author. Open file blame", exact: true })).toBeVisible();
   await editor.press("ControlOrMeta+End"); await page.keyboard.insertText("// unsaved decoration\n"); await editor.press("ArrowUp");
   await expect(page.locator(".cm-git-marker.cm-git-added")).not.toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Git authorship: Uncommitted changes. Open file history", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Git authorship: Uncommitted changes. Open file blame", exact: true })).toBeVisible();
   await expect(page.locator(".file-tab .git-path-badge")).toHaveAttribute("title", /unsaved changes/);
   await page.getByRole("button", { name: "Files", exact: true }).click();
   await expect(page.locator("[role='treeitem'][data-git-status='modified']")).not.toHaveCount(0);
@@ -226,26 +244,28 @@ test("consent gates explorer, tab, gutter and authorship decorations for live un
   await expect(preview).toContainText("const value = 2;"); await expect(preview).toContainText("const value = 3;");
   await preview.getByRole("button", { name: "Next Git change", exact: true }).click();
   await expect(preview).toContainText("const other = 4;");
-  await page.screenshot({ path: info.outputPath("git-live-decorations.png") });
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-live-decorations.png") });
   await preview.getByRole("button", { name: "Close Git change preview", exact: true }).click();
   await expect(preview).toHaveCount(0); await expect(editor).toContainText("unsaved decoration");
   const result = await trace(page); expect(result.baseline[0].path).toBe("project/src/file.ts"); expect(result.blame[0].path).toBe("project/src/file.ts"); expect(result.diskSaves).toBe(0); expect(errors).toEqual([]);
 });
 
-test("five keyboard subviews create a branch, manage local tags and save/apply a stable stash", async ({ page }, info) => {
+test("six keyboard subviews create a branch, manage local tags and save/apply a stable stash", async ({ page }, info) => {
   const errors = await fixture(page);
   await page.getByRole("button", { name: "Git", exact: true }).click();
   const panel = page.getByRole("region", { name: "Git source control", exact: true });
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
   const views = panel.getByRole("tablist", { name: "Source control view", exact: true });
-  await expect(views.getByRole("tab")).toHaveCount(5);
+  await expect(views.getByRole("tab")).toHaveCount(6);
   await views.getByRole("tab", { name: "Changes", exact: true }).focus();
-  for (const label of ["History", "Branches", "Stash", "Worktrees", "Changes"]) {
+  for (const label of ["History", "Branches", "Stash", "Worktrees", "GitHub", "Changes"]) {
     await page.keyboard.press("ArrowRight");
     await expect(views.getByRole("tab", { name: label, exact: true })).toBeFocused();
     await expect(views.getByRole("tab", { name: label, exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(panel.getByRole("tabpanel", { name: label, exact: true })).toBeVisible();
   }
+  await page.keyboard.press("End"); await expect(views.getByRole("tab", { name: "GitHub", exact: true })).toBeFocused();
+  await page.keyboard.press("Home"); await expect(views.getByRole("tab", { name: "Changes", exact: true })).toBeFocused();
   await views.getByRole("tab", { name: "Branches", exact: true }).click();
   const branches = panel.getByRole("region", { name: "Git branches", exact: true });
   await branches.getByRole("button", { name: "New", exact: true }).click();
@@ -279,7 +299,7 @@ test("five keyboard subviews create a branch, manage local tags and save/apply a
   await expect(output).not.toBeVisible();
   await expect(stashes.getByRole("button", { name: "Apply stash@{0}", exact: true })).toBeVisible();
   const result = await trace(page); expect(result.stashes).toHaveLength(2); expect(result.stashes[0]).toMatchObject({ action: "save", message: "Browser fixture work", stashId: null }); expect(result.stashes[1]).toMatchObject({ action: "apply", stashId: "e".repeat(40), expectedIndexRevision: "index-3" });
-  await page.screenshot({ path: info.outputPath("git-branch-stash.png") }); expect(errors).toEqual([]);
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-branch-stash.png") }); expect(errors).toEqual([]);
 });
 
 test("worktree removal is explicit and remote failure retains message and unsaved editor draft", async ({ page }, info) => {
@@ -310,12 +330,12 @@ test("worktree removal is explicit and remote failure retains message and unsave
   await expect(panel.getByRole("alert")).toContainText("Fixture authentication failed");
   await expect(message).toHaveValue("Keep this commit draft"); await expect(editor).toContainText("keep after remote failure");
   expect((await trace(page)).remotes[0]).toMatchObject({ action: "fetch", expectedConfigFingerprint: "reviewed-config-1" }); expect((await trace(page)).diskSaves).toBe(0);
-  await page.evaluate(() => { (window as unknown as { __gitFixture: { remoteConfigChanged: boolean } }).__gitFixture.remoteConfigChanged = true; });
+  await page.evaluate(() => { (window as unknown as { __gitFixture: { remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean } }).__gitFixture.remoteConfigChanged = true; });
   await panel.getByRole("button", { name: "Fetch", exact: true }).click();
   await expect(panel.getByRole("alert")).toContainText("Remote configuration changed. Review remotes again.");
   await expect(message).toHaveValue("Keep this commit draft"); await expect(editor).toContainText("keep after remote failure");
   expect((await trace(page)).remotes).toHaveLength(2);
-  await page.screenshot({ path: info.outputPath("git-remote-failure.png") }); expect(errors).toEqual([]);
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-remote-failure.png") }); expect(errors).toEqual([]);
 });
 
 test("saved hunk staging uses reviewed index and disk snapshots while editor stays dirty", async ({ page }) => {
@@ -351,7 +371,7 @@ test("rebase conflict workflow requires resolution before continuing and sends f
   await panel.getByRole("button", { name: "Open conflict file project/src/file.ts", exact: true }).click();
   const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
   await expect(editor).toContainText("<<<<<<< HEAD");
-  await page.screenshot({ path: info.outputPath("git-rebase-conflict.png") });
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-rebase-conflict.png") });
   await editor.click(); await editor.press("ControlOrMeta+a"); await page.keyboard.insertText("const value = 3; // resolved fixture conflict\n");
   await panel.getByRole("button", { name: "Mark project/src/file.ts resolved", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Save or close unsaved files" })).toBeVisible();
@@ -359,11 +379,148 @@ test("rebase conflict workflow requires resolution before continuing and sends f
   await editor.click(); await editor.press("ControlOrMeta+s");
   await expect.poll(async () => (await trace(page)).diskSaves).toBe(1);
   await panel.getByRole("button", { name: "Mark project/src/file.ts resolved", exact: true }).click();
+  await expect(panel.getByRole("alert")).toContainText("Conflict state changed");
+  await expect(panel.getByRole("button", { name: "Continue rebase", exact: true })).toBeDisabled();
+  await panel.getByRole("button", { name: "Refresh conflict state", exact: true }).click();
+  await panel.getByRole("button", { name: "Mark project/src/file.ts resolved", exact: true }).click();
   await expect(panel.getByRole("button", { name: "Continue rebase", exact: true })).toBeEnabled();
   await panel.getByRole("button", { name: "Continue rebase", exact: true }).click();
   await expect(panel).toContainText("Fixture rebase completed."); await expect(panel).not.toContainText("Rebase in progress");
   const actions = (await trace(page)).integration;
-  expect(actions).toHaveLength(3); expect(actions[0]).toMatchObject({ command: "git_rebase", targetId: "c".repeat(40), expectedIndexRevision: "index-1" });
-  expect(actions[1]).toMatchObject({ command: "git_mark_resolved", expectedIndexRevision: "index-3", expectedWorktreeSnapshot: "disk-3" });
-  expect(actions[2]).toMatchObject({ command: "git_rebase_control", action: "continue", expectedIndexRevision: "index-4", expectedWorktreeSnapshot: "disk-4" }); expect(errors).toEqual([]);
+  expect(actions).toHaveLength(4); expect(actions[0]).toMatchObject({ command: "git_rebase", targetId: "c".repeat(40), expectedIndexRevision: "index-1" });
+  expect(actions[1]).toMatchObject({ command: "git_mark_resolved", expectedIndexRevision: "index-2", expectedWorktreeSnapshot: "disk-2" });
+  expect(actions[2]).toMatchObject({ command: "git_mark_resolved", expectedIndexRevision: "index-3", expectedWorktreeSnapshot: "disk-3" });
+  expect(actions[3]).toMatchObject({ command: "git_rebase_control", action: "continue", expectedIndexRevision: "index-4", expectedWorktreeSnapshot: "disk-4" }); expect(errors).toEqual([]);
+});
+
+test("GitHub forms retain failed drafts, review literal PR patches and check out the pinned head", async ({ page }, info) => {
+  const errors = await fixture(page, true);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("tab", { name: "GitHub", exact: true }).click();
+  const hosting = panel.getByRole("region", { name: "GitHub", exact: true });
+  await expect(hosting).toContainText("Enable Git for this repository"); expect((await trace(page)).hosting).toHaveLength(0);
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await expect(hosting.getByRole("combobox", { name: "GitHub repository", exact: true })).toHaveValue("origin");
+  await hosting.getByRole("button", { name: "New pull request", exact: true }).click();
+  await hosting.getByLabel("Title", { exact: true }).fill("Keep this pull request draft");
+  await hosting.getByLabel("Description", { exact: true }).fill("Unsaved hosted description");
+  await hosting.getByRole("button", { name: "Create pull request", exact: true }).click();
+  await expect(hosting.getByRole("alert")).toContainText("Fixture create failed");
+  await expect(hosting.getByLabel("Title", { exact: true })).toHaveValue("Keep this pull request draft");
+  await expect(hosting.getByLabel("Description", { exact: true })).toHaveValue("Unsaved hosted description");
+  await expect(hosting.getByRole("checkbox", { name: "Create as draft", exact: true })).toBeChecked();
+  expect((await trace(page)).hosting.filter(call => call.command === "github_create_pull_request")).toHaveLength(1);
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-github-create-failure.png") });
+  await page.evaluate(() => { (window as any).__gitFixture.failCreate = false; });
+  await hosting.getByRole("button", { name: "Create pull request", exact: true }).click();
+  await expect(hosting.getByLabel("Title", { exact: true })).toHaveCount(0);
+  await hosting.getByRole("button", { name: /Fixture pull request/ }).click();
+  await expect(hosting).toContainText("Fixture CI"); await expect(hosting).toContainText("success");
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-github-checks.png") });
+  await expect(hosting).toContainText("<script>fixture</script>"); expect(await hosting.locator("script").count()).toBe(0);
+  await hosting.locator("summary").filter({ hasText: "Changed files (1)" }).click();
+  await hosting.getByRole("button", { name: "Load file patches", exact: true }).click();
+  await hosting.locator("summary").filter({ hasText: "project/src/file.ts" }).click();
+  await expect(hosting).toContainText("+<script>literal patch</script>"); expect(await hosting.locator("script").count()).toBe(0);
+  await hosting.getByLabel("Review message", { exact: true }).fill("Keep this review draft");
+  await hosting.getByRole("button", { name: "Review submission", exact: true }).click();
+  expect((await trace(page)).hosting.filter(call => call.command === "github_review_pull_request")).toHaveLength(0);
+  await hosting.getByRole("button", { name: "Submit review", exact: true }).click();
+  await expect(hosting.getByRole("alert")).toContainText("Fixture review failed");
+  await expect(hosting.getByLabel("Review message", { exact: true })).toHaveValue("Keep this review draft");
+  const beforePoll = (await trace(page)).statusReads;
+  await expect.poll(async () => (await trace(page)).statusReads, { timeout: 7000 }).toBeGreaterThan(beforePoll);
+  await expect(hosting.getByLabel("Review message", { exact: true })).toHaveValue("Keep this review draft");
+  await expect(hosting.getByRole("heading", { name: "Fixture pull request", exact: true })).toBeVisible();
+  const calls = (await trace(page)).hosting;
+  expect(calls.find(call => call.command === "github_create_pull_request").request).toMatchObject({ title: "Keep this pull request draft", body: "Unsaved hosted description", base: "main", head: "feature/review", draft: true });
+  expect(calls.find(call => call.command === "github_review_pull_request").expectedRepository).toEqual({ host: "github.com", owner: "fixture", name: "project", remoteName: "origin" });
+  expect(calls.find(call => call.command === "github_review_pull_request").request).toMatchObject({ number: 42, event: "comment", body: "Keep this review draft", expectedHead: "f".repeat(40) });
+  expect(calls.find(call => call.request?.kind === "pullRequestFiles").request).toMatchObject({ number: 42, page: 1, expectedHead: "f".repeat(40) });
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-github-review-failure.png") });
+  await hosting.getByRole("button", { name: "Check out pull request", exact: true }).click();
+  await expect(hosting.getByLabel("New local branch", { exact: true })).toHaveValue("pr/42");
+  await hosting.getByRole("button", { name: "Fetch and check out", exact: true }).click();
+  await expect(panel.locator(".git-repo-branch")).toContainText("pr/42");
+  expect((await trace(page)).checkout[0]).toMatchObject({ command: "git_checkout_pull_request", remoteName: "origin", number: 42, expectedHead: "f".repeat(40), localBranch: "pr/42", expectedIndexRevision: "index-1", expectedConfigFingerprint: "reviewed-config-1" });
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-github-pinned-checkout.png") }); expect(errors).toEqual([]);
+});
+
+test("Changes opens the three-way conflict editor and saves its reviewed resolution before Continue", async ({ page }, info) => {
+  const errors = await fixture(page, true);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await panel.getByRole("tab", { name: "Branches", exact: true }).click();
+  await panel.getByRole("button", { name: "Rebase onto main", exact: true }).click();
+  await panel.getByRole("button", { name: "Start rebase", exact: true }).click();
+  await panel.getByRole("tab", { name: "Changes", exact: true }).click();
+  await panel.getByRole("region", { name: "Working changes", exact: true }).getByRole("button", { name: "Resolve project/src/file.ts", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Resolve conflict: project/src/file.ts", exact: true });
+  await expect(dialog.getByLabel("Base source", { exact: true })).toContainText("const value = 1;");
+  await expect(dialog.getByLabel("Current (ours) source", { exact: true })).toContainText("const value = 2;");
+  await expect(dialog.getByLabel("Incoming (theirs) source", { exact: true })).toContainText("const value = 3;");
+  await expect(dialog.getByRole("button", { name: "Mark resolved", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Accept current", exact: true }).click();
+  await expect(dialog.getByRole("textbox", { name: /Result/ })).toHaveValue("const value = 2;\n");
+  await expect(dialog.getByRole("button", { name: "Mark resolved", exact: true })).toBeDisabled();
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-three-way-resolution-draft.png") });
+  await dialog.getByRole("button", { name: "Save resolution", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Mark resolved", exact: true })).toBeEnabled();
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-three-way-saved-resolution.png") });
+  expect((await trace(page)).conflictSaves[0]).toMatchObject({ path: "project/src/file.ts", content: "const value = 2;\n", expectedIndexRevision: "index-2", expectedWorktreeSnapshot: "disk-2" });
+  await dialog.getByRole("button", { name: "Mark resolved", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect((await trace(page)).integration.at(-1)).toMatchObject({ command: "git_mark_resolved", expectedIndexRevision: "index-3", expectedWorktreeSnapshot: "disk-3" });
+  await panel.getByRole("button", { name: "Continue rebase", exact: true }).click();
+  await expect(panel).toContainText("Fixture rebase completed.");
+  expect((await trace(page)).integration.at(-1)).toMatchObject({ command: "git_rebase_control", action: "continue", expectedIndexRevision: "index-4", expectedWorktreeSnapshot: "disk-4" }); expect(errors).toEqual([]);
+});
+
+test("status authorship opens full-file blame with age mapping and commit navigation", async ({ page }, info) => {
+  const errors = await fixture(page);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  await page.getByRole("button", { name: "Enable Git", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
+  await editor.click(); await editor.press("ControlOrMeta+Home"); await editor.press("ArrowDown");
+  await page.getByRole("button", { name: "Git authorship: Fixture author. Open file blame", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "File blame", exact: true });
+  await expect(dialog).toContainText("Current buffer mapped to HEAD"); await expect(dialog).toContainText("Uncommitted changes");
+  await expect(dialog.getByRole("button", { name: "Review commit bbbbbbbb for line 2", exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Age heatmap", exact: true }).click();
+  await expect(dialog.locator("tr[data-age]")).not.toHaveCount(0);
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-full-file-blame.png") });
+  await dialog.getByRole("button", { name: "Review commit bbbbbbbb for line 2", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Git comparison", exact: true })).toContainText("Commit changes");
+  expect((await trace(page)).diskSaves).toBe(0); expect(errors).toEqual([]);
+});
+
+test("worktrees create a new branch and bind lock and prune actions to metadata reviews", async ({ page }, info) => {
+  const errors = await fixture(page, true);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await panel.getByRole("tab", { name: "Worktrees", exact: true }).click();
+  const trees = panel.getByRole("region", { name: "Git worktrees", exact: true });
+  await trees.getByRole("button", { name: "New", exact: true }).click();
+  await trees.getByLabel("Checkout mode", { exact: true }).selectOption("newBranch");
+  await trees.getByLabel("Existing local branch", { exact: true }).fill("feature/fixture-worktree");
+  await trees.getByLabel("Absolute folder path", { exact: true }).fill("/fixture/new-worktree");
+  await trees.getByRole("button", { name: "Add worktree", exact: true }).click();
+  const entry = trees.locator(".git-worktree-entry").filter({ hasText: "/fixture/new-worktree" });
+  await expect(entry).toContainText("feature/fixture-worktree");
+  expect((await trace(page)).worktrees.find(call => call.command === "git_worktree_create")).toMatchObject({ path: "/fixture/new-worktree", mode: "newBranch", branch: "feature/fixture-worktree", expectedHead: "b".repeat(40) });
+  await entry.getByRole("button", { name: "Lock", exact: true }).click();
+  await expect(entry).toContainText("Locked");
+  await expect(entry.getByRole("button", { name: "Remove worktree /fixture/new-worktree", exact: true })).toBeDisabled();
+  expect((await trace(page)).worktrees.find(call => call.command === "git_worktree_set_locked")).toMatchObject({ path: "/fixture/new-worktree", locked: true, expectedSnapshot: "worktrees-2" });
+  await trees.getByRole("button", { name: "Review stale worktree metadata", exact: true }).click();
+  await expect(trees).toContainText("Fixture stale metadata: /fixture/stale");
+  expect((await trace(page)).worktrees.filter(call => call.command === "git_worktree_prune")).toHaveLength(0);
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-worktree-prune-review.png") });
+  await trees.getByRole("button", { name: "Prune reviewed metadata", exact: true }).click();
+  expect((await trace(page)).worktrees.find(call => call.command === "git_worktree_prune")).toMatchObject({ expectedSnapshot: "worktrees-3" });
+  await expect(entry).toBeVisible(); expect(errors).toEqual([]);
 });

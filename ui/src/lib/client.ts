@@ -164,6 +164,82 @@ function previewEntries(path: string): FileEntry[] {
 }
 
 export const api = {
+  async gitCheckoutPullRequest(...args: Parameters<typeof commands.gitCheckoutPullRequest>) {
+    if (!isDesktop) nativeRequired('Checking out a pull request');
+    return commands.gitCheckoutPullRequest(...args);
+  },
+  async gitInitializeRepository(...args: Parameters<typeof commands.gitInitializeRepository>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitInitializeRepository(...args);
+  },
+  async gitCloneRepository(...args: Parameters<typeof commands.gitCloneRepository>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitCloneRepository(...args);
+  },
+  async gitConfigureRemote(...args: Parameters<typeof commands.gitConfigureRemote>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitConfigureRemote(...args);
+  },
+  async gitManageBranch(...args: Parameters<typeof commands.gitManageBranch>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitManageBranch(...args);
+  },
+  async gitFetchBackground(...args: Parameters<typeof commands.gitFetchBackground>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitFetchBackground(...args);
+  },
+  async gitWorktreePruneReview(...args: Parameters<typeof commands.gitWorktreePruneReview>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitWorktreePruneReview(...args);
+  },
+  async gitWorktreePrune(...args: Parameters<typeof commands.gitWorktreePrune>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitWorktreePrune(...args);
+  },
+  async gitWorktreeSetLocked(...args: Parameters<typeof commands.gitWorktreeSetLocked>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitWorktreeSetLocked(...args);
+  },
+  async gitWorktreeCreate(...args: Parameters<typeof commands.gitWorktreeCreate>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitWorktreeCreate(...args);
+  },
+  async gitIntegrationStart(...args: Parameters<typeof commands.gitIntegrationStart>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitIntegrationStart(...args);
+  },
+  async gitIntegrationControl(...args: Parameters<typeof commands.gitIntegrationControl>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitIntegrationControl(...args);
+  },
+  async gitConflictResource(...args: Parameters<typeof commands.gitConflictResource>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitConflictResource(...args);
+  },
+  async gitSaveConflictResolution(...args: Parameters<typeof commands.gitSaveConflictResolution>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.gitSaveConflictResolution(...args);
+  },
+  async githubRepositories(...args: Parameters<typeof commands.githubRepositories>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.githubRepositories(...args);
+  },
+  async githubStatus(...args: Parameters<typeof commands.githubStatus>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.githubStatus(...args);
+  },
+  async githubRead(...args: Parameters<typeof commands.githubRead>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.githubRead(...args);
+  },
+  async githubCreatePullRequest(...args: Parameters<typeof commands.githubCreatePullRequest>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.githubCreatePullRequest(...args);
+  },
+  async githubReviewPullRequest(...args: Parameters<typeof commands.githubReviewPullRequest>) {
+    if (!isDesktop) nativeRequired('Using native Git integration');
+    return commands.githubReviewPullRequest(...args);
+  },
   async gitContext(): Promise<GitContext> {
     if (!isDesktop) nativeRequired('Reading Git repositories');
     return commands.gitContext();

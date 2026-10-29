@@ -1,7 +1,9 @@
-import { For, Show, createEffect } from "solid-js";
+import { For, Show, createEffect, type JSX } from "solid-js";
 import type { GitWorkbench } from "../../stores/git";
 import type { GitSubView, GitView } from "../../stores/git-view";
 import { GitRepositoryViews } from "./GitRepositoryViews";
+import { GitRemotes } from "./GitRemotes";
+import { GitSetup } from "./GitSetup";
 import { GitHistory } from "./GitHistory";
 import { GitOperationNotice, GitPanel, GitRepositoryHeader } from "./GitPanel";
 
@@ -10,10 +12,10 @@ type GitSourceControlProps = {
   /** True while the sidebar shows the Git view; History only reads commits while visible. */
   active: boolean;
   /** The active editor path, used by the This file scope when no file was named explicitly. */
-  activePath?: string;
+  activePath?: string; github?: JSX.Element; onResolveConflict?: (path: string) => void;
 };
 
-const subViews: { id: GitSubView; label: string }[] = [{ id: "changes", label: "Changes" }, { id: "history", label: "History" }, { id: "branches", label: "Branches" }, { id: "stashes", label: "Stash" }, { id: "worktrees", label: "Worktrees" }];
+const subViews: { id: GitSubView; label: string }[] = [{ id: "changes", label: "Changes" }, { id: "history", label: "History" }, { id: "branches", label: "Branches" }, { id: "stashes", label: "Stash" }, { id: "worktrees", label: "Worktrees" }, { id: "github", label: "GitHub" }];
 
 /** One Source Control view keeps repository workflows within the same consent boundary. */
 export function GitSourceControl(props: GitSourceControlProps) {
@@ -25,7 +27,7 @@ export function GitSourceControl(props: GitSourceControlProps) {
   const refresh = () => {
     if (v.subView() === "history") void g.refresh().then(() => g.loadHistory());
     else if (["branches", "stashes", "worktrees"].includes(v.subView())) void g.refresh().then(() => g.loadResource(v.subView() as "branches" | "stashes" | "worktrees"));
-    else void g.refresh();
+    else void g.refresh().then(() => { if (v.subView() === "changes" && (g.status()?.operation || g.status()?.entries.some(entry => entry.conflicted))) return g.loadIntegrationState(); });
   };
   function keydown(event: KeyboardEvent) {
     const index = subViews.findIndex(item => item.id === v.subView());
@@ -54,9 +56,11 @@ export function GitSourceControl(props: GitSourceControlProps) {
         )}</For>
       </div>
       <GitRepositoryHeader git={g} available={props.available} onRefresh={refresh} />
+      <Show when={props.available && g.context() && !g.context()?.repository && g.hasWorkspace()}><GitSetup git={g} /></Show>
       <Show when={g.context()?.enabled}>
         <Show when={selectedRemote()}>{remote => <div class="git-remote-target"><strong>{remote().name}</strong><span title={remote().fetchUrl}>{remote().fetchUrl}</span><Show when={remote().pushUrl !== remote().fetchUrl}><span title={remote().pushUrl}>Push: {remote().pushUrl}</span></Show></div>}</Show>
         <Show when={g.resourceErrors().remotes}><div class="git-error" role="alert">{g.resourceErrors().remotes}<button class="git-text-action" onClick={() => void g.loadResource("remotes")}>Review remotes</button></div></Show>
+        <GitRemotes git={g} />
         <div class="git-remote-actions" aria-label="Remote operations">
           <button class="git-text-action" disabled={!g.ready() || !g.remotes()?.remotes.length} onClick={() => void g.remote("fetch")}>Fetch</button>
           <button class="git-text-action" disabled={!g.ready() || !g.remotes()?.remotes.length} onClick={() => void g.remote("pull")}>Pull</button>
@@ -70,7 +74,7 @@ export function GitSourceControl(props: GitSourceControlProps) {
       <Show when={v.subView() === "history"}><GitOperationNotice git={g} /></Show>
       <Show when={v.subView() === "changes"}>
         <div class="git-subview-panel" role="tabpanel" id="git-subview-panel-changes" aria-labelledby="git-subview-changes">
-          <GitPanel git={g} available={props.available} embedded />
+          <GitPanel git={g} available={props.available} embedded onResolveConflict={props.onResolveConflict} />
         </div>
       </Show>
       <Show when={v.subView() === "history"}>
@@ -86,6 +90,7 @@ export function GitSourceControl(props: GitSourceControlProps) {
           />
         </div>
       </Show>
+      <Show when={v.subView() === "github"}><div class="git-subview-panel" role="tabpanel" id="git-subview-panel-github" aria-labelledby="git-subview-github">{props.github || <p class="git-note">GitHub integration is unavailable.</p>}</div></Show>
       <For each={["branches", "stashes", "worktrees"] as const}>{kind => <Show when={v.subView() === kind}>
         <div class="git-subview-panel" role="tabpanel" id={`git-subview-panel-${kind}`} aria-labelledby={`git-subview-${kind}`}>
           <GitRepositoryViews git={g} kind={kind} active={props.active} onShowChanges={() => v.setSubView("changes")} />

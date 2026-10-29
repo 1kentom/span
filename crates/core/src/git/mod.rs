@@ -1,8 +1,19 @@
 //! Local Git operates on repository files and the index, never editor buffers.
 mod advanced;
 mod advanced_types;
+mod hosting_checkout;
+#[cfg(test)]
+mod hosting_checkout_tests;
+mod management;
+mod management_types;
+mod merge;
+pub use management_types::*;
 mod extended;
 mod history;
+#[cfg(test)]
+mod management_tests;
+#[cfg(test)]
+mod merge_tests;
 pub use advanced_types::*;
 #[cfg(test)]
 mod advanced_tests;

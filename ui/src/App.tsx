@@ -14,6 +14,11 @@ import { GitSourceControl } from "./components/git/GitSourceControl";
 import { createGitView } from "./stores/git-view";
 import { GitDiffView } from "./components/git/GitDiffView";
 import { GitLineStatus } from "./components/git/GitLineStatus";
+import { GitBlameView } from "./components/git/GitBlameView";
+import { GitMergeEditor } from "./components/git/GitMergeEditor";
+import { GitHubPanel } from "./components/git/GitHubPanel";
+import { createGitHubWorkbench } from "./stores/github";
+import type { GitConflictResource_Serialize as GitConflictResource } from "./bindings";
 import { Explorer } from "./components/Explorer";
 import { NewPopup } from "./components/NewPopup";
 import { createExplorerState } from "./lib/explorer-state";
@@ -200,8 +205,17 @@ export default function App() {
   let centerElement!: HTMLDivElement;
 
   const gitView = createGitView();
-  const git = createGitWorkbench({ root: () => w.workspace()?.root, generation: w.workspaceGeneration, active: () => showLeft() && leftView() === "Git" || isGitTab(w.activeTab() || ""), blocked: w.busy, available: isDesktop, onOpenView: (key, title) => { w.openGitTab(key, title); }, beforeWorkingTreeChange: () => {
-    if (!w.hasDirty()) return true;
+  const [gitMergePath, setGitMergePath] = createSignal<string>();
+  const [gitMergeResource, setGitMergeResource] = createSignal<GitConflictResource>();
+  const [gitMergeLoading, setGitMergeLoading] = createSignal(false);
+  const [gitMergeError, setGitMergeError] = createSignal("");
+  const [gitMergeDirty, setGitMergeDirty] = createSignal(false);
+  const [pendingGitMergeClose, setPendingGitMergeClose] = createSignal(false);
+  const [gitBlamePath, setGitBlamePath] = createSignal<string>();
+  let saveGitMergeDraft: (() => Promise<boolean>) | undefined;
+  let gitMergeRequest = 0;
+  const git = createGitWorkbench({ root: () => w.workspace()?.root, generation: w.workspaceGeneration, active: () => showLeft() && leftView() === "Git" || isGitTab(w.activeTab() || ""), blocked: w.busy, available: isDesktop, onOpenView: (key, title) => { w.openGitTab(key, title); }, onOpenWorkspace: path => applyStartup({ workspaceRoot: path, files: [], impliedRoot: false }), beforeWorkingTreeChange: action => {
+    if (!w.hasDirty() && !(gitMergeDirty() && action !== "save conflict resolution")) return true;
     w.setError("Save or close unsaved files before changing the Git working tree.");
     return false;
   }, onWorkingTreeChange: async () => {
@@ -222,6 +236,32 @@ export default function App() {
     path: () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? path : undefined; },
     blocked: () => w.busy() || !!git.operation(),
   });
+  const github = createGitHubWorkbench({ git, generation: w.workspaceGeneration, active: () => showLeft() && leftView() === "Git" && gitView.subView() === "github" });
+  async function refreshGitConflict(path = gitMergePath()) {
+    if (!path) return;
+    const request = ++gitMergeRequest; const generation = w.workspaceGeneration(); const repository = git.context()?.repository?.id;
+    setGitMergeLoading(true); setGitMergeError("");
+    try { const resource = await git.readConflict(path); if (request === gitMergeRequest && generation === w.workspaceGeneration() && repository === git.context()?.repository?.id && path === gitMergePath()) setGitMergeResource(resource); }
+    catch (cause) { if (request === gitMergeRequest && generation === w.workspaceGeneration()) setGitMergeError(String(cause)); }
+    finally { if (request === gitMergeRequest && generation === w.workspaceGeneration()) setGitMergeLoading(false); }
+  }
+  function openGitConflict(path: string) {
+    if (gitMergeDirty() && gitMergePath() !== path) { w.setError("Save or close the current merge draft before opening another conflict."); return; }
+    setGitMergePath(path); setGitMergeResource(undefined); void refreshGitConflict(path);
+  }
+  const closeGitConflict = () => { if (gitMergeDirty()) setPendingGitMergeClose(true); else { gitMergeRequest++; setGitMergePath(undefined); setGitMergeResource(undefined); } };
+  function showGitBlame(path: string) { if (!gitLineInfo.enabled()) gitLineInfo.toggle(); setGitBlamePath(path); }
+  async function openBlameCommit(commitId: string, path: string) {
+    const ctx = git.context(); if (!ctx?.enabled || !ctx.repository) return;
+    const generation = w.workspaceGeneration(); const prefix = ctx.repository.workspacePrefix.replace(/\/$/, ""); const repositoryPath = prefix ? `${prefix}/${path}` : path;
+    try {
+      const details = await api.gitCommitDetails(ctx, commitId);
+      if (generation !== w.workspaceGeneration() || ctx.repository.id !== git.context()?.repository?.id) return;
+      git.openDiff(repositoryPath, "commit", details.commit); setGitBlamePath(undefined);
+    } catch (cause) { w.setError(String(cause)); }
+  }
+  const gitReviewIdentity = createMemo(() => `${git.context()?.repository?.id}:${w.workspaceGeneration()}`);
+  createEffect(on(gitReviewIdentity, () => { gitMergeRequest++; setGitMergePath(undefined); setGitMergeResource(undefined); setGitMergeLoading(false); setGitMergeDirty(false); setGitMergeError(""); setPendingGitMergeClose(false); setGitBlamePath(undefined); }));
   createEffect(() => { const keys = w.groups().flatMap(group => group.tabs).filter(isGitTab).map(gitTabKey).filter((key): key is string => !!key); git.retainViews(keys); });
   /** The Uploads workspace takes the project panel and editor area; its Explorer tab returns. */
   const uploadsOpen = () => showLeft() && leftView() === "Uploads";
@@ -336,7 +376,7 @@ export default function App() {
     await w.updateSettings({ keybindings: scoped });
   }
   const shortcut = (id: ActionId) => shortcutLabel(id, bindings(), platform);
-  const hasUnsaved = () => w.hasDirty() || settingsDirty() || runDraftDirty();
+  const hasUnsaved = () => w.hasDirty() || settingsDirty() || runDraftDirty() || gitMergeDirty();
   const [agentDraft, setAgentDraft] = createSignal<{ id: number; text: string }>();
   let agentDraftId = 0;
   /** Opens the assistant and puts `text` in its composer. The user reads it and sends it. */
@@ -655,11 +695,11 @@ export default function App() {
   }
   function saveExternalClose() {
     const request = pendingExternal(); if (!request) return Promise.resolve(false);
-    return settleIntent(request, current => pendingExternal() === current, async () => { for (const path of Object.keys(w.buffers).filter(w.dirty)) { if (!await w.save(path) || pendingExternal() !== request) return false; } if (settingsDirty() && (!await saveSettingsDraft?.() || pendingExternal() !== request)) return false; if (runDraftDirty() && (!await saveRunDraft?.() || pendingExternal() !== request)) return false; return !hasUnsaved(); }, () => { request.resolve(true); setPendingExternal(undefined); });
+    return settleIntent(request, current => pendingExternal() === current, async () => { for (const path of Object.keys(w.buffers).filter(w.dirty)) { if (!await w.save(path) || pendingExternal() !== request) return false; } if (settingsDirty() && (!await saveSettingsDraft?.() || pendingExternal() !== request)) return false; if (runDraftDirty() && (!await saveRunDraft?.() || pendingExternal() !== request)) return false; if (gitMergeDirty() && (!await saveGitMergeDraft?.() || pendingExternal() !== request)) return false; return !hasUnsaved(); }, () => { request.resolve(true); setPendingExternal(undefined); });
   }
   function saveWindowClose() {
     const intent = closeIntent;
-    return settleIntent(intent, current => current === closeIntent && pendingAppClose(), async () => { for (const path of Object.keys(w.buffers).filter(w.dirty)) { if (!await w.save(path) || intent !== closeIntent) return false; } if (settingsDirty() && (!await saveSettingsDraft?.() || intent !== closeIntent)) return false; if (runDraftDirty() && (!await saveRunDraft?.() || intent !== closeIntent)) return false; return !hasUnsaved(); }, () => closeWindow(false, intent));
+    return settleIntent(intent, current => current === closeIntent && pendingAppClose(), async () => { for (const path of Object.keys(w.buffers).filter(w.dirty)) { if (!await w.save(path) || intent !== closeIntent) return false; } if (settingsDirty() && (!await saveSettingsDraft?.() || intent !== closeIntent)) return false; if (runDraftDirty() && (!await saveRunDraft?.() || intent !== closeIntent)) return false; if (gitMergeDirty() && (!await saveGitMergeDraft?.() || intent !== closeIntent)) return false; return !hasUnsaved(); }, () => closeWindow(false, intent));
   }
   const beforeUnload = (event: BeforeUnloadEvent) => { if (hasUnsaved()) { event.preventDefault(); event.returnValue = ""; } };
   async function closeWindow(discard = false, intent = closeIntent) {
@@ -892,7 +932,7 @@ export default function App() {
           <button class="icon-button" aria-label="New file" title="New file" disabled={!w.workspace()} onClick={() => void withFiles(() => explorer.startCreate("file"))}><MenuIcon name="newFile" /></button>
           <button class="icon-button" aria-label="New folder" title="New folder" disabled={!w.workspace()} onClick={() => void withFiles(() => explorer.startCreate("folder"))}><MenuIcon name="newFolder" /></button>
         </div>
-        <Explorer gitDecorations={gitDecorations} git={<GitSourceControl git={git} view={gitView} available={isDesktop} active={showLeft() && leftView() === "Git"} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} />} workbench={w} state={explorer} view={leftView() === "Uploads" ? "Files" : leftView() as "Files" | "Search" | "Git"} onNavigate={navigate} onOpenToSide={path => { void w.openToSide(path); }} onEditorTarget={editorTargetAt} onEditorPreview={setExplorerDropTarget} onEditorDrop={dropFilesOnEditor} onAgentTarget={agentAt} onAgentPreview={setExplorerOverAgent} onAgentDrop={entries => attachToAgent?.(entries)} nativeDrops={isDesktop} />
+        <Explorer gitDecorations={gitDecorations} git={<GitSourceControl github={<GitHubPanel github={github} git={git} onOpenUrl={url => void api.openExternal(url).catch(cause => w.setError(String(cause)))} />} onResolveConflict={openGitConflict} git={git} view={gitView} available={isDesktop} active={showLeft() && leftView() === "Git"} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} />} workbench={w} state={explorer} view={leftView() === "Uploads" ? "Files" : leftView() as "Files" | "Search" | "Git"} onNavigate={navigate} onOpenToSide={path => { void w.openToSide(path); }} onEditorTarget={editorTargetAt} onEditorPreview={setExplorerDropTarget} onEditorDrop={dropFilesOnEditor} onAgentTarget={agentAt} onAgentPreview={setExplorerOverAgent} onAgentDrop={entries => attachToAgent?.(entries)} nativeDrops={isDesktop} />
       </aside>
       <Show when={!agentsMode()}><PanelHandle label="Resize project panel" restoreLabel="Restore project panel" shortcut={shortcut("toggleProject")} direction="horizontal" value={leftWidth()} min={200} max={sides().project.max} overlay={sides().project.overlay} automatic={!w.panels().projectCollapsed && !showLeft()} collapsed={!showLeft()} onResize={setLeftWidth} onShown={setShowLeft} /></Show>
       <div class="center-area" ref={centerElement}><Show when={hubOpen() ? undefined : hub.view().banner}>{banner => <TrustBanner banner={banner()} onTrust={() => hubAction("trust", banner().server)} onDismiss={() => hub.dismissBanner(banner().root)} />}</Show><div class={`editor-groups ${stacked() ? "stacked" : ""}`} ref={groupsElement}><For each={w.groups().map(group => group.id)}>{(id, index) => <><Show when={index() > 0}><ResizeHandle label="Resize editor groups" direction={stacked() ? "vertical" : "horizontal"} value={groupsExtent() * splitFraction()} min={groupsExtent() * .2} max={groupsExtent() * .8} onResize={size => setSplitFraction(size / groupsExtent())} /></Show><EditorPane group={w.groups().find(group => group.id === id)!} width={w.groups().length > 1 && index() === 0 ? groupsExtent() * splitFraction() - 4 : undefined} /></>}</For><Show when={uploadsOpen()}><div class="uploads-view-layer"><UploadsWorkspace api={uploadsApi} platform={platform} onShowExplorer={() => { setLeftView("Files"); setShowLeft(true); }} /></div></Show><LibraryViewer /><Show when={agentsMode()}><div class="agents-view-layer"><AgentsPage agent={agent} workspaceRoot={w.workspace()?.root} workspaceName={w.workspace()?.name || "No folder"} windowWidth={windowWidth()} onOpenEditor={() => setAgentMode("editor")} onOpenFile={path => openFromAgent(path)} newRequest={agentsNewRequest()} searchShortcut={platform === "mac" ? "⌘K" : "Ctrl+K"} newShortcut={shortcut("newFile")} /></div></Show><div class="settings-view-layer" style={settingsLayerStyle()} onFocusIn={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }} onPointerDown={() => { const group = w.groups()[settingsGroup()]; if (group) w.setActiveGroup(group.id); }}><SettingsDocument /></div></div>
@@ -903,10 +943,13 @@ export default function App() {
     </div>
     <Show when={runManagerOpen()}><RunConfigurationManager catalog={runs.catalog()} selectedId={runs.selectedId()} available={isDesktop && !!w.workspace()} onSave={runs.save} onDuplicate={runs.duplicate} onDelete={runs.remove} onSelect={runs.setSelectedId} onClose={() => setRunManagerOpen(false)} onDirtyChange={setRunDraftDirty} onSaveReady={save => { saveRunDraft = save; }} agentTools={<RunToolsPreference approvals={runApprovals} available={isDesktop} />} /></Show>
     <Show when={!w.busy() && runApprovals.pending()[0]}>{request => <RunApprovalModal request={request()} queued={runApprovals.pending().length} busy={!!runApprovals.resolving()} error={runApprovals.error()} onResolve={(id, allow) => void runApprovals.resolve(id, allow)} />}</Show>
-    <footer class="statusbar"><div class="breadcrumbs"><Show when={w.activePath()} fallback={<span>{w.activeTab() === SETTINGS_TAB ? "Workspace settings" : isViewerTab(w.activeTab() || "") ? "Attachment preview" : w.busy() ? "Opening folder…" : "Ready"}</span>}><Breadcrumbs path={w.activePath()} workspace={w.workspace()} symbols={symbolCrumbs()} onSymbol={symbol => openSymbol(symbol)} focusRequest={breadcrumbFocus()} listDirectory={api.listDirectory} onOpen={path => navigate(path)} onReveal={path => void revealPath(path)} onContextMenu={(event, path, directory) => showContext(event, path, directory ? "directory" : "file")} /></Show></div><div class="status-right"><Show when={!isDesktop}><span class="preview-label" title={previewNotice}>Browser preview</span></Show><GitLineStatus info={gitLineInfo} decorations={gitDecorations} path={w.activePath()} line={cursor().line} text={w.activePath() ? w.documents()[w.activePath()!]?.document.toString() : undefined} onHistory={showFileHistory} /><span>{cursor().line}:{cursor().column}</span><Show when={w.autoSaveFailures().length}><button title="Review Auto Save error" onClick={() => w.setError(w.autoSaveFailures()[0].message)}>Auto Save failed</button></Show><LanguageServerStatus view={hub.view()} language={activeLanguage()} open={hubOpen()} onToggle={toggleHub} /><NotificationBell /><span>UTF-8</span><span class="version-label">span 0.1.0</span></div></footer>
+    <footer class="statusbar"><div class="breadcrumbs"><Show when={w.activePath()} fallback={<span>{w.activeTab() === SETTINGS_TAB ? "Workspace settings" : isViewerTab(w.activeTab() || "") ? "Attachment preview" : w.busy() ? "Opening folder…" : "Ready"}</span>}><Breadcrumbs path={w.activePath()} workspace={w.workspace()} symbols={symbolCrumbs()} onSymbol={symbol => openSymbol(symbol)} focusRequest={breadcrumbFocus()} listDirectory={api.listDirectory} onOpen={path => navigate(path)} onReveal={path => void revealPath(path)} onContextMenu={(event, path, directory) => showContext(event, path, directory ? "directory" : "file")} /></Show></div><div class="status-right"><Show when={!isDesktop}><span class="preview-label" title={previewNotice}>Browser preview</span></Show><GitLineStatus onBlame={showGitBlame} info={gitLineInfo} decorations={gitDecorations} path={w.activePath()} line={cursor().line} text={w.activePath() ? w.documents()[w.activePath()!]?.document.toString() : undefined} onHistory={showFileHistory} /><span>{cursor().line}:{cursor().column}</span><Show when={w.autoSaveFailures().length}><button title="Review Auto Save error" onClick={() => w.setError(w.autoSaveFailures()[0].message)}>Auto Save failed</button></Show><LanguageServerStatus view={hub.view()} language={activeLanguage()} open={hubOpen()} onToggle={toggleHub} /><NotificationBell /><span>UTF-8</span><span class="version-label">span 0.1.0</span></div></footer>
     <Show when={usageOpen()}><UsagePage api={{ summary: client.usageSummary, sessions: client.usageSessions, importScan: client.usageImportScan, importStatus: client.usageImportStatus }} desktop={isDesktop} importEnabled={w.settings().agents?.usage?.importLocalLogs ?? false} onImportChange={importLocalLogs => w.updateSettingKey("agents", { ...w.settings().agents, usage: { ...w.settings().agents?.usage, importLocalLogs } }, "user")} onClose={() => setUsageOpen(false)} onExport={isDesktop && w.workspace() ? async (name, text) => { const saved = await api.saveAttachment("", name, bytesToBase64(new TextEncoder().encode(text))); void navigate(saved.path); } : undefined} exportUnavailable={isDesktop ? "Open a folder to export usage as CSV" : "Export is available in the desktop app"} onOpenExternal={url => void api.openExternal(url).catch(error => w.setError(String(error)))} /></Show>
     <Show when={hubOpen()}><LanguageIntelligencePanel view={hub.view()} fileLanguage={activeLanguage()} placement={hubPlacement()} onAction={hubAction} onToggleServer={hubToggleServer} onClose={closeHub} onOpenSettings={openSettings} onCopy={text => api.writeClipboard(text)} /></Show>
     <ToastStack />
+    <Show when={gitMergePath()}>{path => <Modal label={`Resolve conflict: ${path()}`} class="git-review-modal" busy={!!git.operation()} preventCloseWhileBusy onClose={closeGitConflict} initialFocus="#git-merge-result"><div class="git-review-modal-heading"><strong>Resolve conflict</strong><button class="icon-button" aria-label="Close conflict editor" disabled={!!git.operation()} onClick={closeGitConflict}><MenuIcon name="cancel" /></button></div><GitMergeEditor path={path()} resource={gitMergeResource()} loading={gitMergeLoading()} error={gitMergeError() || git.error()} saving={git.operation() === "save conflict resolution"} resolving={git.operation() === "mark resolved"} onDirtyChange={setGitMergeDirty} onSaveReady={save => { saveGitMergeDraft = save; }} onRefresh={() => void refreshGitConflict()} onSave={async (content, reviewed) => { const resource = reviewed ?? gitMergeResource(); if (!resource) return false; const ok = await git.saveConflict(path(), content, resource.state.status.indexRevision, resource.state.worktreeSnapshot); if (ok) await refreshGitConflict(); return ok; }} onMarkResolved={async reviewed => { const resource = reviewed ?? gitMergeResource(); if (!resource) return false; const ok = await git.markResolved(path(), resource.state); if (ok) { setGitMergeDirty(false); setGitMergePath(undefined); setGitMergeResource(undefined); } return ok; }} /></Modal>}</Show>
+    <Show when={pendingGitMergeClose()}><Modal label="Unsaved merge resolution" class="confirm-modal" initialFocus="[data-modal-cancel]" onClose={() => setPendingGitMergeClose(false)}><h2>Save this merge draft?</h2><p>Your edited result has not been saved to the working file.</p><div class="dialog-actions"><button class="button" onClick={() => { setPendingGitMergeClose(false); setGitMergeDirty(false); gitMergeRequest++; setGitMergePath(undefined); setGitMergeResource(undefined); }}>Discard draft</button><span /><button class="button" data-modal-cancel>Keep editing</button><button class="button primary" disabled={!!git.operation()} onClick={async () => { if (await saveGitMergeDraft?.()) { setPendingGitMergeClose(false); setGitMergePath(undefined); setGitMergeResource(undefined); } }}>Save and close</button></div></Modal></Show>
+    <Show when={gitBlamePath()}>{path => <Modal label="File blame" class="git-review-modal" onClose={() => setGitBlamePath(undefined)}><GitBlameView info={gitLineInfo} decorations={gitDecorations} path={path()} text={w.documents()[path()]?.document.toString()} onCommit={(commitId, file) => void openBlameCommit(commitId, file)} onHistory={file => { showFileHistory(file); setGitBlamePath(undefined); }} onClose={() => setGitBlamePath(undefined)} /></Modal>}</Show>
     <Show when={quickOpen()}><QuickOpen initialQuery={quickOpenQuery()} symbols={createSymbolSource()} onQueryFiles={w.queryFiles} indexStatus={w.indexStatus()} indexError={w.indexError()} discoveryRevision={w.discoveryRevision()} workspaceGeneration={w.workspaceGeneration()} files={w.files()} onOpen={navigate} onClose={() => setQuickOpen(false)} onOpenFolder={requestWorkspace} workspace={w.workspace()} activePath={isSettingsBuffer(w.activePath() || "") ? undefined : w.activePath()} recentPaths={w.recentPaths()} handlers={handlers} bindings={bindings()} onPreview={async path => { const document = w.documents()[path]?.document; if (document) return document.sliceString(0, 64 * 1024); if (isBinaryAssetPath(path)) return "Image preview is available when opened."; if (w.binaryFile(path) || isKnownBinaryPath(path)) return NOT_TEXT_MESSAGE; try { return (await api.peekBuffer(path)).text.slice(0, 64 * 1024); } catch (error) { if (isNotTextError(error)) return NOT_TEXT_MESSAGE; throw error; } }} onSearch={api.search} /></Show>
     <NavigationLayer line={cursor().line} column={cursor().column} />
     <WorkspaceTrustDialog trust={workspaceTrust} root={() => w.workspace()?.root} />

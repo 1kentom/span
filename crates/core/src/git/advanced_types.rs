@@ -58,3 +58,22 @@ pub struct GitDiscardResult {
     /// Local recovery copy of the discarded working bytes. Never staged by this action.
     pub recovery_path: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GitIntegrationKind {
+    Merge,
+    CherryPick,
+    Revert,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitConflictResource {
+    pub path: String,
+    pub base: Option<String>,
+    pub ours: Option<String>,
+    pub theirs: Option<String>,
+    pub working: String,
+    pub state: GitIntegrationState,
+}

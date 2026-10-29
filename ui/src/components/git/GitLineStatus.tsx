@@ -12,6 +12,7 @@ export function GitLineStatus(props: {
   path?: string;
   line: number;
   text?: string;
+  onBlame?: (path: string) => void;
   onHistory: (path: string) => void;
 }) {
   // Cursor motion reuses the exact text mapping instead of diffing the file again.
@@ -28,8 +29,8 @@ export function GitLineStatus(props: {
     return original === undefined ? { label: "Uncommitted changes", detail: "This line has changed since HEAD." }
       : (() => { const line = blame.lines.find(entry => entry.line === original); return line ? {
         label: line.author,
-        detail: `${line.author} · ${gitCommitDate(line.timestamp).detail}\n${line.summary}\n${line.commitId.slice(0, 8)}. Open file history.`,
+        detail: `${line.author} · ${gitCommitDate(line.timestamp).detail}\n${line.summary}\n${line.commitId.slice(0, 8)}. Open file blame and commit details.`,
       } : undefined; })();
   });
-  return <Show when={attribution()}>{value => <button class="git-line-status" title={value().detail} aria-label={`Git authorship: ${value().label}. Open file history`} onClick={() => props.path && props.onHistory(props.path!)}><Icon name="Hierarchy" size={12} /><span>{value().label}</span></button>}</Show>;
+  return <Show when={attribution()}>{value => <button class="git-line-status" title={value().detail} aria-label={`Git authorship: ${value().label}. Open file blame`} onClick={() => props.path && (props.onBlame ?? props.onHistory)(props.path!)}><Icon name="Hierarchy" size={12} /><span>{value().label}</span></button>}</Show>;
 }

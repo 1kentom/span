@@ -166,7 +166,7 @@ impl GitService {
         })
     }
 
-    async fn config_fingerprint(
+    pub(super) async fn config_fingerprint(
         &self,
         repo: &RepoIdentity,
         token: &CancellationToken,
@@ -507,7 +507,7 @@ impl GitService {
         Ok(result)
     }
 
-    async fn worktrees_for(
+    pub(super) async fn worktrees_for(
         &self,
         repo: &RepoIdentity,
         token: &CancellationToken,
@@ -801,7 +801,7 @@ impl GitService {
         })
     }
 
-    async fn validate_branch(
+    pub(super) async fn validate_branch(
         &self,
         repo: &RepoIdentity,
         branch: &str,
@@ -827,7 +827,7 @@ impl GitService {
         Ok(())
     }
 
-    async fn local_branch(
+    pub(super) async fn local_branch(
         &self,
         repo: &RepoIdentity,
         branch: &str,
@@ -845,7 +845,7 @@ impl GitService {
         Ok(())
     }
 
-    async fn review_operation(
+    pub(super) async fn review_operation(
         &self,
         repo: &RepoIdentity,
         expected: Option<&str>,
@@ -870,7 +870,7 @@ impl GitService {
         Ok(status)
     }
 
-    async fn operation_result(
+    pub(super) async fn operation_result(
         &self,
         repo: &RepoIdentity,
         args: Vec<OsString>,
@@ -880,7 +880,7 @@ impl GitService {
             .await
     }
 
-    async fn operation_result_with_env(
+    pub(super) async fn operation_result_with_env(
         &self,
         repo: &RepoIdentity,
         args: Vec<OsString>,

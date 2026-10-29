@@ -8,6 +8,8 @@ mod format;
 mod format_native;
 mod fs_ops;
 mod git;
+mod github;
+pub use github::*;
 mod images;
 mod java_run;
 mod pdf_pages;

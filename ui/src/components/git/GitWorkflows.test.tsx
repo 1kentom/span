@@ -19,11 +19,18 @@ function fixture() {
   const transport = {
     gitContext: vi.fn(async () => context), gitEnable: vi.fn(async () => status), gitStatus: vi.fn(async () => status), gitDiff: vi.fn(), gitHistory: vi.fn(), gitCommitDiff: vi.fn(), gitStage: vi.fn(), gitUnstage: vi.fn(), gitCommit: vi.fn(),
     gitBranches: vi.fn(async () => [branch]), gitCheckout: vi.fn(async () => ({ ...status, repository: { ...status.repository, branch: branch.name, head: branch.commitId } })),
+    gitConfigureRemote: vi.fn(async () => ({ remotes: [], configFingerprint: "new-config" })),
+    gitManageBranch: vi.fn(async () => ({ status, output: "Branch updated" })),
+    gitWorktreeCreate: vi.fn(async () => ({ status, output: "Created worktree" })),
+    gitWorktreePruneReview: vi.fn(async () => ({ snapshot: "reviewed-worktrees", output: "stale metadata" })),
+    gitWorktreePrune: vi.fn(async () => ({ status, output: "Pruned metadata" })),
+    gitWorktreeSetLocked: vi.fn(async () => ({ status, output: "Locked worktree" })),
     gitRemotes: vi.fn(async () => ({ remotes: [{ name: "origin", current: true, fetchUrl: "https://example.test/repo", pushUrl: "https://example.test/repo" }], configFingerprint: "config" })), gitRemote: vi.fn(async () => ({ status, output: "Remote updated" })),
     gitStashes: vi.fn(async () => [{ id: "c".repeat(40), selector: "stash@{0}", subject: "Saved work" }]), gitStash: vi.fn(async () => ({ status, output: "Changes restored" })),
     gitWorktrees: vi.fn(async () => [{ path: "/repo", branch: "main", head: "a".repeat(40), bare: false, locked: false, prunable: false }, { path: "/other", branch: "feature/test", head: "b".repeat(40), bare: false, locked: false, prunable: false }]),
     gitWorktreeAdd: vi.fn(async () => ({ status, output: "Added worktree" })), gitWorktreeRemove: vi.fn(async () => ({ status, output: "Removed worktree" })),
     gitHunkDiff: vi.fn(async () => ({ diff: patch, worktreeSnapshot: "disk", hunks: [{ id: "hunk-id", header: "@@ -1 +1 @@", patch: patch.patch }] })), gitApplyHunk: vi.fn(async () => status),
+    gitIntegrationStart: vi.fn(async () => ({ state, completed: true, output: "Merged" })),
     gitIntegrationState: vi.fn(async () => state), gitRebase: vi.fn(async () => ({ state, completed: true, output: "Rebased" })), gitRebaseControl: vi.fn(async () => ({ state, completed: true, output: "Rebase finished" })), gitMarkResolved: vi.fn(async () => state), gitDiscardFile: vi.fn(async () => ({ state, recoveryPath: "/private/git/span-recovery/file.ts.bak" })),
     gitTags: vi.fn(async () => [{ name: "v1", objectId: "d".repeat(40), targetId: "a".repeat(40), annotated: false }]), gitCreateTag: vi.fn(async () => []), gitDeleteTag: vi.fn(async () => []), gitMergeFastForward: vi.fn(async () => ({ status, output: "Fast-forwarded" })),
   };
@@ -68,10 +75,10 @@ it("requires inline confirmation before removing a separate worktree", async () 
 it("merges only the reviewed immutable target and confirms tag deletion with its object ID", async () => {
   const f = fixture(); await f.git.refresh(); f.view.setSubView("branches"); f.mount();
   await vi.waitFor(() => expect(f.host.textContent).toContain("v1"));
-  button(f.host, "Fast-forward merge feature/test").click(); expect(f.transport.gitMergeFastForward).not.toHaveBeenCalled();
-  const merge = f.host.querySelector('[aria-label="Confirm fast-forward merge of feature/test"]')!;
-  [...merge.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Fast-forward merge")!.click();
-  await vi.waitFor(() => expect(f.transport.gitMergeFastForward).toHaveBeenCalledWith(context, branch.commitId, "index"));
+  button(f.host, "Merge feature/test").click(); expect(f.transport.gitMergeFastForward).not.toHaveBeenCalled();
+  const merge = f.host.querySelector('[aria-label="Confirm merge of feature/test"]')!;
+  [...merge.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Merge branch")!.click();
+  await vi.waitFor(() => expect(f.transport.gitIntegrationStart).toHaveBeenCalledWith(context, "merge", branch.commitId, "index"));
   await vi.waitFor(() => expect(button(f.host, "Delete local tag v1")?.disabled).toBe(false));
   button(f.host, "Delete local tag v1").click(); expect(f.transport.gitDeleteTag).not.toHaveBeenCalled();
   const confirm = f.host.querySelector('[aria-label="Confirm deletion of local tag v1"]')!;
@@ -112,7 +119,7 @@ it("starts a rebase only after confirming the immutable reviewed branch tip", as
   await vi.waitFor(() => expect(f.transport.gitRebase).toHaveBeenCalledWith(context, branch.commitId, "index"));
   await vi.waitFor(() => expect(f.reload).toHaveBeenCalledOnce());
 });
-it("opens conflict files and stages saved resolutions using a freshly reviewed snapshot", async () => {
+it("opens conflict files and stages saved resolutions using the displayed reviewed snapshot", async () => {
   const f = fixture();
   const conflicted: GitStatus_Serialize = { ...status, operation: "rebase", entries: [{ id: "file", path: "file.ts", displayPath: "file.ts", oldPath: null, displayOldPath: null, indexStatus: "U", worktreeStatus: "U", untracked: false, conflicted: true, submodule: false, unsupportedReason: null }] };
   f.transport.gitStatus.mockResolvedValue(conflicted);
@@ -121,6 +128,7 @@ it("opens conflict files and stages saved resolutions using a freshly reviewed s
   await f.git.refresh(); f.mount();
   expect(f.host.textContent).toContain("Rebase in progress");
   button(f.host, "Open conflict file file.ts").click(); expect(f.openFile).toHaveBeenCalledWith("file.ts");
+  await vi.waitFor(() => expect(button(f.host, "Mark file.ts resolved").disabled).toBe(false));
   button(f.host, "Mark file.ts resolved").click();
   await vi.waitFor(() => expect(f.transport.gitMarkResolved).toHaveBeenCalledWith(context, "file.ts", "index", "saved-resolution"));
   expect(f.before).toHaveBeenCalledWith("mark resolved");
@@ -131,9 +139,10 @@ it("requires an explicit rebase abort confirmation before discarding saved resol
   const f = fixture(); f.transport.gitStatus.mockResolvedValue({ ...status, operation: "rebase" });
   f.transport.gitIntegrationState.mockResolvedValue({ ...state, status: { ...status, operation: "rebase" } });
   await f.git.refresh(); f.mount();
+  await vi.waitFor(() => expect(f.git.integrationState()).toBeDefined());
   [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Abort rebase…")!.click();
   expect(f.transport.gitRebaseControl).not.toHaveBeenCalled();
-  const group = f.host.querySelector('[aria-label="Confirm rebase abort"]')!;
+  const group = f.host.querySelector('[aria-label="Confirm Git integration abort"]')!;
   [...group.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Abort rebase")!.click();
   await vi.waitFor(() => expect(f.transport.gitRebaseControl).toHaveBeenCalledWith(context, "abort", "index", "saved-resolution"));
 });
@@ -142,6 +151,7 @@ it("confirms saved-file discard and shows the retained recovery location", async
   const f = fixture(); const modified: GitStatus_Serialize = { ...status, entries: [{ id: "file", path: "file.ts", displayPath: "file.ts", oldPath: null, displayOldPath: null, indexStatus: ".", worktreeStatus: "M", untracked: false, conflicted: false, submodule: false, unsupportedReason: null }] };
   f.transport.gitStatus.mockResolvedValue(modified); f.transport.gitIntegrationState.mockResolvedValue({ ...state, status: modified });
   await f.git.refresh(); f.mount();
+  await vi.waitFor(() => expect(button(f.host, "Discard saved changes in file.ts").disabled).toBe(false));
   button(f.host, "Discard saved changes in file.ts").click(); expect(f.transport.gitDiscardFile).not.toHaveBeenCalled();
   const group = f.host.querySelector('[aria-label="Confirm discard of file.ts"]')!;
   const confirmButton = [...group.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Discard saved changes")!; confirmButton.focus(); confirmButton.click();
@@ -192,4 +202,70 @@ it("reports saved and empty stashes without showing Git status as the notice", a
   await f.git.stash("save"); expect(f.git.notice()).toBe("Saved tracked changes to stash.");
   f.transport.gitStash.mockResolvedValueOnce({ status, output: "No local changes to save\n" });
   await f.git.stash("save"); expect(f.git.notice()).toBe("No tracked changes to stash.");
+});
+
+it("reviews remotes before configuration and requires confirmation for removal", async () => {
+  const f = fixture(); await f.git.refresh(); f.mount();
+  await vi.waitFor(() => expect(f.git.remotes()?.configFingerprint).toBe("config"));
+  const remoteEditor = f.host.querySelector(".git-remotes-editor")!;
+  [...remoteEditor.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Remove")!.click();
+  expect(f.transport.gitConfigureRemote).not.toHaveBeenCalled();
+  [...remoteEditor.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Remove remote")!.click();
+  await vi.waitFor(() => expect(f.transport.gitConfigureRemote).toHaveBeenCalledWith(context, "remove", "origin", null, "config"));
+});
+it("passes reviewed branch and worktree identities to management commands", async () => {
+  const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes");
+  expect(await f.git.manageBranch("rename", branch, "feature/renamed")).toBe(true);
+  expect(f.transport.gitManageBranch).toHaveBeenCalledWith(context, "rename", branch.name, "feature/renamed", branch.commitId, context.repository!.head, "config");
+  await f.git.reviewPrune(); expect(f.transport.gitWorktreePrune).not.toHaveBeenCalled();
+  expect(await f.git.pruneWorktrees()).toBe(true); expect(f.transport.gitWorktreePrune).toHaveBeenCalledWith(context, "reviewed-worktrees");
+  expect(await f.git.createWorktree("/new", "detached", "")).toBe(true);
+  expect(f.transport.gitWorktreeCreate).toHaveBeenCalledWith(context, "/new", "detached", null, context.repository!.head);
+});
+it("preserves branch and remote form drafts during status polling", async () => {
+  const f = fixture(); await f.git.refresh(); f.view.setSubView("branches"); f.mount();
+  await vi.waitFor(() => expect(f.host.textContent).toContain(branch.name));
+  [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Rename")!.click();
+  const input = f.host.querySelector<HTMLInputElement>('[id="branch-value-feature/test"]')!;
+  input.value = "feature/draft"; input.dispatchEvent(new Event("input", { bubbles: true }));
+  await f.git.refresh();
+  expect(f.host.querySelector<HTMLInputElement>('[id="branch-value-feature/test"]')?.value).toBe("feature/draft");
+  [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Edit URL")!.click();
+  const url = f.host.querySelector<HTMLInputElement>("#git-remote-url")!;
+  url.value = "https://example.test/draft"; url.dispatchEvent(new Event("input", { bubbles: true }));
+  await f.git.refresh(); expect(f.host.querySelector<HTMLInputElement>("#git-remote-url")?.value).toBe("https://example.test/draft");
+});
+it("uses the displayed resolution snapshot and refuses silent refresh before destructive actions", async () => {
+  const f = fixture(); await f.git.refresh(); await f.git.loadIntegrationState();
+  f.transport.gitIntegrationState.mockResolvedValue({ ...state, worktreeSnapshot: "external-unreviewed-bytes" });
+  f.transport.gitMarkResolved.mockRejectedValueOnce(new Error("Working tree changed. Refresh and review."));
+  expect(await f.git.markResolved("file.ts")).toBe(false);
+  expect(f.transport.gitIntegrationState).toHaveBeenCalledOnce();
+  expect(f.transport.gitMarkResolved).toHaveBeenCalledWith(context, "file.ts", "index", "saved-resolution");
+  expect(f.git.integrationState()?.worktreeSnapshot).toBe("saved-resolution");
+  expect(await f.git.rebaseControl("abort")).toBe(true);
+  expect(f.transport.gitRebaseControl).toHaveBeenCalledWith(context, "abort", "index", "saved-resolution");
+});
+it("refuses resolution and discard without a displayed snapshot", async () => {
+  const f = fixture(); await f.git.refresh();
+  expect(await f.git.markResolved("file.ts")).toBe(false);
+  expect(await f.git.discardFile("file.ts")).toBe(false);
+  expect(f.transport.gitIntegrationState).not.toHaveBeenCalled();
+  expect(f.transport.gitMarkResolved).not.toHaveBeenCalled(); expect(f.transport.gitDiscardFile).not.toHaveBeenCalled();
+  expect(f.git.error()).toContain("Refresh");
+});
+it("recovers from stale conflict tokens only after an explicit Changes refresh", async () => {
+  const f = fixture(); const conflicted: GitStatus_Serialize = { ...status, operation: "merge", entries: [{ id: "file", path: "file.ts", displayPath: "file.ts", oldPath: null, displayOldPath: null, indexStatus: "U", worktreeStatus: "U", untracked: false, conflicted: true, submodule: false, unsupportedReason: null }] };
+  f.transport.gitStatus.mockResolvedValue(conflicted); f.transport.gitIntegrationState.mockResolvedValue({ ...state, status: conflicted });
+  await f.git.refresh(); f.mount(); await vi.waitFor(() => expect(f.git.integrationState()).toBeDefined());
+  f.transport.gitIntegrationState.mockResolvedValue({ status: conflicted, worktreeSnapshot: "manually-saved-resolution" });
+  f.transport.gitMarkResolved.mockRejectedValueOnce(new Error("Working tree changed. Refresh conflict state."));
+  button(f.host, "Mark file.ts resolved").click(); await vi.waitFor(() => expect(f.git.error()).toContain("Working tree changed"));
+  expect(f.transport.gitIntegrationState).toHaveBeenCalledOnce(); expect(f.git.integrationState()?.worktreeSnapshot).toBe("saved-resolution");
+  const explicitRefresh = button(f.host, "Refresh conflict state"); expect(explicitRefresh.disabled).toBe(false); explicitRefresh.click();
+  await vi.waitFor(() => expect(f.git.integrationState()?.worktreeSnapshot).toBe("manually-saved-resolution"));
+  button(f.host, "Mark file.ts resolved").click(); await vi.waitFor(() => expect(f.transport.gitMarkResolved).toHaveBeenLastCalledWith(context, "file.ts", "index", "manually-saved-resolution"));
+  await vi.waitFor(() => expect(f.git.operation()).toBeUndefined());
+  f.transport.gitIntegrationState.mockResolvedValue({ status: conflicted, worktreeSnapshot: "header-reviewed" });
+  button(f.host, "Refresh Git").click(); await vi.waitFor(() => expect(f.git.integrationState()?.worktreeSnapshot).toBe("header-reviewed"));
 });

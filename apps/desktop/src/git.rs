@@ -26,7 +26,7 @@ struct CachedService {
     service: GitService,
 }
 
-async fn current_service(
+pub(crate) async fn current_service(
     state: &DesktopState,
 ) -> Result<(Arc<Mutex<CoreWorkspace>>, GitService), String> {
     let _gate = state.connection_gate.lock().await;
@@ -75,7 +75,7 @@ async fn current_service(
     Ok((workspace, service))
 }
 
-async fn ensure_current_workspace(
+pub(crate) async fn ensure_current_workspace(
     state: &DesktopState,
     expected: &Arc<Mutex<CoreWorkspace>>,
 ) -> Result<(), String> {
@@ -385,7 +385,7 @@ async fn git_commit_for(
 
 // Keep the authoritative editor lock during a disk mutation. Edits and saves cannot
 // arrive after the dirty-buffer check and race a Git checkout or stash operation.
-async fn mutate_git<T, F, Fut>(
+pub(crate) async fn mutate_git<T, F, Fut>(
     state: DesktopState,
     context: GitContext,
     changes_disk: bool,
@@ -423,7 +423,7 @@ where
     result
 }
 
-async fn read_git<T, F, Fut>(
+pub(crate) async fn read_git<T, F, Fut>(
     state: DesktopState,
     context: GitContext,
     operation: F,

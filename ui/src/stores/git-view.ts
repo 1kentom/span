@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 
 /** The Git sidebar view holds repository workflows and commit history. */
-export type GitSubView = "changes" | "history" | "branches" | "stashes" | "worktrees";
+export type GitSubView = "changes" | "history" | "branches" | "stashes" | "worktrees" | "github";
 /** History covers the whole repository or the single file the user asked about. */
 export type GitHistoryScope = "all" | "file";
 
@@ -16,7 +16,7 @@ function defaultStorage(): GitViewStorage | undefined {
 /** Sidebar Git view state: the sub-view (remembered per session) and the history scope. */
 export function createGitView(storage: GitViewStorage | undefined = defaultStorage()) {
   const read = (): GitSubView => {
-    try { const value = storage?.getItem(GIT_SUBVIEW_KEY); return value && ["history", "branches", "stashes", "worktrees"].includes(value) ? value as GitSubView : "changes"; } catch { return "changes"; }
+    try { const value = storage?.getItem(GIT_SUBVIEW_KEY); return value && ["history", "branches", "stashes", "worktrees", "github"].includes(value) ? value as GitSubView : "changes"; } catch { return "changes"; }
   };
   const [subView, setSubViewSignal] = createSignal<GitSubView>(read());
   const [scope, setScope] = createSignal<GitHistoryScope>("all");

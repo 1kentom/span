@@ -626,7 +626,7 @@ impl GitService {
         })
     }
 
-    async fn integration_state_for(
+    pub(super) async fn integration_state_for(
         &self,
         repo: &RepoIdentity,
         cancellation: &CancellationToken,
@@ -647,7 +647,7 @@ impl GitService {
         })
     }
 
-    async fn protect_local_target_paths(
+    pub(super) async fn protect_local_target_paths(
         &self,
         repo: &RepoIdentity,
         target: &str,
@@ -703,17 +703,37 @@ impl GitService {
         Ok(())
     }
 
-    async fn run_integration(
+    pub(super) async fn run_integration(
         &self,
         repo: &RepoIdentity,
         args: Vec<OsString>,
         cancellation: &CancellationToken,
     ) -> Result<GitIntegrationResult> {
+        let expected_operation = args.iter().find_map(|arg| match arg.to_str() {
+            Some("merge") => Some("merge"),
+            Some("rebase") => Some("rebase"),
+            Some("cherry-pick") => Some("cherry-pick"),
+            Some("revert") => Some("revert"),
+            _ => None,
+        });
         // Continue retains Git's prepared commit message instead of opening a terminal editor.
         // Hooks and signing remain enabled and use the configured Git behavior.
         let output = self.run_repo(repo, args, vec![("GIT_EDITOR".into(), "true".into())], None, cancellation).await
-            .map_err(|reason| error(format!("Rebase command ended before its outcome could be confirmed: {reason}. Refresh and inspect the rebase state before retrying.")))?;
+            .map_err(|reason| error(format!("Git integration command ended before its outcome could be confirmed: {reason}. Refresh and inspect the integration state before retrying.")))?;
         let status = self.finish_status(repo).await?;
+        // A failed Git command represents a reviewable paused operation only
+        // when the requested operation actually exists. Argument errors, hook
+        // refusals and unrelated operation markers must remain errors.
+        let matching_operation = match (expected_operation, status.operation.as_deref()) {
+            (Some("rebase"), Some("rebase" | "rebase or am")) => true,
+            (Some(expected), Some(actual)) => expected == actual,
+            _ => false,
+        };
+        if !output.success && !matching_operation {
+            require_success(&output).map_err(|reason| error(format!(
+                "Git integration failed without the requested operation being active: {reason}. Refresh and inspect Git before retrying."
+            )))?;
+        }
         let worktree_snapshot = integration_snapshot(repo, &status)?;
         let completed = output.success && status.operation.is_none();
         let output = redact_git_output(&format!(
@@ -749,7 +769,7 @@ fn other_index_entries<'a>(bytes: &'a [u8], selected: &str) -> Result<Vec<&'a [u
     Ok(entries)
 }
 
-fn require_integration_review(
+pub(super) fn require_integration_review(
     state: &GitIntegrationState,
     index: &str,
     working: &str,
@@ -765,7 +785,7 @@ fn require_integration_review(
     Ok(())
 }
 
-fn integration_snapshot(repo: &RepoIdentity, status: &GitStatus) -> Result<String> {
+pub(super) fn integration_snapshot(repo: &RepoIdentity, status: &GitStatus) -> Result<String> {
     let mut pieces = vec![
         status.index_revision.as_bytes().to_vec(),
         status
@@ -813,6 +833,11 @@ fn integration_snapshot(repo: &RepoIdentity, status: &GitStatus) -> Result<Strin
     }
     for path in [
         "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "sequencer/head",
+        "sequencer/todo",
+        "sequencer/abort-safety",
         "REBASE_HEAD",
         "ORIG_HEAD",
         "rebase-merge/head-name",
@@ -853,7 +878,7 @@ fn integration_snapshot(repo: &RepoIdentity, status: &GitStatus) -> Result<Strin
     ))
 }
 
-fn require_small_text(bytes: &[u8]) -> Result<()> {
+pub(super) fn require_small_text(bytes: &[u8]) -> Result<()> {
     if bytes.len() > TEXT_LIMIT || bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
         return Err(error(
             "This action supports UTF-8 text files up to 1 MiB only",
@@ -873,7 +898,10 @@ fn bounded_worktree_snapshot(repo: &RepoIdentity, path: &str) -> Result<String> 
     Ok(opaque(&[stamp.as_bytes(), &bytes]))
 }
 
-fn working_text_bytes(repo: &RepoIdentity, path: &str) -> Result<(Vec<u8>, fs::Permissions)> {
+pub(super) fn working_text_bytes(
+    repo: &RepoIdentity,
+    path: &str,
+) -> Result<(Vec<u8>, fs::Permissions)> {
     let before = read::disk_stamp_for(repo, path)?;
     let meta = fs::symlink_metadata(repo.root.join(relative_path(path)?))
         .map_err(|reason| error(format!("Read discard file metadata: {reason}")))?;
@@ -898,7 +926,7 @@ fn working_text_bytes(repo: &RepoIdentity, path: &str) -> Result<(Vec<u8>, fs::P
     Ok((bytes, permissions))
 }
 
-fn write_recovery_copy(repo: &RepoIdentity, bytes: &[u8]) -> Result<PathBuf> {
+pub(super) fn write_recovery_copy(repo: &RepoIdentity, bytes: &[u8]) -> Result<PathBuf> {
     let directory = repo.git_dir.join("span-recovery");
     match fs::create_dir(&directory) {
         Ok(()) => {}
@@ -936,11 +964,11 @@ fn write_recovery_copy(repo: &RepoIdentity, bytes: &[u8]) -> Result<PathBuf> {
     Ok(path)
 }
 
-struct PreparedDiscard {
+pub(super) struct PreparedDiscard {
     path: PathBuf,
 }
 impl PreparedDiscard {
-    fn new(target: &Path, bytes: &[u8], permissions: fs::Permissions) -> Result<Self> {
+    pub(super) fn new(target: &Path, bytes: &[u8], permissions: fs::Permissions) -> Result<Self> {
         let parent = target
             .parent()
             .ok_or_else(|| error("Discard file has no parent"))?;
@@ -958,7 +986,7 @@ impl PreparedDiscard {
             .map_err(|reason| error(format!("Write discard replacement: {reason}")))?;
         Ok(prepared)
     }
-    fn apply(self, target: &Path) -> std::io::Result<()> {
+    pub(super) fn apply(self, target: &Path) -> std::io::Result<()> {
         fs::rename(&self.path, target)
     }
 }

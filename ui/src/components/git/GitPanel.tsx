@@ -1,11 +1,11 @@
-import { For, Show, createSignal, createEffect } from "solid-js";
+import { For, Show, createSignal, createEffect, createMemo, on } from "solid-js";
 import type { GitChange } from "../../bindings";
 import { workspaceGitPath, type GitWorkbench } from "../../stores/git";
 import Icon, { FileIcon, MenuIcon } from "../Icon";
 import { api } from "../../lib/client";
 import "../../styles/git.css";
 
-type GitPanelProps = { git: GitWorkbench; available: boolean };
+type GitPanelProps = { git: GitWorkbench; available: boolean; onResolveConflict?: (path: string) => void };
 /** Embedded panels skip the repository header because the Source Control view shows it once. */
 type GitPanelViewProps = GitPanelProps & { embedded?: boolean };
 
@@ -13,7 +13,7 @@ export function GitRepositoryHeader(props: GitPanelProps & { onRefresh?: () => v
   const repository = () => props.git.status()?.repository || props.git.context()?.repository;
   const refresh = () => {
     if (props.onRefresh) props.onRefresh();
-    else void props.git.refresh();
+    else void props.git.refresh().then(() => { if (props.git.context()?.enabled) return props.git.loadIntegrationState(); });
   };
   return (
     <header class="git-repo-header">
@@ -23,7 +23,7 @@ export function GitRepositoryHeader(props: GitPanelProps & { onRefresh?: () => v
           class="icon-button"
           aria-label="Refresh Git"
           title="Refresh Git"
-          disabled={!props.available || !props.git.hasWorkspace() || props.git.loading() || !!props.git.operation()}
+          disabled={!props.available || !props.git.hasWorkspace() || props.git.loading() || !!props.git.operation() || props.git.autoFetching()}
           onClick={refresh}
         >
           <Icon name="Refresh2" size={15} />
@@ -64,7 +64,7 @@ export function GitOperationNotice(props: { git: GitWorkbench }) {
   </div></Show>;
 }
 
-function GitChangeRow(props: { git: GitWorkbench; entry: GitChange; staged: boolean }) {
+function GitChangeRow(props: { git: GitWorkbench; entry: GitChange; staged: boolean; onResolveConflict?: (path: string) => void }) {
   const [confirmDiscard, setConfirmDiscard] = createSignal(false);
   const entry = () => props.entry;
   const status = () => entry().conflicted ? "!" : entry().untracked ? "U" : props.staged ? entry().indexStatus : entry().worktreeStatus;
@@ -96,7 +96,7 @@ function GitChangeRow(props: { git: GitWorkbench; entry: GitChange; staged: bool
   };
   const review = () => props.git.openDiff(entry().path!, props.staged ? "staged" : "working");
   return (
-    <div class="git-change-item"><div class="git-change-row" classList={{ "is-conflicted": entry().conflicted }}>
+    <div class="git-change-item"><Show when={entry().conflicted && entry().path && props.onResolveConflict}><button class="git-text-action" onClick={() => props.onResolveConflict?.(entry().path!)}>Resolve {entry().displayPath}</button></Show><div class="git-change-row" classList={{ "is-conflicted": entry().conflicted }}>
       <button
         class="git-change-open"
         aria-label={`Review ${props.staged ? "staged" : "working"} changes in ${entry().displayPath}`}
@@ -112,10 +112,10 @@ function GitChangeRow(props: { git: GitWorkbench; entry: GitChange; staged: bool
       </button>
       <Show when={entry().conflicted && !props.staged}>
         <button class="git-row-action" aria-label={`Open conflict file ${entry().displayPath}`} title={workspaceGitPath(props.git.context(), entry().path || "") === undefined ? "This conflict is outside the opened folder. Open the repository folder to edit it." : "Open conflict markers in the editor"} disabled={!props.git.canOpenWorkingFile() || !entry().path || workspaceGitPath(props.git.context(), entry().path || "") === undefined} onClick={() => props.git.openWorkingFile(entry().path!)}><Icon name="Edit2" size={14} /></button>
-        <button class="git-row-action" aria-label={`Mark ${entry().displayPath} resolved`} title="Save your resolution, then mark this file resolved" disabled={!props.git.integrationReady() || !entry().path} onClick={event => void finishRowAction(event.currentTarget, () => props.git.markResolved(entry().path!))}><Icon name="TickCircle" size={14} /></button>
+        <button class="git-row-action" aria-label={`Mark ${entry().displayPath} resolved`} title="Save your resolution, then mark this file resolved" disabled={!props.git.integrationReady() || !props.git.integrationState() || !entry().path} onClick={event => void finishRowAction(event.currentTarget, () => props.git.markResolved(entry().path!))}><Icon name="TickCircle" size={14} /></button>
       </Show>
       <Show when={!props.staged && props.git.supportsDiscard() && props.git.mutable(entry()) && !entry().untracked && !entry().oldPath && entry().worktreeStatus === "M"}>
-        <button class="git-row-action git-danger" aria-label={`Discard saved changes in ${entry().displayPath}`} title="Restore the index version of this text file, preserving a recovery copy" disabled={!props.git.ready()} aria-expanded={confirmDiscard()} onClick={() => setConfirmDiscard(value => !value)}><Icon name="Trash" size={13} /></button>
+        <button class="git-row-action git-danger" aria-label={`Discard saved changes in ${entry().displayPath}`} title="Restore the index version of this text file, preserving a recovery copy" disabled={!props.git.ready() || !props.git.integrationState()} aria-expanded={confirmDiscard()} onClick={() => setConfirmDiscard(value => !value)}><Icon name="Trash" size={13} /></button>
       </Show>
       <button
         ref={actionButton}
@@ -128,12 +128,12 @@ function GitChangeRow(props: { git: GitWorkbench; entry: GitChange; staged: bool
         <Icon name={props.staged ? "Minus" : "Add"} size={14} />
       </button>
     </div>
-    <Show when={confirmDiscard()}><div class="git-confirmation" role="group" aria-label={`Confirm discard of ${entry().displayPath}`}><p>Restore the saved index version of {entry().displayPath}? Span will keep a recovery copy of the current saved content. Save or close unsaved editor changes first.</p><div class="git-inline-actions"><button class="button" onClick={() => setConfirmDiscard(false)}>Cancel</button><button class="button" disabled={!props.git.ready()} onClick={event => void finishRowAction(event.currentTarget, () => props.git.discardFile(entry().path!))}>Discard saved changes</button></div></div></Show>
+    <Show when={confirmDiscard()}><div class="git-confirmation" role="group" aria-label={`Confirm discard of ${entry().displayPath}`}><p>Restore the saved index version of {entry().displayPath}? Span will keep a recovery copy of the current saved content. Save or close unsaved editor changes first.</p><div class="git-inline-actions"><button class="button" onClick={() => setConfirmDiscard(false)}>Cancel</button><button class="button" disabled={!props.git.ready() || !props.git.integrationState()} onClick={event => void finishRowAction(event.currentTarget, () => props.git.discardFile(entry().path!))}>Discard saved changes</button></div></div></Show>
     </div>
   );
 }
 
-function GitChanges(props: { git: GitWorkbench; staged: boolean }) {
+function GitChanges(props: { git: GitWorkbench; staged: boolean; onResolveConflict?: (path: string) => void }) {
   const entries = () => props.staged ? props.git.staged() : props.git.changed();
   const mutable = () => entries().filter(props.git.mutable);
   const changeAll = () => {
@@ -157,7 +157,7 @@ function GitChanges(props: { git: GitWorkbench; staged: boolean }) {
       </div>
       <For each={entries().map(entry => entry.id)}>{id => {
         const initial = entries().find(entry => entry.id === id)!;
-        return <GitChangeRow git={props.git} entry={entries().find(entry => entry.id === id) || initial} staged={props.staged} />;
+        return <GitChangeRow onResolveConflict={props.onResolveConflict} git={props.git} entry={entries().find(entry => entry.id === id) || initial} staged={props.staged} />;
       }}</For>
     </section>
   );
@@ -166,8 +166,12 @@ function GitChanges(props: { git: GitWorkbench; staged: boolean }) {
 export function GitPanel(props: GitPanelViewProps) {
   const g = props.git;
   const [abortConfirmation, setAbortConfirmation] = createSignal(false);
+  const integrationKind = () => g.status()?.operation === "merge" ? "merge" : g.status()?.operation === "cherry-pick" ? "cherryPick" : g.status()?.operation === "revert" ? "revert" : undefined;
+  const controlIntegration = (action: "continue" | "abort") => integrationKind() ? g.integrationControl(integrationKind()!, action) : g.rebaseControl(action);
   const isRebasing = () => !!g.status()?.operation?.includes("rebase");
-  createEffect(() => { if (isRebasing() && !g.integrationState() && !g.integrationLoading() && !g.integrationError()) void g.loadIntegrationState(); });
+  createEffect(() => { if (g.context()?.enabled && g.status() && !g.integrationState() && !g.integrationLoading() && !g.integrationError()) void g.loadIntegrationState(); });
+  const integrationIdentity = createMemo(() => `${g.context()?.repository?.id}:${g.status()?.operation}`);
+  createEffect(on(integrationIdentity, () => setAbortConfirmation(false)));
   const [helpError, setHelpError] = createSignal("");
   const openHelp = (event: MouseEvent, url: string) => {
     event.preventDefault();
@@ -214,11 +218,13 @@ export function GitPanel(props: GitPanelViewProps) {
             <div class="git-integration-banner">
               <strong>{isRebasing() ? "Rebase in progress" : status().entries.some(entry => entry.conflicted) ? "Resolve merge conflicts" : "Git operation in progress"}</strong>
               <p>{status().entries.some(entry => entry.conflicted) ? "Open each conflicted file, save your resolution, then mark it resolved." : isRebasing() ? "All conflicts are resolved. Continue the rebase when the staged changes are ready." : "Finish the current Git operation before committing."}</p>
-              <Show when={isRebasing()}><div class="git-inline-actions"><button class="button" disabled={!g.integrationReady() || status().entries.some(entry => entry.conflicted)} onClick={() => void g.rebaseControl("continue")}>Continue rebase</button><button class="button" aria-expanded={abortConfirmation()} disabled={!g.integrationReady()} onClick={() => setAbortConfirmation(value => !value)}>Abort rebase…</button></div></Show>
-              <Show when={g.integrationError()}><div class="git-error" role="alert">{g.integrationError()}<button class="git-text-action" onClick={() => void g.loadIntegrationState()}>Refresh conflict state</button></div></Show>
-              <Show when={abortConfirmation()}><div class="git-confirmation" role="group" aria-label="Confirm rebase abort"><p>Abort this rebase and restore its starting state? Saved conflict resolutions may be discarded.</p><div class="git-inline-actions"><button class="button" onClick={() => setAbortConfirmation(false)}>Cancel</button><button class="button" disabled={!g.integrationReady()} onClick={async event => { const button = event.currentTarget; const hadFocus = document.activeElement === button; if (await g.rebaseControl("abort")) { setAbortConfirmation(false); if (hadFocus && !button.isConnected && document.activeElement === document.body) document.querySelector<HTMLTextAreaElement>(".git-commit-message")?.focus(); } }}>Abort rebase</button></div></div></Show>
+              <Show when={isRebasing() || integrationKind()}><div class="git-inline-actions"><button class="button" disabled={!g.integrationReady() || !g.integrationState() || status().entries.some(entry => entry.conflicted)} onClick={() => void controlIntegration("continue")}>Continue {g.status()?.operation}</button><button class="button" aria-expanded={abortConfirmation()} disabled={!g.integrationReady() || !g.integrationState()} onClick={() => setAbortConfirmation(value => !value)}>Abort {g.status()?.operation}…</button></div></Show>
+              <button class="git-text-action" aria-label="Refresh conflict state" disabled={g.integrationLoading() || !!g.operation() || g.autoFetching()} onClick={() => void g.loadIntegrationState()}>{g.integrationLoading() ? "Refreshing conflict state…" : "Refresh conflict state"}</button>
+              <Show when={g.integrationError()}><div class="git-error" role="alert">{g.integrationError()}</div></Show>
+              <Show when={abortConfirmation()}><div class="git-confirmation" role="group" aria-label="Confirm Git integration abort"><p>Abort this Git integration and restore its starting state? Saved conflict resolutions may be discarded.</p><div class="git-inline-actions"><button class="button" onClick={() => setAbortConfirmation(false)}>Cancel</button><button class="button" disabled={!g.integrationReady() || !g.integrationState()} onClick={async event => { const button = event.currentTarget; const hadFocus = document.activeElement === button; if (await controlIntegration("abort")) { setAbortConfirmation(false); if (hadFocus && !button.isConnected && document.activeElement === document.body) document.querySelector<HTMLTextAreaElement>(".git-commit-message")?.focus(); } }}>Abort {g.status()?.operation}</button></div></div></Show>
             </div>
           </Show>
+          <Show when={g.integrationError() && !status().operation && !status().entries.some(entry => entry.conflicted)}><div class="git-error" role="alert">{g.integrationError()}<button class="git-text-action" onClick={() => void g.loadIntegrationState()}>Refresh saved Git state</button></div></Show>
           <div class="git-commit-box">
             <label for="git-commit-message">Commit message</label>
             <textarea
@@ -245,8 +251,8 @@ export function GitPanel(props: GitPanelViewProps) {
             <p class="git-error">The repository exceeds the status display limit. Whole-repository actions and Commit are unavailable until the complete staged list can be reviewed.</p>
           </Show>
           <div class="git-scroll">
-            <GitChanges git={g} staged />
-            <GitChanges git={g} staged={false} />
+            <GitChanges onResolveConflict={props.onResolveConflict} git={g} staged />
+            <GitChanges onResolveConflict={props.onResolveConflict} git={g} staged={false} />
             <Show when={!status().entries.length}>
               <div class="git-empty"><strong>Working tree clean</strong><span>No staged or working changes.</span></div>
             </Show>
