@@ -593,27 +593,32 @@ fn mark_collisions(entries: &mut [InspectedEntry]) {
                 .map(|path| (index, collision_key(path), item.view.dir))
         })
         .collect();
-    for (i, (left_index, left, left_dir)) in paths.iter().enumerate() {
-        for (right_index, right, right_dir) in paths.iter().skip(i + 1) {
-            let left_is_prefix =
-                right.starts_with(left) && right.as_bytes().get(left.len()) == Some(&b'/');
-            let right_is_prefix =
-                left.starts_with(right) && left.as_bytes().get(right.len()) == Some(&b'/');
-            if left_is_prefix && !left_dir {
-                set_unsafe(&mut entries[*left_index], "file-directory prefix collision");
+    paths.sort_by(|left, right| left.1.split('/').cmp(right.1.split('/')));
+    let mut file_ancestors: Vec<(usize, String)> = Vec::new();
+    for (index, path, dir) in paths {
+        while let Some((_, ancestor)) = file_ancestors.last() {
+            if ancestor == &path || is_proper_path_prefix(ancestor, &path) {
+                break;
+            }
+            file_ancestors.pop();
+        }
+        if let Some((ancestor_index, ancestor)) = file_ancestors.last() {
+            if is_proper_path_prefix(ancestor, &path) {
                 set_unsafe(
-                    &mut entries[*right_index],
+                    &mut entries[*ancestor_index],
                     "file-directory prefix collision",
                 );
-            } else if right_is_prefix && !right_dir {
-                set_unsafe(
-                    &mut entries[*right_index],
-                    "file-directory prefix collision",
-                );
-                set_unsafe(&mut entries[*left_index], "file-directory prefix collision");
+                set_unsafe(&mut entries[index], "file-directory prefix collision");
             }
         }
+        if !dir {
+            file_ancestors.push((index, path));
+        }
     }
+}
+
+fn is_proper_path_prefix(prefix: &str, path: &str) -> bool {
+    path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/')
 }
 
 fn set_unsafe(entry: &mut InspectedEntry, reason: &str) {
@@ -941,6 +946,45 @@ mod tests {
         assert_eq!(fs::read_dir(&workspace_path).unwrap().count(), 0);
     }
 
+    #[test]
+    fn prefix_sweep_handles_punctuation_before_descendants() {
+        let mut entries = vec![
+            inspected_entry("foo", false),
+            inspected_entry("foo-", false),
+            inspected_entry("foo/a", false),
+        ];
+
+        super::mark_collisions(&mut entries);
+
+        assert!(entries[0].safe_path.is_none());
+        assert!(entries[1].safe_path.is_some());
+        assert!(entries[2].safe_path.is_none());
+    }
+
+    #[test]
+    fn prefix_sweep_marks_nested_file_ancestors() {
+        let mut entries = vec![
+            inspected_entry("a", false),
+            inspected_entry("a/b", false),
+            inspected_entry("a/b/c", false),
+        ];
+
+        super::mark_collisions(&mut entries);
+
+        assert!(entries.iter().all(|entry| entry.safe_path.is_none()));
+    }
+
+    #[test]
+    fn prefix_sweep_handles_ten_thousand_independent_paths() {
+        let mut entries: Vec<_> = (0..10_000)
+            .map(|index| inspected_entry(&format!("independent-{index:05}.txt"), false))
+            .collect();
+
+        super::mark_collisions(&mut entries);
+
+        assert!(entries.iter().all(|entry| entry.safe_path.is_some()));
+    }
+
     #[cfg(unix)]
     #[test]
     fn refuses_when_workspace_root_path_is_replaced_by_a_symlink() {
@@ -973,6 +1017,22 @@ mod tests {
 
     fn stored_zip(name: &str, contents: &[u8]) -> Vec<u8> {
         stored_zip_with_declared_size(name, contents, contents.len() as u32)
+    }
+
+    fn inspected_entry(path: &str, dir: bool) -> super::InspectedEntry {
+        super::InspectedEntry {
+            view: super::ArchiveEntry {
+                path: path.to_owned(),
+                dir,
+                size: 0,
+                packed: 0,
+                modified: None,
+                encrypted: false,
+                unsafe_reason: None,
+            },
+            safe_path: Some(path.to_owned()),
+            collision_path: Some(path.to_owned()),
+        }
     }
 
     fn stored_zip_with_declared_size(
