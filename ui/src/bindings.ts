@@ -45,6 +45,9 @@ export const commands = {
 	listDirectory: (path: string) => __TAURI_INVOKE<FileEntry_Serialize[]>("list_directory", { path }),
 	listFiles: () => __TAURI_INVOKE<FileEntry_Serialize[]>("list_files"),
 	fileIndexStatus: () => __TAURI_INVOKE<FileIndexStatus_Serialize | null>("file_index_status"),
+	checkExternalFiles: (checks: ExternalFileCheck[], expectedWorkspaceRoot: string, sinceRevision: number | null) => __TAURI_INVOKE<ExternalFilesUpdate_Serialize>("check_external_files", { checks, expectedWorkspaceRoot, sinceRevision }),
+	resolveExternalFile: (path: string, expectedRevision: number, reviewedDiskToken: string, resolution: ExternalFileResolution, expectedWorkspaceRoot: string) => __TAURI_INVOKE<BufferSnapshot>("resolve_external_file", { path, expectedRevision, reviewedDiskToken, resolution, expectedWorkspaceRoot }),
+	abandonExternalFile: (path: string, expectedRevision: number, expectedWorkspaceRoot: string) => __TAURI_INVOKE<null>("abandon_external_file", { path, expectedRevision, expectedWorkspaceRoot }),
 	queryFile: (query: string, limit: number) => __TAURI_INVOKE<FileIndexQueryResponse>("query_file", { query, limit }),
 	reconcileFileIndex: () => __TAURI_INVOKE<FileIndexStatus_Serialize>("reconcile_file_index"),
 	newFile: (path: string) => __TAURI_INVOKE<BufferSnapshot>("new_file", { path }),
@@ -1695,6 +1698,60 @@ export type ExplorerSettings_Serialize = {
 	autoReveal: boolean,
 	/**  Ask before deleting a file or folder. */
 	confirmDelete: boolean,
+};
+
+export type ExternalDiskSnapshot = {
+	token: string,
+	exists: boolean,
+	text: string,
+	truncated: boolean,
+};
+
+export type ExternalFileCheck = {
+	path: string,
+	expectedRevision: number,
+	/**  False while the renderer has an edit not yet acknowledged by core. */
+	allowReload: boolean,
+};
+
+export type ExternalFileKind = "unchanged" | "reloaded" | "conflict" | "deleted" | "stale" | "unavailable";
+
+export type ExternalFileResolution = "reload" | "overwrite";
+
+export type ExternalFileState = ExternalFileState_Serialize | ExternalFileState_Deserialize;
+
+export type ExternalFileState_Deserialize = {
+	path: string,
+	revision: number,
+	kind: ExternalFileKind,
+	snapshot?: BufferSnapshot | null,
+	disk?: ExternalDiskSnapshot | null,
+	error?: string | null,
+};
+
+export type ExternalFileState_Serialize = {
+	path: string,
+	revision: number,
+	kind: ExternalFileKind,
+	snapshot: BufferSnapshot | null,
+	disk: ExternalDiskSnapshot | null,
+	error: string | null,
+};
+
+export type ExternalFilesUpdate = ExternalFilesUpdate_Serialize | ExternalFilesUpdate_Deserialize;
+
+export type ExternalFilesUpdate_Deserialize = {
+	workspaceRoot: string,
+	revision: number,
+	directoriesChanged: boolean,
+	states: ExternalFileState_Deserialize[],
+};
+
+export type ExternalFilesUpdate_Serialize = {
+	workspaceRoot: string,
+	revision: number,
+	directoriesChanged: boolean,
+	states: ExternalFileState_Serialize[],
 };
 
 /**  Why a delegation failed. Closed set: the lead can branch on it. */

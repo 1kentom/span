@@ -10,6 +10,7 @@ use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode}
 mod agents;
 mod cli;
 mod events;
+mod external_files;
 mod file_index;
 mod git;
 #[doc(hidden)]
@@ -997,6 +998,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             list_directory,
             list_files,
             file_index::file_index_status,
+            external_files::check_external_files,
+            external_files::resolve_external_file,
+            external_files::abandon_external_file,
             file_index::query_file,
             file_index::reconcile_file_index,
             new_file,

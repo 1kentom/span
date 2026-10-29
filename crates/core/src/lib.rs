@@ -2,6 +2,7 @@
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
 mod attachment;
 mod buffer;
+mod external_changes;
 mod folder_outline;
 mod format;
 mod format_native;
@@ -27,6 +28,10 @@ mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
+pub use external_changes::{
+    ExternalDiskSnapshot, ExternalFileCheck, ExternalFileKind, ExternalFileResolution,
+    ExternalFileState,
+};
 pub use folder_outline::{FolderOutline, FOLDER_OUTLINE_LIMIT, MAX_FOLDER_OUTLINE_LIMIT};
 pub use format::{
     native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,

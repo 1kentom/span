@@ -267,12 +267,14 @@ async fn visibility_reconfiguration_preserves_handle_but_cancels_old_scan_and_qu
     let paths: Vec<_> = results
         .results
         .iter()
-        .map(|entry| entry.relative_path.to_string_lossy().into_owned())
+        .map(|entry| entry.relative_path.as_path())
         .collect();
-    assert!(paths.contains(&"ignored/source.rs".into()));
-    assert!(!paths.iter().any(|path| path.starts_with("node_modules/")
-        || path.starts_with("target/")
-        || path.starts_with('.')));
+    assert!(paths.contains(&Path::new("ignored/source.rs")));
+    assert!(!paths.iter().any(|path| path.starts_with("node_modules")
+        || path.starts_with("target")
+        || path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'))));
 }
 
 #[tokio::test]

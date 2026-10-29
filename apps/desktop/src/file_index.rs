@@ -12,7 +12,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, TrySendError},
         Arc, Mutex,
     },
@@ -74,6 +74,7 @@ struct RuntimeInner {
     index: FileIndex,
     current: Mutex<Option<WatchSession>>,
     watcher_error: Arc<Mutex<Option<String>>>,
+    change_revision: Arc<AtomicU64>,
 }
 
 struct WatchSession {
@@ -81,6 +82,10 @@ struct WatchSession {
     stop: Arc<AtomicBool>,
     watcher: Option<RecommendedWatcher>,
     worker: Option<JoinHandle<()>>,
+}
+struct WatchUpdates {
+    error: Arc<Mutex<Option<String>>>,
+    revision: Arc<AtomicU64>,
 }
 
 impl FileIndexRuntime {
@@ -110,6 +115,7 @@ impl FileIndexRuntime {
         let worker_stop = Arc::clone(&stop);
         let worker_overflow = Arc::clone(&overflow);
         let watcher_error = Arc::clone(&self.inner.watcher_error);
+        let change_revision = Arc::clone(&self.inner.change_revision);
         let index = self.inner.index.clone();
         let worker_root = root.clone();
         let worker = thread::Builder::new()
@@ -125,7 +131,10 @@ impl FileIndexRuntime {
                     receiver,
                     worker_stop,
                     worker_overflow,
-                    watcher_error,
+                    WatchUpdates {
+                        error: watcher_error,
+                        revision: change_revision,
+                    },
                 )
             })
             .map_err(|error| format!("Could not start workspace watcher worker: {error}"))?;
@@ -186,6 +195,9 @@ impl FileIndexRuntime {
             .map_err(|_| "File index state is unavailable".to_owned())?
             .as_ref()
             .map(|session| session.handle.clone()))
+    }
+    pub fn change_revision(&self) -> u64 {
+        self.inner.change_revision.load(Ordering::Acquire)
     }
 
     pub fn status(&self, expected_root: &Path) -> Result<Option<FileIndexStatus>, String> {
@@ -362,8 +374,12 @@ fn watch_loop(
     receiver: Receiver<notify::Result<Event>>,
     stop: Arc<AtomicBool>,
     overflow: Arc<AtomicBool>,
-    watcher_error: Arc<Mutex<Option<String>>>,
+    updates: WatchUpdates,
 ) {
+    let WatchUpdates {
+        error: watcher_error,
+        revision: change_revision,
+    } = updates;
     while !stop.load(Ordering::Acquire) {
         let first = match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(first) => first,
@@ -390,6 +406,15 @@ fn watch_loop(
             return;
         }
         let force_rescan = overflow.swap(false, Ordering::AcqRel);
+        if force_rescan
+            || batch.iter().any(|event| {
+                event
+                    .as_ref()
+                    .map_or(true, |event| !matches!(event.kind, EventKind::Access(_)))
+            })
+        {
+            change_revision.fetch_add(1, Ordering::AcqRel);
+        }
         let rescan = force_rescan || process_batch(&index, &handle, &root, batch);
         if rescan {
             let message = if force_rescan {
@@ -842,6 +867,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_changes_from_the_real_watcher_reload_a_clean_core_buffer() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        write(&root, "file.txt", "original");
+        let mut workspace = span_core::CoreWorkspace::open(&root).unwrap();
+        workspace.open_buffer("file.txt").unwrap();
+        let runtime = FileIndexRuntime::default();
+        runtime.activate(root.clone()).await.unwrap();
+        wait_until_ready(&runtime, &root).await;
+        let before = runtime.change_revision();
+        write(&root, "file.txt", "external text");
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while runtime.change_revision() == before {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the real file change must reach the existing watcher");
+        let change = workspace
+            .check_external_files(&[span_core::ExternalFileCheck {
+                path: "file.txt".into(),
+                expected_revision: 0,
+                allow_reload: true,
+            }])
+            .unwrap()
+            .remove(0);
+        assert_eq!(change.kind, span_core::ExternalFileKind::Reloaded);
+        assert_eq!(change.snapshot.unwrap().text, "external text");
+        runtime.shutdown();
+    }
+
+    #[tokio::test]
     async fn real_watcher_replays_scan_deltas_and_reconciles_deletes_renames_ignores_and_directory_moves(
     ) {
         let directory = tempfile::tempdir().unwrap();
@@ -1002,7 +1059,10 @@ mod tests {
                 receiver,
                 worker_stop,
                 worker_overflow,
-                worker_error,
+                WatchUpdates {
+                    error: worker_error,
+                    revision: Arc::new(AtomicU64::new(0)),
+                },
             )
         });
         sender
