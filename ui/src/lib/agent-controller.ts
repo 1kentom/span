@@ -2090,7 +2090,7 @@ export function createAgentController(props: AgentPanelProps) {
 
   const scrollers: { content?: HTMLDivElement } = {};
   const scrollToLatest = (smooth = false) =>
-    requestAnimationFrame(() => scrollers.content?.scrollTo({ top: scrollers.content.scrollHeight, behavior: smooth ? "smooth" : "auto" }));
+    requestAnimationFrame(() => scrollers.content?.scrollTo({ top: scrollers.content.scrollHeight, behavior: smooth && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" }));
   function followLatest() {
     setPinned(true);
     scrollToLatest(true);

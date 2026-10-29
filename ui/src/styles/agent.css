@@ -354,11 +354,20 @@
 .agent-panel .agent-markdown > .markdown-block:last-child > :last-child {
   margin-bottom: 0;
 }
+/* Latest pill: anchored to the feed region, so it can never sit over the dock stack below it */
+.agent-feed-region {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  isolation: isolate;
+}
 .agent-jump {
   position: absolute;
   left: 50%;
-  bottom: 128px;
-  z-index: 20;
+  bottom: 8px;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -369,6 +378,22 @@
   background: var(--sb-menu);
   box-shadow: var(--sb-shadow);
   font-size: 11px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 140ms ease, visibility 0s linear 140ms;
+}
+.agent-jump.shown {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 140ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-jump,
+  .agent-jump.shown {
+    transition: none;
+  }
 }
 
 /* Composer stack: banners, drawers and docks sit on top of the prompt box */
