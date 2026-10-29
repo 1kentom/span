@@ -150,3 +150,7 @@
 .span-editor .cm-diagnostic{font:12px/19px Inter,sans-serif;border-left-width:3px}
 .span-editor .cm-diagnosticSource{color:var(--editor-muted)}
 .lsp-scope-note{color:var(--faint);font-size:11px}
+
+.span-editor .cm-lintRange.cm-lsp-unused,.span-editor .cm-lintRange.cm-lsp-deprecated{background-image:none;padding-bottom:0}
+.span-editor .cm-lintRange.cm-lsp-unused{opacity:.5}
+.span-editor .cm-lintRange.cm-lsp-deprecated{text-decoration:line-through;text-decoration-thickness:1px}
