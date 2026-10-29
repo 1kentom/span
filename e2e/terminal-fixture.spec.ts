@@ -103,7 +103,7 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
   await expect(page.getByRole("dialog", { name: "Goto", exact: true })).toHaveCount(0);
   await input.press("Control+Shift+G");
   await expect(page.getByRole("region", { name: "Git source control", exact: true })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest(".git-panel"))).toBe(true);
+  await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest(".git-source-control"))).toBe(true);
   await expect(page.getByRole("button", { name: "Enable Git", exact: true })).toBeVisible();
   expect((await trace()).writes.map(value => value.text).join("")).not.toContain("\x07");
   await input.focus(); await input.press("Control+g"); await input.press("Control+p");
