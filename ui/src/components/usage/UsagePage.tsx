@@ -1,15 +1,18 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { SessionUsageRow_Serialize as SessionUsageRow, UsageRange_Deserialize as UsageRange, UsageSummary_Serialize as UsageSummary } from "../../bindings";
+import type { SessionUsageRow_Serialize as SessionUsageRow, UsageImportStatus_Serialize as ImportStatus, UsageRange_Deserialize as UsageRange, UsageSummary_Serialize as UsageSummary } from "../../bindings";
 import { Icon } from "../Icon";
 import { ModelIcon } from "../agent/ModelPopover";
 import { UsageChart, UsageChartTable, type ChartMetric, type SeriesInfo } from "./UsageChart";
-import { AgentTable, ModelTable, SessionTable } from "./UsageTables";
-import { RANGES, assignSlots, compactTokens, costText, csvFileName, fullNumber, money, rangeFor, usageCsv, usd, type RangeKey } from "../../lib/usage";
+import { AgentTable, ModelTable, SessionTable, brandId } from "./UsageTables";
+import { RANGES, SOURCES, assignSlots, compactTokens, costText, csvFileName, fullNumber, money, rangeFor, usageCsv, usd, type RangeKey, type SourceKey } from "../../lib/usage";
 import "../../styles/usage.css";
 
 export type UsageApi = {
   summary: (range: UsageRange) => Promise<UsageSummary | undefined>;
   sessions: (range: UsageRange) => Promise<SessionUsageRow[]>;
+  /** The opt-in local log importer (ADR 0012, source B). */
+  importScan?: () => Promise<ImportStatus | undefined>;
+  importStatus?: () => Promise<ImportStatus | undefined>;
 };
 
 type Loaded = { summary?: UsageSummary; sessions: SessionUsageRow[] };
@@ -26,8 +29,15 @@ export function UsagePage(props: {
   onExport?: (fileName: string, text: string) => Promise<void>;
   exportUnavailable?: string;
   onOpenExternal?: (url: string) => void;
+  /** `agents.usage.importLocalLogs` from the user settings. */
+  importEnabled?: boolean;
+  /** Turns the importer on or off in the user settings. */
+  onImportChange?: (enabled: boolean) => Promise<void>;
 }) {
   const [range, setRange] = createSignal<RangeKey>("30d");
+  const [source, setSource] = createSignal<SourceKey>("all");
+  const [importState, setImportState] = createSignal<ImportStatus>();
+  const [importBusy, setImportBusy] = createSignal(false);
   const [metric, setMetric] = createSignal<ChartMetric>("tokens");
   const [showTable, setShowTable] = createSignal(false);
   const [data, setData] = createSignal<Loaded>();
@@ -44,7 +54,7 @@ export function UsagePage(props: {
     setLoading(true);
     setError("");
     try {
-      const target = rangeFor(range());
+      const target = rangeFor(range(), new Date(), props.importEnabled ? source() : "tracked");
       const [summary, sessions] = await Promise.all([props.api.summary(target), props.api.sessions(target)]);
       if (id === request) setData({ summary, sessions });
     } catch (cause) {
@@ -53,7 +63,28 @@ export function UsagePage(props: {
       if (id === request) setLoading(false);
     }
   }
-  createEffect(on(range, () => void load()));
+  createEffect(on([range, source, () => props.importEnabled], () => void load()));
+  let poll: ReturnType<typeof setTimeout> | undefined;
+  /** Scans the local logs in the background, shows progress, and reloads once the scan is done. */
+  async function followImport(start: boolean) {
+    if (!props.importEnabled || !props.api.importScan || !props.api.importStatus) return;
+    clearTimeout(poll);
+    try {
+      const state = start ? await props.api.importScan() : await props.api.importStatus();
+      setImportState(state);
+      if (state?.running) poll = setTimeout(() => void followImport(false), 600);
+      else if (!start) void load();
+    } catch (cause) {
+      setImportState((current) => ({ enabled: true, running: false, report: current?.report ?? null, scannedMs: current?.scannedMs ?? null, error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  }
+  createEffect(on(() => props.importEnabled, (enabled) => { if (enabled) void followImport(true); else { clearTimeout(poll); setImportState(undefined); setSource("all"); } }));
+  onCleanup(() => clearTimeout(poll));
+  async function toggleImport(enabled: boolean) {
+    if (!props.onImportChange) return;
+    setImportBusy(true);
+    try { await props.onImportChange(enabled); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setImportBusy(false); }
+  }
   onMount(() => heading?.focus());
   onCleanup(() => { request += 1; if (restore?.isConnected) restore.focus(); });
   const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); props.onClose(); } };
@@ -82,7 +113,7 @@ export function UsagePage(props: {
     setExporting(true);
     setExportNote("");
     try {
-      const target = rangeFor(range());
+      const target = rangeFor(range(), new Date(), props.importEnabled ? source() : "tracked");
       const rows = await props.api.sessions(target);
       const name = csvFileName();
       await props.onExport(name, usageCsv(rows));
@@ -105,6 +136,11 @@ export function UsagePage(props: {
           </div>
         </div>
         <span class="usage-spacer" />
+        <Show when={props.importEnabled}>
+          <div class="usage-segmented" role="group" aria-label="Source">
+            <For each={SOURCES}>{(entry) => <button type="button" aria-pressed={source() === entry.key} title={entry.label} onClick={() => setSource(entry.key)}>{entry.key === "all" ? "All" : entry.key === "tracked" ? "Span" : "Imported"}</button>}</For>
+          </div>
+        </Show>
         <div class="usage-segmented" role="group" aria-label="Date range">
           <For each={RANGES}>{(entry) => <button type="button" aria-pressed={range() === entry.key} onClick={() => setRange(entry.key)}>{entry.label}</button>}</For>
         </div>
@@ -120,8 +156,31 @@ export function UsagePage(props: {
               <strong>Cost figures are estimates.</strong> They are API-equivalent cost at list prices, not your subscription bill: Claude and ChatGPT plans have usage limits, not per-token charges. Where an agent reported its own cost, that figure is used.
               <Show when={asOf()}> Prices as of {asOf()} from the <For each={summary()?.prices.sources ?? []}>{(source, index) => <>{index() > 0 ? (index() === (summary()?.prices.sources.length ?? 0) - 1 ? " and " : ", ") : ""}<a href={source.url} onClick={(event) => { if (props.onOpenExternal) { event.preventDefault(); props.onOpenExternal(source.url); } }} target="_blank" rel="noreferrer noopener">{source.provider}</a></>}</For> pricing pages. Set your own in <code>agents.usage.prices</code>.</Show>
             </p>
-            <span class="usage-source-chip" title="Counted from what agents reported to Span over the Agent Client Protocol. Sessions run outside Span are not included.">Tracked by Span</span>
+            <Show when={props.importEnabled} fallback={<span class="usage-source-chip" title="Counted from what agents reported to Span over the Agent Client Protocol. Sessions run outside Span are not included.">Tracked by Span</span>}>
+              <span class="usage-source-chip imported" title="Also counts Claude Code's and Codex's own local usage logs, read only">Tracked + local logs</span>
+            </Show>
           </div>
+          <Show when={props.desktop && props.onImportChange && !props.importEnabled}>
+            <div class="usage-import-offer">
+              <Icon name="Import" size={15} />
+              <p><strong>Include sessions run outside Span.</strong> Read Claude Code's and Codex's own usage logs in your home folder: read only, counters only (never your prompts or replies), nothing uploaded. Imported figures stay labelled. You can turn this off in Settings.</p>
+              <button type="button" class="usage-button" disabled={importBusy()} onClick={() => void toggleImport(true)}>Import local logs</button>
+            </div>
+          </Show>
+          <Show when={props.importEnabled && importState()}>
+            {(state) => (
+              <div class="usage-import-status" role="status" aria-live="polite">
+                <Show when={state().running} fallback={
+                  <span>{state().error ? `Local logs could not be read: ${state().error}` : state().scannedMs ? `Local logs read ${new Date(state().scannedMs!).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${state().report ? ` · ${fullNumber(state().report!.filesTotal)} files${state().report!.truncated ? ", file cap reached" : ""}${state().report!.skipped ? `, ${fullNumber(state().report!.skipped)} skipped` : ""}` : ""}` : "Local logs not read yet"}</span>
+                }>
+                  <span>Reading local logs{state().report?.filesTotal ? `: ${fullNumber(state().report!.filesDone)} of ${fullNumber(state().report!.filesTotal)} files` : ""}</span>
+                  <span class="usage-progress" aria-hidden="true"><i style={{ width: `${state().report?.filesTotal ? Math.round((state().report!.filesDone / state().report!.filesTotal) * 100) : 4}%` }} /></span>
+                </Show>
+                <span class="usage-spacer" />
+                <button type="button" class="usage-text-button" disabled={state().running} onClick={() => void followImport(true)}>Read again</button>
+              </div>
+            )}
+          </Show>
           <Show when={exportNote()}><p class="usage-export-note" role="status">{exportNote()}</p></Show>
           <Switch>
             <Match when={!props.desktop}>
@@ -166,7 +225,7 @@ export function UsagePage(props: {
                   <div class="usage-tile">
                     <span class="usage-tile-label">Most used model</span>
                     <Show when={topModel()} fallback={<strong class="usage-hero usage-unknown">Not named</strong>}>
-                      {(model) => <strong class="usage-hero usage-model-hero" title={model().model}><ModelIcon id={model().agentIds[0]} name={agentName(model().agentIds[0] ?? "")} traits={[]} size={18} model={{ value: model().model, name: model().model }} /><span>{model().price?.label ?? model().model}</span></strong>}
+                      {(model) => <strong class="usage-hero usage-model-hero" title={model().model}><ModelIcon id={brandId(model().agentIds[0] ?? "")} name={agentName(model().agentIds[0] ?? "")} traits={[]} size={18} model={{ value: model().model, name: model().model }} /><span>{model().price?.label ?? model().model}</span></strong>}
                     </Show>
                     <span class="usage-tile-foot"><Show when={topModel()}>{(model) => <>{totalTokens() > 0 ? `${Math.round((model().totals.tokens.total / totalTokens()) * 100)}% of tokens` : `${fullNumber(model().totals.turns)} turns`} · {fullNumber(current().models.length)} models</>}</Show></span>
                   </div>

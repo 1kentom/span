@@ -54,10 +54,12 @@ describe("usage formatting", () => {
 
   it("builds local day ranges ending today", () => {
     const now = new Date(2026, 9, 29, 15, 0);
-    expect(rangeFor("today", now)).toEqual({ from: "2026-10-29", to: "2026-10-29" });
-    expect(rangeFor("7d", now)).toEqual({ from: "2026-10-23", to: "2026-10-29" });
-    expect(rangeFor("30d", now)).toEqual({ from: "2026-09-30", to: "2026-10-29" });
-    expect(rangeFor("all", now)).toEqual({});
+    const offset = -now.getTimezoneOffset();
+    expect(rangeFor("today", now)).toEqual({ from: "2026-10-29", to: "2026-10-29", utcOffsetMinutes: offset });
+    expect(rangeFor("7d", now)).toMatchObject({ from: "2026-10-23", to: "2026-10-29" });
+    expect(rangeFor("30d", now)).toMatchObject({ from: "2026-09-30", to: "2026-10-29" });
+    expect(rangeFor("all", now)).toEqual({ utcOffsetMinutes: offset });
+    expect(rangeFor("all", now, "imported")).toEqual({ utcOffsetMinutes: offset, source: "imported" });
   });
 });
 
@@ -78,6 +80,7 @@ describe("usage series slots", () => {
 describe("usage CSV", () => {
   it("quotes fields, neutralises formulas and leaves unknown costs empty", () => {
     const row: SessionUsageRow = {
+      imported: false,
       agentId: "claude",
       agentName: "Claude, Code",
       sessionId: "s-1",
@@ -91,6 +94,6 @@ describe("usage CSV", () => {
     };
     const [header, line] = usageCsv([row]).trim().split("\n");
     expect(header.split(",")).toContain("cost_usd_estimate");
-    expect(line).toBe(`"Claude, Code",claude,s-1,'=SUM(A1),,2026-10-29T00:00:00.000Z,opus,1,1,2,3,4,0,10,,,`);
+    expect(line).toBe(`tracked,"Claude, Code",claude,s-1,'=SUM(A1),,2026-10-29T00:00:00.000Z,opus,1,1,2,3,4,0,10,,,`);
   });
 });

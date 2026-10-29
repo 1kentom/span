@@ -5,6 +5,9 @@ import { Icon } from "../Icon";
 import { ModelIcon } from "../agent/ModelPopover";
 import { compactTokens, costText, fullNumber, money, sortRows, type SortState } from "../../lib/usage";
 
+/** Imported sessions carry their own agent ids; their marks are the agent's own. */
+export const brandId = (agentId: string) => (agentId === "claude-code-logs" ? "claude" : agentId === "codex-logs" ? "codex" : agentId);
+
 type NumericKey = "tokens" | "input" | "output" | "cache" | "turns" | "sessions" | "cost";
 const numeric = (totals: UsageTotals, key: NumericKey): number => {
   switch (key) {
@@ -84,7 +87,7 @@ export function AgentTable(props: { rows: readonly AgentUsage[]; share: (id: str
           <tbody>
             <For each={rows()}>{(row) => (
               <tr>
-                <th scope="row"><span class="usage-name"><BrandIcon id={row.agentId} name={row.name} size={16} /><span>{row.name}</span><span class="usage-share-pill" title="Share of tokens in this range">{props.share(row.agentId)}%</span></span></th>
+                <th scope="row"><span class="usage-name"><BrandIcon id={brandId(row.agentId)} name={row.name} size={16} /><span>{row.name}</span><span class="usage-share-pill" title="Share of tokens in this range">{props.share(row.agentId)}%</span><Show when={row.imported}><span class="usage-source-pill" title="Read from the agent's own local logs">Imported</span></Show></span></th>
                 <TokenCells totals={row.totals} />
                 <td class="num">{fullNumber(row.totals.sessions)}</td>
                 <CostCell totals={row.totals} />
@@ -118,7 +121,7 @@ export function ModelTable(props: { rows: readonly ModelUsage[]; agentName: (id:
               <tr>
                 <th scope="row">
                   <span class="usage-name">
-                    <ModelIcon id={row.agentIds[0]} name={props.agentName(row.agentIds[0] ?? "")} traits={[]} size={16} model={{ value: row.model, name: row.model }} />
+                    <ModelIcon id={brandId(row.agentIds[0] ?? "")} name={props.agentName(row.agentIds[0] ?? "")} traits={[]} size={16} model={{ value: row.model, name: row.model }} />
                     <span class="usage-model-text"><span class="usage-mono">{row.model || "Model not named"}</span><small title={priceNote(row)}>{priceNote(row)}</small></span>
                   </span>
                 </th>
@@ -151,7 +154,7 @@ export function SessionTable(props: { rows: readonly SessionUsageRow[] }) {
             <For each={rows().slice(0, limit())}>{(row) => (
               <tr>
                 <th scope="row"><span class="usage-model-text"><span class="usage-session-title">{row.title || "Untitled session"}</span><small class="usage-mono" title={row.sessionId}>{row.sessionId}{row.models.length ? ` · ${row.models.join(", ")}` : ""}</small></span></th>
-                <td><span class="usage-name"><BrandIcon id={row.agentId} name={row.agentName} size={14} /><span>{row.agentName}</span></span></td>
+                <td><span class="usage-name"><BrandIcon id={brandId(row.agentId)} name={row.agentName} size={14} /><span>{row.agentName}</span><Show when={row.imported}><span class="usage-source-pill" title="Read from the agent's own local logs">Imported</span></Show></span></td>
                 <td class="num secondary">{when(row.lastActiveMs)}</td>
                 <TokenCells totals={row.totals} />
                 <td class="num">{fullNumber(row.totals.turns)}</td>
