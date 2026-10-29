@@ -28,6 +28,17 @@ seen) or not checked.
   for 10 minutes or more, History shows no "Health check. Reply with exactly
   one word" rows, in this workspace and in All folders. Earlier leftovers
   are gone after a restart where the agent supports `session/delete`.
+- Delegation thread clutter (ADR 0003, amendment of 2026-10-29): have a
+  Claude lead delegate one task to Codex and send it three follow-ups with
+  `message`. History (this workspace and All folders, on Claude and on
+  Codex) shows only the lead's row, never a child row; the delegation card
+  inside the lead still opens the child. `claude --resume` in the workspace
+  does not list the Claude child. Ten minutes after the child's last task,
+  or when the lead chat is closed or the app quits, the child is closed or
+  deleted where the agent supports it, and a late `message` gets the "closed
+  after sitting idle" error. A fifth parallel delegation is refused while
+  four run. Reopening the app resumes the last chat without leaving an
+  extra empty session in the agent's history.
 
 ## Phase 1: backend multi-session
 
