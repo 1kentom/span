@@ -72,6 +72,7 @@ impl GitService {
     }
 
     /// Working stages the selected hunk, Staged reverses it in the index.
+    #[allow(clippy::too_many_arguments)] // IPC review tokens remain explicit at this boundary.
     pub async fn apply_hunk(
         &self,
         context_id: &str,
@@ -1021,7 +1022,7 @@ impl CoreWorkspace {
             if self
                 .buffers
                 .get(&path)
-                .is_some_and(|buffer| buffer.rope.to_string() != text)
+                .is_some_and(|buffer| buffer.rope != text.as_str())
             {
                 self.discard_buffer(&path)?;
             }
