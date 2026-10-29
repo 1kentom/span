@@ -2,7 +2,7 @@ import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount }
 import type { AgentCommand, AgentEvent, ConfigOption, AgentPreset_Serialize, BufferSnapshot, EditProposal, InstalledAgent, PromptAttachment, RegistryAgent, SessionMeta_Serialize as SessionMeta, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionStates_Serialize as SessionStates, SessionSummary } from "../bindings";
 import { createAttachmentIntake, type AttachmentTabView } from "../components/attachments";
 import type { AuthSecret, Phase } from "../components/agent/types";
-import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentPresets, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
+import { agentAuthenticateWith, agentCancelTask, agentChildPermission, agentDelegationStatus, agentTaskTranscript, agentPresets, api, isDesktop, sessionExportMarkdown, sessionMetaList, sessionMetaSetArchived, sessionMetaSetTitle, sessionMetaUpdate } from "./client";
 import { exportFileName, exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, threadOf, threadRowMeta } from "./session-threads";
 import { childPermissions, isFinished, permissionWaitsOn, type ChildPermission } from "./agent-delegation";
 import { agentHealthResults, healthNow, setAgentHealth } from "./agent-health";
@@ -29,7 +29,7 @@ import {
 } from "./agent-session";
 
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
-import { bytesToBase64, createFileAttachment, createFolderAttachment, folderOutline, isInWorkspace, needsStoredLink, planAttachment, redactPaths, type Attachment, type PromptCapabilities } from "./attachments";
+import { FOLDER_OUTLINE_LIMIT, bytesToBase64, createFileAttachment, createFolderAttachment, folderOutline, isInWorkspace, needsStoredLink, planAttachment, redactPaths, type Attachment, type PromptCapabilities } from "./attachments";
 import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
 import { feedTurns } from "./agent-handoff";
 import { moveItem } from "./agent-queue";
@@ -71,6 +71,8 @@ export type AgentPanelProps = {
   uploads?: UploadRecorder;
   /** Reads a PDF's page count for its tile. Without it the count is left out. */
   countPdfPages?: (bytes: Uint8Array) => Promise<number | undefined>;
+  /** Bounded outline of a workspace folder from the backend (desktop). Without it the outline is built from listings. */
+  folderOutline?: (path: string, limit: number) => Promise<{ text: string; files: number; truncated: boolean }>;
   /** Asks the user for a folder, starting in `defaultPath`. Resolves the absolute path, or null when cancelled. */
   pickFolder?: (defaultPath?: string) => Promise<string | null>;
 };
@@ -557,6 +559,8 @@ export function createAgentController(props: AgentPanelProps) {
     await agentCancelTask(taskId);
     await refreshDelegation();
   }
+  /** Reads a delegated task's child session for "Open session" on its card. Desktop only; read only. */
+  const openTaskSession = isDesktop ? (taskId: string) => agentTaskTranscript(taskId) : undefined;
   const hasLiveTask = createMemo(() => state().feed.some((item) => item.kind === "delegation" && !isFinished(item.task.status)));
   // Progress text and results come from the polled status, so refresh it while a task is live.
   createEffect(() => {
@@ -1059,6 +1063,8 @@ export function createAgentController(props: AgentPanelProps) {
       ),
     );
     const itemId = state().nextId;
+    // The chat's title now, in case the user switches chats before the turn ends and the files are recorded.
+    const promptTitle = currentTitle();
     // Captured now: the turn runs with this model, and the user may switch chats before it ends.
     const turnMeta = turnMetaPatch({ agentId: agentId(), sessionId: state().sessionId, connectionName: agentLabel(), config: state().config });
     setTurnStart(Date.now());
@@ -1068,7 +1074,7 @@ export function createAgentController(props: AgentPanelProps) {
     try {
       await api.agentPrompt(message, entry.attachments);
       if (turnMeta) void recordSessionMeta(turnMeta);
-      void recordSent(entry.items, { sessionId: promptSession ?? null, agentId: agentId() ?? null, messageId: String(itemId) });
+      void recordSent(entry.items, { sessionId: promptSession ?? null, agentId: agentId() ?? null, messageId: String(itemId), sessionTitle: (promptSession === sessionId() ? currentTitle() : undefined) ?? promptTitle ?? null });
     } catch (cause) {
       if (!current()) return;
       if (isBusyPromptError(cause)) {
@@ -1940,7 +1946,7 @@ export function createAgentController(props: AgentPanelProps) {
     const out = await Promise.all(items.map(async (item) => {
       if (!needsStoredLink(item, capabilities) || (item.uploadId && item.path)) return item;
       try {
-        const id = item.uploadId ?? (await recorder.add(saveName(item), bytesToBase64(item.bytes!), { origin: uploadOrigin(item.source), sessionId: state().sessionId ?? null, agentId: agentId() ?? null })).id;
+        const id = item.uploadId ?? (await recorder.add(saveName(item), bytesToBase64(item.bytes!), { origin: uploadOrigin(item.source), sessionId: state().sessionId ?? null, agentId: agentId() ?? null, sessionTitle: currentTitle() ?? null })).id;
         recordedIds.add(item.id);
         const next = { ...item, uploadId: id, path: await recorder.copyPath(id) };
         replaceAttachment(next);
@@ -1953,7 +1959,7 @@ export function createAgentController(props: AgentPanelProps) {
     return { items: out, failed };
   }
   /** Recording (#91): every sent attachment with content goes into the uploads store once, with its session, agent and message. */
-  async function recordSent(items: readonly Attachment[], source: { sessionId: string | null; agentId: string | null; messageId: string }) {
+  async function recordSent(items: readonly Attachment[], source: { sessionId: string | null; agentId: string | null; messageId: string; sessionTitle: string | null }) {
     const recorder = props.uploads;
     if (!recorder) return;
     for (const item of items) {
@@ -2014,11 +2020,20 @@ export function createAgentController(props: AgentPanelProps) {
       return;
     }
     const name = relative ? leaf(relative) : leaf(root.replace(/[\\/]+$/, "")) || "workspace";
-    const outline = await folderOutline(name, async (inner) => {
-      const path = [relative, inner].filter(Boolean).join("/");
-      return (await api.listDirectory(path)).map((entry) => ({ name: entry.name, isDir: entry.isDir }));
-    });
-    intake.addItems([createFolderAttachment({ name, ...outline, path: relative || ".", source: "workspace-file" })]);
+    // One backend call when the desktop offers it (workspace ignore rules apply); otherwise a listing per folder.
+    let outline: { text: string; files: number; truncated: boolean };
+    try {
+      outline = props.folderOutline
+        ? await props.folderOutline(relative || ".", FOLDER_OUTLINE_LIMIT)
+        : await folderOutline(name, async (inner) => {
+          const path = [relative, inner].filter(Boolean).join("/");
+          return (await api.listDirectory(path)).map((entry) => ({ name: entry.name, isDir: entry.isDir }));
+        });
+    } catch (cause) {
+      intake.reject([{ name, reason: `Could not outline the folder: ${errorText(cause)}` }]);
+      return;
+    }
+    intake.addItems([createFolderAttachment({ name, text: outline.text, files: outline.files, truncated: outline.truncated, path: relative || ".", source: "workspace-file" })]);
   }
 
   /** Earlier chats this window holds (other than the open one) that have something to export. */
@@ -2274,6 +2289,7 @@ export function createAgentController(props: AgentPanelProps) {
     stop,
     answerPermission,
     cancelTask,
+    openTaskSession,
     childPermission,
     childPermissions: childPermissionList,
     answerChildPermission,

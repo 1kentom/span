@@ -6,7 +6,7 @@ import { UploadsError } from './uploads-api';
 
 const upload = (patch: Partial<Upload_Serialize> = {}): Upload_Serialize => ({
   id: 'a'.repeat(32), name: 'notes.md', mime: 'text/markdown', size: 5, kind: 'document', fingerprint: 'fnv1a128:0', createdMs: 1000, missing: false,
-  source: { sessionId: 'session-123456789', agentId: 'claude-acp', messageId: '4', origin: 'dropped' }, ...patch,
+  source: { sessionId: 'session-123456789', agentId: 'claude-acp', messageId: '4', origin: 'dropped', sessionTitle: null }, ...patch,
 });
 const b64 = (text: string) => btoa(text);
 function client(patch: Partial<UploadsClient> = {}): UploadsClient {
@@ -31,7 +31,15 @@ describe('desktop uploads api over the generated commands', () => {
     const api = createBindingsUploadsApi(client(), { sessionTitle: id => (id === 'session-123456789' ? 'Fix the toggle' : undefined) });
     const list = await api.list();
     expect(list).toEqual([{ id: 'a'.repeat(32), name: 'notes.md', size: 5, mime: 'text/markdown', createdAt: 1000, origin: 'sent', session: { id: 'session-123456789', title: 'Fix the toggle' }, agent: { id: 'claude-acp' } }]);
-    expect(uploadEntry(upload({ source: { sessionId: 'abcdefghij', agentId: null, messageId: null, origin: 'agent-generated' } }))).toMatchObject({ origin: 'generated', session: { title: 'Chat abcdefgh' } });
+    expect(uploadEntry(upload({ source: { sessionId: 'abcdefghij', agentId: null, messageId: null, origin: 'agent-generated', sessionTitle: null } }))).toMatchObject({ origin: 'generated', session: { title: 'Chat abcdefgh' } });
+  });
+  it('names the session by the title the store recorded when no live title is known', () => {
+    const stored = upload({ source: { sessionId: 'abcdefghij', agentId: null, messageId: '1', origin: 'sent', sessionTitle: 'Fix the login bug' } });
+    expect(uploadEntry(stored).session).toEqual({ id: 'abcdefghij', title: 'Fix the login bug' });
+    // A live title (the chat was renamed since) wins over the recorded one.
+    expect(uploadEntry(stored, () => 'Renamed chat').session?.title).toBe('Renamed chat');
+    // A blank recorded title falls back to the short id.
+    expect(uploadEntry(upload({ source: { ...stored.source, sessionTitle: '  ' } })).session?.title).toBe('Chat abcdefgh');
   });
   it('reads in chunks until the requested length or the end', async () => {
     const c = client();

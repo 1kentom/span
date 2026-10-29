@@ -701,6 +701,12 @@ export async function agentCancelTask(taskId: string): Promise<void> {
   await commands.agentCancelTask(taskId);
 }
 
+/** One delegated task and the text its child session wrote so far, for opening the child session from its card. Read only. */
+export async function agentTaskTranscript(taskId: string): Promise<import('../bindings').DelegationTranscript_Serialize> {
+  if (!isDesktop) nativeRequired('Opening a delegated session');
+  return commands.agentTaskTranscript(taskId);
+}
+
 /** Preview only: the browser answers navigation requests from a labelled text-scanning fixture, see navigation-preview.ts. */
 const previewNavigation = createPreviewNavigationPort(() => Object.fromEntries(Object.keys(fixture).map(path => { const buffer = buffers.get(path); return [path, { text: buffer?.text ?? fixture[path], revision: buffer?.revision ?? 0 }]; })));
 
@@ -781,6 +787,36 @@ export async function uploadsList(): Promise<import('../bindings').Upload_Serial
 export async function uploadsUsage(): Promise<import('../bindings').UploadUsage> {
   if (isDesktop) return commands.uploadsUsage();
   return { count: 0, totalBytes: 0, maxCount: 2000, maxTotalBytes: 512 * 1024 * 1024, maxFileBytes: 32 * 1024 * 1024, orphanBlobs: 0, orphanBytes: 0, quarantinedIndexes: 0 };
+}
+
+/** The uploads store folder of the open workspace, in app data. */
+export async function uploadsFolder(): Promise<string> {
+  if (!isDesktop) nativeRequired('The uploads store');
+  return commands.uploadsFolder();
+}
+
+/** Open the uploads store folder in the system file manager. */
+export async function uploadsRevealFolder(): Promise<void> {
+  if (!isDesktop) nativeRequired('Revealing the uploads folder');
+  await commands.uploadsRevealFolder();
+}
+
+/** Clear this workspace's uploads store after the user confirmed. Workspace files are never touched. */
+export async function uploadsClear(): Promise<import('../bindings').ClearedUploads> {
+  if (!isDesktop) nativeRequired('Clearing uploads');
+  return commands.uploadsClear();
+}
+
+/** Bounded outline of a workspace folder (folder-relative paths) in one call. Desktop only. */
+export async function folderOutline(path: string, limit: number): Promise<import('../bindings').FolderOutline> {
+  if (!isDesktop) nativeRequired('Folder outlines');
+  return commands.folderOutline(path, limit);
+}
+
+/** Page count of a PDF read in Rust, for files the viewer's PDF library cannot open. Undefined when not reliably readable. */
+export async function pdfPageCountNative(dataBase64: string): Promise<number | undefined> {
+  if (!isDesktop) return undefined;
+  return (await commands.pdfPageCount(dataBase64)) ?? undefined;
 }
 
 /** Store a file (at most 32 MiB). `name` follows the workspace attachment naming rules. */

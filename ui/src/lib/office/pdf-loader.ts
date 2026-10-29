@@ -84,3 +84,18 @@ export async function pdfPageCount(bytes: Uint8Array, loader: PdfLoader = loadPd
     await loaded?.destroy().catch(() => undefined);
   }
 }
+
+/**
+ * Page count for an attachment tile: the PDF library first, then `native` (the Rust reader, desktop only) for files
+ * the library cannot open. Undefined when neither reads a count reliably, so the tile leaves it out.
+ */
+export async function pdfPageCountWithFallback(bytes: Uint8Array, native?: (bytes: Uint8Array) => Promise<number | undefined>, loader: PdfLoader = loadPdf): Promise<number | undefined> {
+  const pages = await pdfPageCount(bytes, loader);
+  if (pages !== undefined || !native) return pages;
+  try {
+    const counted = await native(bytes);
+    return Number.isInteger(counted) && counted! > 0 ? counted : undefined;
+  } catch {
+    return undefined;
+  }
+}
