@@ -14,6 +14,10 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
   getSelection() { return "selected bytes"; }
 } }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+const installedProfiles = [
+  { id: "/bin/zsh", name: "Zsh", path: "/bin/zsh", isDefault: true, kind: "shell" as const },
+  { id: "/bin/bash", name: "Bash", path: "/bin/bash", isDefault: false, kind: "shell" as const },
+];
 const disposers: (() => void)[] = [];
 beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} }); });
 afterEach(() => { disposers.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); vi.unstubAllGlobals(); });
@@ -207,10 +211,7 @@ it("refuses controller close after the dock is disposed", async () => {
 it("labels interactive tabs from the actual executable and launches only the chosen installed profile", async () => {
   const view = mount(true);
   vi.mocked(view.transport.create).mockImplementationOnce(async (_cols, _rows, handlers) => { handlers.started?.("/bin/zsh"); return "zsh-pty"; });
-  vi.mocked(view.transport.profiles!).mockResolvedValueOnce([
-    { id: "/bin/zsh", name: "Zsh", path: "/bin/zsh", isDefault: true },
-    { id: "/bin/bash", name: "Bash", path: "/bin/bash", isDefault: false },
-  ]);
+  vi.mocked(view.transport.profiles!).mockResolvedValueOnce(installedProfiles);
   await vi.waitFor(() => expect(view.root.querySelector('[role="tab"]')?.textContent).toBe("zsh"));
   view.button("Choose terminal shell").click();
   await vi.waitFor(() => expect(document.querySelectorAll('[role="menuitem"]')).toHaveLength(2));
@@ -228,10 +229,7 @@ it("labels interactive tabs from the actual executable and launches only the cho
 
 it("supports profile picker keyboard navigation, Escape focus restoration and discovery errors", async () => {
   const view = mount();
-  vi.mocked(view.transport.profiles!).mockResolvedValueOnce([
-    { id: "/bin/zsh", name: "Zsh", path: "/bin/zsh", isDefault: true },
-    { id: "/bin/bash", name: "Bash", path: "/bin/bash", isDefault: false },
-  ]);
+  vi.mocked(view.transport.profiles!).mockResolvedValueOnce(installedProfiles);
   const trigger = view.button("Choose terminal shell");
   trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
   await vi.waitFor(() => expect(document.activeElement?.getAttribute("role")).toBe("menuitem"));

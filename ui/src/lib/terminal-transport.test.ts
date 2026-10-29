@@ -65,7 +65,7 @@ it("creates command PTYs with literal source and workspace guard, preserving ear
 
 it("passes an installed shell profile to create and reports the actual executable", async () => {
   const callbacks = { ...handlers(), started: vi.fn() };
-  const profiles = [{ id: "/bin/bash", path: "/bin/bash", name: "Bash", isDefault: false }];
+  const profiles = [{ id: "/bin/bash", path: "/bin/bash", name: "Bash", isDefault: false, kind: "shell" as const }];
   native.profiles.mockResolvedValueOnce(profiles);
   native.create.mockResolvedValueOnce({ ...info, shell: "/bin/bash" });
   const transport = createTerminalTransport("/workspace");

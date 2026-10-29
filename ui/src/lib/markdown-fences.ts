@@ -51,7 +51,7 @@ export function describeMarkdownFence(info: string, code: string): MarkdownFence
   if (transcript && !commands?.length) return { ...result, disabledReason: "No prompted shell commands detected" };
   const command = commands ? commands.join("\n") : code.replace(/\s+$/, "");
   if (!command.trim()) return { ...result, disabledReason: "Code block is empty" };
-  // Transcript continuations cannot be reconstructed reliably from output, so leave execution to Enter in the terminal.
+  // Transcript continuations cannot be reconstructed reliably from output, so leave execution to the explicit Run draft action.
   const review = detected || (declared === "console" && !prompted.length) || !!commands?.some((line) => /\\\s*$/.test(line));
   return { ...result, command, action: review ? "send" : "run", omittedOutput: !!commands && nonempty.length > commands.length, disabledReason: "" };
 }
