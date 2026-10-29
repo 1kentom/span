@@ -32,7 +32,7 @@ async function setup(rows: any[], hubOver: Partial<HubPort> = {}) {
     const hub = createLanguageIntelligence({ servers, activePath: () => "src/A.java", workspaceRoot: () => "/w", autoInstall: () => true, setUserSetting: setting, pickPath: hubPort.pickPath, openSettings });
     disposers.push(render(() => <>
       <LanguageIntelligenceButton view={hub.view()} open={false} onToggle={() => undefined} />
-      <LanguageServerStatus view={hub.view()} open={false} onToggle={() => undefined} />
+      <LanguageServerStatus view={hub.view()} language="java" open={false} onToggle={() => undefined} />
       <LanguageIntelligencePanel embedded view={hub.view()} onAction={(action, server) => void hub.perform(action, server)} onToggleServer={(server, on) => void hub.setEnabled(server, on)} />
     </>, root));
     return { servers, hub };
@@ -65,11 +65,10 @@ describe("fixture: one view model drives every surface", () => {
       // The same number in the button, the status bar and the panel text.
       expect(m.root.querySelector(".hub-button")!.getAttribute("aria-label")).toBe(`Language intelligence. Installing Java (${percent}%).`);
       expect(m.root.querySelector(".hub-button")!.getAttribute("data-percent")).toBe(String(percent));
-      expect(text(m.root, ".lsp-status-text")).toBe(`Java ${percent}%`);
+      expect(m.root.querySelector(".lsp-status-button")!.getAttribute("aria-label")).toBe(`Java, Eclipse JDT LS 1.62, installing ${percent}%. Show language support`);
       expect(text(m.root, "[data-testid=hub-percent]")).toBe(`${percent}%`);
       expect(text(m.root, ".hub-state-word")).toBe("Installing");
       expect(text(m.root, ".hub-status-text")).toBe(`Downloading ${Math.round(step.overall / MB)} of 320 MB`);
-      expect(m.root.querySelector(".lsp-status-button")!.getAttribute("aria-label")).toBe(m.root.querySelector(".hub-button")!.getAttribute("aria-label"));
     }
     for (let index = 1; index < seen.length; index++) expect(seen[index]).toBeGreaterThanOrEqual(seen[index - 1]);
     expect(seen.at(-1)).toBe(100);
@@ -103,8 +102,8 @@ describe("fixture: one view model drives every surface", () => {
   it("shows indexing from work progress and ends with ready", async () => {
     const m = await setup([row({ state: { kind: "ready" }, installed: true, capabilities: caps })]);
     expect(m.root.querySelector(".hub-panel")!.getAttribute("data-kind")).toBe("ready");
-    expect(text(m.root, ".hub-state-word")).toBe("");
-    expect(text(m.root, ".hub-status-text")).toMatch(/^Completions, errors, hover/);
+    expect(text(m.root, ".hub-state-word")).toBe("Ready");
+    expect(m.root.querySelectorAll('.hub-chip[data-on="true"]')).toHaveLength(7);
     const work = (event: Partial<WorkProgressEvent>) => m.listeners.work({ server: "jdtls", root: "/w", token: "t", kind: "report", ...event });
     work({ kind: "begin", title: "Indexing project", message: "Reading classes", percentage: 0 });
     work({ percentage: 35 });
@@ -112,10 +111,28 @@ describe("fixture: one view model drives every surface", () => {
     expect(text(m.root, "[data-testid=hub-percent]")).toBe("35%");
     expect(text(m.root, ".hub-status-text")).toBe("Reading classes");
     expect(m.root.querySelector(".hub-button")!.getAttribute("data-percent")).toBe("35");
-    expect(text(m.root, ".lsp-status-text")).toBe("Java 35%");
+    expect(m.root.querySelector(".lsp-status-button")!.getAttribute("aria-label")).toContain("indexing 35%");
     work({ kind: "end" });
     expect(m.root.querySelector(".hub-panel")!.getAttribute("data-kind")).toBe("ready");
     expect(text(m.root, "[data-testid=hub-percent]")).toBe("");
+  });
+  it("a switch updates the row, the status bar and the card at once, before the setting write returns", async () => {
+    const m = await setup([row({ state: { kind: "ready" }, installed: true, capabilities: caps })]);
+    let release!: () => void;
+    m.setting.mockImplementationOnce(() => new Promise<undefined>(resolve => { release = () => resolve(undefined); }));
+    const toggle = m.root.querySelector<HTMLElement>('.hub-row[data-server="jdtls"] [role=switch]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    toggle.click();
+    expect(m.setting).toHaveBeenCalledWith("languageServers.enabled.jdtls", false);
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(m.root.querySelector('.hub-row[data-server="jdtls"]')!.getAttribute("data-state")).toBe("off");
+    expect(m.root.querySelector(".lsp-status")!.getAttribute("data-state")).toBe("off");
+    expect(text(m.root, ".hub-state-word")).toBe("Off");
+    (m.port.status as any).mockResolvedValue([row({ state: { kind: "disabled" }, enabled: false, installed: true })]);
+    release();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(m.root.querySelector(".lsp-status")!.getAttribute("data-state")).toBe("off");
   });
   it("trust: restarts with a message, then clears it when the folder restarted and is ready", async () => {
     const needs = row({ state: { kind: "ready" }, installed: true, capabilities: caps, trust: { workspaceTrusted: false, needsTrust: true } });
