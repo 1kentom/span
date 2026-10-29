@@ -9,7 +9,8 @@ import { loadTerminalFont, terminalTheme } from "../lib/terminal-theme";
 
 /** UI callbacks only. The desktop adapter uses the generated Rust IPC contracts. */
 export interface TerminalTransport {
-  create(cols: number, rows: number, handlers: TerminalHandlers, profileId?: string): Promise<string>;
+  /** `directory` starts the shell in a workspace folder other than the default one; Rust refuses anything outside the workspace. */
+  create(cols: number, rows: number, handlers: TerminalHandlers, profileId?: string, directory?: string): Promise<string>;
   createCommand(cols: number, rows: number, handlers: TerminalHandlers, language: TerminalCommandLanguage, code: string): Promise<string>;
   profiles?(): Promise<TerminalProfile[]>;
   write(id: string, data: Uint8Array): Promise<void>;
@@ -36,6 +37,8 @@ export interface TerminalController {
 export interface TerminalPanelProps {
   command?: { language: TerminalCommandLanguage; code: string };
   profileId?: string;
+  /** Absolute workspace folder the shell starts in, instead of the workspace root. */
+  directory?: string;
   onRunCommand?(code: string, language: TerminalCommandLanguage): Promise<void>;
   onShell?(shell: string): void;
   visible: boolean;
@@ -196,7 +199,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
       };
       id = props.command
         ? await props.transport.createCommand(cols, rows, handlers, props.command.language, props.command.code)
-        : await props.transport.create(cols, rows, handlers, props.profileId);
+        : await (props.directory === undefined ? props.transport.create(cols, rows, handlers, props.profileId) : props.transport.create(cols, rows, handlers, props.profileId, props.directory));
     } catch (failure) {
       if (startupInput?.token === token) startupInput = undefined;
       if (!disposed && token === generation) throw failure;

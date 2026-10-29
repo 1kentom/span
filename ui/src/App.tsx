@@ -70,6 +70,7 @@ import { isViewerTab } from "./lib/viewer-tabs";
 import { NOT_TEXT_MESSAGE, isKnownBinaryPath, isNotTextError } from "./lib/binary-file";
 import { WorkspaceFileView } from "./components/viewer/WorkspaceFileView";
 import { revealLabel } from "./components/uploads/upload-model";
+import { explorerSystemItems } from "./lib/explorer-menu";
 import { canDispatchAction, currentPlatform, dispatchKeyboard, resolveKeybindings, shortcutLabel, shortcutFromEvent, type ActionHandlers, type ActionId } from "./lib/commands";
 import { navigationActions, runNavigationAction, setNavigationNotifier, type NavigationActionId } from "./lib/navigation-actions";
 import { menuBindingsForFocus, terminalAllowsAppShortcut } from "./lib/terminal-shortcuts";
@@ -166,6 +167,12 @@ export default function App() {
   let saveRunDraft: (() => Promise<boolean>) | undefined;
   let terminalDock: TerminalDockController | undefined;
   const revealTerminal = () => { setBottomTab("terminal"); setShowBottom(true); };
+  /** Explorer "Open in Terminal": a new shell in a workspace folder ("" is the root). */
+  const openTerminalAt = (folder: string) => {
+    const root = w.workspace()?.root;
+    if (!root || !terminalDock) { w.setError("Open a folder to start a terminal."); return; }
+    try { terminalDock.openAt(absolutePath(folder, root)); } catch (error) { w.setError(String(error instanceof Error ? error.message : error)); }
+  };
   function OutputViewTabs() { return <Show when={runs.runs().length > 0 || runRequested() || navigationState.references.status !== "idle" || navigationState.hierarchy.status !== "idle"}><div class="run-view-tabs" role="tablist" aria-label="Output views" onKeyDown={event => { if (["ArrowLeft", "ArrowRight"].includes(event.key) && (runs.runs().length > 0 || runRequested())) { event.preventDefault(); setBottomTab(bottomTab() === "terminal" ? "run" : "terminal"); } }}><button role="tab" aria-selected={bottomTab() === "terminal"} tabIndex={bottomTab() === "terminal" ? 0 : -1} onClick={() => setBottomTab("terminal")}>Terminal</button><Show when={runs.runs().length > 0 || runRequested()}><button role="tab" aria-selected={bottomTab() === "run"} tabIndex={bottomTab() === "run" ? 0 : -1} onClick={() => setBottomTab("run")}>Run</button></Show><NavigationTabs showPanel={() => setShowBottom(true)} /></div></Show>; }
   createEffect(on(bottomTab, tab => { if (tab === "run") queueMicrotask(() => document.querySelector<HTMLButtonElement>('.run-output .run-view-tabs [aria-selected="true"]')?.focus()); }, { defer: true }));
   const runFile = () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? path : undefined; };
@@ -533,9 +540,10 @@ export default function App() {
       { id: "show-ignored-files", label: explorerPrefs().showIgnoredFiles ? "Hide ignored files" : "Show ignored files", icon: "menu-folder", onSelect: () => setExplorerPreference("showIgnoredFiles", !explorerPrefs().showIgnoredFiles) },
     );
     const clipboard = explorer.clipboard();
-    items.push({ id: "cut-file", label: "Cut", icon: "menu-cut", separator: true, shortcut: key("X"), onSelect: () => explorer.setClip(true) }, { id: "copy-file", label: "Copy", icon: "menu-copy", shortcut: key("C"), onSelect: () => explorer.setClip(false) }, { id: "paste-file", label: "Paste", icon: "menu-paste", shortcut: key("V"), disabled: !clipboard, onSelect: () => { void explorer.paste(folder); } }, { id: "duplicate", label: "Duplicate", icon: "menu-duplicate", disabled: many, onSelect: () => { void explorer.duplicate(path); } });
+    items.push({ id: "cut-file", label: "Cut", icon: "menu-cut", separator: true, shortcut: key("X"), onSelect: () => explorer.setClip(true) }, { id: "copy-file", label: "Copy", icon: "menu-copy", shortcut: key("C"), onSelect: () => explorer.setClip(false) }, { id: "paste-file", label: "Paste", icon: "menu-paste", shortcut: key("V"), disabled: !clipboard, onSelect: () => { void explorer.paste(folder); } }, { id: "duplicate", label: "Duplicate", icon: "menu-duplicate", shortcut: key("D"), disabled: many, onSelect: () => { void explorer.duplicate(path); } });
     items.push({ id: "paths", label: "Copy path", icon: "menu-path", separator: true, children: [{ id: "copy-name", label: "Copy filename", icon: "menu-copy", onSelect: () => { void copyText(fileName(path || w.workspace()?.root || "")); } }, { id: "copy-relative", label: "Copy relative path", icon: "menu-path", onSelect: () => copyPath(path) }, { id: "copy-absolute", label: "Copy absolute path", icon: "menu-path", onSelect: () => copyPath(path, true) }] });
-    items.push({ id: "rename", label: "Rename…", icon: "menu-rename", separator: true, disabled: many, shortcut: mac ? "\u21b5" : "F2", onSelect: () => { void explorer.startRename(path); } }, { id: "trash", label: "Move to Trash…", icon: "menu-trash", shortcut: mac ? "\u2318\u232b" : "Delete", onSelect: () => { void explorer.trash(); } });
+    items.push(...explorerSystemItems({ path, directory, many, desktop: isDesktop, revealFolders: false, revealLabel: revealLabel(platform), terminalReady: !!terminalDock && !!w.workspace(), onReveal: target => { void api.revealFile(target).catch(error => w.setError(String(error))); }, onTerminal: openTerminalAt }));
+    items.push({ id: "rename", label: "Rename…", icon: "menu-rename", separator: true, disabled: many, shortcut: "F2", onSelect: () => { void explorer.startRename(path); } }, { id: "trash", label: "Move to Trash…", icon: "menu-trash", shortcut: mac ? "\u2318\u232b" : "Delete", onSelect: () => { void explorer.trash(); } });
     return items;
   }
   function showContext(event: MouseEvent | KeyboardEvent, path: string, kind: "file" | "directory" | "tab" | "editor", group = w.activeGroup()) {

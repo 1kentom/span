@@ -84,21 +84,25 @@ export function Explorer(props: { git?: JSX.Element; gitDecorations?: GitDecorat
     const move = (to: number, extend: boolean) => { const path = paths[Math.max(0, Math.min(paths.length - 1, to))]; if (!path) return; if (extend) state.selectRange(path); else state.selectOnly(path); focusPath(path); };
     const directory = current !== undefined && state.isDirectory(current);
     const open = current !== undefined && w.expanded().has(current);
+    const currentRow = row ?? (current ? rowElement(current) : null);
+    // Cmd+Down (Ctrl+Down) opens the row, like Enter: JetBrains' Jump to Source.
+    if (key === "ArrowDown" && mod && !event.shiftKey && current) { stop(); currentRow?.click(); return; }
     if (key === "ArrowDown") { stop(); move(index + 1, event.shiftKey); return; }
     if (key === "ArrowUp") { stop(); move(index - 1, event.shiftKey); return; }
     if (key === "Home") { stop(); move(0, event.shiftKey); return; }
     if (key === "End") { stop(); move(paths.length - 1, event.shiftKey); return; }
     if (key === "PageDown" || key === "PageUp") { stop(); const page = Math.max(1, Math.floor(treeElement.clientHeight / 26) - 1); move(index + (key === "PageDown" ? page : -page), event.shiftKey); return; }
-    if (key === "ArrowRight" && current) { stop(); if (directory && !open) row?.click(); else if (directory) move(index + 1, false); return; }
+    if (key === "ArrowRight" && current) { stop(); if (directory && !open) currentRow?.click(); else if (directory) move(index + 1, false); return; }
     if (key === "ArrowLeft" && current) {
       stop();
-      if (directory && open) { row?.click(); return; }
+      if (directory && open) { currentRow?.click(); return; }
       for (let parent = parentPath(current); parent; parent = parentPath(parent)) if (paths.includes(parent)) { state.selectOnly(parent); focusPath(parent); return; }
       return;
     }
-    if (key === "F2" || (key === "Enter" && mac)) { stop(); void state.startRename(current); return; }
+    // F2 renames on every platform and Enter opens, as in JetBrains IDEs.
+    if (key === "F2") { stop(); void state.startRename(current); return; }
     if (key === "Enter" && mod && current && !directory) { stop(); props.onOpenToSide(current); return; }
-    if (key === "Enter" && current) { stop(); row?.click(); return; }
+    if (key === "Enter" && current) { stop(); currentRow?.click(); return; }
     if (key === "Delete" || (key === "Backspace" && mod)) { stop(); void state.trash(); return; }
     if (key === "Escape") { if (state.clipboard()) { stop(); state.clearClipboard(); } else if (state.selection().length) { stop(); state.clearSelection(); } return; }
     if (mod && !event.altKey && !event.shiftKey) {
@@ -106,6 +110,7 @@ export function Explorer(props: { git?: JSX.Element; gitDecorations?: GitDecorat
       if (lower === "x") { stop(); state.setClip(true); return; }
       if (lower === "v") { stop(); void state.paste(); return; }
       if (lower === "a") { stop(); state.selectAll(); return; }
+      if (lower === "d" && current) { stop(); void state.duplicate(current); return; }
       if (lower === "z") { stop(); void state.undo(); return; }
       if (key === "-") { stop(); state.collapseAll(); return; }
     }
@@ -188,6 +193,8 @@ export function Explorer(props: { git?: JSX.Element; gitDecorations?: GitDecorat
     const toggle = () => void toggleChain(chain()?.segments.map(segment => segment.path) ?? [entry.path]);
     return <>
       <Show when={state.edit()?.mode === "rename" && state.edit()!.path === target()} fallback={<button class={`tree-row internal-drag-source ${w.activePath() === entry.path ? "selected" : ""} ${state.selection().includes(target()) ? "sel" : ""} ${state.clipboard()?.cut && state.clipboard()!.paths.includes(target()) ? "cut" : ""} ${dropFolder() === target() && entry.isDir ? "droptgt" : ""}`} role="treeitem" data-path={target()} data-git-status={gitStatus()?.kind} tabIndex={state.focus() && state.focus() !== target() ? -1 : 0} aria-busy={entry.isDir && w.loadingDirectories().has(target())} aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-label={entry.isDir && merged() ? target() : undefined} aria-selected={state.selection().includes(target()) || (!entry.isDir && w.activePath() === entry.path)} draggable={false} onPointerDown={event => { if (event.button === 0 && !event.shiftKey && !event.metaKey && !event.ctrlKey) startDrag(event, target()); }} onFocus={() => state.setFocus(target())} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={event => {
+        // WebKit does not focus a clicked button, so focus the row for the tree's keyboard shortcuts.
+        event.currentTarget.focus({ preventScroll: true });
         if (event.metaKey || event.ctrlKey) { state.toggleSelect(target()); return; }
         if (event.shiftKey) { state.selectRange(target()); return; }
         state.selectOnly(target());
@@ -208,7 +215,7 @@ export function Explorer(props: { git?: JSX.Element; gitDecorations?: GitDecorat
         <div class="tree-root"><button onClick={() => void w.toggleDirectory("")} aria-expanded={w.expanded().has("")}><Icon name={w.expanded().has("") ? "arrow-down4" : "arrow-right4"} size={13} /><strong class="tree-root-name" title={w.workspace()?.name}>{w.workspace()?.name}</strong></button><button class="icon-button subtle" aria-label="Refresh explorer" title="Refresh" onClick={() => void w.refreshFiles()}><Icon name="Refresh2" size={15} /></button><button class="icon-button subtle" aria-label="Collapse all folders" title="Collapse all" onClick={() => state.collapseAll()}><Icon name="Minus" size={15} /></button><button class="icon-button subtle" aria-label="Open folder" title="Open folder" onClick={w.requestWorkspace}><Icon name="Folder2" size={15} /></button></div>
         <div class="file-index-status" role="status" title={w.indexError() || w.indexStatus()?.lastError || w.indexStatus()?.watcherError || undefined}>{fileIndexMessage(w.indexStatus(), w.indexError())}</div>
         <Show when={w.loadingDirectories().has("")}><div class="tree-loading" role="status">Loading folder…</div></Show>
-        <div class={`file-tree ${dropFolder() === "" ? "dropall" : ""}`} ref={treeElement} aria-busy={w.loadingDirectories().has("")} role="tree" aria-multiselectable="true" aria-label="Workspace files" onKeyDown={treeKey} onPointerDown={event => { if (event.target === event.currentTarget) state.clearSelection(); }}><Show when={w.expanded().has("")}><TreeRows path="" depth={0} /></Show></div>
+        <div class={`file-tree ${dropFolder() === "" ? "dropall" : ""}`} ref={treeElement} aria-busy={w.loadingDirectories().has("")} role="tree" tabIndex={-1} aria-multiselectable="true" aria-label="Workspace files" onKeyDown={treeKey} onPointerDown={event => { if (event.target === event.currentTarget) { state.clearSelection(); event.currentTarget.focus({ preventScroll: true }); } }}><Show when={w.expanded().has("")}><TreeRows path="" depth={0} /></Show></div>
       </Show>
     </Show>
     <Show when={state.notice()}><div class="tree-notice" role="status">{state.notice()}</div></Show>
