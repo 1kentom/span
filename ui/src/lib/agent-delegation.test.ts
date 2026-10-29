@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, DelegationEvent, FailureReason } from "../bindings";
-import { FAILURE_TEXT, boundedSummary, budgetText, childPermissions, delegationLine, failureText, permissionWaitsOn, taskElapsedMs, taskNote, taskStatusKind } from "./agent-delegation";
+import { FAILURE_TEXT, boundedSummary, budgetNote, budgetText, childPermissions, delegationLine, failureText, permissionWaitsOn, taskElapsedMs, taskNote, taskStatusKind } from "./agent-delegation";
 import { DOCK_TAB_HINT, TYPING_QUIET_MS, shouldFocusDock } from "./agent-dock-focus";
 import { composerHints } from "./agent-hints";
 import { applyDelegationStatus, initialAgentState, reduceAgentEvent, type AgentState } from "./agent-session";
@@ -189,8 +189,18 @@ describe("richer task data", () => {
     expect(boundedSummary("short")).toBe("short");
     expect(boundedSummary("x".repeat(900))!.length).toBe(603);
     expect(budgetText(budget)).toBe("2 turns, 1,500 tokens, USD 0.50");
+    expect(budgetText({ ...budget, tokens: 31_290, contextSize: 200_000, cost: null })).toBe("2 turns, 31,290 tokens in context");
     expect(budgetText({ turns: 0, tokens: null, contextSize: null, cost: null, currency: null, elapsedSeconds: 7 })).toBeUndefined();
     expect(budgetText(undefined)).toBeUndefined();
+  });
+  it("reads a completed task's detail as a quiet budget note, never as a failure", () => {
+    const state = apply([delegation({ kind: "delegated", lead, child, taskId: "t1", agentName: "Codex" })]);
+    const task = { taskId: "t1", lead, child, agentName: "Codex", status: "completed", stopReason: "end_turn", reason: null, detail: "Used about 1500 tokens, over the 1000 token budget", startedAtMs: 1, finishedAtMs: 2, progressText: null, resultSummary: "Done", artifacts: [], budgetUsed: budget };
+    const card = cards(applyDelegationStatus(state, { enabled: true, available: true, reason: null, lead, attached: true, decisions: [], tasks: [task] }))[0];
+    expect(card.status).toBe("completed");
+    expect(taskNote(card)).toBeUndefined();
+    expect(budgetNote(card)).toBe("Used about 1500 tokens, over the 1000 token budget");
+    expect(budgetNote({ ...card, status: "failed" })).toBeUndefined();
   });
 });
 
