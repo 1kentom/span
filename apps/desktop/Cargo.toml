@@ -52,6 +52,7 @@ span-acp.workspace = true
 span-terminal.workspace = true
 span-file-index.workspace = true
 notify = "8.2.1"
+ignore = "0.4"
 span-lsp.workspace = true
 tokio-util = "0.7"
 

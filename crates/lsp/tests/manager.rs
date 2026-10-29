@@ -1269,3 +1269,78 @@ fn work_progress_params_parse() {
         parse_work_progress(&serde_json::json!({"token": [1], "value": {"kind": "end"}})).is_none()
     );
 }
+
+#[tokio::test]
+async fn watched_files_route_only_to_registered_ready_instance_for_the_given_root() {
+    let f = fixture("watched");
+    let other = f._dir.path().join("other-project");
+    std::fs::create_dir(&other).unwrap();
+    let first = FileEvent::new(
+        path_to_uri(&f.file("First.java")).unwrap(),
+        FileChangeType::CREATED,
+    );
+    let second = FileEvent::new(
+        path_to_uri(&other.join("Second.java")).unwrap(),
+        FileChangeType::DELETED,
+    );
+    // Disk changes cannot implicitly start an instance.
+    f.manager
+        .notify_watched_files(ID, &f.root, vec![first.clone()])
+        .await
+        .unwrap();
+    assert!(f.entries().is_empty());
+    f.ready().await;
+    f.wait_log("response", 2).await;
+    // A different root gets a separate process without registrations.
+    *f.resolver.mode.lock().unwrap() = "normal";
+    f.manager.start(ID, &other).await.unwrap();
+    f.manager.wait_ready(ID, &other, WAIT).await.unwrap();
+    f.wait_log("response", 3).await;
+    f.manager
+        .notify_watched_files(ID, &other, vec![second.clone()])
+        .await
+        .unwrap();
+    f.manager
+        .notify_watched_files(ID, &f.root, vec![first.clone(), second.clone()])
+        .await
+        .unwrap();
+    f.manager
+        .hover(ID, &f.root, f.hover_params("First.java"), None)
+        .await
+        .unwrap();
+    f.manager
+        .hover(ID, &other, f.hover_params("First.java"), None)
+        .await
+        .unwrap();
+    let notifications = f.methods("workspace/didChangeWatchedFiles");
+    assert_eq!(notifications.len(), 1, "{notifications:?}");
+    assert_eq!(
+        notifications[0]["params"]["changes"],
+        serde_json::json!([first.clone()])
+    );
+    let first_pid = f
+        .methods("initialize")
+        .into_iter()
+        .find(|m| m["params"]["rootUri"] == serde_json::json!(path_to_uri(&f.root).unwrap()))
+        .unwrap()["pid"]
+        .clone();
+    assert_eq!(notifications[0]["pid"], first_pid);
+    // Restarting a process drops registrations with the old client.
+    f.manager.shutdown(ID, &f.root).await;
+    f.manager
+        .notify_watched_files(ID, &f.root, vec![first.clone()])
+        .await
+        .unwrap();
+    f.ready().await;
+    f.manager
+        .notify_watched_files(ID, &f.root, vec![first])
+        .await
+        .unwrap();
+    f.manager
+        .hover(ID, &f.root, f.hover_params("First.java"), None)
+        .await
+        .unwrap();
+    assert_eq!(f.methods("workspace/didChangeWatchedFiles").len(), 1);
+    assert_eq!(f.methods("initialize").len(), 3);
+    f.manager.shutdown_all().await;
+}

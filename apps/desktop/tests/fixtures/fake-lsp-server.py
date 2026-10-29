@@ -156,6 +156,8 @@ while True:
         break
     method = msg.get("method")
     if method is None:
+        if msg.get("id") == "watch-register" and "result" in msg:
+            log({"method": "watchRegistrationReady", "params": None, "pid": os.getpid()})
         continue
     log({"method": method, "params": msg.get("params"), "pid": os.getpid()})
     if method == "initialize":
@@ -171,6 +173,10 @@ while True:
             caps.update(NAV_CAPS)
         reply(msg, {"capabilities": caps})
     elif method == "initialized":
+        if mode == "watched-files":
+            send({"id": "watch-register", "method": "client/registerCapability", "params": {
+                "registrations": [{"id": "json-files", "method": "workspace/didChangeWatchedFiles",
+                                   "registerOptions": {"watchers": [{"globPattern": "**/*.json"}]}}]}})
         if mode.startswith("progress"):
             progress_burst(mode)
     elif method == "textDocument/didOpen":

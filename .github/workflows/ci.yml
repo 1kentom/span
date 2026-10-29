@@ -309,11 +309,18 @@ jobs:
       - run: cargo test --workspace --no-fail-fast
 
   real-servers:
-    name: real language servers (ubuntu-24.04)
+    name: real language servers (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.servers == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -321,6 +328,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -328,19 +339,19 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux webview dependencies
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ${{ env.WEBVIEW_APT }} build-essential curl wget file
       - name: Cache downloaded language servers
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/span-lsp-server-cache
-          key: span-lsp-servers-${{ hashFiles('crates/lsp/src/servers/catalog.rs') }}
+          key: span-lsp-servers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/lsp/src/servers/catalog.rs') }}
       - name: Real server smoke tests (vtsls, HTML, CSS, JSON, rust-analyzer, basedpyright, JDT LS)
         env:
           SPAN_LSP_TEST_CACHE: ${{ runner.temp }}/span-lsp-server-cache
           SPAN_LSP_TRACE_DIR: ${{ runner.temp }}/span-lsp-trace/smoke
         run: |
           set -o pipefail
-          export JAVA_HOME="$JAVA_HOME_25_X64"
           mkdir -p "$RUNNER_TEMP/span-lsp-trace"
           # rust-analyzer diagnostic delivery is timing sensitive: retry a failed run once.
           cmd="cargo test -p span-lsp --features real-servers --test servers_smoke --no-fail-fast"
@@ -351,7 +362,6 @@ jobs:
           SPAN_LSP_TRACE_DIR: ${{ runner.temp }}/span-lsp-trace/desktop
         run: |
           set -o pipefail
-          export JAVA_HOME="$JAVA_HOME_25_X64"
           mkdir -p "$RUNNER_TEMP/span-lsp-trace"
           # rust-analyzer diagnostic delivery is timing sensitive: retry a failed run once.
           cmd="cargo test -p span-desktop --features real-servers --test real_servers --no-fail-fast"
@@ -360,7 +370,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: span-lsp-traces-${{ github.run_attempt }}
+          name: span-lsp-traces-${{ matrix.os }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/span-lsp-trace
           retention-days: 7
           if-no-files-found: ignore

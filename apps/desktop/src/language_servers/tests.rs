@@ -1925,3 +1925,128 @@ async fn open_in_unready(f: &mut Fixture, path: &str) {
     f.svc.on_snapshot(&snapshot);
     f.svc.flush().await;
 }
+
+fn watched_test_batch(root: &Path, incomplete: bool) -> crate::watched_paths::WatchedBatch {
+    crate::watched_paths::WatchedBatch {
+        root: root.to_path_buf(),
+        changes: vec![lsp::FileEvent {
+            uri: tauri::Url::from_file_path(root.join("config.json"))
+                .unwrap()
+                .as_str()
+                .parse()
+                .unwrap(),
+            typ: lsp::FileChangeType::CHANGED,
+        }],
+        incomplete,
+    }
+}
+
+#[tokio::test]
+async fn watched_files_do_not_start_servers_and_pending_work_is_bounded_and_generation_scoped() {
+    let f = fixture(true, "normal", Duration::from_secs(5));
+    f.svc
+        .watched_files_changed(watched_test_batch(&f.root, false));
+    assert!(lock(&f.svc.state).watched_files.is_none());
+    assert_eq!(f.resolver.resolves.load(Ordering::SeqCst), 0);
+    {
+        // Tauri owns an independent worker thread. Hold the production state
+        // lock across enqueueing and inspection so it cannot drain this batch.
+        let mut st = lock(&f.svc.state);
+        st.states
+            .insert((ID, f.root.clone()), LanguageServerStateDto::Starting);
+        for _ in 0..(MAX_WATCH_DELIVERIES + 10) {
+            f.svc
+                .queue_watched_files(&mut st, watched_test_batch(&f.root, false));
+        }
+        let pending = st.watched_files.as_ref().unwrap();
+        assert_eq!(pending.deliveries.len(), MAX_WATCH_DELIVERIES);
+        assert!(pending.events <= MAX_PENDING_WATCH_EVENTS);
+        assert!(pending.incomplete);
+    }
+    f.svc
+        .workspace_changed(f.root.clone(), &Settings::default());
+    assert!(lock(&f.svc.state).watched_files.is_none());
+    f.svc.flush().await;
+    assert_eq!(f.resolver.resolves.load(Ordering::SeqCst), 0);
+    {
+        let mut st = lock(&f.svc.state);
+        st.states
+            .insert((ID, f.root.clone()), LanguageServerStateDto::Ready);
+        let mut large = watched_test_batch(&f.root, false);
+        large.changes = vec![large.changes[0].clone(); MAX_PENDING_WATCH_EVENTS + 1];
+        f.svc.queue_watched_files(&mut st, large);
+        let pending = st.watched_files.as_ref().unwrap();
+        assert_eq!(pending.events, MAX_PENDING_WATCH_EVENTS);
+        assert!(pending.incomplete);
+        LanguageServers::bump_epoch(&mut st, ID);
+    }
+    // A retired target is skipped rather than starting a replacement instance.
+    f.svc.flush().await;
+    assert_eq!(f.resolver.resolves.load(Ordering::SeqCst), 0);
+    assert!(!methods(&f.log)
+        .iter()
+        .any(|method| method == "workspace/didChangeWatchedFiles"));
+}
+
+#[tokio::test]
+async fn the_existing_native_watcher_reaches_a_registered_ready_server() {
+    let mut f = fixture(true, "watched-files", Duration::from_secs(5));
+    f.open_ready().await;
+    eventually("watch registration acknowledgement", || {
+        methods(&f.log)
+            .iter()
+            .any(|m| m == "watchRegistrationReady")
+    })
+    .await;
+    // Simulate the service event forwarder still showing Starting while the
+    // already-existing instance finishes initialization. The event must survive.
+    lock(&f.svc.state)
+        .states
+        .insert((ID, f.root.clone()), LanguageServerStateDto::Starting);
+    let mut starting = watched_test_batch(&f.root, false);
+    starting.changes[0].uri = span_lsp::path_to_uri(&f.root.join("during-startup.json")).unwrap();
+    f.svc.watched_files_changed(starting);
+    lock(&f.svc.state)
+        .states
+        .insert((ID, f.root.clone()), LanguageServerStateDto::Ready);
+    f.svc.flush().await;
+    eventually("retained startup notification", || {
+        log_entries(&f.log).iter().any(|entry| {
+            entry["method"] == "workspace/didChangeWatchedFiles"
+                && entry["params"]["changes"].as_array().is_some_and(|events| {
+                    events.iter().any(|event| {
+                        event["uri"]
+                            .as_str()
+                            .is_some_and(|uri| uri.ends_with("/during-startup.json"))
+                    })
+                })
+        })
+    })
+    .await;
+    let runtime = crate::file_index::FileIndexRuntime::default();
+    let service = f.svc.clone();
+    runtime.set_file_change_sink(Arc::new(move |batch| service.watched_files_changed(batch)));
+    runtime.activate(f.root.clone()).await.unwrap();
+    std::fs::write(f.root.join("config.json"), "{}").unwrap();
+    eventually("native watched-file notification", || {
+        log_entries(&f.log).iter().any(|entry| {
+            entry["method"] == "workspace/didChangeWatchedFiles"
+                && entry["params"]["changes"].as_array().is_some_and(|events| {
+                    events.iter().any(|event| {
+                        event["uri"]
+                            .as_str()
+                            .is_some_and(|uri| uri.ends_with("/config.json"))
+                    })
+                })
+        })
+    })
+    .await;
+    let entries = log_entries(&f.log);
+    let initial_count = entries
+        .iter()
+        .filter(|entry| entry["method"] == "initialize")
+        .count();
+    assert_eq!(initial_count, 1);
+    runtime.shutdown();
+    f.svc.manager.shutdown_all().await;
+}

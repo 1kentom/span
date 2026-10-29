@@ -578,6 +578,29 @@ impl Manager {
             .map_err(|e| map_err(&client, e))
     }
 
+    /// Forward disk changes to the current ready instance only. A watcher never
+    /// starts a server; the client filters events against its dynamic registrations.
+    pub async fn notify_watched_files(
+        &self,
+        id: ServerId,
+        root: &Path,
+        changes: Vec<lsp_types::FileEvent>,
+    ) -> Result<(), ManagerError> {
+        let Some((_inst, inner)) = self.lock_current(id, root).await else {
+            return Ok(());
+        };
+        if !inner.ready {
+            return Ok(());
+        }
+        let Some(client) = inner.client.as_ref() else {
+            return Ok(());
+        };
+        client
+            .did_change_watched_files(changes)
+            .await
+            .map_err(|e| map_err(client, e))
+    }
+
     /// Current buffered text of a document, if the manager tracks it.
     pub async fn document_text(&self, id: ServerId, root: &Path, path: &Path) -> Option<String> {
         let inst = self.get(id, root).await?;
