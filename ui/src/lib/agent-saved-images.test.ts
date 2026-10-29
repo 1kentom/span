@@ -1,0 +1,132 @@
+import { describe, expect, it, vi } from 'vitest';
+import { createSavedImageStore, SAVED_IMAGE_COUNT } from './agent-saved-images';
+import type { ImageSource } from '../bindings';
+
+const source: ImageSource = { mime: 'image/png', dataUrl: 'data:image/png;base64,iVBORw0KGgo=' };
+const candidate = (id: string, path = `${id}.png`) => ({ id, path });
+const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+const deferred = () => { let resolve!: (value: ImageSource) => void; const promise = new Promise<ImageSource>((done) => { resolve = done; }); return { promise, resolve }; };
+
+describe('workspace-scoped saved image previews', () => {
+  it('sends the raw path and exact originating root to native, then exposes bytes for the viewer', async () => {
+    const load = vi.fn(async () => source);
+    const store = createSavedImageStore(load);
+    store.sync('session', '/w', [candidate('image', '/w/assets/图.png')]);
+    await flush();
+    expect(load).toHaveBeenCalledWith('/w/assets/图.png', '/w');
+    const image = store.get('image', '/w/assets/图.png');
+    expect(image?.state).toBe('ready');
+    if (image?.state !== 'ready') throw new Error('No image');
+    expect(image.attachment).toMatchObject({ path: 'assets/图.png', name: '图.png', source: 'workspace-file', size: 8 });
+    expect([...image.attachment.bytes!]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    expect(store.findAttachment(image.attachment.id)).toBe(image.attachment);
+    store.dispose();
+    expect(store.findAttachment(image.attachment.id)).toBeUndefined();
+  });
+  it('shows native canonical refusal, never rewrites traversal paths, and refuses remote sources', async () => {
+    const load = vi.fn(async () => { throw new Error('Path leaves the workspace'); });
+    const store = createSavedImageStore(load);
+    store.sync('s', '/w', [candidate('escape', '../outside.png'), candidate('uri', 'https://example.test/image.png')]);
+    await flush();
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith('../outside.png', '/w');
+    expect(store.get('escape', '../outside.png')).toEqual({ state: 'unavailable', reason: 'Path leaves the workspace' });
+    expect(store.get('uri', 'https://example.test/image.png')?.state).toBe('unavailable');
+    store.dispose();
+  });
+  it('discards stale workspace/session results and keeps two native reads globally in flight', async () => {
+    const first = deferred(); const second = deferred(); const next = deferred();
+    const load = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise).mockReturnValueOnce(next.promise);
+    const store = createSavedImageStore(load);
+    store.sync('old', '/old', [candidate('one'), candidate('two'), candidate('queued')]);
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    store.sync('new', '/new', [candidate('new')]);
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+    first.resolve(source);
+    await flush();
+    expect(load).toHaveBeenLastCalledWith('new.png', '/new');
+    expect(store.get('one', 'one.png')).toBeUndefined();
+    next.resolve(source); second.resolve(source);
+    await flush();
+    expect(store.get('new', 'new.png')?.state).toBe('ready');
+    expect(load).not.toHaveBeenCalledWith('queued.png', '/old');
+    store.dispose();
+  });
+  it('drops changed and pruned tool entries, and ignores a disposed in-flight completion', async () => {
+    const pending = deferred();
+    const store = createSavedImageStore(async () => pending.promise);
+    store.sync('s', '/w', [candidate('same', 'old.png')]);
+    await flush();
+    store.sync('s', '/w', [candidate('same', 'new.png')]);
+    store.dispose();
+    pending.resolve(source);
+    await flush();
+    expect(store.get('same', 'old.png')).toBeUndefined();
+    expect(store.get('same', 'new.png')).toBeUndefined();
+  });
+  it('only queues the newest bounded set and does not reread retained entries on feed updates', async () => {
+    const load = vi.fn(async () => source);
+    const store = createSavedImageStore(load);
+    const candidates = Array.from({ length: SAVED_IMAGE_COUNT + 4 }, (_, i) => candidate(String(i)));
+    store.sync('s', '/w', candidates);
+    for (let i = 0; i < 20; i++) await flush();
+    expect(load).toHaveBeenCalledTimes(SAVED_IMAGE_COUNT);
+    expect(store.get('0', '0.png')).toBeUndefined();
+    store.sync('s', '/w', candidates);
+    await flush();
+    expect(load).toHaveBeenCalledTimes(SAVED_IMAGE_COUNT);
+    store.sync('s', '/w', []);
+    expect(store.get('35', '35.png')).toBeUndefined();
+    store.dispose();
+  });
+  it('rejects a remote URL returned by the loader instead of fetching it', async () => {
+    const store = createSavedImageStore(async () => ({ mime: 'image/png', dataUrl: 'https://example.test/track.png' }));
+    store.sync('s', '/w', [candidate('bad')]);
+    await flush();
+    expect(store.get('bad', 'bad.png')).toEqual({ state: 'unavailable', reason: 'Invalid workspace image source.' });
+    store.dispose();
+  });
+  it('does not start a stale request disposed before its first microtask', async () => {
+    const load = vi.fn(async () => source);
+    const store = createSavedImageStore(load);
+    store.sync('s', '/w', [candidate('never-start')]);
+    store.dispose();
+    await flush();
+    expect(load).not.toHaveBeenCalled();
+  });
+  it('shares native read permits across disposed and replacement controllers', async () => {
+    const first = deferred(); const second = deferred();
+    const oldLoad = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const oldStore = createSavedImageStore(oldLoad);
+    oldStore.sync('old', '/old', [candidate('one'), candidate('two')]);
+    await flush();
+    oldStore.dispose();
+    const newLoad = vi.fn(async () => source);
+    const newStore = createSavedImageStore(newLoad);
+    newStore.sync('new', '/new', [candidate('replacement')]);
+    await flush();
+    expect(newLoad).not.toHaveBeenCalled();
+    first.resolve(source);
+    await flush();
+    expect(newLoad).toHaveBeenCalledOnce();
+    expect(newStore.get('replacement', 'replacement.png')?.state).toBe('ready');
+    second.resolve(source);
+    await flush();
+    newStore.dispose();
+  });
+  it('enforces the aggregate byte budget and releases it when completed tools leave the feed', async () => {
+    const size = 8 * 1024 * 1024;
+    const large = { mime: 'image/png', dataUrl: `data:image/png;base64,${'A'.repeat(Math.floor(size / 3) * 4)}AAA=` };
+    const store = createSavedImageStore(async () => large);
+    store.sync('s', '/w', Array.from({ length: 5 }, (_, i) => candidate(String(i))));
+    for (let i = 0; i < 6; i++) await flush();
+    expect(store.get('3', '3.png')?.state).toBe('ready');
+    expect(store.get('4', '4.png')).toEqual({ state: 'unavailable', reason: 'Generated image previews reached the 32 MiB session limit.' });
+    store.sync('s', '/w', [candidate('fresh')]);
+    await flush();
+    expect(store.get('fresh', 'fresh.png')?.state).toBe('ready');
+    store.dispose();
+  });
+});

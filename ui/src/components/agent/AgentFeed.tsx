@@ -210,7 +210,17 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
 
 function Work(props: { agent: AgentController; block: () => Extract<Block, { type: "work" }> }) {
   const a = props.agent;
-  const steps = createMemo(() => props.block().tools.map((tool) => toStep(tool, workChildren(a.feed(), tool), a.props.workspacePath, (path, line) => void a.openInEditor(path, line), (id) => a.setViewing(id))));
+  const steps = createMemo(() => props.block().tools.map((tool) => {
+    const step = toStep(tool, workChildren(a.feed(), tool), a.props.workspacePath, (path, line) => void a.openInEditor(path, line), (id) => a.setViewing(id));
+    if (!step.savedPath || step.images?.length || step.status !== "completed") return step;
+    const image = a.savedImage(`${tool.sessionId}:${tool.toolCallId}`, step.savedPath);
+    if (image?.state === "ready") {
+      const item = image.attachment;
+      step.images = [{ id: item.id, name: item.name, mime: item.mime, src: image.src, onOpen: () => a.openAttachment(item) }];
+      step.savedImageNote = "Workspace image preview loaded.";
+    } else step.savedImageNote = image?.state === "pending" ? "Loading workspace image preview..." : image?.state === "unavailable" ? image.reason : "Preview is unavailable for this older generated image.";
+    return step;
+  }));
   const summary = createMemo(() => workSummary(steps()));
   const bypass = () => Boolean(a.state().agent?.features.editsBypassReview) && steps().some((step) => step.kind === "edit" && !step.internal);
   return (

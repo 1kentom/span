@@ -11,6 +11,20 @@ pub struct RasterImage {
 }
 
 impl CoreWorkspace {
+    /// Agent paths are untrusted. Check the originating workspace before resolving the path.
+    pub fn read_agent_image(
+        &self,
+        path: &str,
+        expected_workspace_root: &str,
+    ) -> Result<RasterImage> {
+        if self.workspace().root != expected_workspace_root {
+            return Err(CoreError::InvalidEdit(
+                "The workspace changed before the generated image could be read".into(),
+            ));
+        }
+        self.read_image(path, 8 * 1024 * 1024)
+    }
+
     /// Local Markdown raster images only. Workspace canonicalization blocks escaping links.
     pub fn read_image(&self, path: &str, max_bytes: usize) -> Result<RasterImage> {
         let path = self.resolve(path)?;
@@ -327,6 +341,56 @@ mod tests {
             .unwrap()
             .read_image("fixture.image", 8 * 1024 * 1024)
     }
+    #[test]
+    fn agent_images_require_the_exact_originating_workspace_and_stay_inside_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("image.png"), TINY_PNG).unwrap();
+        fs::write(outside.path().join("outside.png"), TINY_PNG).unwrap();
+        let workspace = CoreWorkspace::open(directory.path()).unwrap();
+        let root = workspace.workspace().root;
+        for path in [
+            "image.png".to_owned(),
+            directory.path().join("image.png").display().to_string(),
+        ] {
+            assert_eq!(
+                workspace.read_agent_image(&path, &root).unwrap().data,
+                TINY_PNG
+            );
+        }
+        assert!(workspace
+            .read_agent_image("image.png", "stale workspace")
+            .unwrap_err()
+            .to_string()
+            .contains("workspace changed"));
+        assert!(workspace
+            .read_agent_image(
+                &outside.path().join("outside.png").display().to_string(),
+                &root
+            )
+            .is_err());
+        assert!(workspace.read_agent_image("../outside.png", &root).is_err());
+        fs::write(directory.path().join("script.svg"), b"<svg/>").unwrap();
+        assert!(workspace.read_agent_image("script.svg", &root).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_image_symlinks_cannot_escape_the_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("outside.png"), TINY_PNG).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("outside.png"),
+            directory.path().join("linked.png"),
+        )
+        .unwrap();
+        let workspace = CoreWorkspace::open(directory.path()).unwrap();
+        assert!(workspace
+            .read_agent_image("linked.png", &workspace.workspace().root)
+            .is_err());
+    }
+
     #[test]
     fn compressed_oversized_png_is_rejected_before_browser_decode() {
         let mut image = TINY_PNG.to_vec();

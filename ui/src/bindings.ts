@@ -101,7 +101,7 @@ export const commands = {
 	/**  Reads one file of the latest native drop as base64, refusing anything larger than `max_bytes`. */
 	readDroppedFile: (path: string, maxBytes: number) => __TAURI_INVOKE<string>("read_dropped_file", { path, maxBytes }),
 	openExternal: (url: string) => __TAURI_INVOKE<null>("open_external", { url }),
-	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
+	readImage: (path: string, expectedWorkspaceRoot: string | null) => __TAURI_INVOKE<ImageSource>("read_image", { path, expectedWorkspaceRoot }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
 	syntax: (path: string) => __TAURI_INVOKE<SyntaxSnapshot>("syntax", { path }),
 	/**
