@@ -135,7 +135,15 @@ struct Delegation {
     waiting_for_user: u32,
     /// The task that finished last, for a usage report that arrives late.
     last_finished: Option<String>,
+    /// Bumped by every task, so an idle timer knows no prompt came since.
+    generation: u64,
+    /// Span ended the child after it sat idle: `message` is refused.
+    closed: bool,
 }
+
+/// Why a child was closed while idle, as the lead reads it.
+pub const IDLE_CLOSED: &str =
+    "this child session was closed after sitting idle with no message; delegate again to start a new one";
 
 #[derive(Default)]
 struct Inner {
@@ -203,6 +211,8 @@ impl Registry {
                 edit_rejected: false,
                 waiting_for_user: 0,
                 last_finished: None,
+                generation: 0,
+                closed: false,
             },
         );
     }
@@ -222,11 +232,15 @@ impl Registry {
             .delegations
             .get_mut(key)
             .ok_or("Unknown delegated session")?;
+        if delegation.closed {
+            return Err(IDLE_CLOSED.into());
+        }
         delegation.meter.turn_allowed(&delegation.budget)?;
         if let Some((_, detail)) = delegation.meter.over(&delegation.budget, second) {
             return Err(format!("budget spent: {detail}"));
         }
         delegation.meter.turns += 1;
+        delegation.generation += 1;
         let status = if delegation.queue.is_empty() {
             TaskStatus::Running
         } else {
@@ -690,8 +704,72 @@ impl Registry {
         self.inner().tasks.get(task_id).map(|t| t.key.clone())
     }
 
-    pub fn children(&self) -> Vec<SessionKey> {
-        self.inner().delegations.keys().cloned().collect()
+    /// The child's task generation when it has no running or queued task
+    /// and is still open, else `None`. An idle timer starts from this.
+    pub fn idle(&self, key: &SessionKey) -> Option<u64> {
+        let inner = self.inner();
+        let d = inner.delegations.get(key)?;
+        (d.queue.is_empty() && !d.closed).then_some(d.generation)
+    }
+
+    /// Mark the child closed if no task started since `generation` and none
+    /// is queued. True when the caller must now end its session.
+    pub fn close_if_idle(&self, key: &SessionKey, generation: u64) -> bool {
+        let mut inner = self.inner();
+        let Some(d) = inner.delegations.get_mut(key) else {
+            return false;
+        };
+        if d.closed || d.generation != generation || !d.queue.is_empty() {
+            return false;
+        }
+        d.closed = true;
+        drop(inner);
+        self.bump();
+        true
+    }
+
+    /// Children with a running or queued task.
+    pub fn busy_children(&self) -> usize {
+        self.inner()
+            .delegations
+            .values()
+            .filter(|d| !d.queue.is_empty())
+            .count()
+    }
+
+    /// The lead's children together, against the lead's total budget:
+    /// `Err` with the reason once `max_turns` prompts or `max_tokens`
+    /// measured tokens were spent across all of them.
+    pub fn lead_budget_left(&self, max_turns: u32, max_tokens: Option<u64>) -> Result<(), String> {
+        let inner = self.inner();
+        let turns: u32 = inner.delegations.values().map(|d| d.meter.turns).sum();
+        if turns >= max_turns {
+            return Err(format!(
+                "budget spent: this lead's children together already ran {turns} turns, the lead's total of {max_turns}"
+            ));
+        }
+        if let Some(max) = max_tokens {
+            let used: u64 = inner
+                .delegations
+                .values()
+                .filter_map(|d| d.meter.used_tokens())
+                .sum();
+            if used >= max {
+                return Err(format!(
+                    "budget spent: this lead's children together used about {used} tokens, the lead's total of {max}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Every child with the agent name it was delegated to.
+    pub fn children_with_agents(&self) -> Vec<(SessionKey, String)> {
+        self.inner()
+            .delegations
+            .iter()
+            .map(|(key, d)| (key.clone(), d.agent.clone()))
+            .collect()
     }
 
     pub fn record_decision(&self, decision: DecisionRecord) {
@@ -871,6 +949,44 @@ mod tests {
         registry.finish(&id, Err("late".into()));
         let task = registry.view(&id, Duration::from_secs(1)).unwrap().task;
         assert_eq!(task.reason, Some(FailureReason::Cancelled));
+    }
+
+    #[test]
+    fn an_idle_child_closes_only_when_no_prompt_came_since() {
+        let (registry, key, id) = registry();
+        assert_eq!(registry.idle(&key), None, "a running task is not idle");
+        registry.finish(&id, Ok(()));
+        let generation = registry.idle(&key).unwrap();
+        // A message arrives before the timer fires: no close.
+        let next = registry.start_task(&key, None, SECOND).unwrap();
+        assert!(!registry.close_if_idle(&key, generation));
+        registry.finish(&next, Ok(()));
+        let generation = registry.idle(&key).unwrap();
+        assert!(registry.close_if_idle(&key, generation));
+        assert!(!registry.close_if_idle(&key, generation), "closed once");
+        assert_eq!(registry.idle(&key), None);
+        assert_eq!(
+            registry.start_task(&key, None, SECOND).unwrap_err(),
+            IDLE_CLOSED
+        );
+    }
+
+    #[test]
+    fn the_lead_total_budget_sums_every_child() {
+        let registry = Registry::default();
+        for name in ["a", "b"] {
+            let key = SessionKey::new("c", name);
+            registry.add_delegation(key.clone(), "worker".into(), Budget::default());
+            let id = registry.start_task(&key, None, SECOND).unwrap();
+            registry.finish(&id, Ok(()));
+        }
+        assert!(registry.lead_budget_left(3, None).is_ok());
+        let refused = registry.lead_budget_left(2, None).unwrap_err();
+        assert!(
+            refused.contains("together already ran 2 turns"),
+            "{refused}"
+        );
+        assert_eq!(registry.busy_children(), 0);
     }
 
     #[test]

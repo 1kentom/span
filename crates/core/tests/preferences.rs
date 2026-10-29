@@ -1130,6 +1130,48 @@ fn agent_health_check_is_on_by_default_and_honoured_only_from_user_settings() {
 }
 
 #[test]
+fn agent_usage_prices_are_honoured_only_from_user_settings() {
+    let directory = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let user = home.path().join("settings.jsonc");
+    let workspace = CoreWorkspace::open(directory.path())
+        .unwrap()
+        .with_user_settings(Some(user.clone()));
+    assert!(Settings::default().agents.usage.prices.is_empty());
+    fs::create_dir_all(directory.path().join(".span")).unwrap();
+    fs::write(
+        directory.path().join(".span/settings.jsonc"),
+        "{ \"agents\": { \"usage\": { \"prices\": { \"gpt-5.5\": { \"input\": 0, \"output\": 0 } } } } }",
+    )
+    .unwrap();
+    assert!(workspace
+        .get_settings()
+        .unwrap()
+        .agents
+        .usage
+        .prices
+        .is_empty());
+    fs::write(
+        &user,
+        "{ \"agents\": { \"usage\": { \"prices\": { \"my-model\": { \"input\": 1.5, \"output\": 6, \"cacheRead\": 0.15 } } } } }",
+    )
+    .unwrap();
+    let prices = workspace.get_settings().unwrap().agents.usage.prices;
+    let price = prices.get("my-model").unwrap();
+    assert_eq!(
+        (price.input, price.output, price.cache_read),
+        (1.5, 6.0, Some(0.15))
+    );
+    assert!(!prices.contains_key("gpt-5.5"));
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../settings.schema.json")).unwrap();
+    assert_eq!(
+        schema["properties"]["agents"]["properties"]["usage"]["properties"]["prices"]["default"],
+        serde_json::json!({})
+    );
+}
+
+#[test]
 fn agent_delegation_is_on_by_default_and_honoured_only_from_user_settings() {
     let directory = tempdir().unwrap();
     let home = tempdir().unwrap();

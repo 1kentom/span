@@ -1,0 +1,83 @@
+{
+  "quirk": "A delegated child on Claude while the user opted Claude chats in to its own default mode (agents.startMode.claude = agentDefault): the child still starts in the approval mode (ListAgents left out, bypassPermissions changed to default), and session/new asks claude-agent-acp not to persist the session (persistSession false, spread into the Agent SDK options), so it stays out of Claude's resume list.",
+  "userSettings": {
+    "agents": {
+      "startMode": {
+        "claude": "agentDefault"
+      }
+    }
+  },
+  "drive": [
+    {
+      "do": "newChildSession"
+    }
+  ],
+  "events": [
+    {
+      "kind": "session",
+      "sessionId": "c-1"
+    },
+    {
+      "kind": "config",
+      "sessionId": "c-1",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "default"
+        },
+        {
+          "id": "model",
+          "currentValue": "sonnet"
+        }
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newChildSession",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "notice",
+      "hint": "permissionsBypassed"
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "bypassPermissions"
+        },
+        {
+          "id": "model"
+        }
+      ]
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/new",
+      "params": {
+        "_meta": {
+          "claudeCode": {
+            "options": {
+              "disallowedTools": [
+                "ListAgents"
+              ],
+              "persistSession": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "c-1",
+        "configId": "mode",
+        "value": "default"
+      }
+    }
+  ]
+}

@@ -15,6 +15,7 @@
 //! - `debugExclude`: text that must not appear in the `Debug` output of any event.
 //! - `userSettings`: the user's settings file content. Without it the user
 //!   has no settings file, so every agent starts in the approval mode.
+//! - A `newChildSession` step opens a delegated child session.
 //! - A `listSessions` step's `expectSessions` lists the session ids the
 //!   client returns, in order.
 use serde_json::{json, Value};
@@ -231,6 +232,7 @@ async fn replay(agent: &str, name: &str) {
                 .new_session_with(mcp_servers.clone())
                 .await
                 .map(|id| session = id),
+            "newChildSession" => service.new_child_session().await.map(|id| session = id),
             "prompt" => {
                 *policy.lock().unwrap() = step["permission"].as_str().unwrap_or("allow").into();
                 service.prompt(session.clone(), text("text"), vec![]).await
@@ -523,6 +525,18 @@ fixture!(
     opencode_start_mode_changes_nothing,
     "opencode",
     "start-mode"
+);
+// A delegated child always starts in the approval mode, whatever the user's
+// start mode for chats, and asks Claude not to persist it (ADR 0003).
+fixture!(
+    codex_child_ignores_agent_default_start_mode,
+    "codex",
+    "child-start-mode"
+);
+fixture!(
+    claude_child_session_meta_and_start_mode,
+    "claude",
+    "child-session"
 );
 fixture!(
     generic_start_mode_approval_leaves_bypass,

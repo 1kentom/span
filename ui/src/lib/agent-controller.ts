@@ -49,6 +49,7 @@ import { createThreadRegistry } from "./agent-threads/threads";
 import type { Thread, ThreadEvents } from "./agent-threads/thread";
 import { sessionKeyId } from "./agent-stores/live-sessions";
 import { editQueuedEntry, mergeQueued } from "./agent-threads/thread-queue";
+import { createUsageRecorder } from "./usage";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 
 const DELEGATION_POLL_MS = 3000;
@@ -499,6 +500,7 @@ export function createAgentController(props: AgentPanelProps) {
     const value = (event as { sessionId?: unknown }).sessionId;
     return typeof value === "string" && value ? value : undefined;
   };
+  const usageRecorder = createUsageRecorder();
   function noteTool(event: AgentEvent) {
     if (event.kind !== "tool") return;
     const id = `${event.sessionId}:${event.toolCallId}`;
@@ -512,6 +514,9 @@ export function createAgentController(props: AgentPanelProps) {
     const target = sessionOf(event);
     const connection = connectionKey();
     noteTool(event);
+    // Usage counters for the Usage page (ADR 0012): one patch per finished turn of any chat on this connection.
+    const usagePatch = usageRecorder.observe(event, { agentId: agentId(), model: ((target && target !== session ? threadOf(connection, target)?.state().conversation.config : state().config) ?? []).find((option) => option.category === "model")?.currentValue });
+    if (usagePatch) void recordSessionMeta(usagePatch);
     const background = target && target !== session ? threadOf(connection, target) : undefined;
     if (background && background !== untrack(focused)) {
       // A chat in the background keeps working: its events update its own thread, never the open chat.
@@ -685,6 +690,7 @@ export function createAgentController(props: AgentPanelProps) {
       }
       await resumeChat(last.sessionId);
       if (sessionId() !== last.sessionId) patch({ failure: undefined });
+      else if (freshAtRestore) releaseUnusedSession(freshAtRestore);
     } finally {
       restoringLast = false;
       // The chat that was open could not be reopened, so the session left is a new one and gets its options back.
@@ -693,6 +699,23 @@ export function createAgentController(props: AgentPanelProps) {
       const agent = agentId();
       if (id && agent) writeLastSession(workspace, { agentId: agent, sessionId: id });
     }
+  }
+  /**
+   * The connect before a restore opens a session that the resumed chat replaces at once. Close it (never delete) where
+   * the agent can, so it does not linger as an empty live session. Only an idle session that never ran a turn.
+   */
+  function releaseUnusedSession(id: string) {
+    const runtime = runtimeOf(id);
+    if (!canClose() || id === sessionId() || (runtime && (runtime.state !== "idle" || runtime.queued > 0))) return;
+    const gone = threadOf(connectionKey(), id);
+    if (gone && gone.state().conversation.feed.length) return;
+    void api
+      .agentCloseSession(id)
+      .then(() => {
+        const thread = threadOf(connectionKey(), id);
+        if (thread && thread !== untrack(focused)) threads.close(thread.key);
+      })
+      .catch(() => undefined);
   }
   /**
    * Starts `name` in a new session. With `switching` (the agent pickers), a chat with messages that moves to another

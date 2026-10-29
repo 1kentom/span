@@ -108,11 +108,14 @@ export function threadRowMeta(thread: Thread): ThreadRowMeta {
 
 /**
  * The listed sessions History shows, in order: an earlier segment is left out when a later segment of its thread is
- * listed as well, so a chat that switched agent appears once.
+ * listed as well, so a chat that switched agent appears once. A delegated child (its metadata has a `parent` link to
+ * the lead) is never a row of its own: it belongs to the lead's thread, where its delegation card shows it (ADR 0003).
  */
 export function visibleThreadRows(listed: readonly string[], metas: readonly SessionMeta[], agentId: string | undefined): string[] {
   const present = new Set(listed);
+  const children = new Set(metas.filter((entry) => entry.parent).map((entry) => entry.sessionId));
   return listed.filter((id) => {
+    if (children.has(id)) return false;
     const { segments } = threadOf(metas, agentId, id);
     const own = segments.findIndex((segment) => segment.sessionId === id);
     return own < 0 || !segments.slice(own + 1).some((later) => present.has(later.sessionId));

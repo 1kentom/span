@@ -21,6 +21,14 @@ impl Quirks for Claude {
     fn approval_session_meta(&self) -> Option<Value> {
         Some(json!({ "claudeCode": { "options": { "disallowedTools": PEER_SESSION_TOOLS } } }))
     }
+    /// claude-agent-acp spreads `_meta.claudeCode.options` into the Agent
+    /// SDK options (0.98.0 source, `...userProvidedOptions`), and the SDK's
+    /// `persistSession: false` keeps the session out of ~/.claude/projects,
+    /// so it never shows in Claude's resume list. Not run against a live
+    /// agent.
+    fn ephemeral_session_meta(&self) -> Option<Value> {
+        Some(json!({ "claudeCode": { "options": { "persistSession": false } } }))
+    }
     /// Claude drops a stdio MCP server that carries an explicit
     /// `type: "stdio"`, so stdio servers are sent without a `type` field.
     fn mcp_server(&self, mut server: Value) -> Option<Value> {
@@ -43,5 +51,18 @@ impl Quirks for Claude {
         let mut notice = json!({"sessionUpdate": "notice", "severity": "info", "title": ""});
         annotate(&mut notice, "hint", json!(AgentHint::InterruptedByUser));
         vec![notice]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn span_owned_sessions_ask_claude_not_to_persist_them() {
+        assert_eq!(
+            Claude.ephemeral_session_meta(),
+            Some(json!({"claudeCode": {"options": {"persistSession": false}}}))
+        );
     }
 }
