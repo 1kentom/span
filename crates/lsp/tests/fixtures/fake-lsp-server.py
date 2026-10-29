@@ -1,7 +1,7 @@
 """Minimal fake LSP server for manager tests.
 
 Usage: fake-lsp-server.py MODE
-Modes: progress, progress-open, nav, nav-flat, nav-modified, nav-hang (navigation requests), normal, slow-exit, slow-init, bad-init, nodef, hang, slow-shutdown, save-text, save
+Modes: progress, progress-open, nav, nav-flat, nav-modified, nav-hang (navigation requests), normal, slow-exit, slow-init, bad-init, nodef, hang, slow-shutdown, save-text, save, watched
 Every message received is appended as one JSON line to $FAKE_LSP_LOG.
 """
 import json
@@ -153,7 +153,8 @@ while True:
         break
     method = msg.get("method")
     if method is None:
-        log({"method": "response", "id": msg.get("id"), "result": msg.get("result")})
+        log({"method": "response", "id": msg.get("id"), "result": msg.get("result"),
+             "pid": os.getpid()})
         continue
     log({"method": method, "params": msg.get("params"), "id": msg.get("id"),
          "pid": os.getpid()})
@@ -185,6 +186,10 @@ while True:
             sys.stderr.flush()
         send({"id": "srv-1", "method": "workspace/configuration",
               "params": {"items": [{"section": "x"}]}})
+        if mode == "watched":
+            send({"id": "watch-1", "method": "client/registerCapability", "params": {
+                "registrations": [{"id": "java-files", "method": "workspace/didChangeWatchedFiles",
+                                   "registerOptions": {"watchers": [{"globPattern": "**/*.java"}]}}]}})
         if mode.startswith("progress"):
             progress_burst(mode)
     elif method == "textDocument/didOpen":

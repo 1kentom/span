@@ -11,6 +11,7 @@ use crate::protocol::{
 };
 use crate::trace::Trace;
 use crate::transport::{StdioReader, StdioWriter};
+use crate::watched_files::{WatchedFiles, MAX_BATCH};
 use lsp_types::*;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -62,6 +63,7 @@ pub struct LspClient {
     /// `initialize` result.
     type_hierarchy: Arc<AtomicBool>,
     workspace_folders: Arc<StdMutex<Vec<WorkspaceFolder>>>,
+    watched_files: Mutex<WatchedFiles>,
     trace: Option<Arc<Trace>>,
 }
 
@@ -153,6 +155,7 @@ impl LspClient {
             capabilities: Arc::new(StdMutex::new(None)),
             type_hierarchy: Arc::new(AtomicBool::new(false)),
             workspace_folders: Arc::new(StdMutex::new(Vec::new())),
+            watched_files: Mutex::new(WatchedFiles::default()),
             trace,
         })
     }
@@ -392,6 +395,20 @@ impl LspClient {
 
     pub async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         let folders = params.workspace_folders.clone().unwrap_or_default();
+        #[allow(deprecated)]
+        let watch_folders = if folders.is_empty() {
+            params
+                .root_uri
+                .clone()
+                .map(|uri| WorkspaceFolder {
+                    uri,
+                    name: "workspace".into(),
+                })
+                .into_iter()
+                .collect()
+        } else {
+            folders.clone()
+        };
         let value = serde_json::to_value(params)?;
         let result = self
             .send_request("initialize".to_string(), Some(value))
@@ -412,6 +429,10 @@ impl LspClient {
             }
         }
 
+        self.watched_files
+            .lock()
+            .await
+            .set_workspace(&watch_folders);
         self.type_hierarchy.store(type_hierarchy, Ordering::SeqCst);
         if let Ok(mut guard) = self.capabilities.lock() {
             *guard = Some(init_result.capabilities.clone());
@@ -768,6 +789,25 @@ impl LspClient {
             .await
     }
 
+    /// Forward only events requested by this client's current registrations.
+    /// Registration mutation and writes share a lock, so an acknowledged unregister
+    /// cannot be followed by a stale matching notification.
+    pub async fn did_change_watched_files(&self, changes: Vec<FileEvent>) -> Result<()> {
+        if changes.len() > MAX_BATCH {
+            return Err(LspError::Protocol(
+                "watched-file batch exceeds 1024 events".into(),
+            ));
+        }
+        let registrations = self.watched_files.lock().await;
+        let changes = registrations.filter(changes);
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let value = serde_json::to_value(DidChangeWatchedFilesParams { changes })?;
+        self.send_notification(crate::watched_files::METHOD.to_string(), Some(value))
+            .await
+    }
+
     pub async fn cancel_request(&self, id: RequestId) -> Result<()> {
         if let Some(pending) = self.pending_requests.write().await.remove(&id) {
             let _ = pending.sender.send(Err(LspError::Cancelled));
@@ -839,9 +879,19 @@ impl LspClient {
                     .unwrap_or(0);
                 Value::Array(vec![serde_json::json!({}); count])
             }
-            "client/registerCapability"
-            | "client/unregisterCapability"
-            | "window/workDoneProgress/create"
+            "client/registerCapability" | "client/unregisterCapability" => {
+                let mut registrations = self.watched_files.lock().await;
+                let result = if method == "client/registerCapability" {
+                    registrations.register(params)
+                } else {
+                    registrations.unregister(params)
+                };
+                return match result {
+                    Ok(()) => self.respond_to_request(id, Value::Null).await,
+                    Err(message) => self.respond_with_error(id, -32602, message).await,
+                };
+            }
+            "window/workDoneProgress/create"
             | "workspace/diagnostic/refresh"
             | "workspace/codeLens/refresh"
             | "workspace/semanticTokens/refresh"
@@ -1006,6 +1056,10 @@ pub fn client_capabilities() -> ClientCapabilities {
                 document_changes: Some(true),
                 resource_operations: Some(vec![]),
                 ..Default::default()
+            }),
+            did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
+                dynamic_registration: Some(true),
+                relative_pattern_support: Some(true),
             }),
             configuration: Some(true),
             workspace_folders: Some(true),

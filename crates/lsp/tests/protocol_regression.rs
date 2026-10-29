@@ -92,6 +92,10 @@ struct Srv {
 }
 
 async fn start(scenario: &str) -> Srv {
+    start_with_params(scenario, InitializeParams::default()).await
+}
+
+async fn start_with_params(scenario: &str, params: InitializeParams) -> Srv {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("server.py");
     std::fs::write(&script, format!("{PRELUDE}\n{scenario}\n")).unwrap();
@@ -102,10 +106,7 @@ async fn start(scenario: &str) -> Srv {
         log.to_string_lossy().into_owned(),
     ]);
     let client = LspClient::spawn(&py, &py_args, None).await.unwrap();
-    client
-        .initialize(InitializeParams::default())
-        .await
-        .unwrap();
+    client.initialize(params).await.unwrap();
     Srv {
         _dir: dir,
         log,
@@ -877,4 +878,311 @@ async fn shutdown_kills_and_reaps_a_server_that_ignores_shutdown_and_exit() {
         None,
         "stubborn child must be gone and reaped"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Dynamically registered workspace file notifications
+// ---------------------------------------------------------------------------
+
+async fn watched_server(root: &Path, operations: Value) -> Srv {
+    let scenario = format!(
+        r##"
+operations = json.loads({})
+while True:
+    m = read()
+    if m is None or m.get("method") == "exit":
+        sys.exit(0)
+    if m.get("method") == "textDocument/hover":
+        step = m["params"]["position"]["character"]
+        if step:
+            op = operations[step - 1]
+            put(frame({{"jsonrpc": "2.0", "id": "watch-" + str(step),
+                       "method": op["method"], "params": op.get("params")}}))
+            r = read()
+            assert r["id"] == "watch-" + str(step), r
+        put(res(m, {{"contents": "ok"}}))
+    elif "id" in m and "method" in m:
+        put(res(m, None))
+"##,
+        json!(operations.to_string())
+    );
+    start_with_params(
+        &scenario,
+        span_lsp::build_initialize_params(root, None).unwrap(),
+    )
+    .await
+}
+
+async fn watch_operation(client: &std::sync::Arc<LspClient>, step: u32) {
+    let c = client.clone();
+    let mut params = hover_params();
+    params.text_document_position_params.position.character = step;
+    let hover = tokio::spawn(async move { c.hover(params).await });
+    let ServerEvent::Request { id, method, params } = next_event(client).await else {
+        panic!("expected server registration request");
+    };
+    client
+        .reply_to_server_request(id, &method, params.as_ref())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), hover)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+fn file_event(path: &Path, typ: FileChangeType) -> FileEvent {
+    FileEvent::new(span_lsp::path_to_uri(path).unwrap(), typ)
+}
+
+fn watched_messages(log: &Path) -> Vec<Value> {
+    received(log)
+        .into_iter()
+        .filter(|m| m["method"] == "workspace/didChangeWatchedFiles")
+        .collect()
+}
+
+#[tokio::test]
+async fn watched_files_register_filter_kinds_normalize_and_unregister_on_wire() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join("project");
+    let src = root.join("src space");
+    let method = "workspace/didChangeWatchedFiles";
+    let s = watched_server(&root, json!([
+        {"method":"client/registerCapability", "params":{"registrations":[
+            {"id":"source", "method":method, "registerOptions":{"watchers":[
+                {"globPattern":{"baseUri":{"uri":span_lsp::path_to_uri(&src).unwrap(),"name":"source"},
+                                "pattern":"**/*.{java,json}"},"kind":3}
+            ]}},
+            {"id":"metadata", "method":method, "registerOptions":{"watchers":[
+                {"globPattern":{"baseUri":span_lsp::path_to_uri(&root.join("config")).unwrap(),"pattern":"**/*.xml"}},
+                {"globPattern":"**/.classpath","kind":4},
+                {"globPattern":format!("{}/**/*.gradle", root.to_string_lossy())}
+            ]}}
+        ]}},
+        {"method":"client/unregisterCapability", "params":{"unregisterations":[
+            {"id":"source", "method":"textDocument/didChange"}
+        ]}},
+        {"method":"client/unregisterCapability", "params":{"unregisterations":[
+            {"id":"source", "method":method}, {"id":"metadata", "method":method}
+        ]}}
+    ])).await;
+    let client = std::sync::Arc::new(s.client);
+    let created = file_event(&src.join("A.java"), FileChangeType::CREATED);
+    client
+        .did_change_watched_files(vec![created.clone()])
+        .await
+        .unwrap();
+    hover_within(&client, 5).await.unwrap();
+    assert!(
+        watched_messages(&s.log).is_empty(),
+        "no blanket notifications before registration"
+    );
+    watch_operation(&client, 1).await;
+    let init = &received(&s.log)[0]["params"]["capabilities"]["workspace"]["didChangeWatchedFiles"];
+    assert_eq!(
+        init,
+        &json!({"dynamicRegistration":true,"relativePatternSupport":true})
+    );
+    // These entries need not exist on disk, including the deleted project files.
+    let normalized_uri = format!(
+        "{}/nested/../B.java",
+        span_lsp::path_to_uri(&src).unwrap().as_str()
+    );
+    let normalized = FileEvent::new(normalized_uri.parse().unwrap(), FileChangeType::CHANGED);
+    let classpath = file_event(&root.join(".classpath"), FileChangeType::DELETED);
+    let config = root.join("config/build.xml");
+    let xml: Vec<_> = [
+        FileChangeType::CREATED,
+        FileChangeType::CHANGED,
+        FileChangeType::DELETED,
+    ]
+    .into_iter()
+    .map(|typ| file_event(&config, typ))
+    .collect();
+    let gradle = file_event(&root.join("build.gradle"), FileChangeType::CHANGED);
+    let nested = file_event(&src.join("nested/Value.json"), FileChangeType::CHANGED);
+    let mut events = vec![
+        created.clone(),
+        created.clone(),
+        normalized,
+        file_event(&src.join("A.java"), FileChangeType::DELETED),
+        file_event(&root.join("outside.java"), FileChangeType::CREATED),
+        file_event(&src.join("notes.txt"), FileChangeType::CREATED),
+        file_event(
+            &workspace.path().join("sibling/src space/A.java"),
+            FileChangeType::CREATED,
+        ),
+        file_event(&root.join("../escape.java"), FileChangeType::CREATED),
+        FileEvent::new(
+            "https://example.test/A.java".parse().unwrap(),
+            FileChangeType::CREATED,
+        ),
+        file_event(&root.join(".classpath"), FileChangeType::CHANGED),
+        classpath.clone(),
+        gradle.clone(),
+        nested.clone(),
+    ];
+    events.extend(xml.clone());
+    client.did_change_watched_files(events).await.unwrap();
+    hover_within(&client, 5).await.unwrap();
+    let messages = watched_messages(&s.log);
+    assert_eq!(messages.len(), 1);
+    let mut expected = vec![
+        created.clone(),
+        file_event(&src.join("B.java"), FileChangeType::CHANGED),
+        classpath,
+        gradle,
+        nested,
+    ];
+    expected.extend(xml);
+    assert_eq!(messages[0]["params"]["changes"], json!(expected));
+    // A matching ID with the wrong method must not unregister this capability.
+    watch_operation(&client, 2).await;
+    client
+        .did_change_watched_files(vec![created.clone()])
+        .await
+        .unwrap();
+    hover_within(&client, 5).await.unwrap();
+    assert_eq!(watched_messages(&s.log).len(), 2);
+    watch_operation(&client, 3).await;
+    client
+        .did_change_watched_files(vec![created])
+        .await
+        .unwrap();
+    hover_within(&client, 5).await.unwrap();
+    assert_eq!(
+        watched_messages(&s.log).len(),
+        2,
+        "unregister stops matching immediately"
+    );
+    let replies: Vec<_> = received(&s.log)
+        .into_iter()
+        .filter(|m| m.get("method").is_none())
+        .collect();
+    assert_eq!(replies.len(), 3);
+    assert!(replies
+        .iter()
+        .all(|r| r.get("error").is_none() && r["result"].is_null()));
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn watched_files_malformed_registration_is_atomic_and_bounded_on_wire() {
+    let workspace = tempfile::tempdir().unwrap();
+    let method = "workspace/didChangeWatchedFiles";
+    let valid = json!({"id":"valid", "method":method, "registerOptions":{"watchers":[{"globPattern":"**/*.java"}]}});
+    let mut operations = vec![
+        json!({"method":"client/registerCapability", "params":{"registrations":[valid.clone(),
+            {"id":"bad", "method":method, "registerOptions":{"watchers":[{"globPattern":"["}]}}
+        ]}}),
+        json!({"method":"client/registerCapability", "params":{"registrations":[
+            {"id":"bad", "method":method, "registerOptions":{"watchers":[{"globPattern":"**/*","kind":8}]}}
+        ]}}),
+        json!({"method":"client/registerCapability", "params":{"registrations":[
+            {"id":"bad", "method":method, "registerOptions":{"watchers":[{"globPattern":{"baseUri":"https://example.test/", "pattern":"**/*"}}]}}
+        ]}}),
+        json!({"method":"client/registerCapability", "params":{"registrations":[
+            {"id":"bad", "method":method, "registerOptions":{"watchers":[{"globPattern":"x".repeat(4097)}]}}
+        ]}}),
+        json!({"method":"client/registerCapability", "params":{"registrations":[valid.clone(), valid.clone()]}}),
+        json!({"method":"client/unregisterCapability", "params":{"unregistrations":[]}}),
+        json!({"method":"client/registerCapability", "params":null}),
+    ];
+    operations.push(json!({"method":"client/registerCapability", "params":{"registrations":[
+        {"id":"big", "method":method, "registerOptions":{"watchers":vec![json!({"globPattern":"**/*"});1025]}}
+    ]}}));
+    let malformed_count = operations.len();
+    operations.push(
+        json!({"method":"client/registerCapability", "params":{"registrations":[valid.clone()]}}),
+    );
+    operations
+        .push(json!({"method":"client/registerCapability", "params":{"registrations":[valid]}}));
+    let s = watched_server(workspace.path(), json!(operations)).await;
+    let client = std::sync::Arc::new(s.client);
+    let event = file_event(&workspace.path().join("A.java"), FileChangeType::CREATED);
+    for step in 1..=malformed_count {
+        watch_operation(&client, step as u32).await;
+        client
+            .did_change_watched_files(vec![event.clone()])
+            .await
+            .unwrap();
+        hover_within(&client, 5).await.unwrap();
+        assert!(
+            watched_messages(&s.log).is_empty(),
+            "step {step} partially registered"
+        );
+    }
+    watch_operation(&client, malformed_count as u32 + 1).await;
+    // Re-registering an installed ID is rejected without changing its existing rules.
+    watch_operation(&client, malformed_count as u32 + 2).await;
+    client
+        .did_change_watched_files(vec![event.clone()])
+        .await
+        .unwrap();
+    assert!(client
+        .did_change_watched_files(vec![event; 1025])
+        .await
+        .is_err());
+    hover_within(&client, 5).await.unwrap();
+    assert_eq!(watched_messages(&s.log).len(), 1);
+    let replies: Vec<_> = received(&s.log)
+        .into_iter()
+        .filter(|m| m.get("method").is_none())
+        .collect();
+    for reply in &replies[..malformed_count] {
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert!(reply.get("result").is_none());
+    }
+    assert!(replies[malformed_count].get("error").is_none());
+    assert_eq!(replies[malformed_count + 1]["error"]["code"], -32602);
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn watched_file_globs_respect_segments_ranges_questions_and_zero_kind() {
+    let workspace = tempfile::tempdir().unwrap();
+    let s = watched_server(workspace.path(), json!([
+        {"method":"client/registerCapability", "params":{"registrations":[
+            {"id":"patterns", "method":"workspace/didChangeWatchedFiles", "registerOptions":{"watchers":[
+                {"globPattern":"assets/?[!0-9]*.[0-9]", "kind":1},
+                {"globPattern":"**/*.ignored", "kind":0}
+            ]}}
+        ]}}
+    ])).await;
+    let client = std::sync::Arc::new(s.client);
+    watch_operation(&client, 1).await;
+    let matched = file_event(
+        &workspace.path().join("assets/ab.1"),
+        FileChangeType::CREATED,
+    );
+    client
+        .did_change_watched_files(vec![
+            matched.clone(),
+            file_event(
+                &workspace.path().join("assets/nested/ab.1"),
+                FileChangeType::CREATED,
+            ),
+            file_event(
+                &workspace.path().join("assets/a0.1"),
+                FileChangeType::CREATED,
+            ),
+            file_event(
+                &workspace.path().join("assets/ab.x"),
+                FileChangeType::CREATED,
+            ),
+            file_event(
+                &workspace.path().join("assets/ab.1"),
+                FileChangeType::CHANGED,
+            ),
+            file_event(&workspace.path().join("a.ignored"), FileChangeType::CREATED),
+        ])
+        .await
+        .unwrap();
+    hover_within(&client, 5).await.unwrap();
+    let messages = watched_messages(&s.log);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["params"]["changes"], json!([matched]));
+    client.shutdown().await.unwrap();
 }
