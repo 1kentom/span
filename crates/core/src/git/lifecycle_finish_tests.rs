@@ -36,9 +36,10 @@ async fn selected_first_push_sets_explicit_upstream_and_refuses_stale_review() {
     git(&local, &["init", "-b", "main"]);
     git(&local, &["commit", "--allow-empty", "-m", "initial"]);
     git(&remote, &["init", "--bare"]);
+    let remote_source = git_path(&remote);
     git(
         &local,
-        &["remote", "add", "chosen", remote.to_str().unwrap()],
+        &["remote", "add", "chosen", remote_source.to_str().unwrap()],
     );
     let service = GitService::new(local.clone()).unwrap();
     let id = service

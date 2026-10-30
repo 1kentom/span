@@ -1,5 +1,11 @@
 # Expanded Git workflows
 
+## Current published status
+
+The structural Git sidebar source is published in [draft PR #225](https://github.com/1kentom/span/pull/225) at `f24b76a`, following merged PR #195. Earlier unpublished-branch and pending-integration statements below are historical checkpoints. Native testing of the exact `f24b76a` ad hoc review app passed local first push, selected-line staging, staged commit, message-only amend, history/reflog and worktree creation. Separate-process opening is only partially verified; child visual/session restoration and native zoom acceptance remain open. User visual acceptance and #210 completion are not claimed.
+
+Exact-head hosted run [41016639250](https://github.com/1kentom/span/actions/runs/41016639250) passed every job except the Windows check, which exposed two test-fixture defects. Fixture-only corrections now pass both focused macOS tests and strict core Clippy; a complete green hosted rerun remains pending. The broader unfinished Git/GitHub scope remains active.
+
 Research checked 2026-10-29 for [#186](https://github.com/1kentom/span/issues/186). This expands the intentionally bounded first local Git cut in [the original research](git-integration-research.md). Source presence, automated verification, installed acceptance and reference-product parity are distinct.
 
 ## Primary-source behavior matrix
@@ -70,16 +76,37 @@ Integration source excludes private `refs/span` entries from all-ref history. Ch
 
 No visual acceptance, completed Git/GitHub objective, release readiness or hosted verification is inferred from these results. The remaining hosted merge, issue actions, review threads, signing setup, interactive rebase, submodule and multi-repository scope stays active. Raw native proof, screenshots and machine-specific artifacts remain local.
 
-## Current branch and integration boundary
+## Historical branch and integration boundary
 
 [PR #195](https://github.com/1kentom/span/pull/195) merged as `b14e0ca`. Main revision `84767a9` includes ignored-file protection for worktree removal and follow-up fixes through [PR #224](https://github.com/1kentom/span/pull/224). The unpublished `feature/git-ui-overhaul` branch at `d8e7b23` contains the initial rails and second structural sidebar design and is now integrating that incoming main.
 
 The 311 core, 203 desktop, 3,194 UI and 28 browser passing results above belong to `d8e7b23`, before this latest integration. They are not verification of the new merge. Latest-merge automated results are recorded below; exact-head hosted checks remain pending. A separate Sidebar Review native app built from `d8e7b23` is installed; actual native acceptance remains pending. Neither rejected visual revision nor issue #210 is accepted or complete. The separately reported caret issue #222 and the broader unfinished Git/GitHub scope remain open.
 
-## Latest incoming-main verification
+## Pre-publication incoming-main verification
 
 The latest integration source passed 3,216 UI tests in 289 files (144.87 seconds), 203 desktop tests (13.81 seconds), and 321 core tests with two ignored (235.63 seconds). The desktop semantic merge restored Show Usage menu handling. Strict workspace Clippy completed successfully in 2 minutes 14 seconds. The final production UI build after authoritative Show Usage binding regeneration passed in 4.18 seconds. These results supersede the earlier pre-integration counts for their respective layers; a final integration commit is still pending.
 
 All 28 Git browser workflows passed in 1.2 minutes with mocked IPC and real rendering checks. The initial run had 27 passes and one timeout and remains a recorded failed run; it is not counted as a pass.
 
 Actual native inspection of the separately installed `d8e7b23` Sidebar Review app exposed spontaneous closing of the outer details-based repository popup. Source now uses an explicit button and a mounted hidden popup, with 14 focused tests passing. A newly built native runtime and acceptance of this correction remain pending. Neither the automated passes nor this identified native defect establishes visual acceptance or completion of #210. Exact-head hosted checks and the broader Git/GitHub completion gates remain open.
+
+## Exact-source native and hosted follow-up
+
+The separate macOS ad hoc Sidebar Review app uses source `f24b76ae91a308370942d363d6b50df95f41b0f6` and binary SHA256 `880f9ee8adf067821f26bbb37d0f29dc007eec219eb5f7668ed172aca2ca8c99`. Actual native interaction and independent repository inspection established:
+
+- First push to a disposable local bare remote sent the exact reviewed SHA and set the explicit upstream, while retaining dirty working files.
+- Selecting one removed line changed only the index; the replacement remained unstaged and the working-file hash stayed unchanged.
+- A staged commit included the two reviewed staged files and left the README modification and untracked file outside the commit.
+- Message-only amend replaced HEAD while retaining its tree and parent and preserving the remaining working files.
+- Native history displayed the amended HEAD, initial commit and real branch/remote decorations. HEAD reflog displayed the amend, preceding commit and initial commit.
+- New-branch linked-worktree creation succeeded. Open in new window launched a separate process at the correct linked root while retaining the parent. Child visual/session restoration remains unverified because the app binding selected the parent process.
+
+Repository-popup stability now passed native refresh observations after the repository-identity effect fix. Earlier native attempts remain failures: `d8e7b23` closed the details disclosure spontaneously, and `0bfec5c9` still dismissed the popup despite using an explicit button. They are not substituted for the corrected runtime's result.
+
+A one-step native zoom observation showed a stale Worktrees underline while accessibility reported Changes selected. Native zoom acceptance is not established and requires further investigation. User visual acceptance remains pending.
+
+Hosted run [41016639250](https://github.com/1kentom/span/actions/runs/41016639250) at exact source `f24b76a` passed all jobs except Windows. Its first-push fixture compared a canonicalized verbatim URL against a raw path, and a partial-staging fixture used filenames illegal on Windows. These failures are retained. Follow-up changes are restricted to tests, preserving Unix hostile-name cases and adding legal cross-platform cases with target and disk assertions; no production Windows routing change is claimed. The corrected complete hosted run remains pending.
+
+Raw fixture metadata, process identifiers, machine paths and screenshots remain local and ignored. These results do not close #210, #222, child-session/zoom gates or the broader hosted collaboration and Git parity requirements.
+
+The two fixture corrections passed their focused macOS tests: first-push review/upstream in 1.14 seconds and literal-path staging isolation in 9.75 seconds. These local passes do not verify Windows; follow-up strict core Clippy and hosted Windows execution remain pending. Further native interaction stopped when user activity moved the review app to the main workspace; no edits were performed there. Native auto-fetch/merge follow-up remains pending.

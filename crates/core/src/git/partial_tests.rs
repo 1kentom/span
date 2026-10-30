@@ -219,7 +219,16 @@ async fn stale_reviews_and_foreign_ids_never_mutate_the_index() {
 
 #[tokio::test]
 async fn literal_paths_and_diff_prefixes_cannot_stage_another_file() {
-    for path in ["literal file\".txt", ":(glob)*", "--option"] {
+    let paths = [
+        "literal file.txt",
+        "café.txt",
+        "author's file.txt",
+        "[glob].txt",
+        "--option",
+    ];
+    #[cfg(unix)]
+    let paths = paths.into_iter().chain(["literal file\".txt", ":(glob)*"]);
+    for path in paths {
         let f = Fixture::new(Some("a\n"), Some("b\n"), path);
         f.git(&["config", "diff.noprefix", "true"]);
         f.git(&["config", "diff.mnemonicprefix", "true"]);
@@ -256,6 +265,8 @@ async fn literal_paths_and_diff_prefixes_cannot_stage_another_file() {
         .await
         .unwrap();
         assert_eq!(f.git(&["ls-files", "--stage", "--", "unrelated"]), before);
+        assert_eq!(f.git(&["show", &format!(":{path}")]), b"b\n");
+        assert_eq!(fs::read(f.0.path().join(path)).unwrap(), b"b\n");
     }
 }
 
