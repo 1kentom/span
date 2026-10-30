@@ -1,0 +1,151 @@
+/*
+ * Zen mode: only the editor and the AI Assistant stay. The top bar keeps its height so the native window controls and
+ * the drag region stay where they are and the editor never moves vertically; everything else in it goes away.
+ * Remaining surfaces share one 14px inset and radius, the same shape as the bars stacked on the prompt box.
+ */
+.ide.zen {
+  --zen-inset: 14px;
+  --zen-radius: 14px;
+  --zen-center-width: 1040px;
+}
+
+/* Chrome that zen hides. The state behind it is untouched, so leaving zen shows it again exactly as it was. */
+.ide.zen .top-left > :not(.traffic-lights),
+.ide.zen .topbar > :is(.top-center, .top-right),
+.ide.zen .statusbar,
+.ide.zen .panel-handle {
+  display: none;
+}
+.ide.zen.zen-no-line-numbers .cm-lineNumbers {
+  display: none;
+}
+
+/* Remaining surfaces: one inset around and between them, one radius. */
+.ide.zen .workbench-main {
+  padding: 0 var(--zen-inset) var(--zen-inset);
+}
+.ide.zen .workbench-main .panel {
+  border-radius: var(--zen-radius);
+}
+.ide.zen .workbench-main > .assistant-panel:not(.sidebar-overlay) {
+  margin-left: var(--zen-inset);
+}
+.ide.zen .run-bottom-panel {
+  margin-top: var(--zen-inset);
+}
+
+/* Centered layout, only while the AI Assistant is closed (see zenChrome). */
+.ide.zen.zen-centered .center-area {
+  flex: 0 1 var(--zen-center-width);
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+/* A project panel opened from zen (Search, Files) floats over the editor and closes back to zen. */
+.ide.zen .workbench-main.managed-panel-layout > .explorer-panel.sidebar-overlay {
+  left: var(--zen-inset);
+  bottom: var(--zen-inset);
+  outline: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+/* Agents page: only the thread. The rail and the side panel keep their own state for when zen ends. */
+.ide.zen-agents .ap-page > :is(.ap-rail, .ap-grip, .ap-rail-restore, .ap-side, .ap-scrim) {
+  display: none;
+}
+
+/* The top edge: a drag strip that reveals the pill on hover. It leaves room for the window controls on either side. */
+.zen-edge {
+  position: fixed;
+  top: 0;
+  left: 96px;
+  right: 96px;
+  height: 36px;
+  z-index: 40;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.zen-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(420px, 100%);
+  height: 28px;
+  padding: 0 4px 0 12px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  background: var(--popup);
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 16px;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+.zen-edge:hover .zen-pill,
+.zen-pill:focus-within,
+.ide.zen-revealed .zen-pill {
+  opacity: 1;
+  transform: none;
+}
+.zen-pill > .file-icon,
+.zen-pill > .icon {
+  flex: none;
+}
+.zen-pill-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.zen-exit {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  border-radius: 8px;
+  color: var(--dim);
+}
+.zen-exit:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.zen-exit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.zen-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Settings > Appearance group heading spacing. */
+.zen-settings {
+  margin-top: 28px;
+}
+
+/* Entering and leaving zen: a short cross fade instead of panels snapping away. */
+html.zen-transition::view-transition-old(root),
+html.zen-transition::view-transition-new(root) {
+  animation-duration: 150ms;
+  animation-timing-function: cubic-bezier(.2, .8, .2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .zen-pill {
+    transition: none;
+  }
+  html.zen-transition::view-transition-old(root),
+  html.zen-transition::view-transition-new(root) {
+    animation: none;
+  }
+}
