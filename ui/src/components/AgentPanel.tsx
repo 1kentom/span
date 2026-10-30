@@ -2,7 +2,8 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCle
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentController, type AgentPanelProps } from "../lib/agent-controller";
 import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
-import { isNearBottom, relativeTime, pillVisible } from "../lib/agent-feed";
+import { isNativeSubagent, setShowSubagentSessions, showSubagentSessions } from "../lib/subagent-sessions";
+import { relativeTime, pillVisible } from "../lib/agent-feed";
 import { classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
@@ -21,10 +22,13 @@ import { modelCost } from "../lib/model-cost";
 import { EditorToast, OpenRefusal } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
+import { FeedFind } from "./agent/FeedFind";
 import { HistoryList } from "./agent/HistoryList";
 import { ENTER_KEY } from "./agent/KeyGlyph";
 import type { ActionView, KeyHint } from "./agent/types";
 import { modalOpen } from "./agent/util";
+import { createCheckpoints } from "../lib/checkpoints";
+import { CheckpointChanges, CheckpointTimeline, CheckpointUndoToast } from "./agents-page/Checkpoints";
 import "../styles/agent.css";
 
 const KEYS: KeyHint[] = [
@@ -39,6 +43,8 @@ const KEYS: KeyHint[] = [
  */
 export function AgentPanel(props: AgentPanelProps & { controller?: AgentController }) {
   const a = props.controller ?? createAgentController(props);
+  /** Turn checkpoints of the open chat (ADR 0013). Nothing renders for folders without them. */
+  const checkpoints = isDesktop ? createCheckpoints(() => a.state().sessionId ?? undefined) : undefined;
   const [query, setQuery] = createSignal("");
   /** A curated agent's local command, placed in the custom ACP row for the user to confirm. */
   const [customDraft, setCustomDraft] = createSignal<{ command: string }>();
@@ -74,8 +80,11 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
         const target = message();
         if (inComposer() || !target) return undefined;
         return () => {
-          a.setPinned(false);
-          requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
+          a.follow.detach();
+          requestAnimationFrame(() => {
+            const element = feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`);
+            if (element) a.follow.reveal(element);
+          });
         };
       },
       onShowSessionList: () => {
@@ -189,6 +198,8 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
           // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
           locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
           status: a.rowStatus(session.sessionId),
+          subagent: isNativeSubagent(session) || undefined,
+          subagents: a.subagentsFor(session.sessionId).map((child) => ({ id: child.sessionId, title: listedTitle(child.title) || "Untitled subagent" })),
         };
       });
   });
@@ -264,12 +275,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
   createEffect(() => {
     // Markdown and highlighting settle after the feed signal changes, so watch the real height.
     const element = feedElement();
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (a.pinned()) a.scrollToLatest();
-    });
-    observer.observe(element);
-    onCleanup(() => observer.disconnect());
+    if (element) onCleanup(a.follow.observe(element));
   });
 
   return (
@@ -376,10 +382,13 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
       <div class="agent-feed-region">
       <div
         class="agent-content"
-        ref={(element) => (a.scrollers.content = element)}
+        tabIndex={-1}
+        ref={(element) => {
+          a.scrollers.content = element;
+          onCleanup(a.follow.attach(element));
+        }}
         onScroll={(event) => {
           if (a.view() === "history") return;
-          a.setPinned(isNearBottom(event.currentTarget));
           setAway(pillVisible(away(), event.currentTarget));
         }}
       >
@@ -407,7 +416,11 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
                   onQuery={setQuery}
                   scope={a.sessionScope()}
                   onScope={a.setSessionScope}
-                  onOpen={(id) => void a.resumeChat(id)}
+                  onOpen={(id) => void (a.isSubagent(id) ? a.openSubagent(id) : a.resumeChat(id))}
+                  onOpenSubagent={a.state().canLoad ? (id) => void a.openSubagent(id) : undefined}
+                  showSubagents={showSubagentSessions()}
+                  onShowSubagents={setShowSubagentSessions}
+                  subagentCount={a.subagentCount()}
                   onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined}
                   onFork={a.canFork() && a.state().canLoad ? (id) => void a.forkChat(id) : undefined}
                   onExport={a.canExport() ? (id) => void a.exportChat(id) : undefined}
@@ -462,6 +475,14 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
           </Match>
           <Match when={body() === "feed"}>
             <AgentFeed agent={a} ref={setFeedElement} />
+            <Show when={checkpoints}>
+              {(store) => (
+                <div class="agent-pad cp-sidebar">
+                  <CheckpointTimeline store={store()} running={a.running()} onViewChanges={(turn) => store().viewTurn(turn)} />
+                  <CheckpointChanges store={store()} running={a.running()} onOpenFile={(path) => void a.openInEditor(path)} />
+                </div>
+              )}
+            </Show>
             <Show when={!a.connected() && !failure()}>
               <div class="sb-actions agent-pad">
                 <Show when={a.launch()}>
@@ -504,6 +525,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
           </div>
         </Show>
       </div>
+      <FeedFind agent={a} scope={() => panel} feed={feedElement} />
       <button
         type="button"
         class="agent-jump"
@@ -517,7 +539,16 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
         {a.running() ? "New activity" : "Latest"}
       </button>
       </div>
-      <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
+      <Show
+        when={!a.viewingSubagent()}
+        fallback={
+          <p class="agent-subagent-note" role="note">
+            <span class="sb-tag">Subagent</span> Read-only. The agent created this session with its own subagent tool; it belongs to the agent's run.
+          </p>
+        }
+      >
+        <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
+      </Show>
       <Show when={a.viewingItem()}>
         {(item) => {
           const closeViewer = () => {
@@ -537,8 +568,11 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
             const target = message();
             if (!target) return;
             a.setViewing(undefined);
-            a.setPinned(false);
-            requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
+            a.follow.detach();
+            requestAnimationFrame(() => {
+              const element = feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`);
+              if (element) a.follow.reveal(element);
+            });
           };
           return (
             <AttachmentViewer
@@ -566,6 +600,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
         }}
       </Show>
       <DropOverlay visible={a.intake.dragging() || nativeOver() || Boolean(props.dropHover)} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
+      <Show when={checkpoints}>{(store) => <CheckpointUndoToast store={store()} />}</Show>
       <EditorToast name={a.toast()} onDismiss={a.clearToast} />
       <OpenRefusal refusal={a.openRefusal()} onCopy={(path) => api.writeClipboard(path)} onDismiss={a.clearOpenRefusal} />
     </section>

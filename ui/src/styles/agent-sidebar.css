@@ -308,6 +308,8 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-term-line { white-space: pre-wrap; color: var(--sb-dim); }
 .sb-term-line.cmd { color: var(--sb-fg); }
 .sb-term-line.err { color: var(--sb-error); }
+.sb-term-more { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 2px 6px 2px 10px; border-bottom: 1px solid var(--sb-border); font-size: 11px; }
+.sb-term-more > .sb-sub { flex: 1; min-width: 0; }
 .sb-term-foot { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 6px 0 10px; border-top: 1px solid var(--sb-border); font-size: 11px; color: var(--sb-faint); }
 .sb-diff-head { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 10px; border-bottom: 1px solid var(--sb-border); font-size: 11px; color: var(--sb-dim); }
 .sb-diff-head .sb-link { font-family: Inter, system-ui, sans-serif; }
@@ -372,6 +374,15 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-session-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; line-height: 16px; color: var(--sb-faint); }
 .sb-session-meta .sb-delta { font-size: 10.5px; }
 .sb-session-note { font-size: 11px; line-height: 15px; color: var(--sb-faint); }
+/* Native subagent sessions nested under their parent row (ADR 0005, amendment of 2026-10-29). */
+.sb-session-body:has(> .sb-subagents) { flex-direction: column; gap: 4px; }
+.sb-subagents { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sb-subagents-toggle { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; height: 18px; padding: 0 4px; border: 0; border-radius: 3px; background: none; color: var(--sb-faint); font: inherit; font-size: 11px; cursor: pointer; }
+.sb-subagents-toggle:hover, .sb-subagents-toggle:focus-visible { background: var(--sb-hover); color: var(--sb-fg); }
+.sb-subagents-list { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0 0 0 13px; list-style: none; }
+.sb-subagent { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 22px; padding: 0 4px; border: 0; border-radius: 3px; background: none; color: var(--sb-dim); font: inherit; font-size: 11.5px; text-align: left; cursor: pointer; }
+.sb-subagent:hover, .sb-subagent:focus-visible { background: var(--sb-hover); color: var(--sb-fg); }
+.agent-subagent-note { margin: 0; padding: 8px 12px; border-top: 1px solid var(--sb-border); font-size: 11.5px; line-height: 16px; color: var(--sb-faint); }
 .sb-session-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
 .sb-session-time { padding-top: 1px; font-size: 11px; line-height: 15px; color: var(--sb-faint); white-space: nowrap; }
 .sb-session .row-menu { width: 22px; height: 22px; border-radius: 4px; color: var(--sb-faint); }
@@ -479,6 +490,7 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-decision-alts { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 2px 0 2px 16px; list-style: none; font-size: 12px; line-height: 17px; color: var(--sb-dim); overflow-wrap: anywhere; }
 .sb-delegation-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .sb-delegation-name { font-size: 12.5px; font-weight: 500; color: var(--sb-strong); }
+.sb-delegation-model { min-width: 0; font-size: 11px; color: var(--sb-dim); }
 .sb-delegation-status { display: inline-flex; align-items: center; gap: 5px; flex: none; }
 .sb-delegation.failed { background: var(--sb-error-surface); border-color: var(--sb-error-border); }
 .sb-delegation-note { overflow-wrap: anywhere; }
@@ -490,7 +502,7 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-dock-from { font-size: 11px; color: var(--sb-dim); }
 .sb-dock-tabhint { font-size: 11.5px; color: var(--sb-dim); }
 .sb-delegation-result { overflow-wrap: anywhere; white-space: pre-wrap; }
-.sb-delegation-progress, .sb-delegation-files li { overflow-wrap: anywhere; }
+.sb-delegation-progress, .sb-delegation-deliverables, .sb-delegation-files li { overflow-wrap: anywhere; }
 .sb-delegation-files { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
 .sb-delegation-actions { display: flex; gap: 6px; }
 .sb-delegation-open { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; font-size: 11.5px; }

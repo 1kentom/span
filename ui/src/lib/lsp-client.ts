@@ -1,7 +1,7 @@
 import type { Text } from "@codemirror/state";
 import type {
   CompletionListDto_Serialize, DiagnosticsPublished_Deserialize, HoverDto_Serialize, LanguageServerError_Deserialize,
-  LanguageServerId, LanguageServerInstallProgress_Deserialize, LanguageServerStateChanged_Deserialize, LocationDto,
+  LanguageServerId, LanguageServerInstallProgress_Deserialize, LanguageServerStateChanged_Deserialize, LanguageServerWatchRecovery, LocationDto,
   LspErrorDto, LspResponse, PositionDto, RangeDto, ServerStatusDto_Serialize, TextEditDto,
 } from "../bindings";
 
@@ -19,6 +19,8 @@ export interface LspPort {
   onState(listener: (event: LanguageServerStateChanged_Deserialize) => void): Promise<() => void>;
   onInstallProgress(listener: (event: LanguageServerInstallProgress_Deserialize) => void): Promise<() => void>;
   onError(listener: (event: LanguageServerError_Deserialize) => void): Promise<() => void>;
+  /** A server fell behind on file changes and is being refreshed. Optional so fixture ports may leave it out. */
+  onWatchRecovery?(listener: (event: LanguageServerWatchRecovery) => void): Promise<() => void>;
 }
 
 /** Servers the editor wires up, keyed the way the Rust catalog resolves files. */

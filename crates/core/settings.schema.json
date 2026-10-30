@@ -127,7 +127,8 @@
           "goBack",
           "goForward",
           "focusBreadcrumbs",
-          "showUsage"
+          "showUsage",
+          "toggleZenMode"
         ]
       },
       "additionalProperties": {
@@ -471,8 +472,8 @@
           "properties": {
             "importLocalLogs": {
               "type": "boolean",
-              "default": false,
-              "description": "Off by default. Also read Claude Code's (~/.claude/projects) and Codex's (~/.codex/sessions) own local usage logs so the Usage page shows sessions run outside Span. Read only: Span keeps token counts, model ids, session ids and times, never prompt text, and uploads nothing. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
+              "default": true,
+              "description": "On by default. Also read the agents' own local usage logs (Claude Code ~/.claude/projects, Codex ~/.codex/sessions, Gemini CLI ~/.gemini/tmp, OpenCode ~/.local/share/opencode) so the Usage page shows sessions run outside Span. Read only: Span keeps token counts, model ids, session ids and times, never prompt text, and uploads nothing. Set false to turn it off. Honoured only in your user settings (~/.config/span/settings.jsonc); ignored in a workspace .span/settings.jsonc."
             },
             "prices": {
               "type": "object",

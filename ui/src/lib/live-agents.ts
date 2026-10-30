@@ -7,7 +7,7 @@
 import { budgetNote, isFinished, type DelegationTaskState } from "./agent-delegation";
 import { agentKey, findHealth, type AgentHealth } from "./agent-health";
 
-export type LiveState = "Working" | "Waiting for you" | "Idle" | "Done" | "Starting" | "Failed";
+export type LiveState = "Working" | "Waiting for you" | "Idle" | "Done" | "Starting" | "Failed" | "Queued" | "Lost";
 
 export type LiveAgent = {
   /** Stable key in the strip. */
@@ -37,12 +37,14 @@ export type LiveInput = {
 };
 
 /** Higher wins when one agent has several tasks: a running task outranks an earlier failed one. */
-const WEIGHT: Record<LiveState, number> = { "Waiting for you": 5, Working: 4, Starting: 3, Failed: 2, Idle: 1, Done: 0 };
+const WEIGHT: Record<LiveState, number> = { "Waiting for you": 6, Working: 5, Starting: 4, Queued: 3, Failed: 2, Lost: 2, Idle: 1, Done: 0 };
 
 export function taskState(task: DelegationTaskState, waiting: boolean): LiveState {
-  if (waiting) return "Waiting for you";
+  if (waiting || task.status === "needs_user" || (task.status === "running" && task.waitingForUser)) return "Waiting for you";
   if (task.status === "starting") return "Starting";
+  if (task.status === "queued") return "Queued";
   if (task.status === "failed") return "Failed";
+  if (task.status === "lost") return "Lost";
   if (isFinished(task.status)) return "Done";
   return "Working";
 }
@@ -133,10 +135,10 @@ export type LiveTone = "error" | "waiting" | "working" | "starting" | "idle" | "
 export const TONE_URGENCY: Record<LiveTone, number> = { error: 5, waiting: 4, working: 3, starting: 2, idle: 1, done: 0 };
 
 export function liveTone(agent: LiveAgent, showHealth = true): LiveTone {
-  if (agent.state === "Failed") return "error";
+  if (agent.state === "Failed" || agent.state === "Lost") return "error";
   if (agent.state === "Waiting for you") return "waiting";
   if (agent.state === "Working") return "working";
-  if (agent.state === "Starting") return "starting";
+  if (agent.state === "Starting" || agent.state === "Queued") return "starting";
   if (showHealth && agent.health?.state === "unreachable") return "error";
   if (showHealth && agent.health?.state === "signedOut") return "waiting";
   return agent.state === "Done" ? "done" : "idle";
@@ -145,7 +147,7 @@ export function liveTone(agent: LiveAgent, showHealth = true): LiveTone {
 /** The state word in the tooltip and accessible name. */
 export function liveStateText(agent: LiveAgent, showHealth = true): string {
   const tone = liveTone(agent, showHealth);
-  if (tone === "error" && agent.state !== "Failed") return "Unreachable";
+  if (tone === "error" && agent.state !== "Failed" && agent.state !== "Lost") return "Unreachable";
   if (tone === "waiting" && agent.state !== "Waiting for you") return "Signed out";
   return agent.state;
 }
@@ -180,7 +182,7 @@ export function liveSummary(agents: readonly LiveAgent[], showHealth = true): { 
   const top = tones.reduce<LiveTone>((best, tone) => (TONE_URGENCY[tone] > TONE_URGENCY[best] ? tone : best), "done");
   const count = tones.filter((tone) => tone === top).length;
   if (top === "error") {
-    const failed = agents.filter((agent) => agent.state === "Failed").length;
+    const failed = agents.filter((agent) => agent.state === "Failed" || agent.state === "Lost").length;
     if (failed === count) return { tone: top, text: `${count} failed` };
     if (failed === 0) return { tone: top, text: `${count} unreachable` };
     return { tone: top, text: `${count} ${SUMMARY.error}` };

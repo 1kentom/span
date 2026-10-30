@@ -2,6 +2,7 @@
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
 mod attachment;
 mod buffer;
+mod checkpoint;
 mod external_changes;
 mod folder_outline;
 mod format;
@@ -33,6 +34,12 @@ mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
+pub use checkpoint::{
+    CaptureOutcome, CheckpointChanges, CheckpointConflict, CheckpointFileChange,
+    CheckpointFileKind, CheckpointHunkRef, CheckpointPhase, CheckpointRestoreReport,
+    CheckpointRevertReport, CheckpointStatus, CheckpointTurn, Checkpoints, CHECKPOINT_KEEP_TURNS,
+    CHECKPOINT_MAX_FILES, CHECKPOINT_MAX_FILE_BYTES,
+};
 pub use external_changes::{
     ExternalDiskSnapshot, ExternalFileCheck, ExternalFileKind, ExternalFileResolution,
     ExternalFileState,

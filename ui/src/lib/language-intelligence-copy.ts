@@ -115,6 +115,7 @@ export const startingLine = "The first start can take a minute";
 export const startingTip = "Features turn on by themselves when it is ready.";
 export const workLine = "Reading your project";
 export const workTip = "Results can be incomplete until it finishes.";
+export const watchRecoveryTip = "It missed some file changes, so span is bringing its view of the project up to date. Nothing to do.";
 export const crashedLine = "Stopped unexpectedly";
 export const disabledLine = "Turn on for completions and errors";
 export const idleLine = "Not started yet";

@@ -20,6 +20,17 @@ pub enum FailureReason {
     DepthExceeded,
     BudgetExceeded,
     Timeout,
+    /// The child session is gone (its agent exited, the session ended, or
+    /// Span restarted) while the task was queued or running (ADR 0014).
+    Lost,
+    /// The task was delegated with `onApproval: "fail"` and the child raised
+    /// a permission request or an edit review: Span cancelled its turn and
+    /// never answered the request (ADR 0014).
+    PermissionRequired,
+    /// The agent has no mode the child may run in for this request.
+    ModeUnavailable,
+    /// `workspace: "worktree"` was asked for; worktrees are not available yet.
+    WorktreeUnavailable,
 }
 
 impl FailureReason {
@@ -34,10 +45,14 @@ impl FailureReason {
             Self::DepthExceeded => "depth_exceeded",
             Self::BudgetExceeded => "budget_exceeded",
             Self::Timeout => "timeout",
+            Self::Lost => "lost",
+            Self::PermissionRequired => "permission_required",
+            Self::ModeUnavailable => "mode_unavailable",
+            Self::WorktreeUnavailable => "worktree_unavailable",
         }
     }
 
-    pub const ALL: [FailureReason; 9] = [
+    pub const ALL: [FailureReason; 13] = [
         Self::AuthRequired,
         Self::PermissionRejected,
         Self::Refused,
@@ -47,6 +62,10 @@ impl FailureReason {
         Self::DepthExceeded,
         Self::BudgetExceeded,
         Self::Timeout,
+        Self::Lost,
+        Self::PermissionRequired,
+        Self::ModeUnavailable,
+        Self::WorktreeUnavailable,
     ];
 
     /// Map an ACP stop reason that is not a success.
@@ -93,6 +112,18 @@ pub struct Artifact {
     pub source: String,
 }
 
+/// What a lead expects back from a delegated task (ADR 0014): files the
+/// child should create or update and the shape of its summary. Shown on the
+/// delegation card and appended to the child's task text.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Deliverables {
+    /// Workspace relative paths, forward slashes.
+    pub files: Vec<String>,
+    /// `summary`, `diff` or `json`.
+    pub format: Option<String>,
+}
+
 /// Resolve a workspace relative path, refusing anything outside `root`.
 /// The file does not need to exist; its parent directory does not either.
 pub fn inside_workspace(root: &Path, relative: &str) -> Result<(PathBuf, String), String> {
@@ -101,7 +132,14 @@ pub fn inside_workspace(root: &Path, relative: &str) -> Result<(PathBuf, String)
         || requested.is_absolute()
         || requested
             .components()
-            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+            // `RootDir` catches `\x` and `/x` on Windows, which are not absolute
+            // there (no drive) but still name a path outside the workspace.
+            .any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::Prefix(_) | Component::RootDir
+                )
+            })
     {
         return Err(format!(
             "Path must be relative to the workspace and stay inside it: {relative}"
@@ -248,6 +286,9 @@ pub struct ResultInput<'a> {
     pub spent_tokens: Option<u64>,
     pub max_tokens: Option<u64>,
     pub progress: Option<Value>,
+    /// `{missing: [...]}` for a finished task delegated with deliverable
+    /// files: the ones that do not exist.
+    pub deliverables: Option<Value>,
     /// Inline image previews are only sent when the lead accepts images.
     pub lead_accepts_images: bool,
     pub image_preview_cap: usize,
@@ -360,6 +401,9 @@ pub fn tool_result(input: ResultInput<'_>) -> Value {
     if let Some(progress) = input.progress {
         structured["progress"] = progress;
     }
+    if let Some(deliverables) = input.deliverables {
+        structured["deliverables"] = deliverables;
+    }
     content.push(json!({"type": "text", "text": structured.to_string()}));
     json!({
         "content": content,
@@ -382,6 +426,31 @@ pub fn failure(agent: &str, reason: FailureReason, detail: &str) -> Value {
     json!({
         "content": [
             {"type": "text", "text": format!("Delegation to {agent} failed ({}): {detail}", reason.as_str())},
+            {"type": "text", "text": structured.to_string()},
+        ],
+        "structuredContent": structured,
+        "isError": true,
+    })
+}
+
+/// A delegate call refused before the child got a task because the lead
+/// asked for a model, effort or mode the agent does not offer (or Span does
+/// not allow). `error` is a short code such as `model_unavailable`;
+/// `choices` lists what the lead may pass instead, as `{id, name}`.
+pub fn choice_error(agent: &str, error: &str, detail: &str, choices: Value) -> Value {
+    let structured = json!({
+        "status": "failed",
+        "agent": agent,
+        "sessionId": Value::Null,
+        "stopReason": Value::Null,
+        "artifacts": [],
+        "error": error,
+        "detail": detail,
+        "choices": choices,
+    });
+    json!({
+        "content": [
+            {"type": "text", "text": format!("Delegation to {agent} failed ({error}): {detail}")},
             {"type": "text", "text": structured.to_string()},
         ],
         "structuredContent": structured,

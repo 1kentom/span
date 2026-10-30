@@ -601,6 +601,30 @@ impl Manager {
             .map_err(|e| map_err(client, e))
     }
 
+    /// Bounded resync of watched files for the current ready instance, see
+    /// [`crate::LspClient::resync_watched_files`]. Never starts a server.
+    pub async fn resync_watched_files(
+        &self,
+        id: ServerId,
+        root: &Path,
+        since: Option<std::time::SystemTime>,
+        exclusions: crate::watch_sync::Exclusions,
+    ) -> Result<(usize, bool), ManagerError> {
+        let Some((_inst, inner)) = self.lock_current(id, root).await else {
+            return Ok((0, false));
+        };
+        if !inner.ready {
+            return Ok((0, false));
+        }
+        let Some(client) = inner.client.as_ref() else {
+            return Ok((0, false));
+        };
+        client
+            .resync_watched_files(since, exclusions, crate::watch_sync::ScanLimits::default())
+            .await
+            .map_err(|e| map_err(client, e))
+    }
+
     /// Current buffered text of a document, if the manager tracks it.
     pub async fn document_text(&self, id: ServerId, root: &Path, path: &Path) -> Option<String> {
         let inst = self.get(id, root).await?;

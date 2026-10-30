@@ -5,12 +5,14 @@
  */
 import type { AgentEvent, SessionMetaPatch_Deserialize as SessionMetaPatch, SessionUsageRow_Serialize as SessionUsageRow, TokenCounts_Deserialize as TokenCounts, UsageCost, UsageRange_Deserialize as UsageRange } from "../bindings";
 
-export type RangeKey = "today" | "7d" | "30d" | "all";
-export const RANGES: readonly { key: RangeKey; label: string; days?: number }[] = [
-  { key: "today", label: "Today", days: 1 },
-  { key: "7d", label: "7 days", days: 7 },
-  { key: "30d", label: "30 days", days: 30 },
-  { key: "all", label: "All" },
+export type RangeKey = "today" | "7d" | "30d" | "90d" | "all";
+/** `short` is the segmented control's label, `label` the long form used in sentences. */
+export const RANGES: readonly { key: RangeKey; label: string; short: string; days?: number }[] = [
+  { key: "today", label: "Today", short: "Today", days: 1 },
+  { key: "7d", label: "7 days", short: "7d", days: 7 },
+  { key: "30d", label: "30 days", short: "30d", days: 30 },
+  { key: "90d", label: "90 days", short: "90d", days: 90 },
+  { key: "all", label: "All time", short: "All" },
 ];
 
 /** `YYYY-MM-DD` of `date` in the local time zone. */
@@ -20,11 +22,11 @@ export function localDay(date: Date): string {
 }
 
 export type SourceKey = "all" | "tracked" | "imported";
-export const SOURCES: readonly { key: SourceKey; label: string }[] = [
-  { key: "all", label: "All sources" },
-  { key: "tracked", label: "Tracked by Span" },
-  { key: "imported", label: "Imported from local logs" },
-];
+export const SOURCES: readonly { key: SourceKey; label: string; short: string }[] = [
+  { key: "all", label: "All sources", short: "All" },
+  { key: "tracked", label: "Tracked by Span", short: "Tracked by Span" },
+  { key: "imported", label: "Imported from local logs", short: "Imported" },
+] as const;
 
 /**
  * The inclusive local day range for a range key, ending today ("All" is open on both ends), with the viewer's UTC
@@ -206,4 +208,167 @@ export function longDay(day: string): string {
   const [year, month, date] = day.split("-").map(Number);
   if (!year || !month || !date) return day;
   return new Date(year, month - 1, date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+
+/**
+ * The same number of days just before `key`'s range, for the "vs previous period" deltas. `undefined` for All, which
+ * has no previous period.
+ */
+export function previousRangeFor(key: RangeKey, now: Date = new Date(), source: SourceKey = "all"): UsageRange | undefined {
+  const days = RANGES.find((range) => range.key === key)?.days;
+  if (!days) return undefined;
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - days);
+  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - (days - 1));
+  return { utcOffsetMinutes: -now.getTimezoneOffset(), ...(source !== "all" ? { source } : {}), from: localDay(start), to: localDay(end) };
+}
+
+/** Signed change from `previous` to `current` as a whole percent, or `undefined` when there is no base to compare. */
+export function percentChange(current: number, previous: number): number | undefined {
+  if (!(previous > 0) || !Number.isFinite(current)) return undefined;
+  return Math.round(((current - previous) / previous) * 100);
+}
+
+/** "+12%", "-4%", "No change". */
+export function deltaText(change: number): string {
+  if (change === 0) return "No change";
+  return `${change > 0 ? "+" : "−"}${Math.abs(change)}%`;
+}
+
+/**
+ * The provider (agent family) of an agent id. Span's own sessions and the imported logs of the same agent share a
+ * provider, so the chart, the filter chips and the colours treat them as one.
+ */
+export type Provider = { key: string; name: string };
+const PROVIDER_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", opencode: "OpenCode" };
+const PROVIDER_ALIASES: Record<string, string> = { "claude-code": "claude", "claude-acp": "claude", "claude-code-logs": "claude", "codex-acp": "codex", "codex-logs": "codex", "gemini-cli": "gemini", "gemini-logs": "gemini", "opencode-logs": "opencode" };
+export function providerKey(agentId: string): string {
+  const id = agentId.toLowerCase();
+  if (PROVIDER_NAMES[id]) return id;
+  if (PROVIDER_ALIASES[id]) return PROVIDER_ALIASES[id];
+  const known = Object.keys(PROVIDER_NAMES).find((name) => id.startsWith(`${name}-`) || id.startsWith(`${name}:`) || id.endsWith(`/${name}`));
+  return known ?? id;
+}
+export function providerName(key: string, fallback?: string): string {
+  return PROVIDER_NAMES[key] ?? fallback ?? key;
+}
+
+type Totals = SessionUsageRow["totals"];
+const emptyCost = (): UsageCost => ({ usd: 0, reportedUsd: 0, estimatedUsd: 0, unpricedTokens: 0, known: false, complete: true });
+export const emptyTotals = (): Totals => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thought: 0, total: 0 }, turns: 0, turnsWithTokens: 0, sessions: 0, cost: emptyCost() });
+
+/** Cost of several buckets: known if any part is known, complete only if every part is. Unknown parts never add $0. */
+export function sumCosts(costs: readonly UsageCost[]): UsageCost {
+  const out = emptyCost();
+  for (const cost of costs) {
+    out.unpricedTokens += cost.unpricedTokens;
+    out.complete &&= cost.complete;
+    if (!cost.known) continue;
+    out.known = true;
+    out.usd = money(out.usd) + money(cost.usd);
+    out.reportedUsd = money(out.reportedUsd) + money(cost.reportedUsd);
+    out.estimatedUsd = money(out.estimatedUsd) + money(cost.estimatedUsd);
+  }
+  return out;
+}
+
+/** Plain sums of counters (every counter in ADR 0012 is additive), for a filtered set of agents or sessions. */
+export function sumTotals(list: readonly Totals[]): Totals {
+  const out = emptyTotals();
+  for (const totals of list) {
+    for (const key of ["input", "output", "cacheRead", "cacheWrite", "thought", "total"] as const) out.tokens[key] += totals.tokens[key];
+    out.turns += totals.turns;
+    out.turnsWithTokens += totals.turnsWithTokens;
+    out.sessions += totals.sessions;
+  }
+  out.cost = sumCosts(list.map((totals) => totals.cost));
+  return out;
+}
+
+/** One chart column: a day (or a week, for long ranges) with a value per series key. */
+export type ChartColumn = { start: string; end: string; values: Map<string, { tokens: number; cost: UsageCost }> };
+
+/**
+ * Days as chart columns grouped by `seriesOf(agentId)`, kept to `include` when given. Ranges longer than `maxColumns`
+ * days fold into weeks so bars stay readable; missing days are filled so the time axis is even.
+ */
+export function chartColumns(days: readonly { day: string; agents: readonly { agentId: string; tokens: number; cost: UsageCost }[] }[], seriesOf: (agentId: string) => string, include?: ReadonlySet<string>, maxColumns = 120): { columns: ChartColumn[]; weekly: boolean } {
+  if (!days.length) return { columns: [], weekly: false };
+  const sorted = [...days].sort((a, b) => a.day.localeCompare(b.day));
+  const filled: typeof sorted = [];
+  const byDay = new Map(sorted.map((day) => [day.day, day]));
+  for (let cursor = parseDay(sorted[0].day), last = parseDay(sorted[sorted.length - 1].day); cursor <= last; cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1)) {
+    const key = localDay(cursor);
+    filled.push(byDay.get(key) ?? { day: key, agents: [] });
+    if (filled.length > 5000) break;
+  }
+  const weekly = filled.length > maxColumns;
+  const size = weekly ? 7 : 1;
+  const columns: ChartColumn[] = [];
+  for (let index = 0; index < filled.length; index += size) {
+    const group = filled.slice(index, index + size);
+    const values = new Map<string, { tokens: number; cost: UsageCost }>();
+    for (const day of group) {
+      for (const slice of day.agents) {
+        const key = seriesOf(slice.agentId);
+        if (include && !include.has(key)) continue;
+        const current = values.get(key);
+        values.set(key, { tokens: (current?.tokens ?? 0) + slice.tokens, cost: current ? sumCosts([current.cost, slice.cost]) : slice.cost });
+      }
+    }
+    columns.push({ start: group[0].day, end: group[group.length - 1].day, values });
+  }
+  return { columns, weekly };
+}
+
+function parseDay(day: string): Date {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year || 1970, (month || 1) - 1, date || 1);
+}
+
+/** Up to `points` evenly spaced sums of `values` (a sparkline's samples). */
+export function sparkline(values: readonly number[], points = 24): number[] {
+  if (values.length <= points) return [...values];
+  const out: number[] = [];
+  const step = values.length / points;
+  for (let index = 0; index < points; index += 1) {
+    const from = Math.floor(index * step);
+    const to = Math.floor((index + 1) * step);
+    out.push(values.slice(from, Math.max(to, from + 1)).reduce((sum, value) => sum + value, 0));
+  }
+  return out;
+}
+
+/** "just now", "4 min ago", "3 h ago", "Oct 29". */
+export function relativeTime(ms: number, now: number = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - ms) / 1000));
+  if (seconds < 45) return "just now";
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} min ago`;
+  if (seconds < 86_400) return `${Math.round(seconds / 3600)} h ago`;
+  return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/** Rounded share as text: "<1%" for a tiny but real share, never "0%" for something that exists. */
+export function shareText(part: number, whole: number): string {
+  if (!(whole > 0) || !(part > 0)) return "0%";
+  const percent = (part / whole) * 100;
+  return percent < 1 ? "<1%" : `${Math.round(percent)}%`;
+}
+
+/** Sessions that match a search: title, session id, agent and models, case-insensitive. */
+export function matchesSearch(row: SessionUsageRow, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [row.title ?? "", row.sessionId, row.agentName, ...row.models].some((field) => field.toLowerCase().includes(needle));
+}
+
+/** "$12.34", "$0.18", "<$0.01": two decimals for lists and tables, where exact figures sit in the tooltip. */
+export function usdShort(value: number): string {
+  if (value > 0 && value < 0.01) return "<$0.01";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
+
+/** A cost for lists: `usdShort` with the trailing "+" for partial totals, or "No price". `title` keeps the exact detail. */
+export function costShort(cost: UsageCost): { text: string; title: string; known: boolean } {
+  const full = costText(cost);
+  return full.known ? { ...full, text: `${usdShort(money(cost.usd))}${cost.complete ? "" : "+"}` } : full;
 }

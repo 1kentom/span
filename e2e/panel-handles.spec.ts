@@ -1,5 +1,5 @@
 import { expect, test, type Locator } from "@playwright/test";
-import { ready, screenshot } from "./helpers";
+import { gripHoverScale, ready, scaleMatrix, screenshot } from "./helpers";
 
 async function style(element: Locator, pseudo?: string) {
   return element.evaluate((node, pseudo) => {
@@ -51,7 +51,7 @@ test("collapsed rails expose local neutral hover and keyboard focus hints with t
     await rail.hover();
     const grip = rail.locator(".panel-rail-grip");
     await expect(grip).toHaveCSS("opacity", "1");
-    await expect.poll(async () => (await style(grip)).transform).toBe("matrix(1.03, 0, 0, 1.03, 0, 0)");
+    await expect.poll(async () => (await style(grip)).transform).toBe(scaleMatrix(gripHoverScale("")));
     const flap = await style(grip, "::before");
     neutral(flap.background);
     expect(flap.width).toBeLessThan(64);

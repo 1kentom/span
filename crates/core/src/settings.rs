@@ -43,12 +43,27 @@ pub struct LanguageServerSettings {
     /// imported into that store once and never written back. `run_project_code` stays as a
     /// global override meaning "trust every folder".
     pub trusted_workspaces: Vec<String>,
+    /// Directory names from the built in watched-file exclusions (`node_modules`, `target`,
+    /// `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) that
+    /// language servers should be told about anyway. Version control folders stay excluded.
+    pub watch_include_directories: Vec<String>,
+    /// Server ids whose "fell behind on file changes" warning the user turned off.
+    pub silenced_watch_warnings: Vec<String>,
 }
 
 /// Settings under `languageServers` that choose executables or trigger downloads. They are
 /// honoured from user settings only: a workspace file is untrusted input.
-pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] =
-    &["autoInstall", "javaHome", "nodePath", "runProjectCode"];
+pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] = &[
+    "autoInstall",
+    "javaHome",
+    "nodePath",
+    "runProjectCode",
+    "watchIncludeDirectories",
+    "silencedWatchWarnings",
+];
+
+/// Most entries accepted in one of the list valued language server settings.
+const MAX_LANGUAGE_SERVER_LIST: usize = 64;
 
 /// Keys under `languageServers` that older preview builds wrote. They are accepted when
 /// reading (never an error), dropped from workspace files like the user-only keys, and
@@ -86,6 +101,32 @@ impl LanguageServerSettings {
 
     fn validate(&self) -> Result<()> {
         for server in self.enabled.keys() {
+            if !LANGUAGE_SERVER_IDS.contains(&server.as_str()) {
+                return Err(CoreError::Settings(format!(
+                    "Unknown language server: {server}"
+                )));
+            }
+        }
+        if self.watch_include_directories.len() > MAX_LANGUAGE_SERVER_LIST
+            || self.watch_include_directories.iter().any(|name| {
+                name.is_empty()
+                    || name.len() > 255
+                    || name == "."
+                    || name == ".."
+                    || name.contains(['/', '\\'])
+                    || name.chars().any(char::is_control)
+            })
+        {
+            return Err(CoreError::Settings(
+                "languageServers.watchIncludeDirectories must list at most 64 folder names".into(),
+            ));
+        }
+        if self.silenced_watch_warnings.len() > MAX_LANGUAGE_SERVER_LIST {
+            return Err(CoreError::Settings(
+                "languageServers.silencedWatchWarnings lists too many servers".into(),
+            ));
+        }
+        for server in &self.silenced_watch_warnings {
             if !LANGUAGE_SERVER_IDS.contains(&server.as_str()) {
                 return Err(CoreError::Settings(format!(
                     "Unknown language server: {server}"
@@ -263,7 +304,7 @@ pub struct AgentSettings {
 }
 
 /// `agents.usage.*` settings (ADR 0012).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentUsageSettings {
     /// `agents.usage.prices.<model>`: the user's own USD per million token
@@ -271,11 +312,21 @@ pub struct AgentUsageSettings {
     /// bundled price table.
     #[specta(optional)]
     pub prices: BTreeMap<String, crate::usage::PriceOverride>,
-    /// `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
-    /// local usage logs (read only, counters only) so the Usage page also
-    /// shows sessions run outside Span. Off by default.
+    /// `agents.usage.importLocalLogs`: read the agents' own local usage logs
+    /// (Claude Code, Codex, Gemini CLI, OpenCode; read only, counters only)
+    /// so the Usage page also shows sessions run outside Span. On by default
+    /// since the owner reversed the opt-in (ADR 0012, amendment).
     #[specta(optional)]
     pub import_local_logs: bool,
+}
+
+impl Default for AgentUsageSettings {
+    fn default() -> Self {
+        AgentUsageSettings {
+            prices: BTreeMap::new(),
+            import_local_logs: true,
+        }
+    }
 }
 
 /// How a session Span starts treats the agent's own default mode.
@@ -511,6 +562,7 @@ pub const COMMAND_IDS: &[&str] = &[
     "goForward",
     "focusBreadcrumbs",
     "showUsage",
+    "toggleZenMode",
 ];
 
 /// Commands introduced after shortcuts could already be saved. Like Toggle Files,
@@ -544,6 +596,7 @@ const INHERITED_DEFAULT_IDS: &[&str] = &[
     "goBack",
     "goForward",
     "focusBreadcrumbs",
+    "toggleZenMode",
 ];
 
 /// Themes that can carry `editor.syntaxColors`.
@@ -718,9 +771,18 @@ fn validate_shortcut(shortcut: &str) -> Result<()> {
             "The application quit shortcut is reserved".into(),
         ));
     }
-    let primary = modifiers
+    // Text editing keys use one command modifier (Cmd+Z, Ctrl+Z). Both Control and Command together
+    // (Ctrl+Cmd+Z, the macOS Zen mode default) is not an editing shortcut.
+    let primaries = modifiers
         .iter()
-        .any(|modifier| matches!(*modifier, "Mod" | "Ctrl" | "Cmd" | "Meta"));
+        .filter_map(|modifier| match *modifier {
+            "Mod" if cfg!(target_os = "macos") => Some("Meta"),
+            "Mod" | "Ctrl" => Some("Ctrl"),
+            "Cmd" | "Meta" => Some("Meta"),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let primary = primaries.len() == 1;
     let editing_modifiers = modifiers
         .iter()
         .all(|modifier| matches!(*modifier, "Mod" | "Ctrl" | "Cmd" | "Meta" | "Shift"));
@@ -819,6 +881,15 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("goForward", vec!["Mod+Alt+ArrowRight"]),
         ("focusBreadcrumbs", vec!["Mod+Shift+."]),
         ("showUsage", vec![]),
+        // VS Code's Cmd+K Z needs a chord, which Span does not have: Ctrl+Cmd+Z on macOS, Ctrl+Alt+Z elsewhere.
+        (
+            "toggleZenMode",
+            if cfg!(target_os = "macos") {
+                vec!["Meta+Ctrl+Z"]
+            } else {
+                vec!["Ctrl+Alt+Z"]
+            },
+        ),
     ];
     let claimed = overrides
         .values()
@@ -1410,6 +1481,35 @@ pub(crate) fn patch_in_scope(
             ("autoInstall" | "runProjectCode", Some(_)) => {
                 return Err(CoreError::Settings(format!(
                     "languageServers.{rest} must be true or false"
+                )))
+            }
+            ("watchIncludeDirectories" | "silencedWatchWarnings", Some(Value::Array(items))) => {
+                let names: Vec<String> = items
+                    .iter()
+                    .map(|item| item.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| {
+                        CoreError::Settings(format!(
+                            "languageServers.{rest} must be a list of strings"
+                        ))
+                    })?;
+                let candidate = if rest == "watchIncludeDirectories" {
+                    LanguageServerSettings {
+                        watch_include_directories: names,
+                        ..Default::default()
+                    }
+                } else {
+                    LanguageServerSettings {
+                        silenced_watch_warnings: names,
+                        ..Default::default()
+                    }
+                };
+                candidate.validate()?;
+                servers.insert(rest.into(), Value::Array(items));
+            }
+            ("watchIncludeDirectories" | "silencedWatchWarnings", Some(_)) => {
+                return Err(CoreError::Settings(format!(
+                    "languageServers.{rest} must be a list of strings"
                 )))
             }
             (_, Some(Value::String(path))) => {
@@ -2559,6 +2659,82 @@ mod language_server_key_tests {
         // Removing from the workspace scope is also refused: those keys are not valid there.
         assert!(set(Workspace, b, "languageServers.javaHome", None).is_err());
     }
+
+    #[test]
+    fn watch_lists_are_user_only_and_round_trip() {
+        let base = "{\n  // keep me\n}\n";
+        let t = set(
+            User,
+            base,
+            "languageServers.watchIncludeDirectories",
+            Some(r#"["node_modules", "dist"]"#),
+        )
+        .unwrap();
+        let t = set(
+            User,
+            &t,
+            "languageServers.silencedWatchWarnings",
+            Some(r#"["vtsls"]"#),
+        )
+        .unwrap();
+        assert!(t.contains("// keep me"));
+        let s = load_with_texts(&t, "{}").unwrap().language_servers;
+        assert_eq!(s.watch_include_directories, ["node_modules", "dist"]);
+        assert_eq!(s.silenced_watch_warnings, ["vtsls"]);
+        let back = set(User, &t, "languageServers.silencedWatchWarnings", None).unwrap();
+        assert!(!back.contains("silencedWatchWarnings"), "{back}");
+        assert!(back.contains("watchIncludeDirectories"));
+
+        // A workspace file cannot set either list, and its values are ignored on read.
+        let ws = r#"{ "languageServers": { "watchIncludeDirectories": ["target"],
+                 "silencedWatchWarnings": ["vtsls"] } }"#;
+        let loaded = load_with_texts("{}", ws).unwrap().language_servers;
+        assert!(loaded.watch_include_directories.is_empty());
+        assert!(loaded.silenced_watch_warnings.is_empty());
+        let err = reject_user_only(ws).unwrap_err().to_string();
+        assert!(err.contains("user settings only"), "{err}");
+        for key in [
+            "languageServers.watchIncludeDirectories",
+            "languageServers.silencedWatchWarnings",
+        ] {
+            let err = set(Workspace, "{}", key, Some(r#"["vtsls"]"#))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("user settings only"), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn watch_lists_reject_bad_entries() {
+        let too_many = format!(
+            "[{}]",
+            (0..65)
+                .map(|i| format!("\"d{i}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        for (key, v) in [
+            (
+                "languageServers.watchIncludeDirectories",
+                "\"node_modules\"",
+            ),
+            ("languageServers.watchIncludeDirectories", "[1]"),
+            ("languageServers.watchIncludeDirectories", r#"[""]"#),
+            ("languageServers.watchIncludeDirectories", r#"[".."]"#),
+            ("languageServers.watchIncludeDirectories", r#"["a/b"]"#),
+            ("languageServers.watchIncludeDirectories", r#"["a\\b"]"#),
+            ("languageServers.watchIncludeDirectories", too_many.as_str()),
+            ("languageServers.silencedWatchWarnings", r#"["gopls"]"#),
+            ("languageServers.silencedWatchWarnings", "true"),
+        ] {
+            assert!(set(User, "{}", key, Some(v)).is_err(), "{key} {v}");
+        }
+        assert!(load_with_texts(
+            r#"{ "languageServers": { "silencedWatchWarnings": ["nope"] } }"#,
+            "{}"
+        )
+        .is_err());
+    }
 }
 
 #[cfg(test)]
@@ -2601,6 +2777,25 @@ mod code_navigation_tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), SYNTAX_TOKEN_IDS.len());
+    }
+
+    #[test]
+    fn zen_mode_defaults_are_valid_and_editing_keys_stay_reserved() {
+        for shortcut in ["Meta+Ctrl+Z", "Ctrl+Alt+Z"] {
+            validate_shortcut(shortcut).unwrap();
+        }
+        for shortcut in ["Mod+Z", "Mod+Shift+Z", "Ctrl+Z", "Meta+Z", "Cmd+Shift+Z"] {
+            assert!(validate_shortcut(shortcut).is_err(), "{shortcut}");
+        }
+        Settings {
+            keybindings: HashMap::from([(
+                "toggleZenMode".into(),
+                vec!["Meta+Ctrl+Z".into(), "Ctrl+Alt+Z".into()],
+            )]),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
     }
 
     #[test]

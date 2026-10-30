@@ -201,6 +201,12 @@ pub fn stop_health(state: &DesktopState) {
 pub fn load_delegated_ledger(app: &tauri::AppHandle) {
     if let Ok(directory) = app.path().app_data_dir() {
         span_acp::set_delegated_ledger(directory.join("agent-delegated-sessions.json"));
+        // Native subagent session ids (ADR 0005, amendment of 2026-10-29):
+        // ids and parent ids only, so History keeps nesting them after a restart.
+        span_acp::set_native_subagent_ledger(directory.join("agent-native-subagents.json"));
+        // Model ids and display names each agent last advertised, for the
+        // lead's list_agents (ADR 0003, amendment of 2026-10-30). No prompts.
+        span_acp::set_model_cache(directory.join("agent-models.json"));
     }
 }
 
@@ -397,6 +403,16 @@ async fn delegation_config(
         run_tools,
         installed,
         background: background_agents,
+        // Only an existing monitor: listing agents never starts health checks.
+        health: delegation_enabled
+            .then(|| {
+                state
+                    .health
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+            })
+            .flatten(),
         events: Some(events),
     }))
 }
@@ -955,6 +971,7 @@ pub async fn agent_delete_session(
     let key = agent.key(&session_id);
     state.run_approvals.cancel_lead(&key);
     state.sessions.delete(&key).await?;
+    crate::checkpoints::session_deleted(state.inner(), &key.session_id);
     forget_session(state.inner(), &key)
 }
 
@@ -981,8 +998,31 @@ async fn prompt_key(
     text: String,
     attachments: Vec<PromptAttachment>,
 ) -> Result<(), PromptError> {
-    let done = state.sessions.start_turn(key, text, attachments)?;
-    match done.await {
+    // Only an idle session starts a turn; a busy one refuses below, so its
+    // prompt is not held back by a snapshot.
+    let idle = state
+        .sessions
+        .session_state(key)
+        .is_some_and(|runtime| runtime.state == span_acp::SessionActivity::Idle);
+    let checkpoint = if idle {
+        crate::checkpoints::turn_started(state, key).await
+    } else {
+        None
+    };
+    let done = match state.sessions.start_turn(key, text, attachments) {
+        Ok(done) => done,
+        Err(refusal) => {
+            if let Some(checkpoint) = checkpoint {
+                crate::checkpoints::turn_refused(state, checkpoint);
+            }
+            return Err(refusal);
+        }
+    };
+    let outcome = done.await;
+    if let Some(checkpoint) = checkpoint {
+        crate::checkpoints::turn_ended(state, checkpoint);
+    }
+    match outcome {
         Ok(Ok(())) => Ok(()),
         // The agent itself still had a turn in flight (it started between
         // the manager's check and the prompt reaching it).

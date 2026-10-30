@@ -51,6 +51,8 @@ import { sessionKeyId } from "./agent-stores/live-sessions";
 import { editQueuedEntry, mergeQueued } from "./agent-threads/thread-queue";
 import { createUsageRecorder } from "./usage";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
+import { createFeedFollow } from "./feed-follow";
+import { rememberFollow, rememberedFollow } from "./checkpoints";
 
 const DELEGATION_POLL_MS = 3000;
 
@@ -232,8 +234,8 @@ export function createAgentController(props: AgentPanelProps) {
   const [online, setOnline] = createSignal(typeof navigator === "undefined" ? true : navigator.onLine !== false);
   const [bannerDismissed, setBannerDismissed] = createSignal(false);
   const [pinned, setPinned] = threadField("pinned");
-  /** Follow the agent: open files from tool call locations. Kept in memory only, so it resets on reload. */
-  const [following, setFollowing] = createSignal(false);
+  /** Follow the agent: open files from tool call locations without taking focus. Off by default, remembered per device. */
+  const [following, setFollowing] = createSignal(rememberedFollow());
   /** Name of the file the UI just opened for the user. `equals: false` restarts the toast for the same name. */
   const [toast, setToast] = createSignal<string | undefined>(undefined, { equals: false });
   /** A click that could not open its path (outside the workspace), with the reason. Cleared by the note. */
@@ -1515,7 +1517,8 @@ export function createAgentController(props: AgentPanelProps) {
     // A Send now picked here waits for this chat's turn boundary, which the chat leaves: it must not lock the order.
     pick(undefined);
     if (!state().sessionId || !connectionKey()) return;
-    updateThread((chat) => toBackground({ ...chat, scrollTop: scrollers.content?.scrollTop, touchedAt: Date.now() }));
+    const position = follow.position();
+    updateThread((chat) => toBackground({ ...chat, scrollTop: position?.top, scrollAnchor: position, touchedAt: Date.now() }));
   }
   /** Shows another chat by focusing its thread. The chat left stays in the background, unless it is transient or `discard`. */
   function focusThread(next: Thread, options: { discard?: boolean } = {}) {
@@ -1553,8 +1556,8 @@ export function createAgentController(props: AgentPanelProps) {
       queueSending: undefined,
       touchedAt: Date.now(),
     }));
-    const top = full && stored && !stored.pinned ? stored.scrollTop : undefined;
-    if (top !== undefined) requestAnimationFrame(() => scrollers.content?.scrollTo({ top }));
+    const saved = full && stored && !stored.pinned ? (stored.scrollAnchor ?? (stored.scrollTop !== undefined ? { top: stored.scrollTop } : undefined)) : undefined;
+    if (saved) follow.restore(saved);
     return { thread, stored };
   }
   /**
@@ -1601,7 +1604,9 @@ export function createAgentController(props: AgentPanelProps) {
       if (threads.get(left.key) === left) {
         focusThread(left);
         left.update((chat) => ({ ...chat, conversation: { ...withConversation(fields, chat.conversation), sessionId: previousId } }));
-        if (!left.state().pinned && left.state().scrollTop !== undefined) requestAnimationFrame(() => scrollers.content?.scrollTo({ top: left.state().scrollTop }));
+        const back = left.state();
+        const saved = back.scrollAnchor ?? (back.scrollTop !== undefined ? { top: back.scrollTop } : undefined);
+        if (!back.pinned && saved) follow.restore(saved);
       } else {
         showChat(previousId, false);
       }
@@ -1613,6 +1618,20 @@ export function createAgentController(props: AgentPanelProps) {
   }
   const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat", { fresh: true });
   const resumeChat = (id: string) => (id === state().sessionId ? (setView("session"), Promise.resolve()) : switchChat(() => api.agentResumeSession(id), "Could not resume that chat", { target: id }));
+  /** A native subagent session opened from its parent's Subagents disclosure or its own row. Shown read-only. */
+  const [openedSubagent, setOpenedSubagent] = createSignal<string>();
+  const openSubagent = (id: string) => {
+    setOpenedSubagent(id);
+    return resumeChat(id);
+  };
+  /**
+   * True while the open session is a native subagent session: the agent's own subagent run owns it, so the chat is
+   * read-only (no composer). It belongs to the agent and is never deleted from Span.
+   */
+  const viewingSubagent = () => {
+    const id = state().sessionId;
+    return Boolean(id && (id === openedSubagent() || sessionHistory.isSubagent(id)));
+  };
   const canClose = createMemo(() => Boolean(state().agent?.features.canCloseSessions));
   const canDelete = createMemo(() => Boolean(state().agent?.features.canDeleteSessions));
   /**
@@ -2172,6 +2191,7 @@ export function createAgentController(props: AgentPanelProps) {
   const toggleFollow = () => {
     followed.clear();
     setFollowing(!following());
+    rememberFollow(following());
   };
   /** Brings the editor selection back into the prompt after it was removed from the context list. */
   const showSelection = () => {
@@ -2181,25 +2201,12 @@ export function createAgentController(props: AgentPanelProps) {
   };
 
   const scrollers: { content?: HTMLDivElement } = {};
-  // Streaming text grows the feed every frame and several watchers ask to follow it: coalesce them into one scroll write
-  // per animation frame, and skip it if the reader scrolled away before the frame ran.
-  let scrollFrame: number | undefined;
-  let scrollSmooth = false;
-  const scrollToLatest = (smooth = false) => {
-    scrollSmooth ||= smooth;
-    if (scrollFrame !== undefined) return scrollFrame;
-    scrollFrame = requestAnimationFrame(() => {
-      const behavior = scrollSmooth && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto";
-      scrollFrame = undefined;
-      scrollSmooth = false;
-      if (!pinned()) return;
-      scrollers.content?.scrollTo({ top: scrollers.content.scrollHeight, behavior });
-    });
-    return scrollFrame;
-  };
+  // The one follow authority for both layouts (feed-follow.ts): only a user gesture detaches the feed, sending and the
+  // Latest pill re-attach it, and its single writer pins instantly, at most once per frame or right after layout.
+  const follow = createFeedFollow({ following: pinned, setFollowing: setPinned, scroller: () => scrollers.content, active: () => view() !== "history" });
+  const scrollToLatest = () => follow.pin();
   function followLatest() {
-    setPinned(true);
-    scrollToLatest(true);
+    follow.send();
   }
 
   /** The step running in the open chat: the newest unfinished tool call. */
@@ -2368,6 +2375,7 @@ export function createAgentController(props: AgentPanelProps) {
     focusPrompt,
     scrollToLatest,
     followLatest,
+    follow,
     dismissFailure: () => patch({ failure: undefined }),
     leaveConnecting: () => setConnecting(undefined),
     loadAgents,
@@ -2406,6 +2414,11 @@ export function createAgentController(props: AgentPanelProps) {
     loadSessions,
     newChat,
     resumeChat,
+    openSubagent,
+    viewingSubagent,
+    subagentsFor: sessionHistory.subagentsFor,
+    subagentCount: sessionHistory.subagentCount,
+    isSubagent: sessionHistory.isSubagent,
     stop,
     answerPermission,
     cancelTask,

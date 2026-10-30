@@ -1,3 +1,4 @@
+import type { FeedPosition } from "../feed-follow";
 import type { PromptAttachment, SessionKey } from "../../bindings";
 import type { AgentErrorInfo } from "../agent-errors";
 import { initialAgentState, type AgentState } from "../agent-session";
@@ -71,6 +72,7 @@ export type ThreadState = {
   /** Scroll: following the newest output, and where the reader left it when not. */
   pinned: boolean;
   scrollTop?: number;
+  scrollAnchor?: FeedPosition;
   /** When the thread was last open or changed in the background, for eviction (agent-chats.ts). */
   touchedAt?: number;
 };

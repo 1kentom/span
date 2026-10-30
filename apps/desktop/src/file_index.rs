@@ -90,6 +90,8 @@ struct WatchUpdates {
     error: Arc<Mutex<Option<String>>>,
     revision: Arc<AtomicU64>,
     file_change_sink: Arc<Mutex<Option<FileChangeSink>>>,
+    /// Set when the native queue dropped an event a language server might watch.
+    lsp_overflow: Arc<AtomicBool>,
 }
 
 impl FileIndexRuntime {
@@ -115,7 +117,7 @@ impl FileIndexRuntime {
         let prepared = tokio::task::spawn_blocking(move || prepare_watcher(root))
             .await
             .map_err(|error| format!("Watcher setup task failed: {error}"))??;
-        let (root, watcher, receiver, overflow) = prepared;
+        let (root, watcher, receiver, overflow, lsp_overflow) = prepared;
         // Allocate the worker before changing index generations. If thread
         // creation fails, the currently open workspace and its scan remain
         // active. The worker waits for the new handle while open_workspace
@@ -146,6 +148,7 @@ impl FileIndexRuntime {
                         error: watcher_error,
                         revision: change_revision,
                         file_change_sink,
+                        lsp_overflow,
                     },
                 )
             })
@@ -354,6 +357,7 @@ type PreparedWatcher = (
     RecommendedWatcher,
     Receiver<notify::Result<Event>>,
     Arc<AtomicBool>,
+    Arc<AtomicBool>,
 );
 
 fn prepare_watcher(root: PathBuf) -> Result<PreparedWatcher, String> {
@@ -366,9 +370,26 @@ fn prepare_watcher(root: PathBuf) -> Result<PreparedWatcher, String> {
     let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
     let overflow = Arc::new(AtomicBool::new(false));
     let callback_overflow = Arc::clone(&overflow);
-    let watcher = notify::recommended_watcher(move |event| {
-        if let Err(TrySendError::Full(_)) = sender.try_send(event) {
+    let lsp_overflow = Arc::new(AtomicBool::new(false));
+    let callback_lsp_overflow = Arc::clone(&lsp_overflow);
+    let callback_root = root.clone();
+    let watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+        if let Err(TrySendError::Full(event)) = sender.try_send(event) {
             callback_overflow.store(true, Ordering::Release);
+            // A dropped event only costs language servers anything when it touched a
+            // folder they may watch. Dependency installs and builds do not count.
+            let relevant = event.as_ref().map_or(true, |event| {
+                crate::watched_paths::lsp_relevant(
+                    &callback_root,
+                    &callback_root,
+                    event,
+                    &crate::watched_paths::exclusions(),
+                    &mut HashMap::new(),
+                )
+            });
+            if relevant {
+                callback_lsp_overflow.store(true, Ordering::Release);
+            }
         }
     })
     .map_err(|error| format!("Could not create workspace watcher: {error}"))?;
@@ -376,7 +397,7 @@ fn prepare_watcher(root: PathBuf) -> Result<PreparedWatcher, String> {
     watcher
         .watch(&root, RecursiveMode::Recursive)
         .map_err(|error| format!("Could not watch workspace root: {error}"))?;
-    Ok((root, watcher, receiver, overflow))
+    Ok((root, watcher, receiver, overflow, lsp_overflow))
 }
 
 fn watch_loop(
@@ -392,6 +413,7 @@ fn watch_loop(
         error: watcher_error,
         revision: change_revision,
         file_change_sink,
+        lsp_overflow,
     } = updates;
     while !stop.load(Ordering::Acquire) {
         let first = match receiver.recv_timeout(Duration::from_millis(100)) {
@@ -435,7 +457,8 @@ fn watch_loop(
         }
         let sink = file_change_sink.lock().ok().and_then(|sink| sink.clone());
         if let Some(sink) = sink {
-            let mapped = crate::watched_paths::watched_batch(&root, &batch, force_rescan);
+            let lost = lsp_overflow.swap(false, Ordering::AcqRel);
+            let mapped = crate::watched_paths::watched_batch(&root, &batch, lost);
             if mapped.incomplete || !mapped.changes.is_empty() {
                 sink(mapped);
             }
@@ -1088,6 +1111,7 @@ mod tests {
                     error: worker_error,
                     revision: Arc::new(AtomicU64::new(0)),
                     file_change_sink: Arc::default(),
+                    lsp_overflow: Arc::default(),
                 },
             )
         });

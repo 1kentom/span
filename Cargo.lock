@@ -4594,6 +4594,7 @@ dependencies = [
  "dprint-plugin-json",
  "dprint-plugin-markdown",
  "dprint-plugin-typescript",
+ "flate2",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",

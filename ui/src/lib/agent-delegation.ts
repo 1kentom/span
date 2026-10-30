@@ -1,10 +1,10 @@
-import type { Artifact, DecisionRecord, DelegationEvent, FailureReason, SessionKey, UsageReport_Deserialize } from "../bindings";
+import type { Artifact, DecisionRecord, DelegationEvent, Deliverables_Deserialize, FailureReason, SessionKey, UsageReport_Deserialize } from "../bindings";
 import type { PermissionEvent } from "./agent-session";
 
 /** Delegation view data. Everything here comes from DelegationEvent or DelegationStatus; nothing is inferred. */
 
 /** `starting`: Span is starting the installed agent before the task exists. */
-export type DelegationStatusKind = "starting" | "queued" | "running" | "completed" | "failed" | "cancelled" | "unknown";
+export type DelegationStatusKind = "starting" | "queued" | "running" | "needs_user" | "completed" | "failed" | "cancelled" | "lost" | "unknown";
 
 /** One delegated task as the feed shows it. Timing, progress, result and budget arrive with the polled status and are absent until then. */
 export type DelegationTaskState = {
@@ -12,6 +12,8 @@ export type DelegationTaskState = {
   child: SessionKey;
   /** Absent only when the task finished before the "delegated" event arrived. */
   agentName?: string;
+  /** Display name of the model the child runs, when the agent reported one. */
+  model?: string;
   status: DelegationStatusKind;
   /** The backend's status string, kept for a status Span does not know. */
   rawStatus?: string;
@@ -26,6 +28,12 @@ export type DelegationTaskState = {
   budgetUsed?: UsageReport_Deserialize;
   /** Set on the placeholder card shown while Span starts this installed agent. */
   startingAgentId?: string;
+  /** What the lead expects back (files and summary format), as the lead asked for it. */
+  deliverables?: Deliverables_Deserialize;
+  /** The `delegate_many` batch the task belongs to. */
+  groupId?: string;
+  /** The child waits for the user (a permission, a question or an edit review), as the polled status reports it. */
+  waitingForUser?: boolean;
 };
 
 /** The delegation facts the session keeps outside the feed. */
@@ -47,6 +55,10 @@ export const FAILURE_TEXT: Record<FailureReason, string> = {
   depth_exceeded: "Delegation depth limit reached",
   budget_exceeded: "The task used up its budget",
   timeout: "The task timed out",
+  lost: "The child session is gone",
+  permission_required: "Stopped at a permission request (the lead asked to fail instead of waiting)",
+  mode_unavailable: "The agent has no mode this task may run in",
+  worktree_unavailable: "Worktrees are not available yet",
 };
 
 export function failureText(reason: FailureReason | string | null | undefined): string | undefined {
@@ -58,6 +70,7 @@ export function failureText(reason: FailureReason | string | null | undefined): 
 export function taskStatusKind(raw: string, reason?: FailureReason | null): DelegationStatusKind {
   if (raw === "queued" || raw === "running" || raw === "completed") return raw;
   if (raw === "cancelled") return "cancelled";
+  if (raw === "lost") return "lost";
   if (raw === "failed") return reason === "cancelled" ? "cancelled" : "failed";
   return "unknown";
 }
@@ -66,9 +79,11 @@ export const STATUS_TEXT: Record<DelegationStatusKind, string> = {
   starting: "Starting",
   queued: "Queued",
   running: "Running",
+  needs_user: "Needs you",
   completed: "Completed",
   failed: "Failed",
   cancelled: "Cancelled",
+  lost: "Lost",
   unknown: "Finished",
 };
 
@@ -78,6 +93,7 @@ export type TaskPatch = {
   taskId: string;
   child: SessionKey;
   agentName?: string;
+  model?: string | null;
   status?: string;
   reason?: FailureReason | null;
   stopReason?: string | null;
@@ -89,6 +105,9 @@ export type TaskPatch = {
   resultSummary?: string | null;
   artifacts?: Artifact[] | null;
   budgetUsed?: UsageReport_Deserialize | null;
+  deliverables?: Deliverables_Deserialize | null;
+  groupId?: string | null;
+  waitingForUser?: boolean | null;
 };
 
 /** Merges a report about one task into what is known. A late "delegated" event never moves a finished task back to running. */
@@ -97,6 +116,7 @@ export function mergeTask(previous: DelegationTaskState | undefined, patch: Task
   const base: DelegationTaskState = previous ?? { taskId: patch.taskId, child: patch.child, status: "running" };
   const next: DelegationTaskState = { ...base, child: patch.child };
   if (patch.agentName) next.agentName = patch.agentName;
+  if (patch.model) next.model = patch.model;
   if (patch.status !== undefined) {
     next.status = taskStatusKind(patch.status, reason);
     next.rawStatus = patch.status;
@@ -112,13 +132,37 @@ export function mergeTask(previous: DelegationTaskState | undefined, patch: Task
   if (patch.resultSummary !== undefined) next.resultSummary = patch.resultSummary || undefined;
   if (patch.artifacts) next.artifacts = patch.artifacts;
   if (patch.budgetUsed) next.budgetUsed = patch.budgetUsed;
+  if (patch.deliverables) next.deliverables = patch.deliverables;
+  if (patch.groupId) next.groupId = patch.groupId;
+  if (typeof patch.waitingForUser === "boolean") next.waitingForUser = patch.waitingForUser;
   return next;
 }
 
-export const isFinished = (status: DelegationStatusKind) => status === "completed" || status === "failed" || status === "cancelled" || status === "unknown";
+export const isFinished = (status: DelegationStatusKind) => status === "completed" || status === "failed" || status === "cancelled" || status === "lost" || status === "unknown";
+
+/** The status a card shows: a running task whose child waits for the user (an open request in the dock, or the polled flag) reads "Needs you". */
+export function cardStatus(task: Pick<DelegationTaskState, "status" | "waitingForUser">, waiting: boolean): DelegationStatusKind {
+  return task.status === "running" && (waiting || task.waitingForUser) ? "needs_user" : task.status;
+}
+
+/** How far a `delegate_many` batch got: finished tasks of the group over all its tasks. Absent for a task outside a batch. */
+export function groupProgress(tasks: readonly DelegationTaskState[], groupId: string | undefined): { done: number; total: number } | undefined {
+  if (!groupId) return undefined;
+  const members = tasks.filter((task) => task.groupId === groupId);
+  if (!members.length) return undefined;
+  return { done: members.filter((task) => isFinished(task.status)).length, total: members.length };
+}
 
 export type DecisionView = { by: string; chosen: string; why: string; alternatives: string[] };
 export const decisionView = (decision: DecisionRecord, by: string): DecisionView => ({ by, chosen: decision.chosen, why: decision.why, alternatives: decision.alternatives.filter((item) => item.trim()) });
+
+/** "Summary, files: a.md, b.rs": what the lead asked the child to hand back. Absent when it asked for nothing. */
+export function deliverablesText(deliverables: Deliverables_Deserialize | undefined): string | undefined {
+  if (!deliverables) return undefined;
+  const format = deliverables.format ? { summary: "Summary", diff: "Diff", json: "JSON" }[deliverables.format] ?? deliverables.format : undefined;
+  const files = deliverables.files.length ? `files: ${deliverables.files.join(", ")}` : undefined;
+  return [format, files].filter(Boolean).join(", ") || undefined;
+}
 
 export const alternativesLabel = (count: number) => `${count} ${count === 1 ? "alternative" : "alternatives"} considered`;
 
@@ -126,6 +170,7 @@ export const alternativesLabel = (count: number) => `${count} ${count === 1 ? "a
 export function taskNote(task: DelegationTaskState): string | undefined {
   if (task.status === "failed") return [failureText(task.reason) ?? "The task failed", task.detail].filter(Boolean).join(". ");
   if (task.status === "cancelled") return task.detail ?? failureText(task.reason);
+  if (task.status === "lost") return [failureText("lost"), task.detail].filter(Boolean).join(". ");
   if (task.status === "unknown") return task.rawStatus ? `Status reported: ${task.rawStatus}` : undefined;
   return undefined;
 }

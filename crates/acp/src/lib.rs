@@ -8,6 +8,8 @@ mod health;
 mod launch;
 mod managed;
 mod manager;
+mod model_cache;
+mod native_subagents;
 mod npm_bin;
 mod process;
 mod registry;
@@ -31,6 +33,13 @@ pub use manager::{
     SessionActivity, SessionEndHook, SessionEvent, SessionEventSink, SessionInfo, SessionKey,
     SessionManager, SessionOrigin, SessionRuntimeState, SessionStateSink, SessionStates,
     Subscription, DEPTH_EXCEEDED, PROMPT_ALREADY_RUNNING,
+};
+pub use model_cache::{
+    alias_models, cached_models, remember_models, set_model_cache, CachedModel, CachedModels,
+};
+pub use native_subagents::{
+    native_subagent_parent, record_native_subagent, set_native_subagent_ledger,
+    starts_with_subagent_preamble, OPENCODE_SUBAGENT_PREAMBLE,
 };
 pub use registry::{fetch_registry, install_registry_agent, list_installed_agents};
 pub use service::{

@@ -1,172 +1,214 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
-import type { AgentUsage_Serialize as AgentUsage, ModelUsage_Serialize as ModelUsage, SessionUsageRow_Serialize as SessionUsageRow, UsageTotals_Serialize as UsageTotals } from "../../bindings";
+import type { ModelUsage_Serialize as ModelUsage, SessionUsageRow_Serialize as SessionUsageRow, UsageTotals_Serialize as UsageTotals } from "../../bindings";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { ModelIcon } from "../agent/ModelPopover";
-import { compactTokens, costText, fullNumber, money, sortRows, type SortState } from "../../lib/usage";
+import { compactTokens, costShort, fullNumber, matchesSearch, money, providerKey, providerName, shareText, sortRows, type SortState } from "../../lib/usage";
+import { seriesVar } from "./UsageChart";
 
-/** Imported sessions carry their own agent ids; their marks are the agent's own. */
-export const brandId = (agentId: string) => (agentId === "claude-code-logs" ? "claude" : agentId === "codex-logs" ? "codex" : agentId);
+/** The brand mark id for an agent id: imported sessions carry their own agent ids but wear the agent's mark. */
+export const brandId = (agentId: string) => providerKey(agentId);
 
-type NumericKey = "tokens" | "input" | "output" | "cache" | "turns" | "sessions" | "cost";
-const numeric = (totals: UsageTotals, key: NumericKey): number => {
-  switch (key) {
-    case "tokens": return totals.tokens.total;
-    case "input": return totals.tokens.input;
-    case "output": return totals.tokens.output;
-    case "cache": return totals.tokens.cacheRead + totals.tokens.cacheWrite;
-    case "turns": return totals.turns;
-    case "sessions": return totals.sessions;
-    // An unknown price sorts below every known one, including a known zero.
-    case "cost": return totals.cost.known ? money(totals.cost.usd) : -1;
-  }
-};
+/** Where a model's price came from, for the row's tooltip. */
+export function priceNote(row: ModelUsage): string {
+  const price = row.price;
+  if (!price) return "No price in the table: tokens only. Set one in agents.usage.prices.";
+  const how = price.kind === "exact" ? "Priced as" : price.kind === "alias" ? "Alias, priced as the current" : price.kind === "family" ? "Variant, priced as" : "Your price for";
+  return `${how} ${price.label}${price.note ? `. ${price.note}` : ""}`;
+}
 
-type Column<K extends string> = { key: K; label: string; numeric?: boolean; title?: string };
+function Cost(props: { totals: UsageTotals }) {
+  const info = () => costShort(props.totals.cost);
+  return <Show when={info().known} fallback={<span class="usage-noprice" title={info().title}>No price</span>}><span class="usage-cost" title={info().title}>{info().text}</span></Show>;
+}
 
-function SortHeader<K extends string>(props: { column: Column<K>; sort: SortState<K>; onSort: (key: K) => void }) {
-  const active = () => props.sort.key === props.column.key;
+export function Panel(props: { title: string; count?: number; actions?: JSX.Element; children: JSX.Element; class?: string }) {
   return (
-    <th scope="col" class={props.column.numeric ? "num" : undefined} aria-sort={active() ? (props.sort.descending ? "descending" : "ascending") : "none"} title={props.column.title}>
-      <button type="button" class="usage-sort" onClick={() => props.onSort(props.column.key)}>
-        <span>{props.column.label}</span>
-        <Icon name={active() && !props.sort.descending ? "arrow-up3" : "arrow-down4"} size={11} class={active() ? "usage-sort-icon on" : "usage-sort-icon"} />
-      </button>
-    </th>
-  );
-}
-
-function useSort<K extends string>(initial: K) {
-  const [sort, setSort] = createSignal<SortState<K>>({ key: initial, descending: true });
-  const toggle = (key: K) => setSort((current) => (current.key === key ? { key, descending: !current.descending } : { key, descending: true }));
-  return [sort, toggle] as const;
-}
-
-function CostCell(props: { totals: UsageTotals }) {
-  const info = () => costText(props.totals.cost);
-  return <td class="num" classList={{ "usage-unknown": !info().known }} title={info().title}>{info().text}</td>;
-}
-
-function TokenCells(props: { totals: UsageTotals }) {
-  const tokens = () => props.totals.tokens;
-  const missing = () => props.totals.turns > 0 && props.totals.tokens.total === 0;
-  return <>
-    <td class="num" title={missing() ? "The agent did not report token counts for these turns" : `${fullNumber(tokens().total)} tokens`} classList={{ "usage-unknown": missing() }}>{missing() ? "Not reported" : compactTokens(tokens().total)}</td>
-    <td class="num secondary" title={`${fullNumber(tokens().input)} input tokens`}>{compactTokens(tokens().input)}</td>
-    <td class="num secondary" title={`${fullNumber(tokens().output)} output tokens`}>{compactTokens(tokens().output)}</td>
-    <td class="num secondary" title={`${fullNumber(tokens().cacheRead)} cache read, ${fullNumber(tokens().cacheWrite)} cache write tokens`}>{compactTokens(tokens().cacheRead + tokens().cacheWrite)}</td>
-  </>;
-}
-
-const TOKEN_COLUMNS: Column<NumericKey>[] = [
-  { key: "tokens", label: "Tokens", numeric: true },
-  { key: "input", label: "Input", numeric: true },
-  { key: "output", label: "Output", numeric: true },
-  { key: "cache", label: "Cache", numeric: true, title: "Cache read plus cache write tokens" },
-];
-
-function Section(props: { title: string; count: number; children: JSX.Element; actions?: JSX.Element }) {
-  return (
-    <section class="usage-card usage-table-card" aria-label={props.title}>
-      <header class="usage-card-head"><h2>{props.title}</h2><span class="usage-count">{props.count}</span><span class="usage-spacer" />{props.actions}</header>
+    <section class={`usage-panel ${props.class ?? ""}`} aria-label={props.title}>
+      <header class="usage-panel-head">
+        <h2>{props.title}</h2>
+        <Show when={props.count !== undefined}><span class="usage-count">{props.count}</span></Show>
+        <span class="usage-spacer" />
+        {props.actions}
+      </header>
       {props.children}
     </section>
   );
 }
 
-export function AgentTable(props: { rows: readonly AgentUsage[]; share: (id: string) => number }) {
-  type Key = NumericKey | "name";
-  const [sort, toggle] = useSort<Key>("tokens");
-  const rows = createMemo(() => sortRows(props.rows, sort(), (row, key) => (key === "name" ? row.name.toLowerCase() : numeric(row.totals, key))));
-  const columns: Column<Key>[] = [{ key: "name", label: "Agent" }, ...TOKEN_COLUMNS, { key: "sessions", label: "Sessions", numeric: true }, { key: "cost", label: "Cost estimate", numeric: true, title: "API-equivalent estimate, not a subscription bill" }];
+const MODEL_LIMIT = 8;
+const slug = (text: string) => text.toLowerCase().replace(/[.\s_]+/g, "-");
+/** Models by tokens with a horizontal share bar each: mark, name, tokens, estimated cost and share. */
+export function ModelList(props: { rows: readonly ModelUsage[]; totalTokens: number; agentName: (id: string) => string }) {
+  const [all, setAll] = createSignal(false);
+  const rows = createMemo(() => [...props.rows].sort((a, b) => b.totals.tokens.total - a.totals.tokens.total));
+  const largest = () => rows()[0]?.totals.tokens.total || 1;
   return (
-    <Section title="By agent" count={props.rows.length}>
-      <div class="usage-table-wrap">
-        <table class="usage-table">
-          <thead><tr><For each={columns}>{(column) => <SortHeader column={column} sort={sort()} onSort={toggle} />}</For></tr></thead>
-          <tbody>
-            <For each={rows()}>{(row) => (
-              <tr>
-                <th scope="row"><span class="usage-name"><BrandIcon id={brandId(row.agentId)} name={row.name} size={16} /><span>{row.name}</span><span class="usage-share-pill" title="Share of tokens in this range">{props.share(row.agentId)}%</span><Show when={row.imported}><span class="usage-source-pill" title="Read from the agent's own local logs">Imported</span></Show></span></th>
-                <TokenCells totals={row.totals} />
-                <td class="num">{fullNumber(row.totals.sessions)}</td>
-                <CostCell totals={row.totals} />
-              </tr>
-            )}</For>
-          </tbody>
-        </table>
-      </div>
-    </Section>
+    <Panel title="By model" count={props.rows.length}>
+      <ol class="usage-rank">
+        <For each={all() ? rows() : rows().slice(0, MODEL_LIMIT)}>{(row) => (
+          <li class="usage-rank-row" title={`${row.model}: ${priceNote(row)}`}>
+            <span class="usage-rank-mark"><ModelIcon id={brandId(row.agentIds[0] ?? "")} name={props.agentName(row.agentIds[0] ?? "")} traits={[]} size={16} model={{ value: row.model, name: row.model }} /></span>
+            <span class="usage-rank-name">
+              <span class="usage-rank-title">{row.price?.label ?? (row.model || "Model not named")}<Show when={row.price && slug(row.price.label) !== slug(row.model)}><span class="usage-rank-id usage-mono">{row.model}</span></Show></span>
+            </span>
+            <span class="usage-rank-num">{compactTokens(row.totals.tokens.total)}</span>
+            <span class="usage-rank-num usage-rank-cost"><Cost totals={row.totals} /></span>
+            <span class="usage-rank-share">{shareText(row.totals.tokens.total, props.totalTokens)}</span>
+            <span class="usage-rank-bar" aria-hidden="true"><i style={{ width: `${Math.max(0.6, (row.totals.tokens.total / largest()) * 100)}%` }} /></span>
+          </li>
+        )}</For>
+      </ol>
+      <Show when={rows().length > MODEL_LIMIT}>
+        <button type="button" class="usage-more" aria-expanded={all()} onClick={() => setAll(!all())}>{all() ? "Show fewer" : `Show all ${rows().length} models`}<Icon name={all() ? "arrow-up3" : "arrow-down4"} size={12} /></button>
+      </Show>
+    </Panel>
   );
 }
 
-export function ModelTable(props: { rows: readonly ModelUsage[]; agentName: (id: string) => string }) {
-  type Key = NumericKey | "name";
-  const [sort, toggle] = useSort<Key>("tokens");
-  const rows = createMemo(() => sortRows(props.rows, sort(), (row, key) => (key === "name" ? (row.model || "~").toLowerCase() : numeric(row.totals, key))));
-  const columns: Column<Key>[] = [{ key: "name", label: "Model" }, ...TOKEN_COLUMNS, { key: "turns", label: "Turns", numeric: true }, { key: "cost", label: "Cost estimate", numeric: true, title: "API-equivalent estimate, not a subscription bill" }];
-  const priceNote = (row: ModelUsage) => {
-    const price = row.price;
-    if (!price) return "No price in the table: tokens only";
-    const how = price.kind === "exact" ? "Priced as" : price.kind === "alias" ? "Alias, priced as the current" : price.kind === "family" ? "Variant, priced as" : "Your price for";
-    return `${how} ${price.label}${price.note ? `. ${price.note}` : ""}`;
-  };
+export type ProviderRow = { key: string; name: string; slot: number | "other"; totals: UsageTotals; spark: number[]; imported: number };
+
+/** A small trend line in the series colour: a 1.5px line over a faint wash, no axes. */
+export function Sparkline(props: { values: readonly number[]; slot: number | "other"; label: string }) {
+  const W = 96;
+  const H = 26;
+  const path = createMemo(() => {
+    const values = props.values.length > 1 ? props.values : [props.values[0] ?? 0, props.values[0] ?? 0];
+    const max = Math.max(...values, 0) || 1;
+    const step = W / (values.length - 1);
+    const points = values.map((value, index) => [index * step, H - 2 - (value / max) * (H - 4)] as const);
+    const line = points.map(([px, py], index) => `${index ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join("");
+    return { line, area: `${line}L${W},${H}L0,${H}Z` };
+  });
   return (
-    <Section title="By model" count={props.rows.length}>
-      <div class="usage-table-wrap">
-        <table class="usage-table">
-          <thead><tr><For each={columns}>{(column) => <SortHeader column={column} sort={sort()} onSort={toggle} />}</For></tr></thead>
-          <tbody>
-            <For each={rows()}>{(row) => (
-              <tr>
-                <th scope="row">
-                  <span class="usage-name">
-                    <ModelIcon id={brandId(row.agentIds[0] ?? "")} name={props.agentName(row.agentIds[0] ?? "")} traits={[]} size={16} model={{ value: row.model, name: row.model }} />
-                    <span class="usage-model-text"><span class="usage-mono">{row.model || "Model not named"}</span><small title={priceNote(row)}>{priceNote(row)}</small></span>
-                  </span>
-                </th>
-                <TokenCells totals={row.totals} />
-                <td class="num">{fullNumber(row.totals.turns)}</td>
-                <CostCell totals={row.totals} />
-              </tr>
-            )}</For>
-          </tbody>
-        </table>
-      </div>
-    </Section>
+    <svg class="usage-spark" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label={props.label}>
+      <path d={path().area} fill={seriesVar(props.slot)} opacity="0.12" />
+      <path d={path().line} fill="none" stroke={seriesVar(props.slot)} stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+    </svg>
   );
 }
 
-const PAGE = 50;
-export function SessionTable(props: { rows: readonly SessionUsageRow[] }) {
-  type Key = NumericKey | "name" | "agent" | "last";
-  const [sort, toggle] = useSort<Key>("last");
+/** Tracked by Span against imported from local logs: tokens and sessions with a share bar each. */
+export function SourceList(props: { tracked: UsageTotals; imported: UsageTotals }) {
+  const total = () => props.tracked.tokens.total + props.imported.tokens.total;
+  const rows = () => [
+    { name: "Tracked by Span", sub: "Sessions Span ran", totals: props.tracked },
+    { name: "Imported", sub: "Agents' own local logs", totals: props.imported },
+  ];
+  return (
+    <Panel title="By source">
+      <ol class="usage-rank">
+        <For each={rows()}>{(row) => (
+          <li class="usage-rank-row usage-source-row">
+            <span class="usage-rank-name"><span class="usage-rank-title">{row.name}</span><span class="usage-rank-sub">{fullNumber(row.totals.sessions)} {row.totals.sessions === 1 ? "session" : "sessions"} · {row.sub}</span></span>
+            <span class="usage-rank-num">{compactTokens(row.totals.tokens.total)}</span>
+            <span class="usage-rank-num usage-rank-cost"><Cost totals={row.totals} /></span>
+            <span class="usage-rank-share">{shareText(row.totals.tokens.total, total())}</span>
+            <span class="usage-rank-bar" aria-hidden="true"><i style={{ width: `${total() ? Math.max(0.6, (row.totals.tokens.total / total()) * 100) : 0}%` }} /></span>
+          </li>
+        )}</For>
+      </ol>
+    </Panel>
+  );
+}
+
+/** Providers (agents) with a sparkline of their daily tokens. */
+export function ProviderList(props: { rows: readonly ProviderRow[]; totalTokens: number }) {
+  const rows = createMemo(() => [...props.rows].sort((a, b) => b.totals.tokens.total - a.totals.tokens.total));
+  return (
+    <Panel title="By agent" count={props.rows.length}>
+      <ol class="usage-rank">
+        <For each={rows()}>{(row) => (
+          <li class="usage-rank-row usage-provider-row">
+            <span class="usage-rank-mark"><BrandIcon id={row.key} name={row.name} size={16} /></span>
+            <span class="usage-rank-name">
+              <span class="usage-rank-title">{row.name}</span>
+              <span class="usage-rank-sub" title={row.imported > 0 ? `${fullNumber(row.imported)} imported from local logs` : undefined}>{fullNumber(row.totals.sessions)} {row.totals.sessions === 1 ? "session" : "sessions"}</span>
+            </span>
+            <Sparkline values={row.spark} slot={row.slot} label={`${row.name} tokens over the range`} />
+            <span class="usage-rank-num">{compactTokens(row.totals.tokens.total)}</span>
+            <span class="usage-rank-num usage-rank-cost"><Cost totals={row.totals} /></span>
+            <span class="usage-rank-share">{shareText(row.totals.tokens.total, props.totalTokens)}</span>
+          </li>
+        )}</For>
+      </ol>
+    </Panel>
+  );
+}
+
+type SessionKey = "name" | "agent" | "model" | "tokens" | "cost" | "last";
+type Column = { key: SessionKey; label: string; numeric?: boolean; title?: string };
+const COLUMNS: Column[] = [
+  { key: "name", label: "Session" },
+  { key: "agent", label: "Agent" },
+  { key: "model", label: "Model" },
+  { key: "tokens", label: "Tokens", numeric: true },
+  { key: "cost", label: "Cost", numeric: true, title: "API-equivalent estimate, not a subscription bill" },
+  { key: "last", label: "Last active", numeric: true },
+];
+
+function SortHeader(props: { column: Column; sort: SortState<SessionKey>; onSort: (key: SessionKey) => void }) {
+  const active = () => props.sort.key === props.column.key;
+  return (
+    <th scope="col" class={props.column.numeric ? "num" : undefined} aria-sort={active() ? (props.sort.descending ? "descending" : "ascending") : "none"} title={props.column.title}>
+      <button type="button" class="usage-sort" onClick={() => props.onSort(props.column.key)}>
+        <span>{props.column.label}</span>
+        <Icon name={active() && !props.sort.descending ? "arrow-up3" : "arrow-down4"} size={10} class={active() ? "usage-sort-icon on" : "usage-sort-icon"} />
+      </button>
+    </th>
+  );
+}
+
+const PAGE = 25;
+/** Sessions: searchable, sortable, compact. A session Span ran opens on click when `onOpen` is given. */
+export function SessionTable(props: { rows: readonly SessionUsageRow[]; onOpen?: (row: SessionUsageRow) => void; canOpen?: (row: SessionUsageRow) => boolean; actions?: JSX.Element }) {
+  const [sort, setSort] = createSignal<SortState<SessionKey>>({ key: "last", descending: true });
+  const [query, setQuery] = createSignal("");
   const [limit, setLimit] = createSignal(PAGE);
-  const rows = createMemo(() => sortRows(props.rows, sort(), (row, key) => (key === "name" ? (row.title || row.sessionId).toLowerCase() : key === "agent" ? row.agentName.toLowerCase() : key === "last" ? row.lastActiveMs : numeric(row.totals, key))));
-  const columns: Column<Key>[] = [{ key: "name", label: "Session" }, { key: "agent", label: "Agent" }, { key: "last", label: "Last active", numeric: true }, ...TOKEN_COLUMNS, { key: "turns", label: "Turns", numeric: true }, { key: "cost", label: "Cost estimate", numeric: true, title: "API-equivalent estimate, not a subscription bill" }];
+  const toggle = (key: SessionKey) => setSort((current) => (current.key === key ? { key, descending: !current.descending } : { key, descending: key !== "name" && key !== "agent" && key !== "model" }));
+  const filtered = createMemo(() => props.rows.filter((row) => matchesSearch(row, query())));
+  const rows = createMemo(() => sortRows(filtered(), sort(), (row, key) => {
+    switch (key) {
+      case "name": return (row.title || row.sessionId).toLowerCase();
+      case "agent": return row.agentName.toLowerCase();
+      case "model": return (row.models[0] ?? "~").toLowerCase();
+      case "tokens": return row.totals.tokens.total;
+      // An unknown price sorts below every known one, including a known zero.
+      case "cost": return row.totals.cost.known ? money(row.totals.cost.usd) : -1;
+      case "last": return row.lastActiveMs;
+    }
+  }));
   const when = (ms: number) => (ms > 0 ? new Date(ms).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+  const openable = (row: SessionUsageRow) => Boolean(props.onOpen && !row.imported && (props.canOpen?.(row) ?? true));
   return (
-    <Section title="By session" count={props.rows.length}>
+    <Panel title="Sessions" count={props.rows.length} class="usage-sessions" actions={<>
+      <label class="usage-search">
+        <Icon name="SearchNormal1" size={13} />
+        <input type="search" placeholder="Search sessions" aria-label="Search sessions" value={query()} onInput={(event) => { setQuery(event.currentTarget.value); setLimit(PAGE); }} />
+      </label>
+      {props.actions}
+    </>}>
       <div class="usage-table-wrap">
         <table class="usage-table">
-          <thead><tr><For each={columns}>{(column) => <SortHeader column={column} sort={sort()} onSort={toggle} />}</For></tr></thead>
+          <thead><tr><For each={COLUMNS}>{(column) => <SortHeader column={column} sort={sort()} onSort={toggle} />}</For></tr></thead>
           <tbody>
-            <For each={rows().slice(0, limit())}>{(row) => (
-              <tr>
-                <th scope="row"><span class="usage-model-text"><span class="usage-session-title">{row.title || "Untitled session"}</span><small class="usage-mono" title={row.sessionId}>{row.sessionId}{row.models.length ? ` · ${row.models.join(", ")}` : ""}</small></span></th>
-                <td><span class="usage-name"><BrandIcon id={brandId(row.agentId)} name={row.agentName} size={14} /><span>{row.agentName}</span><Show when={row.imported}><span class="usage-source-pill" title="Read from the agent's own local logs">Imported</span></Show></span></td>
+            <For each={rows().slice(0, limit())} fallback={<tr><td class="usage-table-empty" colSpan={COLUMNS.length}>No sessions match “{query()}”</td></tr>}>{(row) => (
+              <tr classList={{ openable: openable(row) }} tabindex={openable(row) ? 0 : undefined} title={openable(row) ? "Open this session" : row.imported ? "Imported from the agent's local logs" : undefined}
+                onClick={() => openable(row) && props.onOpen!(row)} onKeyDown={(event) => { if (openable(row) && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); props.onOpen!(row); } }}>
+                <th scope="row"><span class="usage-session-title">{row.title || "Untitled session"}</span></th>
+                <td><span class="usage-agent"><BrandIcon id={brandId(row.agentId)} name={row.agentName} size={14} /><span>{providerName(brandId(row.agentId), row.agentName)}</span><Show when={row.imported}><span class="usage-tag">Imported</span></Show></span></td>
+                <td><span class="usage-mono usage-model-cell" title={row.models.join(", ")}>{row.models[0] ?? "–"}<Show when={row.models.length > 1}><small> +{row.models.length - 1}</small></Show></span></td>
+                <td class="num" title={`${fullNumber(row.totals.tokens.total)} tokens`}>{row.totals.turns > 0 && row.totals.tokens.total === 0 ? <span class="usage-unknown">Not reported</span> : compactTokens(row.totals.tokens.total)}</td>
+                <td class="num"><Cost totals={row.totals} /></td>
                 <td class="num secondary">{when(row.lastActiveMs)}</td>
-                <TokenCells totals={row.totals} />
-                <td class="num">{fullNumber(row.totals.turns)}</td>
-                <CostCell totals={row.totals} />
               </tr>
             )}</For>
           </tbody>
         </table>
       </div>
       <Show when={rows().length > limit()}>
-        <button type="button" class="usage-more" onClick={() => setLimit((value) => value + PAGE)}>Show {Math.min(PAGE, rows().length - limit())} more of {rows().length - limit()}<Icon name="arrow-down4" size={12} /></button>
+        <button type="button" class="usage-more" onClick={() => setLimit((value) => value + PAGE)}>Show {Math.min(PAGE, rows().length - limit())} more of {fullNumber(rows().length - limit())}<Icon name="arrow-down4" size={12} /></button>
       </Show>
-    </Section>
+    </Panel>
   );
 }

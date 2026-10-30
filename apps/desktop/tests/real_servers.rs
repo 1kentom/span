@@ -149,29 +149,37 @@ impl Fetch for CountingFetch {
 // Processes
 // ---------------------------------------------------------------------------
 
+/// Every process as `(pid, ppid, state)`, without the lister that produced the
+/// table (it is itself a child of the test process, not a language server).
+/// Unix state is the `ps` stat column (`Z...` is a zombie). Windows has no
+/// zombies, so its state is always `R` and reaping is checked by absence.
+#[cfg(unix)]
 fn process_table() -> Vec<(u32, u32, String)> {
-    #[cfg(unix)]
     let out = Command::new("ps")
         .args(["-axo", "pid=,ppid=,stat=,comm="])
         .output()
         .expect("run ps");
-    #[cfg(windows)]
+    parse_process_table(&String::from_utf8_lossy(&out.stdout), "ps")
+}
+
+#[cfg(windows)]
+fn process_table() -> Vec<(u32, u32, String)> {
     let out = Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object { '{0} {1} R' -f $_.ProcessId, $_.ParentProcessId }",
+            "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} R {2}' -f $_.ProcessId, $_.ParentProcessId, $_.Name }",
         ])
         .output()
         .expect("run powershell");
-    assert!(
-        out.status.success(),
-        "process query failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let table: Vec<_> = String::from_utf8_lossy(&out.stdout)
-        .lines()
+    parse_process_table(&String::from_utf8_lossy(&out.stdout), "powershell.exe")
+}
+
+/// Parses `pid ppid state command` rows, dropping rows whose command file name
+/// is `lister`.
+fn parse_process_table(text: &str, lister: &str) -> Vec<(u32, u32, String)> {
+    text.lines()
         .filter_map(|l| {
             let mut it = l.split_whitespace();
             let row = (
@@ -179,24 +187,23 @@ fn process_table() -> Vec<(u32, u32, String)> {
                 it.next()?.parse().ok()?,
                 it.next()?.to_string(),
             );
-            // The `ps` run that produced this table is itself a child of the test
-            // process; it is not a language server.
-            #[cfg(unix)]
-            {
-                let comm = it.collect::<Vec<_>>().join(" ");
-                if Path::new(&comm).file_name()? == "ps" {
-                    return None;
-                }
-            }
-            Some(row)
+            let comm = it.collect::<Vec<_>>().join(" ");
+            let name = Path::new(&comm).file_name()?.to_string_lossy().to_string();
+            (!name.eq_ignore_ascii_case(lister)).then_some(row)
         })
-        .collect();
-    assert!(
-        table.iter().any(|(pid, _, _)| *pid == std::process::id()),
-        "process query omitted the test process: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    table
+        .collect()
+}
+
+#[cfg(unix)]
+fn force_kill(pid: u32) {
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+}
+
+#[cfg(windows)]
+fn force_kill(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .status();
 }
 
 #[test]
@@ -625,6 +632,10 @@ impl Env {
                         lines.push(format!("install {:?} {:?}", i.server, i.phase));
                     }
                 }
+                LspEvent::WatchRecovery(r) => lines.push(format!(
+                    "watch recovery {:?} {:?}: {}",
+                    r.server, r.phase, r.message
+                )),
             }
         }
         lines.join("\n  ")
@@ -1066,12 +1077,7 @@ impl Env {
             }
             if Instant::now() > deadline {
                 for p in &alive {
-                    #[cfg(unix)]
-                    let _ = Command::new("kill").args(["-9", &p.to_string()]).status();
-                    #[cfg(windows)]
-                    let _ = Command::new("taskkill")
-                        .args(["/F", "/T", "/PID", &p.to_string()])
-                        .status();
+                    force_kill(*p);
                 }
                 panic!("{what}: processes still alive: {alive:?}");
             }

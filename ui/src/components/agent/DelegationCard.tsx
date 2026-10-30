@@ -8,6 +8,8 @@ import { STATUS_TEXT, boundedSummary, isFinished, taskElapsedMs, type Delegation
 
 type DelegationCardProps = {
   agent: string;
+  /** Display name of the model the child runs, when the agent reported one. */
+  model?: string;
   status: DelegationStatusKind;
   /** The reason text for a failed or cancelled task, from the backend's reported reason. */
   note?: string;
@@ -23,6 +25,10 @@ type DelegationCardProps = {
   budget?: string;
   /** A completed task that went over its token budget after the fact. Informational, never a failure. */
   budgetNote?: string;
+  /** What the lead asked the child to hand back, already formatted. */
+  deliverables?: string;
+  /** The `delegate_many` batch this task belongs to: finished tasks over all of them. */
+  group?: { done: number; total: number };
   /** Stops the task. Called from the Cancel button only. */
   onCancel?: (taskId: string) => Promise<void>;
   /** Opens a workspace-relative path through the validated open path. False when nothing opened. */
@@ -37,6 +43,9 @@ const GLYPH: Partial<Record<DelegationStatusKind, { name: string; tone: string }
   completed: { name: "TickCircle", tone: "sb-ok" },
   failed: { name: "CloseCircle", tone: "sb-bad" },
   cancelled: { name: "Stop", tone: "dim" },
+  queued: { name: "Clock", tone: "dim" },
+  needs_user: { name: "MessageQuestion", tone: "sb-glyph warn" },
+  lost: { name: "Warning2", tone: "sb-bad" },
   unknown: { name: "InfoCircle", tone: "dim" },
 };
 
@@ -75,11 +84,13 @@ export function DelegationCard(props: DelegationCardProps) {
   const canOpenSession = () => Boolean(props.onOpenSession && props.taskId && props.status !== "starting");
   const openArtifact = (path: string) => setOpenError(props.onOpenArtifact?.(path) ? undefined : `Could not open ${path}`);
   return (
-    <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}: ${STATUS_TEXT[props.status]}`}>
+    <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed" || props.status === "lost", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}${props.model ? ` (${props.model})` : ""}: ${STATUS_TEXT[props.status]}`}>
       <div class="sb-delegation-head">
         <BrandIcon name={props.agent} size={14} />
         <span class="sb-delegation-name sb-ellipsis">{props.agent}</span>
+        <Show when={props.model}><span class="sb-delegation-model sb-ellipsis" title={props.model}>{props.model}</span></Show>
         <span class="sb-chip">Delegated</span>
+        <Show when={props.group}>{(group) => <span class="sb-chip sb-delegation-group" title="Tasks of this batch that finished">Batch {group().done} of {group().total} done</span>}</Show>
         <span class="sb-flex" />
         <span class="sb-delegation-status" role="status">
           <Show when={glyph()} fallback={<span class="sb-spinner" aria-hidden="true" />}>
@@ -90,6 +101,7 @@ export function DelegationCard(props: DelegationCardProps) {
       </div>
       <Show when={props.status === "starting"}><div class="sb-sub sb-delegation-starting">Starting {props.agent}</div></Show>
       <Show when={props.note}><div class="sb-body sb-delegation-note">{props.note}</div></Show>
+      <Show when={props.deliverables}><div class="sb-sub sb-delegation-deliverables">Expects {props.deliverables}</div></Show>
       <Show when={elapsed()}><div class="sb-sub sb-delegation-elapsed">Elapsed {elapsed()}</div></Show>
       <Show when={props.progressText && !finished()}><div class="sb-sub sb-delegation-progress">{props.progressText}</div></Show>
       <Show when={summary()}><div class="sb-body sb-delegation-result">{summary()}</div></Show>

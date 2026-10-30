@@ -282,6 +282,42 @@ export function toolImages(tool: Pick<ToolEvent, "toolCallId" | "images">): Tool
 }
 
 /** Maps one ACP tool call to a step row, with a diff or terminal detail only when the agent sent one. */
+/** Output lines a terminal step shows before "Show earlier lines". */
+export const TERMINAL_TAIL = 200;
+
+/** The parsed content blocks and raw output of a tool event; typed fields win over the JSON. */
+function payload(tool: ToolEvent): [Record<string, unknown>[], unknown] {
+  let update: Record<string, unknown> | undefined;
+  try {
+    update = record(JSON.parse(tool.contentJson));
+  } catch {
+    update = undefined;
+  }
+  const content = Array.isArray(update?.content) ? update!.content.map(record).filter(Boolean) as Record<string, unknown>[] : [];
+  return [content, tool.rawOutput ?? update?.rawOutput];
+}
+
+/** A shell call's output lines (text content, else stdout, output and stderr) and its exit code. */
+function runOutput(content: Record<string, unknown>[], raw: unknown): { lines: TermLine[]; exitCode?: number } {
+  const output: TermLine[] = [];
+  for (const entry of content) {
+    const block = record(entry.content);
+    if (entry.type === "content" && block?.type === "text" && text(block.text)) output.push(...lines(block.text as string).map((line) => ({ kind: "out" as const, text: line })));
+  }
+  let exitCode: number | undefined;
+  if (!output.length && typeof raw === "string") output.push(...lines(raw).map((line) => ({ kind: "out" as const, text: line })));
+  const rawRecord = record(raw);
+  if (rawRecord) {
+    if (!output.length) {
+      for (const [key, kindName] of [["stdout", "out"], ["output", "out"], ["stderr", "err"]] as const)
+        if (text(rawRecord[key])) output.push(...lines(rawRecord[key] as string).map((line) => ({ kind: kindName, text: line })));
+    }
+    const code = rawRecord.exit_code ?? rawRecord.exitCode;
+    if (typeof code === "number") exitCode = code;
+  }
+  return { lines: output, exitCode };
+}
+
 export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: string, onOpen?: (path: string, line?: number) => void, onOpenImage?: (id: string) => void): StepView {
   const kind = stepKind(tool.toolKind);
   let update: Record<string, unknown> | undefined;
@@ -322,29 +358,16 @@ export function toStep(tool: ToolEvent, children: readonly ToolEvent[], root?: s
     step.detail = { type: "diff", path, lines: view.lines, onOpen: onOpen && openable ? () => onOpen(path, view.openAt) : undefined };
   } else if (kind === "run") {
     const command = commandText(rawInput);
-    const output: TermLine[] = [];
-    for (const entry of content) {
-      const block = record(entry.content);
-      if (entry.type === "content" && block?.type === "text" && text(block.text)) output.push(...lines(block.text as string).map((line) => ({ kind: "out" as const, text: line })));
-    }
-    const raw = rawOutput;
-    let exitCode: number | undefined;
-    if (!output.length && typeof raw === "string") output.push(...lines(raw).map((line) => ({ kind: "out" as const, text: line })));
-    const rawRecord = record(raw);
-    if (rawRecord) {
-      if (!output.length) {
-        for (const [key, kindName] of [["stdout", "out"], ["output", "out"], ["stderr", "err"]] as const)
-          if (text(rawRecord[key])) output.push(...lines(rawRecord[key] as string).map((line) => ({ kind: kindName, text: line })));
-      }
-      const code = rawRecord.exit_code ?? rawRecord.exitCode;
-      if (typeof code === "number") exitCode = code;
-    }
+    const { lines: output, exitCode } = runOutput(content, rawOutput);
     if (command || output.length) {
+      const tail = output.slice(-TERMINAL_TAIL);
       step.detail = {
         type: "terminal",
-        lines: [...(command ? [{ kind: "cmd" as const, text: command }] : []), ...output.slice(-200)],
+        lines: [...(command ? [{ kind: "cmd" as const, text: command }] : []), ...tail],
         exitCode,
         running: step.status === "in_progress",
+        // Earlier lines are read again from the event only when asked for, so a long output is not kept twice.
+        ...(output.length > tail.length ? { hidden: output.length - tail.length, full: () => runOutput(...payload(tool)).lines } : {}),
       };
     }
   }

@@ -65,7 +65,7 @@ export type DiffLine = { kind: "add" | "del" | "ctx"; n?: number; text: string }
 export type TermLine = { kind: "cmd" | "out" | "err"; text: string };
 export type SearchMatch = { loc: string; text: string };
 export type StepDetail =
-  | { type: "terminal"; lines: TermLine[]; cwd?: string; exitCode?: number | null; running?: boolean }
+  | { type: "terminal"; lines: TermLine[]; cwd?: string; exitCode?: number | null; running?: boolean; /** Output lines left out before `lines`. */ hidden?: number; /** Every output line, read again from the event on demand. */ full?: () => TermLine[] }
   | { type: "diff"; path: string; lines: DiffLine[]; onOpen?: () => void }
   | { type: "matches"; matches: SearchMatch[] };
 export type StepImage = { id: string; name: string; mime: string; src: string; onOpen?: () => void };
@@ -151,5 +151,9 @@ export type SessionRow = {
   locked?: boolean;
   /** The session's state from the backend. Absent for a session Span does not hold, which then shows no state. */
   status?: import("../../lib/agent-chats").RowStatus;
+  /** A native subagent session (the agent's own subagent tool), listed only when the preference shows them. Never deletable here. */
+  subagent?: boolean;
+  /** Native subagent sessions the agent listed under this row's session, for its Subagents disclosure. */
+  subagents?: { id: string; title: string }[];
 };
 export type HistoryScope = "workspace" | "all";
