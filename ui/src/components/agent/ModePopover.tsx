@@ -3,6 +3,9 @@ import { Icon } from "../Icon";
 import { groupOptions, isBooleanOption } from "../../lib/agent-options";
 import { modeIconFor } from "../../lib/mode-icons";
 import type { ConfigOptionView } from "./types";
+import type { ThreadPermissionMode } from "../../bindings";
+import type { AgentState } from "../../lib/agent-session";
+import { SpanModeSection } from "./PermissionMode";
 import { arrowFocus, useEscape } from "./util";
 
 type ModePopoverProps = {
@@ -12,18 +15,28 @@ type ModePopoverProps = {
   busy?: boolean;
   onSelect: (configId: string, value: string) => void;
   onClose: () => void;
+  /** The thread's Span permission mode (ADR 0015). When set, its modes lead and the agent options it manages are hidden. */
+  spanMode?: AgentState["permissionMode"];
+  onSpanMode?: (mode: ThreadPermissionMode) => void;
 };
 
-/** The mode popover: the agent's mode first, then each other select or on/off option it reports, so none is lost. */
+/**
+ * The mode popover: Span's permission modes first (when the session reports one), then the agent's own mode unless Span
+ * manages it, then each other select or on/off option it reports, so none is lost.
+ */
 export function ModePopover(props: ModePopoverProps) {
   let root: HTMLDivElement | undefined;
   useEscape(props.onClose);
-  const sections = createMemo(() => groupOptions(props.options).mode.map((option) => option.id), undefined, { equals: (a, b) => a.join("\n") === b.join("\n") });
+  const managed = () => props.spanMode?.managed ?? [];
+  const sections = createMemo(() => groupOptions(props.options).mode.map((option) => option.id).filter((id) => !managed().includes(id)), undefined, { equals: (a, b) => a.join("\n") === b.join("\n") });
   createEffect(() => {
     queueMicrotask(() => (root?.querySelector<HTMLElement>("[aria-checked='true']:not(:disabled)") ?? root?.querySelector<HTMLElement>("button:not(:disabled)"))?.focus());
   });
   return (
     <div class="sb-popover sb-picker" role="dialog" aria-label={`${props.agentName} mode`} ref={root} onKeyDown={(event) => arrowFocus(event, root, "button:not(:disabled)")}>
+      <Show when={props.spanMode}>
+        {(mode) => <SpanModeSection mode={mode()} busy={props.busy} onSelect={(value) => props.onSpanMode?.(value)} />}
+      </Show>
       {/* Keyed by option id and choice value so a config update keeps focus on the row the user is on. */}
       <For each={sections()}>
         {(optionId, index) => {
@@ -31,7 +44,7 @@ export function ModePopover(props: ModePopoverProps) {
           const option = () => (last = props.options.find((candidate) => candidate.id === optionId) ?? last);
           return (
             <>
-              <Show when={index() > 0}><div class="sb-rule-h" /></Show>
+              <Show when={index() > 0 || props.spanMode}><div class="sb-rule-h" /></Show>
               <Show
                 when={isBooleanOption(option())}
                 fallback={

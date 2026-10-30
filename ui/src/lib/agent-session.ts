@@ -10,8 +10,10 @@ import type {
   DelegationStatus,
   EditProposal,
   PlanEntry,
+  PolicyReason,
   SessionKey,
   SlashCommand,
+  ThreadPermissionMode,
 } from "../bindings";
 import type { Attachment } from "./attachments";
 import type { BranchMode } from "./agent-rewind";
@@ -40,6 +42,10 @@ export type FeedItem =
   | { id: number; kind: "proposal"; proposal: EditProposal; resolution?: "accepted" | "rejected" }
   | { id: number; kind: "stop"; reason: string; hint?: AgentHint }
   | { id: number; kind: "decision"; decision: DecisionRecord }
+  /** A permission request Span answered itself under the thread's mode (ADR 0015): blocked in Plan, or allowed. */
+  | { id: number; kind: "policy"; decision: string; reason: PolicyReason; title: string; toolKind?: string }
+  /** The agent finished a plan while the thread was in Plan mode: the card offers Implement plan and Refine plan. */
+  | { id: number; kind: "planReady"; plan: string; status: "ready" | "implementing" | "refining" }
   | { id: number; kind: "delegation"; task: DelegationTaskState };
 
 export type AgentInfo = { name?: string; title?: string; version?: string; features: AgentFeatures };
@@ -57,6 +63,10 @@ export type AgentState = {
   auth?: { message: string; methods: AuthMethodInfo[]; hint?: AgentHint; /** The agent's own text when it is not a sign-in request. Shown first; sign-in is secondary. */ agentMessage?: string };
   /** The session's mode lets the agent run tools without asking. `mode` is the mode's name. */
   permissionBypass?: { mode: string };
+  /** The thread's Span permission mode (ADR 0015), as the backend reports and enforces it. */
+  permissionMode?: { mode: ThreadPermissionMode; supported: ThreadPermissionMode[]; child: boolean; managed: string[] };
+  /** The agent reports a mode other than the one the thread's Span mode needs (shown as a banner until resolved). */
+  modeMismatch?: { mode: ThreadPermissionMode; configId: string; expected: string; actual: string };
   canLoad: boolean;
   canList: boolean;
   commands: SlashCommand[];
@@ -115,7 +125,7 @@ export function initialAgentState(desktop: boolean): AgentState {
 
 /** Clears everything tied to one conversation, keeping the agent identity and logs. */
 export function resetConversation(state: AgentState): AgentState {
-  return { ...state, feed: [], plan: [], elicitations: [], strayPermissions: [], childRequests: [], usage: undefined, turnUsage: undefined, sessionTitle: undefined, commands: [], running: false, stopRequested: false, permissionBypass: undefined };
+  return { ...state, feed: [], plan: [], elicitations: [], strayPermissions: [], childRequests: [], usage: undefined, turnUsage: undefined, sessionTitle: undefined, commands: [], running: false, stopRequested: false, permissionBypass: undefined, permissionMode: undefined, modeMismatch: undefined };
 }
 
 export function addFeedItem(state: AgentState, item: DistributiveOmit<FeedItem, "id">): AgentState {
@@ -251,6 +261,8 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         sessionId: undefined,
         auth: undefined,
         permissionBypass: undefined,
+        permissionMode: undefined,
+        modeMismatch: undefined,
         elicitations: [],
         strayPermissions: [],
         childRequests: [],
@@ -262,7 +274,8 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
       };
     }
     case "session":
-      return { ...state, sessionId: event.sessionId, status: "ready", auth: undefined, permissionBypass: event.sessionId === state.sessionId ? state.permissionBypass : undefined };
+      if (event.sessionId === state.sessionId) return { ...state, status: "ready", auth: undefined };
+      return { ...state, sessionId: event.sessionId, status: "ready", auth: undefined, permissionBypass: undefined, permissionMode: undefined, modeMismatch: undefined };
     case "capabilities":
       return { ...state, canLoad: event.canLoadSession, canList: event.canListSessions };
     case "ready":
@@ -364,6 +377,16 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
       if (!toolCallId || awaitsPermission(resolved.feed, toolCallId)) return resolved;
       return mapFeed(resolved, (item) => (item.kind === "tool" && item.event.toolCallId === toolCallId ? releaseHeld(item) : item));
     }
+    case "permissionMode":
+      return { ...state, permissionMode: { mode: event.mode, supported: event.supported, child: event.child, managed: event.managed } };
+    case "permissionAuto": {
+      // Claude asks to leave plan mode with its plan (ExitPlanMode): Span refused it, and the plan becomes the card.
+      if (event.decision === "rejected" && event.toolKind === "switch_mode") return addPlanReady(state, planText(event.rawInput) ?? lastAgentText(state.feed) ?? "");
+      return addFeedItem(state, { kind: "policy", decision: event.decision, reason: event.reason, title: event.title, ...(event.toolKind ? { toolKind: event.toolKind } : {}) });
+    }
+    case "modeMismatch":
+      if (event.resolved) return state.modeMismatch && state.modeMismatch.configId === event.configId ? { ...state, modeMismatch: undefined } : state;
+      return { ...state, modeMismatch: { mode: event.mode, configId: event.configId, expected: event.expected, actual: event.actual } };
     case "delegation":
       return reduceDelegation(state, event.event);
     case "proposal":
@@ -381,6 +404,11 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
         ...(tokens !== undefined ? { turnUsage: { tokens } } : {}),
       };
       if (CARD_STOP_REASONS.includes(event.stopReason)) return addFeedItem(next, { kind: "stop", reason: event.stopReason, ...(event.hint ? { hint: event.hint } : {}) });
+      // A turn that ended normally in Plan mode with a written answer is a plan the user can implement or refine.
+      if (event.stopReason === "end_turn" && state.permissionMode?.mode === "plan" && !turnHasPlanCard(state.feed)) {
+        const plan = lastAgentText(state.feed);
+        if (plan) return addPlanReady(next, plan);
+      }
       if (event.stopReason === "cancelled") return addFeedItem(next, { kind: "note", text: (event.hint === "rejectedByUser" && hintText(event.hint)) || "Stopped" });
       const quiet = event.hint === "noOutputStreamed" ? hintText(event.hint) : undefined;
       return quiet ? addFeedItem(next, { kind: "note", text: quiet }) : next;
@@ -396,6 +424,38 @@ export function reduceAgentEvent(state: AgentState, event: AgentEvent): AgentSta
       };
   }
   return state;
+}
+
+/** The plan text Claude's ExitPlanMode request carries (`rawInput.plan`). */
+function planText(raw: unknown): string | undefined {
+  const plan = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>).plan : undefined;
+  return typeof plan === "string" && plan.trim() ? plan : undefined;
+}
+
+/** The agent's last answer text in the current turn (after the last user message). */
+function lastAgentText(feed: readonly FeedItem[]): string | undefined {
+  for (let index = feed.length - 1; index >= 0; index -= 1) {
+    const item = feed[index];
+    if (item.kind === "user") return undefined;
+    if (item.kind === "text" && item.text.trim()) return item.text;
+  }
+  return undefined;
+}
+
+/** True when the current turn already has a Plan ready card. */
+function turnHasPlanCard(feed: readonly FeedItem[]): boolean {
+  for (let index = feed.length - 1; index >= 0; index -= 1) {
+    const item = feed[index];
+    if (item.kind === "user") return false;
+    if (item.kind === "planReady") return true;
+  }
+  return false;
+}
+
+/** One Plan ready card per turn; an earlier card that was never acted on stays as it was. */
+function addPlanReady(state: AgentState, plan: string): AgentState {
+  if (turnHasPlanCard(state.feed)) return state;
+  return addFeedItem(state, { kind: "planReady", plan, status: "ready" });
 }
 
 /** The status line after an error event: a limit says which, anything else stays generic. */
