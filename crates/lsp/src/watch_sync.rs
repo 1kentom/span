@@ -645,6 +645,9 @@ mod tests {
             fs::write(root.join(file), "x").unwrap();
         }
         let wanted = |path: &Path| path.extension().is_some_and(|e| e == "ts" || e == "json");
+        // A file URI drops the Windows verbatim prefix (`\\?\`) that canonicalize adds,
+        // so compare against the root after the same round trip.
+        let base = uri_path(&crate::path_to_uri(&root).unwrap()).unwrap();
         let names = |scan: &ScanResult| {
             let mut names: Vec<_> = scan
                 .changes
@@ -652,7 +655,7 @@ mod tests {
                 .map(|c| {
                     assert_eq!(c.typ, FileChangeType::CHANGED);
                     let path = uri_path(&c.uri).unwrap();
-                    path.strip_prefix(&root)
+                    path.strip_prefix(&base)
                         .unwrap()
                         .to_string_lossy()
                         .replace('\\', "/")
