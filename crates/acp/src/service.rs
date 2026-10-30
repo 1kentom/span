@@ -1,7 +1,7 @@
 use crate::adapter::{map::config_options_value, Adapter, AgentKind, ConfigRoute, McpCaps};
 use crate::{
-    AgentCommand, AgentEvent, AgentFeatures, AgentHint, AuthCredential, AuthInput, AuthMethodInfo,
-    ConfigOption, PermissionOption, PromptAttachment, SessionSummary,
+    AgentCommand, AgentEvent, AgentFeatures, AgentHint, AuthCredential, AuthError, AuthInput,
+    AuthMethodInfo, ConfigOption, PermissionOption, PromptAttachment, SessionSummary,
 };
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo, UntypedMessage};
@@ -22,6 +22,10 @@ pub struct AgentService {
     state: Arc<Mutex<Bridge>>,
     workspace: Arc<Mutex<CoreWorkspace>>,
     completion: watch::Receiver<bool>,
+    /// Set once when the connection is shut down: a sign-in or a session
+    /// creation still waiting on the agent ends at once instead of applying
+    /// its result to a closed connection.
+    closing: Arc<watch::Sender<bool>>,
     #[cfg(test)]
     runtime_polls: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -56,7 +60,15 @@ enum Command {
     /// MCP servers and what the session is for.
     NewSession(Vec<Value>, Opened, Reply<String>),
     Prompt(String, Vec<ContentBlock>, Reply<()>),
-    Authenticate(String, Option<Meta>, Reply<()>),
+    /// Method, `_meta` (may hold a secret), the sign-in's generation, its
+    /// abort signal and the reply.
+    Authenticate(
+        String,
+        Option<Meta>,
+        u64,
+        oneshot::Receiver<()>,
+        oneshot::Sender<Result<(), AuthError>>,
+    ),
     Cancel(String),
     SetConfig(String, String, String, Reply<()>),
     ListSessions(Listing, Reply<Vec<SessionSummary>>),
@@ -117,6 +129,14 @@ struct Bridge {
     can_delete: bool,
     auth_methods: Vec<AuthMethodInfo>,
     auth_required: bool,
+    /// A sign-in is in flight. Only one at a time per connection; prompts
+    /// and session creation are refused until it ends.
+    auth_in_progress: bool,
+    /// Generation of the latest sign-in. A completion from an older one
+    /// (cancelled, or replaced by a newer sign-in) is ignored.
+    auth_epoch: u64,
+    /// Ends the sign-in in flight (the user's Cancel, or shutdown).
+    auth_abort: Option<oneshot::Sender<()>>,
     /// Normalises this agent's quirks; generic until `initialize` names the agent.
     adapter: Arc<Adapter>,
     mcp_caps: McpCaps,
@@ -388,6 +408,8 @@ impl AgentService {
         let (tx, rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = oneshot::channel();
         let (completion_tx, completion_rx) = watch::channel(false);
+        let (closing_tx, closing_rx) = watch::channel(false);
+        let closing = Arc::new(closing_tx);
         let shared = state.clone();
         let service_workspace = workspace.clone();
         #[cfg(test)]
@@ -410,6 +432,7 @@ impl AgentService {
                             shared.clone(),
                             emit.clone(),
                             rx,
+                            closing_rx,
                             ready_tx,
                         );
                         #[cfg(test)]
@@ -451,6 +474,7 @@ impl AgentService {
             state,
             workspace: service_workspace,
             completion: completion_rx,
+            closing,
             #[cfg(test)]
             runtime_polls,
         })
@@ -552,6 +576,9 @@ impl AgentService {
         }
         let (image, embedded) = {
             let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            if bridge.auth_in_progress {
+                return Err(SIGN_IN_PENDING.into());
+            }
             (bridge.prompt_image, bridge.prompt_embedded)
         };
         let blocks = prompt_blocks(text, attachments, image, embedded)?;
@@ -562,7 +589,9 @@ impl AgentService {
         Ok(rx)
     }
     /// Call `authenticate` with an advertised `agent` method. Create the session afterwards.
-    pub async fn authenticate(&self, method_id: String) -> Result<(), String> {
+    /// Only one sign-in runs per connection: a second call while one is in
+    /// flight returns [`AuthError::AuthenticationInProgress`] and sends nothing.
+    pub async fn authenticate(&self, method_id: String) -> Result<(), AuthError> {
         self.check_auth_method(&method_id, None)?;
         self.send_authenticate(method_id, None).await
     }
@@ -573,7 +602,7 @@ impl AgentService {
         &self,
         method_id: String,
         credential: AuthCredential,
-    ) -> Result<(), String> {
+    ) -> Result<(), AuthError> {
         let meta = match credential {
             AuthCredential::ApiKey { key } => {
                 self.check_auth_method(&method_id, Some(AuthInput::ApiKey))?;
@@ -620,16 +649,69 @@ impl AgentService {
             _ => Err("This sign-in method needs a different kind of credential".into()),
         }
     }
-    async fn send_authenticate(&self, method_id: String, meta: Option<Meta>) -> Result<(), String> {
+    async fn send_authenticate(
+        &self,
+        method_id: String,
+        meta: Option<Meta>,
+    ) -> Result<(), AuthError> {
+        let (abort_tx, abort_rx) = oneshot::channel();
+        let epoch = {
+            let mut bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            if bridge.closed {
+                return Err(AuthError::Cancelled {
+                    message: SIGN_IN_CLOSED.into(),
+                });
+            }
+            if bridge.auth_in_progress {
+                return Err(AuthError::AuthenticationInProgress {
+                    message: SIGN_IN_IN_PROGRESS.into(),
+                });
+            }
+            bridge.auth_in_progress = true;
+            bridge.auth_epoch += 1;
+            bridge.auth_abort = Some(abort_tx);
+            bridge.auth_epoch
+        };
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Command::Authenticate(method_id, meta, tx))
-            .map_err(|_| "Agent disconnected")?;
-        rx.await.map_err(|_| "Agent disconnected".to_string())?
+        let result = match self
+            .tx
+            .send(Command::Authenticate(method_id, meta, epoch, abort_rx, tx))
+        {
+            Ok(()) => rx.await.unwrap_or_else(|_| {
+                Err(AuthError::Cancelled {
+                    message: SIGN_IN_CLOSED.into(),
+                })
+            }),
+            Err(_) => Err("Agent disconnected".into()),
+        };
+        // The command loop may have ended without answering.
+        finish_auth(&self.state, epoch);
+        result
     }
     /// True when the last session creation failed because the agent wants authentication.
     pub fn auth_required(&self) -> bool {
         self.state.lock().map(|b| b.auth_required).unwrap_or(false)
+    }
+    /// True while a sign-in is in flight on this connection.
+    pub fn auth_in_progress(&self) -> bool {
+        self.state.lock().is_ok_and(|b| b.auth_in_progress)
+    }
+    /// Cancel the sign-in in flight, if any. Its caller gets
+    /// [`AuthError::Cancelled`] at once, prompts and session creation are
+    /// allowed again, and a late answer from the agent is ignored. Returns
+    /// whether a sign-in was cancelled.
+    pub fn cancel_authentication(&self) -> bool {
+        let abort = match self.state.lock() {
+            Ok(mut bridge) if bridge.auth_in_progress => {
+                bridge.auth_in_progress = false;
+                bridge.auth_abort.take()
+            }
+            _ => return false,
+        };
+        if let Some(abort) = abort {
+            let _ = abort.send(());
+        }
+        true
     }
     /// Answer an elicitation. `action` is `accept`, `decline` or `cancel`.
     /// `content_json` is a JSON object of field values and applies to `accept` only.
@@ -853,10 +935,17 @@ impl AgentService {
             .map_err(|_| "Agent disconnected".into())
     }
     pub fn shutdown(&self) -> Result<(), String> {
-        self.state
-            .lock()
-            .map_err(|_| "Agent state lock poisoned")?
-            .closed = true;
+        {
+            let mut bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            bridge.closed = true;
+            bridge.auth_in_progress = false;
+            if let Some(abort) = bridge.auth_abort.take() {
+                let _ = abort.send(());
+            }
+        }
+        // A sign-in or session creation waiting on the agent ends now; the
+        // command loop may be busy and read the Shutdown command later.
+        self.closing.send_replace(true);
         self.tx
             .send(Command::Shutdown)
             .map_err(|_| "Agent disconnected".into())
@@ -1026,6 +1115,7 @@ async fn run(
     state: Arc<Mutex<Bridge>>,
     emit: EventSink,
     mut rx: mpsc::UnboundedReceiver<Command>,
+    mut closing: watch::Receiver<bool>,
     ready: Reply<()>,
 ) -> agent_client_protocol::Result<()> {
     // The adapter keeps the canonical root for its own path checks; the agent is
@@ -1307,6 +1397,12 @@ async fn run(
                 match command {
                     Command::NewSession(servers, opened, reply) => {
                         let hidden = opened == Opened::Hidden;
+                        // A sign-in in flight decides whether a session can be
+                        // made at all; a hidden health session never waits on it.
+                        if !hidden && state.lock().is_ok_and(|bridge| bridge.auth_in_progress) {
+                            let _ = reply.send(Err(SIGN_IN_PENDING.into()));
+                            continue;
+                        }
                         let ephemeral = opened != Opened::User;
                         // The start mode is read from the user's settings only. If it
                         // cannot be read the session starts in the approval mode. A
@@ -1316,7 +1412,12 @@ async fn run(
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { merge_meta(&mut params, meta); }
                         if let Some(meta) = adapter.ephemeral_session_meta().filter(|_| ephemeral) { merge_meta(&mut params, meta); }
-                        let result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)).await;
+                        // A shutdown while the agent is still answering ends the
+                        // wait: no session is recorded on a closed connection.
+                        let result = tokio::select! {
+                            result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)) => result,
+                            _ = closing.wait_for(|closed| *closed) => { let _ = reply.send(Err(SESSION_CLOSED.into())); break; }
+                        };
                         let result = match result {
                             Ok(result) => result,
                             Err(_) => { let _ = reply.send(Err("Agent session creation timed out after 30 seconds".into())); break; }
@@ -1364,15 +1465,31 @@ async fn run(
                         let _ = reply.send(result);
                         if unsupported { break; }
                     }
-                    Command::Authenticate(method_id, meta, reply) => {
-                        let auth_cx = cx.clone(); let auth_state = state.clone();
+                    Command::Authenticate(method_id, meta, epoch, abort, reply) => {
+                        let auth_cx = cx.clone(); let auth_state = state.clone(); let mut auth_closing = closing.clone();
                         cx.spawn(async move {
-                            let result = tokio::time::timeout(std::time::Duration::from_secs(120), auth_cx.send_request(AuthenticateRequest::new(method_id).meta(meta)).block_task()).await;
-                            let result = match result {
-                                Ok(Ok(_)) => { if let Ok(mut bridge) = auth_state.lock() { bridge.auth_required = false; } Ok(()) }
-                                Ok(Err(error)) => Err(error.to_string()),
-                                Err(_) => Err("The agent did not finish authentication within 120 seconds".to_string()),
+                            let request = tokio::time::timeout(std::time::Duration::from_secs(120), auth_cx.send_request(AuthenticateRequest::new(method_id).meta(meta)).block_task());
+                            // The user's Cancel or a shutdown ends the wait; the request is dropped.
+                            let outcome = tokio::select! {
+                                result = request => Some(result),
+                                _ = abort => None,
+                                _ = auth_closing.wait_for(|closed| *closed) => None,
                             };
+                            let result = match outcome {
+                                None => Err(cancelled(&auth_state)),
+                                Some(Ok(Ok(_))) => {
+                                    // Only the current sign-in on an open connection applies its result.
+                                    let current = auth_state.lock().is_ok_and(|mut bridge| {
+                                        let current = !bridge.closed && bridge.auth_in_progress && bridge.auth_epoch == epoch;
+                                        if current { bridge.auth_required = false; }
+                                        current
+                                    });
+                                    if current { Ok(()) } else { Err(cancelled(&auth_state)) }
+                                }
+                                Some(Ok(Err(error))) => Err(AuthError::Failed { message: error.to_string() }),
+                                Some(Err(_)) => Err(AuthError::Failed { message: "The agent did not finish authentication within 120 seconds".to_string() }),
+                            };
+                            finish_auth(&auth_state, epoch);
                             let _ = reply.send(result);
                             Ok(())
                         })?;
@@ -1380,6 +1497,7 @@ async fn run(
                     Command::Prompt(id, blocks, reply) => {
                         let valid = state.lock().map(|mut bridge| {
                             if bridge.closed || !bridge.sessions.contains(&id) { return Err("Unknown session".to_string()); }
+                            if bridge.auth_in_progress { return Err(SIGN_IN_PENDING.to_string()); }
                             // Gemini silently aborts the running turn when a second prompt arrives, so none is ever sent.
                             if bridge.replaying.contains_key(&id) { return Err("The session is still being restored".to_string()); }
                             if !bridge.running.insert(id.clone()) { return Err(crate::manager::PROMPT_ALREADY_RUNNING.to_string()); }
@@ -1643,6 +1761,43 @@ fn gated_mcp_servers(state: &Arc<Mutex<Bridge>>, servers: &[Value]) -> Vec<Value
 }
 
 const AUTH_PREFIX: &str = "Authentication required";
+
+/// A second sign-in while one is in flight.
+const SIGN_IN_IN_PROGRESS: &str =
+    "Signing in to this agent is already in progress. Wait for it to finish or cancel it.";
+/// A prompt or a new session while a sign-in is in flight.
+const SIGN_IN_PENDING: &str =
+    "Signing in to this agent. Wait for it to finish or cancel it, then try again.";
+/// A sign-in the user cancelled.
+const SIGN_IN_CANCELLED: &str = "Sign-in was cancelled";
+/// A sign-in that ended because its connection closed or was replaced.
+const SIGN_IN_CLOSED: &str = "Sign-in was cancelled because the agent connection closed";
+/// A session creation that ended because its connection closed.
+const SESSION_CLOSED: &str = "Session creation was cancelled because the agent connection closed";
+
+/// The sign-in `epoch` has ended: clear the in-flight flag unless a newer
+/// sign-in has started since.
+fn finish_auth(state: &Arc<Mutex<Bridge>>, epoch: u64) {
+    if let Ok(mut bridge) = state.lock() {
+        if bridge.auth_epoch == epoch {
+            bridge.auth_in_progress = false;
+            bridge.auth_abort = None;
+        }
+    }
+}
+
+/// Why a sign-in ended without applying: the connection closed, or the user cancelled.
+fn cancelled(state: &Arc<Mutex<Bridge>>) -> AuthError {
+    let closed = state.lock().map(|bridge| bridge.closed).unwrap_or(true);
+    AuthError::Cancelled {
+        message: if closed {
+            SIGN_IN_CLOSED
+        } else {
+            SIGN_IN_CANCELLED
+        }
+        .into(),
+    }
+}
 
 /// The user facing text of an `-32000` error. The prefix is added only when
 /// the agent's text does not already start with it (OpenCode's does).

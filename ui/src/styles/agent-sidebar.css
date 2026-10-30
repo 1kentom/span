@@ -215,6 +215,8 @@
 .sb-recent { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 6px; border: 0; border-radius: 5px; background: none; color: var(--sb-fg); font-size: 12.5px; text-align: left; cursor: pointer; }
 .sb-recent:hover { background: var(--sb-hover); }
 .sb-methods { display: flex; flex-direction: column; gap: 6px; }
+.sb-signing-in { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid var(--sb-accent-border); border-radius: 8px; background: var(--sb-accent-surface); }
+.sb-signing-in-text { font-size: 12px; color: var(--sb-fg); }
 .sb-method {
   display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 9px 12px; border: 1px solid transparent;
   border-radius: 8px; background: var(--sb-raised); color: var(--sb-fg); text-align: left; cursor: pointer;

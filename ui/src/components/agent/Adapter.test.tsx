@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
       agentSetConfig: vi.fn(async (_id: string, _value: string) => undefined),
       agentPermission: vi.fn(async () => undefined),
       agentAuthenticate: vi.fn(async () => "s1"),
+      agentCancelAuthentication: vi.fn(async () => true),
       writeClipboard: vi.fn(async () => undefined),
       readImage: vi.fn(async () => ({ mime: "image/png", dataUrl: "data:image/png;base64,iVBORw0KGgo=" })),
     },
@@ -401,6 +402,90 @@ describe("sign-in forms and secrets", () => {
     expect(controller.state().failure).toMatchObject({ phase: "auth", message: "The key was rejected" });
     expect(JSON.stringify(controller.state())).not.toContain(SECRET);
     expect(controller.pendingAction()).toBe("");
+  });
+  it("shows a calm signing-in state with the methods disabled and a Cancel button", () => {
+    const cancelled: string[] = [];
+    const picked: string[] = [];
+    const host = mount(() => (
+      <SignIn
+        title="Sign in to Gemini"
+        methods={[{ id: "oauth", name: "Google login" }, { id: "gemini-api-key", name: "API key", input: "apiKey" }]}
+        signingIn
+        onCancelSignIn={() => cancelled.push("cancel")}
+        onPick={(id) => picked.push(id)}
+      />
+    ));
+    const status = host.querySelector(".sb-signing-in");
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(text(status?.querySelector(".sb-signing-in-text"))).toBe("Signing in\u2026");
+    const methods = [...host.querySelectorAll<HTMLButtonElement>(".sb-method")];
+    expect(methods.every((button) => button.disabled)).toBe(true);
+    click(methods[0]);
+    expect(picked).toEqual([]);
+    click(status?.querySelector("button"));
+    expect(cancelled).toEqual(["cancel"]);
+  });
+  it("shows no signing-in line while idle", () => {
+    const host = mount(() => <SignIn title="Sign in" methods={[{ id: "oauth", name: "Google login" }]} onPick={() => undefined} />);
+    expect(host.querySelector(".sb-signing-in")).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>(".sb-method")?.disabled).toBe(false);
+  });
+  it("clears a typed key when the form is cancelled", () => {
+    let cancelled = 0;
+    const host = mount(() => <AuthForm kind="apiKey" methodName="API key" onSubmit={() => undefined} onCancel={() => (cancelled += 1)} />);
+    const input = host.querySelector<HTMLInputElement>("input[type=password]")!;
+    type(input, SECRET);
+    const cancel = [...host.querySelectorAll<HTMLButtonElement>(".sb-actions button")].find((button) => button.textContent === "Cancel");
+    click(cancel);
+    expect(cancelled).toBe(1);
+    expect(input.value).toBe("");
+    expect(host.innerHTML).not.toContain(SECRET);
+  });
+  it("keeps one sign-in in flight, cancels it quietly and allows a new one", async () => {
+    let reject!: (cause: unknown) => void;
+    mocks.agentAuthenticateWith.mockImplementationOnce(() => new Promise<string>((_resolve, rejectWith) => (reject = rejectWith)));
+    mocks.api.agentCancelAuthentication.mockImplementationOnce(async () => {
+      reject(Object.assign(new Error("Sign-in was cancelled"), { auth: { kind: "cancelled", message: "Sign-in was cancelled" } }));
+      return true;
+    });
+    let controller!: AgentController;
+    mount(() => {
+      controller = createAgentController({ workspacePath: "/w", workspaceGeneration: 1 });
+      return null;
+    });
+    await tick();
+    const first = controller.authenticateWith("gemini-api-key", { kind: "apiKey", key: SECRET });
+    await tick();
+    expect(controller.signingIn()).toBe(true);
+    expect(controller.pendingAction()).toBe("auth");
+    // A second click while one is in flight sends nothing.
+    await controller.authenticateWith("gemini-api-key", { kind: "apiKey", key: SECRET });
+    await controller.authenticate("oauth");
+    expect(mocks.agentAuthenticateWith).toHaveBeenCalledTimes(1);
+    expect(mocks.api.agentAuthenticate).not.toHaveBeenCalled();
+    await controller.cancelSignIn();
+    await first;
+    expect(mocks.api.agentCancelAuthentication).toHaveBeenCalledTimes(1);
+    expect(controller.signingIn()).toBe(false);
+    expect(controller.pendingAction()).toBe("");
+    // Cancelling is not a failure.
+    expect(controller.state().failure).toBeUndefined();
+    expect(JSON.stringify(controller.state())).not.toContain(SECRET);
+    await controller.authenticateWith("gemini-api-key", { kind: "apiKey", key: SECRET });
+    expect(mocks.agentAuthenticateWith).toHaveBeenCalledTimes(2);
+    expect(controller.state().sessionId).toBe("s1");
+  });
+  it("reports authentication_in_progress quietly instead of as a failure", async () => {
+    mocks.agentAuthenticateWith.mockRejectedValueOnce(Object.assign(new Error("already in progress"), { auth: { kind: "authentication_in_progress", message: "already in progress" } }));
+    let controller!: AgentController;
+    mount(() => {
+      controller = createAgentController({ workspacePath: "/w", workspaceGeneration: 1 });
+      return null;
+    });
+    await tick();
+    await controller.authenticateWith("gemini-api-key", { kind: "apiKey", key: SECRET });
+    expect(controller.state().failure).toBeUndefined();
+    expect(controller.signingIn()).toBe(false);
   });
 });
 

@@ -152,3 +152,38 @@ shows it stays pending until the user answers.
 - The desktop registers sessions it creates on the primary connection, so
   `agent_cancel`, `agent_close_session`, `agent_delete_session` and
   `agent_disconnect` cascade to any children. No new Tauri commands.
+
+## Amendment of 2026-10-30: sign-in guards per connection
+
+Sign-in (`agent_authenticate`, `agent_authenticate_with`) is now part of a
+connection's lifecycle, the same way sessions are:
+
+- One sign-in in flight per connection. A second call while one runs
+  answers the typed `AuthError` with `kind: "authentication_in_progress"`
+  and sends nothing to the agent. The other kinds are `cancelled` (the user
+  pressed Cancel, or the connection closed or was replaced) and `failed`.
+- While a sign-in is in flight, prompts and `session/new` on that connection
+  are refused with a plain message. Span's hidden health sessions are not
+  held back by it.
+- `agent_cancel_authentication` cancels the focused connection's sign-in.
+  The pending call answers `cancelled` at once and a late answer from the
+  agent is ignored: every sign-in carries a generation number, and only the
+  current one on an open connection clears `auth_required`.
+- `AgentService::shutdown` (disconnect, agent switch, folder change, app
+  exit) cancels the sign-in in flight and ends a `session/new` still waiting
+  on the agent, so no session is recorded on a closed connection. An agent
+  switch also cancels the old connection's sign-in when that connection is
+  kept for keyed sessions. After a sign-in, the desktop creates the blocked
+  session only when the connection is still the focused, open one, and
+  closes a session that finished after a switch.
+- The sign-in card shows "Signing in..." with its methods disabled and a
+  Cancel button. The key and gateway form clears its fields on Cancel, on
+  submit and on unmount. No `AuthError` message carries a credential, and
+  `authenticate` `_meta` stays redacted from the protocol log.
+
+Covered by fixture tests in `crates/acp/tests/process_client.rs`, desktop
+tests in `apps/desktop/src/agents.rs` (`session_tests`) and vitest in
+`ui/src/components/agent/Adapter.test.tsx`. UNVERIFIED: a real provider
+sign-in (browser OAuth, device code) cancelled midway, and the card in the
+native window. Cancel drops the request on Span's side; the agent may still
+finish its own sign-in, which then only shows on the next session.

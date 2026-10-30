@@ -312,14 +312,23 @@ export const commands = {
 	/**
 	 *  Sign in with an advertised method, then create the session that was blocked.
 	 *  Returns the new session id, or the current one when a session already exists.
+	 *  Only one sign-in runs per connection: a second one answers the typed
+	 *  `AuthError::AuthenticationInProgress`. A sign-in cancelled by the user, or
+	 *  whose connection closed or was replaced, answers `AuthError::Cancelled`.
 	 */
 	agentAuthenticate: (methodId: string) => __TAURI_INVOKE<string>("agent_authenticate", { methodId }),
 	/**
 	 *  Sign in with a method that needs an API key or a gateway the user typed,
 	 *  then create the session that was blocked. The secret is passed to the agent
-	 *  only; it is not logged or stored.
+	 *  only; it is not logged or stored. Same errors as `agent_authenticate`.
 	 */
 	agentAuthenticateWith: (methodId: string, credential: AuthCredential_Deserialize) => __TAURI_INVOKE<string>("agent_authenticate_with", { methodId, credential }),
+	/**
+	 *  Cancel the focused agent's sign-in in flight. Its `agent_authenticate`
+	 *  call answers `AuthError::Cancelled` and a late answer from the agent is
+	 *  ignored. Returns whether a sign-in was cancelled.
+	 */
+	agentCancelAuthentication: () => __TAURI_INVOKE<boolean>("agent_cancel_authentication"),
 	/**  Agents launched by a known custom command rather than a registry install. */
 	agentPresets: () => __TAURI_INVOKE<AgentPreset_Serialize[]>("agent_presets"),
 	/**  Answer an agent input request. `action` is accept, decline or cancel. */
@@ -1277,6 +1286,22 @@ export type AuthCredential_Deserialize = { kind: "apiKey"; key: string } | { kin
  *  agent in `authenticate` `_meta` and never logged or stored by Span.
  */
 export type AuthCredential_Serialize = { kind: "apiKey"; key: string } | { kind: "gateway"; baseUrl: string; headers: { [key in string]: string } };
+
+/**
+ *  Why a sign-in did not finish. Callers match `kind`, never the message.
+ *  No variant carries a credential: messages are Span's own text or the
+ *  agent's error, never the key, token or gateway headers that were sent.
+ */
+export type AuthError =
+/**  Another sign-in is already in flight on this connection. Nothing was sent. */
+{ kind: "authentication_in_progress"; message: string } |
+/**
+ *  The user cancelled the sign-in, or the connection closed or was
+ *  replaced before it finished. Its result, if any, was dropped.
+ */
+{ kind: "cancelled"; message: string } |
+/**  Any other failure, with the message for the user. */
+{ kind: "failed"; message: string };
 
 /**  What an `agent` sign-in method asks the user for. */
 export type AuthInput =

@@ -15,7 +15,7 @@ import { createHubPreview } from './hub-preview';
 import type { HubPort } from './hub-port';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
-import type { AgentHealth_Serialize as AgentHealth, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates, ThreadPermissionMode } from '../bindings';
+import type { AgentHealth_Serialize as AgentHealth, AuthError, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates, ThreadPermissionMode } from '../bindings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileProbe, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -884,10 +884,22 @@ export const api = {
   async onAgentSessionStates(listener: (states: SessionStates) => void): Promise<() => void> {
     return isDesktop ? events.agentSessionStatesChanged.listen(event => listener(event.payload.states)) : () => undefined;
   },
-  /** Sign in with an advertised method, then the blocked session is created. Returns the session id. */
+  /**
+   * Sign in with an advertised method, then the blocked session is created. Returns the session id. A refusal is thrown
+   * as an Error whose `auth` field is the typed `AuthError` (`kind` authentication_in_progress, cancelled or failed).
+   */
   async agentAuthenticate(methodId: string): Promise<string> {
     if (!isDesktop) nativeRequired('Signing in to agents');
-    return commands.agentAuthenticate(methodId);
+    try {
+      return await commands.agentAuthenticate(methodId);
+    } catch (cause) {
+      return authFailure(cause);
+    }
+  },
+  /** Cancel the sign-in in flight on the active connection. Its pending call rejects with `auth.kind` cancelled. */
+  async agentCancelAuthentication(): Promise<boolean> {
+    if (!isDesktop) return false;
+    return commands.agentCancelAuthentication();
   },
   /** action is accept, decline or cancel. contentJson is a JSON object string and applies to accept. */
   async agentElicitation(requestId: string, action: 'accept' | 'decline' | 'cancel', contentJson: string | null = null): Promise<void> {
@@ -993,7 +1005,17 @@ export const lspPort: LspPort = {
 /** Sign in with a method whose `input` is `apiKey` or `gateway`. The secret goes to the agent only; Span does not log or store it. Returns the session id. */
 export async function agentAuthenticateWith(methodId: string, credential: import('../bindings').AuthCredential_Deserialize): Promise<string> {
   if (!isDesktop) nativeRequired('Signing in to agents');
-  return commands.agentAuthenticateWith(methodId, credential);
+  try {
+    return await commands.agentAuthenticateWith(methodId, credential);
+  } catch (cause) {
+    return authFailure(cause);
+  }
+}
+
+/** Rethrows a typed sign-in refusal as an Error whose `auth` field is the `AuthError`. It never carries the credential. */
+function authFailure(cause: unknown): never {
+  if (cause && typeof cause === 'object' && 'kind' in cause && 'message' in cause) throw Object.assign(new Error(String((cause as AuthError).message)), { auth: cause as AuthError });
+  throw cause;
 }
 
 /** Agents launched by a known custom command (OpenCode) rather than a registry install. */

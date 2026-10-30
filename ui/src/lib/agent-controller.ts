@@ -181,6 +181,8 @@ export function createAgentController(props: AgentPanelProps) {
   const [menu, setMenu] = createSignal<Menu>(null);
   const [working, setWorking] = createSignal(false);
   const [pendingAction, setPendingAction] = createSignal("");
+  /** A sign-in is in flight: the sign-in card shows a calm "Signing in…" state with only Cancel enabled. */
+  const [signingIn, setSigningIn] = createSignal(false);
   const catalog = agentCatalog.use();
   const background = agentBackground.use();
   // Before any effect reads it, and again on every change, so the store sees the setting exactly when the panel does.
@@ -942,20 +944,43 @@ export function createAgentController(props: AgentPanelProps) {
     }
   }
   async function authenticate(methodId: string) {
+    await signIn(() => api.agentAuthenticate(methodId));
+  }
+  /**
+   * Runs one sign-in. Only one is in flight per connection: a second click while one runs is ignored here, and the
+   * backend refuses it with `authentication_in_progress`. A sign-in the user cancelled, or whose connection closed or
+   * was replaced, ends quietly: the card returns to its methods without an error. A result for an older connection is
+   * dropped by the epoch guard.
+   */
+  async function signIn(run: () => Promise<string>) {
+    if (signingIn()) return;
     const current = guard(agentEpoch);
     setPendingAction("auth");
+    setSigningIn(true);
     patch({ failure: undefined });
     try {
-      const id = await api.agentAuthenticate(methodId);
+      const id = await run();
       if (!current()) return;
       markFresh(id);
       patch({ sessionId: id, auth: undefined, status: "ready", statusMessage: "Connected and ready" });
       finishHandoff(id);
       focusPrompt();
     } catch (cause) {
-      if (current()) fail({ phase: "auth", message: errorText(cause) });
+      const kind = (cause as { auth?: { kind?: string } } | null)?.auth?.kind;
+      if (current() && kind !== "cancelled" && kind !== "authentication_in_progress") fail({ phase: "auth", message: errorText(cause) });
     } finally {
+      // Cleared even for an older connection: the backend ends its sign-in when the connection closes or is replaced.
+      if (!disposed) setSigningIn(false);
       if (current()) setPendingAction("");
+    }
+  }
+  /** Cancel the sign-in in flight. Its call rejects as cancelled and the card shows the methods again. */
+  async function cancelSignIn() {
+    if (!signingIn()) return;
+    try {
+      await api.agentCancelAuthentication();
+    } catch {
+      /* the connection is already gone; its sign-in ended with it */
     }
   }
 
@@ -1041,21 +1066,7 @@ export function createAgentController(props: AgentPanelProps) {
    * state or the feed, not logged, and not kept in a closure after the request settles.
    */
   async function authenticateWith(methodId: string, secret: AuthSecret) {
-    const current = guard(agentEpoch);
-    setPendingAction("auth");
-    patch({ failure: undefined });
-    try {
-      const id = await agentAuthenticateWith(methodId, secret);
-      if (!current()) return;
-      markFresh(id);
-      patch({ sessionId: id, auth: undefined, status: "ready", statusMessage: "Connected and ready" });
-      finishHandoff(id);
-      focusPrompt();
-    } catch (cause) {
-      if (current()) fail({ phase: "auth", message: errorText(cause) });
-    } finally {
-      if (current()) setPendingAction("");
-    }
+    await signIn(() => agentAuthenticateWith(methodId, secret));
   }
 
   async function compose(text: string, selected: ReturnType<typeof selection>) {
@@ -2419,6 +2430,8 @@ export function createAgentController(props: AgentPanelProps) {
     disconnect,
     authenticate,
     authenticateWith,
+    signingIn,
+    cancelSignIn,
     send,
     steer,
     sendText,

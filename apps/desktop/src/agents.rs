@@ -5,7 +5,7 @@ use span_acp::tools::{
     ToolServerConfig,
 };
 use span_acp::{
-    AgentCommand, AgentEvent, AgentHealth, AgentPreset, AgentService, AuthCredential,
+    AgentCommand, AgentEvent, AgentHealth, AgentPreset, AgentService, AuthCredential, AuthError,
     BackgroundAgents, BackgroundState, EventSink, HealthMonitor, HealthPolicy, InstalledAgent,
     LiveSession, PromptAttachment, PromptError, RegistryAgent, SessionActivity, SessionEvent,
     SessionKey, SessionManager, SessionOrigin, SessionStates, PROMPT_ALREADY_RUNNING,
@@ -598,6 +598,8 @@ where
     if let Some(previous) = previous.filter(|previous| previous.connection != connection) {
         // The old connection no longer feeds the sidebar channel.
         previous.forward.store(false, Ordering::SeqCst);
+        // A sign-in still in flight on it belongs to the chat that was left.
+        previous.service.cancel_authentication();
         // Sessions opened by key on it keep it alive (ADR 0011): starting a
         // sidebar agent never closes another live thread.
         if !keep {
@@ -1055,26 +1057,24 @@ pub async fn agent_session_states(state: State<'_, DesktopState>) -> Result<Sess
 
 /// Sign in with an advertised method, then create the session that was blocked.
 /// Returns the new session id, or the current one when a session already exists.
+/// Only one sign-in runs per connection: a second one answers the typed
+/// `AuthError::AuthenticationInProgress`. A sign-in cancelled by the user, or
+/// whose connection closed or was replaced, answers `AuthError::Cancelled`.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_authenticate(
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     method_id: String,
-) -> Result<String, String> {
+) -> Result<String, AuthError> {
     let agent = active(state.inner())?;
     agent.service.authenticate(method_id).await?;
-    if !agent.session.is_empty() {
-        return Ok(agent.session);
-    }
-    let session = open_lead(&app, state.inner(), &agent).await?;
-    switch_session(state.inner(), &agent.service, &session)?;
-    Ok(session)
+    after_sign_in(&app, state.inner(), agent).await
 }
 
 /// Sign in with a method that needs an API key or a gateway the user typed,
 /// then create the session that was blocked. The secret is passed to the agent
-/// only; it is not logged or stored.
+/// only; it is not logged or stored. Same errors as `agent_authenticate`.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_authenticate_with(
@@ -1082,17 +1082,52 @@ pub async fn agent_authenticate_with(
     state: State<'_, DesktopState>,
     method_id: String,
     credential: AuthCredential,
-) -> Result<String, String> {
+) -> Result<String, AuthError> {
     let agent = active(state.inner())?;
     agent
         .service
         .authenticate_with(method_id, credential)
         .await?;
+    after_sign_in(&app, state.inner(), agent).await
+}
+
+/// Cancel the focused agent's sign-in in flight. Its `agent_authenticate`
+/// call answers `AuthError::Cancelled` and a late answer from the agent is
+/// ignored. Returns whether a sign-in was cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_cancel_authentication(state: State<'_, DesktopState>) -> Result<bool, String> {
+    Ok(active(state.inner())?.service.cancel_authentication())
+}
+
+/// The connection signed in to is still the focused one and still open.
+fn still_signing_in(state: &DesktopState, agent: &ActiveAgent) -> bool {
+    agent.service.is_open()
+        && active(state).is_ok_and(|focused| focused.service.same_connection(&agent.service))
+}
+
+/// The blocked session after a sign-in, on the connection that signed in.
+/// A connection closed or replaced meanwhile gets no session; a session that
+/// was made just before the switch is closed again so none is left behind.
+async fn after_sign_in(
+    app: &tauri::AppHandle,
+    state: &DesktopState,
+    agent: ActiveAgent,
+) -> Result<String, AuthError> {
+    let changed = || AuthError::Cancelled {
+        message: "Sign-in was cancelled because the agent connection changed".into(),
+    };
+    if !still_signing_in(state, &agent) {
+        return Err(changed());
+    }
     if !agent.session.is_empty() {
         return Ok(agent.session);
     }
-    let session = open_lead(&app, state.inner(), &agent).await?;
-    switch_session(state.inner(), &agent.service, &session)?;
+    let session = open_lead(app, state, &agent).await?;
+    if switch_session(state, &agent.service, &session).is_err() {
+        let _ = close_key(state, &agent.key(&session)).await;
+        return Err(changed());
+    }
     Ok(session)
 }
 
@@ -2109,6 +2144,72 @@ mod session_tests {
         assert!(state.sessions.session(&other).is_some());
         assert!(!state.agent.lock().unwrap().opened.contains(&lead));
         disconnect_and_wait(&state).await.unwrap();
+    }
+
+    /// A fixture agent that asks for sign-in, focused with no session, and a
+    /// sign-in to it in flight (the fixture answers it after 1.5 s).
+    async fn signing_in_agent(
+        state: &DesktopState,
+        directory: &std::path::Path,
+    ) -> (ActiveAgent, tokio::task::JoinHandle<Result<(), AuthError>>) {
+        let connection = keyed_connection(state, directory, &["--auth", "--slow-auth"]).await;
+        let service = state.sessions.service(&connection).unwrap();
+        assert!(service.new_session().await.is_err());
+        assert!(service.auth_required());
+        let agent = ActiveAgent {
+            service: service.clone(),
+            connection,
+            session: String::new(),
+            delegation_events: Arc::new(|_| {}),
+            forward: Arc::new(AtomicBool::new(true)),
+        };
+        state.agent.lock().unwrap().focused = Some(agent.clone());
+        let pending = tokio::spawn(async move { service.authenticate("token".into()).await });
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !agent.service.auth_in_progress() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("sign-in did not start");
+        assert!(still_signing_in(state, &agent));
+        (agent, pending)
+    }
+
+    #[tokio::test]
+    async fn an_agent_switch_cancels_the_old_connections_sign_in() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DesktopState::default();
+        let (old, pending) = signing_in_agent(&state, directory.path()).await;
+        connect_then_replace(&state, async {
+            Ok(fixture_agent(&state, directory.path(), "new-session").await)
+        })
+        .await
+        .unwrap();
+        let error = pending.await.unwrap().unwrap_err();
+        assert!(matches!(error, AuthError::Cancelled { .. }), "{error:?}");
+        // The sign-in's session would go to a connection that is no longer focused.
+        assert!(!still_signing_in(&state, &old));
+        assert!(state
+            .sessions
+            .live_sessions()
+            .iter()
+            .all(|live| live.key.connection_id != old.connection));
+        disconnect_and_wait(&state).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_the_folder_cancels_a_pending_sign_in() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DesktopState::default();
+        let (agent, pending) = signing_in_agent(&state, directory.path()).await;
+        disconnect_and_wait(&state).await.unwrap();
+        let error = pending.await.unwrap().unwrap_err();
+        assert!(matches!(error, AuthError::Cancelled { .. }), "{error:?}");
+        assert!(!agent.service.is_open());
+        assert!(!agent.service.auth_in_progress());
+        assert!(!still_signing_in(&state, &agent));
+        assert!(state.sessions.live_sessions().is_empty());
     }
 
     #[tokio::test]
