@@ -244,6 +244,25 @@ Use a scratch Git repository and an agent that writes files directly
   announced with names and states.
 - Reduce motion on: no animated dots or transitions.
 
+## Sign-in guards (native pass)
+
+Covered by Rust fixture tests and vitest (ADR 0001, amendment of
+2026-10-30); not yet exercised in a native window or with a real provider.
+Use an agent that is signed out (for example Gemini with an API key method,
+or Claude Code with a gateway):
+
+- Start a sign-in: the card shows "Signing in..." with every method and the
+  form disabled and one Cancel button. Clicking a method again does nothing.
+- Cancel: the card returns to its methods without an error, the key field is
+  empty, and a new sign-in can start at once.
+- Start a sign-in, then disconnect, switch to another agent, or close the
+  folder: no error card, no session appears afterwards for the old agent,
+  and the new agent's chat is not changed when the old sign-in would have
+  finished.
+- Quit the app during a sign-in: it exits without hanging.
+- Protocol logs after a key or gateway sign-in show the method name only,
+  never the key, token or headers.
+
 ## Drag and drop (native pass)
 
 Covered by vitest with mocked Tauri drag-drop events; none of this has been
