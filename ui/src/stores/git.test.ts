@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoot, createSignal } from "solid-js";
-import type { GitCommit, GitCommitResult, GitContext, GitDiff, GitHistoryPage, GitStatus } from "../bindings";
+import type { GitCommit, GitCommitResult_Serialize as GitCommitResult, GitContext_Serialize as GitContext, GitDiff, GitHistoryPage, GitStatus_Serialize as GitStatus } from "../bindings";
 vi.mock("../lib/client", () => ({ api: {} }));
 import { createGitWorkbench, workspaceGitPath } from "./git";
 const disposers: (() => void)[] = [];
@@ -16,21 +16,104 @@ function fixture(available = true) {
     const [root, setRoot] = createSignal("/repo/project"); const [generation, setGeneration] = createSignal(1);
     const [active, setActive] = createSignal(false);
     const transport = {
+      gitRemotes: vi.fn(async () => ({ configFingerprint: "config-reviewed", remotes: [{ name: "origin", fetchUrl: "https://example.test/repo", pushUrl: "https://example.test/repo", current: true }] })),
+      gitRemoteSelected: vi.fn(async () => ({ operation: { status: status(), output: "Published" }, remoteSucceeded: true, upstreamConfigured: true, warning: null as string | null })),
+      gitWorktreeWindowPath: vi.fn(async () => "/validated/worktree"),
+      gitCloneRepository: vi.fn(async () => ({ path: "/cloned" })),
       gitContext: vi.fn(async () => context(root(), generation() === 1 ? "repo-a" : "repo-b")),
       gitEnable: vi.fn(async () => status()),
       gitStatus: vi.fn(async (ctx: GitContext) => status(ctx)), gitDiff: vi.fn(async () => diff("patch")),
       gitHistory: vi.fn(async (): Promise<GitHistoryPage> => ({ repositoryId: "repo-a", anchor: "b".repeat(40), commits: [commit], nextSkip: null })),
       gitCommitDiff: vi.fn(async () => ({ ...diff("history patch"), side: "commit" as const, commitId: commit.id })),
       gitStage: vi.fn(async () => ({ ...status(), indexRevision: "index-2" })), gitUnstage: vi.fn(async () => status()),
+      gitAmend: vi.fn(async (): Promise<GitCommitResult> => ({ commitId: commit.id, commit, warning: null, status: { ...status(), entries: [] } })),
       gitCommit: vi.fn(async (): Promise<GitCommitResult> => ({ commitId: commit.id, commit, warning: null, status: { ...status(), entries: [] } })),
     };
-    const onOpenView = vi.fn();
-    const git = createGitWorkbench({ root, generation, active, blocked: () => false, available, transport, onOpenView });
-    return { git, transport, onOpenView, setRoot, setGeneration, setActive };
+    const onOpenView = vi.fn(); const onOpenWorktreeWindow = vi.fn(async (_path: string) => {});
+    const git = createGitWorkbench({ root, generation, active, blocked: () => false, available, transport, onOpenView, onOpenWorktreeWindow });
+    return { git, transport, onOpenView, onOpenWorktreeWindow, setRoot, setGeneration, setActive };
   });
 }
 
 describe("repository-scoped Git workbench", () => {
+  it("amends only the explicitly reviewed HEAD and forwards index and staged guards", async () => {
+    const f = fixture(); await f.git.refresh(); f.git.setMessage("Replacement"); f.git.setAmend(true);
+    expect(f.git.amendHead()).toBe(context().repository!.head);
+    expect(await f.git.commit()).toBe(true);
+    expect(f.transport.gitAmend).toHaveBeenCalledWith(context(), "Replacement", context().repository!.head, "index-1", "tree-1");
+    expect(f.transport.gitCommit).not.toHaveBeenCalled(); expect(f.transport.gitStage).not.toHaveBeenCalled();
+    expect(f.git.amend()).toBe(false); expect(f.git.message()).toBe("");
+  });
+  it("allows message-only amend with an empty index and preserves failed drafts", async () => {
+    const f = fixture(); f.transport.gitStatus.mockResolvedValue({ ...status(), entries: [] });
+    await f.git.refresh(); f.git.setMessage("Message only");
+    expect(f.git.canCommit()).toBe(false); f.git.setAmend(true); expect(f.git.canCommit()).toBe(true);
+    f.transport.gitAmend.mockRejectedValueOnce(new Error("Hook rejected"));
+    expect(await f.git.commit()).toBe(false); expect(f.git.message()).toBe("Message only"); expect(f.git.amend()).toBe(true);
+    expect(await f.git.commit()).toBe(true); expect(f.transport.gitStage).not.toHaveBeenCalled();
+  });
+  it("refuses stale amend intent even if a polling HEAD later returns to the old value", async () => {
+    const f = fixture(); await f.git.refresh(); f.git.setMessage("Keep draft"); f.git.setAmend(true);
+    f.transport.gitStatus.mockResolvedValueOnce({ ...status(), repository: { ...status().repository, head: "c".repeat(40) } });
+    await f.git.refresh(); expect(f.git.amendHead()).toBe(context().repository!.head); expect(f.git.amendStale()).toBe(true);
+    expect(await f.git.commit()).toBe(false); await f.git.refresh(); expect(await f.git.commit()).toBe(false);
+    expect(f.transport.gitAmend).not.toHaveBeenCalled(); expect(f.git.message()).toBe("Keep draft");
+    f.git.setAmend(false); f.git.setAmend(true); expect(f.git.canCommit()).toBe(true);
+  });
+  it("disables amend for incomplete or unsafe repository review", async () => {
+    const f = fixture();
+    for (const unsafe of [
+      { ...status(), truncated: true }, { ...status(), operation: "merge" },
+      { ...status(), entries: [{ ...status().entries[0], conflicted: true }] },
+      { ...status(), repository: { ...status().repository, unborn: true, head: null } },
+    ]) {
+      f.transport.gitStatus.mockResolvedValueOnce(unsafe); await f.git.refresh();
+      expect(f.git.canEnableAmend()).toBe(false); f.git.setAmend(true); expect(f.git.amend()).toBe(false);
+    }
+    await f.git.refresh(); f.git.setMessage("Workspace draft"); f.git.setAmend(true);
+    f.setRoot("/another"); expect(f.git.amend()).toBe(false);
+  });
+  it("leaves normal commit selection and guards unchanged", async () => {
+    const f = fixture(); await f.git.refresh(); f.git.setMessage("Normal"); expect(await f.git.commit()).toBe(true);
+    expect(f.transport.gitCommit).toHaveBeenCalledWith(context(), "Normal", "index-1", "tree-1");
+    expect(f.transport.gitAmend).not.toHaveBeenCalled();
+  });
+  it("validates worktree paths before opening a native window", async () => {
+    const f = fixture(); await f.git.refresh();
+    expect(await f.git.openWorktreeWindow("/requested")).toBe(true);
+    expect(f.transport.gitWorktreeWindowPath).toHaveBeenCalledWith(context(), "/requested");
+    expect(f.onOpenWorktreeWindow).toHaveBeenCalledWith("/validated/worktree");
+    f.transport.gitWorktreeWindowPath.mockRejectedValueOnce(new Error("Not a registered worktree"));
+    expect(await f.git.openWorktreeWindow("/untrusted")).toBe(false);
+    expect(f.onOpenWorktreeWindow).toHaveBeenCalledTimes(1);
+  });
+  it("publishes the current branch to an explicit target with reviewed snapshots", async () => {
+    const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes");
+    expect(await f.git.remoteSelected("push", "origin", "first-push", true)).toBe(true);
+    expect(f.transport.gitRemoteSelected).toHaveBeenCalledWith(context(), "push", "origin", "first-push", "index-1", "config-reviewed", true);
+  });
+  it("requires reviewed remote configuration and rejects unknown selections", async () => {
+    const f = fixture(); await f.git.refresh();
+    expect(await f.git.remoteSelected("fetch", "origin")).toBe(false);
+    await f.git.loadResource("remotes");
+    expect(await f.git.remoteSelected("pull", "missing", "main")).toBe(false);
+    expect(f.transport.gitRemoteSelected).not.toHaveBeenCalled();
+    expect(await f.git.remoteSelected("fetch", "origin")).toBe(true);
+    expect(f.transport.gitRemoteSelected).toHaveBeenCalledWith(context(), "fetch", "origin", null, "index-1", "config-reviewed", false);
+  });
+  it("reports remote success with local upstream failure without retrying or clearing drafts", async () => {
+    const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes"); f.git.setMessage("Keep draft");
+    f.transport.gitRemoteSelected.mockResolvedValueOnce({ operation: { status: status(), output: "Published" }, remoteSucceeded: true, upstreamConfigured: false, warning: "Could not set upstream." });
+    expect(await f.git.remoteSelected("push", "origin", "main", true)).toBe(true);
+    expect(f.git.warning()).toContain("remote action completed"); expect(f.git.message()).toBe("Keep draft");
+    expect(f.transport.gitRemoteSelected).toHaveBeenCalledTimes(1);
+  });
+  it("clones without an open workspace while initialization stays disabled", async () => {
+    const f = fixture(); f.setRoot("");
+    expect(await f.git.initializeRepository()).toBe(false);
+    expect(await f.git.cloneRepository("https://example.test/repo", "/cloned")).toBe(true);
+    expect(f.transport.gitCloneRepository).toHaveBeenCalledWith("https://example.test/repo", "/cloned");
+  });
   it("stages the reviewed index during a background refresh and ignores its older reply", async () => {
     const f = fixture(); await f.git.refresh();
     const pendingStatus = deferred<GitStatus>(); f.transport.gitStatus.mockReturnValueOnce(pendingStatus.promise);

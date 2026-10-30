@@ -461,7 +461,7 @@ impl GitService {
     }
 }
 
-fn new_directory(path: &str) -> Result<PathBuf> {
+pub(super) fn new_directory(path: &str) -> Result<PathBuf> {
     let target = Path::new(path);
     if !target.is_absolute()
         || path.contains(['\0', '\r', '\n'])
@@ -483,7 +483,7 @@ fn new_directory(path: &str) -> Result<PathBuf> {
     Ok(parent.join(name))
 }
 
-fn validate_remote_name(name: &str) -> Result<()> {
+pub(super) fn validate_remote_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.len() > 256
         || !name
@@ -498,7 +498,7 @@ fn validate_remote_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_remote_source(source: &str) -> Result<()> {
+pub(super) fn validate_remote_source(source: &str) -> Result<()> {
     if source.is_empty()
         || source.len() > 8192
         || source.starts_with('-')

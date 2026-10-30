@@ -4603,6 +4603,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "similar",
  "span-file-index",
  "span-syntax",

@@ -67,6 +67,20 @@ pub(crate) async fn git_clone_repository(
     source: String,
     destination: String,
 ) -> Result<GitCloneResult, String> {
+    let has_workspace = state
+        .workspace
+        .lock()
+        .map_err(|_| "Workspace state is unavailable".to_owned())?
+        .is_some();
+    if !has_workspace {
+        return span_core::GitService::clone_without_workspace(
+            &source,
+            &destination,
+            CancellationToken::default(),
+        )
+        .await
+        .map_err(|e| e.to_string());
+    }
     let (workspace, service) = current_service(&state).await?;
     let result = service
         .clone_repository(&source, &destination, CancellationToken::default())

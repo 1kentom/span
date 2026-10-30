@@ -222,7 +222,7 @@ export default function App() {
   const [gitBlamePath, setGitBlamePath] = createSignal<string>();
   let saveGitMergeDraft: (() => Promise<boolean>) | undefined;
   let gitMergeRequest = 0;
-  const git = createGitWorkbench({ root: () => w.workspace()?.root, generation: w.workspaceGeneration, active: () => showLeft() && leftView() === "Git" || isGitTab(w.activeTab() || ""), blocked: w.busy, available: isDesktop, onOpenView: (key, title) => { w.openGitTab(key, title); }, onOpenWorkspace: path => applyStartup({ workspaceRoot: path, files: [], impliedRoot: false }), beforeWorkingTreeChange: action => {
+  const git = createGitWorkbench({ root: () => w.workspace()?.root, generation: w.workspaceGeneration, active: () => showLeft() && leftView() === "Git" || isGitTab(w.activeTab() || ""), blocked: w.busy, available: isDesktop, onOpenView: (key, title) => { w.openGitTab(key, title); }, onOpenWorktreeWindow: async path => { const ctx = git.context(); if (!ctx?.repository) throw new Error("The repository changed."); await api.gitOpenWorktreeWindow(ctx, path); }, onOpenWorkspace: path => applyStartup({ workspaceRoot: path, files: [], impliedRoot: false }), beforeWorkingTreeChange: action => {
     if (!w.hasDirty() && !(gitMergeDirty() && action !== "save conflict resolution")) return true;
     w.setError("Save or close unsaved files before changing the Git working tree.");
     return false;
@@ -804,6 +804,10 @@ export default function App() {
     return (
       <Show when={view()} fallback={<div class="git-empty">This Git comparison is no longer available. Reopen it from Source control.</div>}>
         {value => <GitDiffView
+          lineReview={value().lineReview}
+          lineReviewError={value().lineReviewError}
+          lineActionDisabled={!git.ready()}
+          onLineAction={async (review, ids, metadata) => { if (!await git.applyReviewedLines(value().key, review, ids, metadata)) throw new Error(git.error() || "The selected changes were not applied. Refresh and review them again."); }}
           hunkData={value().hunkData}
           hunkActionDisabled={!git.ready()}
           onHunkAction={id => void git.applyHunk(value().key, id)}
@@ -894,7 +898,7 @@ export default function App() {
           </Show>
         </div>}</For>
         <Show when={!active()}><Show when={w.groups().length === 1} fallback={<div class="editor-empty"><h2>No file open</h2><button onClick={() => void openFilePicker()}><span>Open a file</span><Show when={shortcut("openFile")}>{key => <kbd>{key()}</kbd>}</Show></button><button onClick={() => requestCloseGroup(group().id)}>Close group</button></div>}>
-          <div class="editor-empty"><AnimatedLogo size={96} /><h1>span</h1><p>A space for code and agents.</p><button onClick={() => void openFilePicker()}><span>Open a file</span><Show when={shortcut("openFile")}>{key => <kbd>{key()}</kbd>}</Show></button><button onClick={requestWorkspace}><span>Open a folder</span><kbd>{shortcut("openFolder")}</kbd></button><button onClick={openSearch}><span>Search workspace</span><kbd>{shortcut("searchWorkspace")}</kbd></button><button onClick={() => setPaletteOpen(true)}><span>Show commands</span><kbd>{shortcut("commandPalette")}</kbd></button><Show when={recentProjects().length}><div class="welcome-recents"><span>Recent projects</span><For each={recentProjects().slice(0, 5)}>{project => <button disabled={project.missing} title={project.root} onClick={() => openRecentProject(project.root)}><Icon name="Folder2" size={14} /><span>{project.name}</span><Show when={project.missing}><small>Missing</small></Show></button>}</For></div></Show></div>
+          <div class="editor-empty"><AnimatedLogo size={96} /><h1>span</h1><p>A space for code and agents.</p><button onClick={() => void openFilePicker()}><span>Open a file</span><Show when={shortcut("openFile")}>{key => <kbd>{key()}</kbd>}</Show></button><button onClick={requestWorkspace}><span>Open a folder</span><kbd>{shortcut("openFolder")}</kbd></button><Show when={isDesktop}><button onClick={showSourceControl}><span>Clone a repository</span></button></Show><button onClick={openSearch}><span>Search workspace</span><kbd>{shortcut("searchWorkspace")}</kbd></button><button onClick={() => setPaletteOpen(true)}><span>Show commands</span><kbd>{shortcut("commandPalette")}</kbd></button><Show when={recentProjects().length}><div class="welcome-recents"><span>Recent projects</span><For each={recentProjects().slice(0, 5)}>{project => <button disabled={project.missing} title={project.root} onClick={() => openRecentProject(project.root)}><Icon name="Folder2" size={14} /><span>{project.name}</span><Show when={project.missing}><small>Missing</small></Show></button>}</For></div></Show></div>
         </Show></Show>
       </div>
     </section>;

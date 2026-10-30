@@ -19,6 +19,7 @@ function fixture() {
   const transport = {
     gitContext: vi.fn(async () => context), gitEnable: vi.fn(async () => status), gitStatus: vi.fn(async () => status), gitDiff: vi.fn(), gitHistory: vi.fn(), gitCommitDiff: vi.fn(), gitStage: vi.fn(), gitUnstage: vi.fn(), gitCommit: vi.fn(),
     gitBranches: vi.fn(async () => [branch]), gitCheckout: vi.fn(async () => ({ ...status, repository: { ...status.repository, branch: branch.name, head: branch.commitId } })),
+    gitRemoteSelected: vi.fn(async () => ({ operation: { status, output: "Remote updated" }, remoteSucceeded: true, upstreamConfigured: true, warning: null })),
     gitConfigureRemote: vi.fn(async () => ({ remotes: [], configFingerprint: "new-config" })),
     gitManageBranch: vi.fn(async () => ({ status, output: "Branch updated" })),
     gitWorktreeCreate: vi.fn(async () => ({ status, output: "Created worktree" })),
@@ -87,11 +88,20 @@ it("merges only the reviewed immutable target and confirms tag deletion with its
 });
 it("keeps failed operation drafts visible and requires explicit remote actions", async () => {
   const f = fixture(); await f.git.refresh(); f.mount();
-  f.git.setMessage("Keep this draft"); expect(f.transport.gitRemote).not.toHaveBeenCalled();
+  f.git.setMessage("Keep this draft"); expect(f.transport.gitRemote).not.toHaveBeenCalled(); expect(f.transport.gitRemoteSelected).not.toHaveBeenCalled();
   await vi.waitFor(() => expect(f.git.remotes()).toBeDefined());
-  f.transport.gitRemote.mockRejectedValueOnce(new Error("Authentication required"));
-  [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Push")!.click();
+  const push = [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Push")!;
+  expect(push.disabled).toBe(true);
+  const target = f.host.querySelector<HTMLInputElement>("#git-network-branch")!;
+  target.value = "publish-draft"; target.dispatchEvent(new Event("input", { bubbles: true }));
+  const review = [...f.host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(node => node.parentElement?.textContent?.includes("I reviewed this remote and target"))!;
+  review.click(); expect(push.disabled).toBe(false);
+  f.transport.gitRemoteSelected.mockRejectedValueOnce(new Error("Authentication required"));
+  push.click();
   await vi.waitFor(() => expect(f.host.textContent).toContain("Authentication required"));
+  expect(f.transport.gitRemoteSelected).toHaveBeenCalledExactlyOnceWith(context, "push", "origin", "publish-draft", "index", "config", true);
+  expect(f.transport.gitRemote).not.toHaveBeenCalled();
+  expect(target.value).toBe("publish-draft");
   expect(f.git.message()).toBe("Keep this draft"); expect(f.reload).not.toHaveBeenCalled();
 });
 it("preserves commit drafts per workspace and across workspace generations", () => {

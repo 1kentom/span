@@ -1,5 +1,6 @@
 use crate::{io_error, workspace::atomic_write, CoreError, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use specta::Type;
 use std::{
     collections::HashMap,
@@ -58,6 +59,7 @@ pub struct SessionState {
     pub split_vertical: bool,
 }
 
+#[derive(Clone)]
 pub struct SessionStore {
     path: PathBuf,
 }
@@ -73,6 +75,24 @@ impl SessionStore {
             })?;
         Ok(Self::new(
             PathBuf::from(home).join(".config/span/session.json"),
+        ))
+    }
+    /// A worktree window has a separate restore slot from the primary window.
+    pub fn isolated_for_workspace(&self, workspace: &Path) -> Result<Self> {
+        let identity = workspace
+            .canonicalize()
+            .map_err(|error| io_error("Resolve window workspace", workspace, error))?;
+        let digest = Sha256::digest(identity.as_os_str().as_encoded_bytes());
+        let name = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| CoreError::Settings("Invalid session storage path".into()))?;
+        Ok(Self::new(
+            parent.join("windows").join(format!("{name}.json")),
         ))
     }
     pub fn load(&self) -> Result<Option<SessionState>> {
@@ -153,4 +173,51 @@ fn sanitize(mut state: SessionState) -> Result<SessionState> {
         .markdown_views
         .retain(|path, _| state.groups.iter().any(|group| group.paths.contains(path)));
     Ok(state)
+}
+
+#[cfg(test)]
+mod isolated_window_tests {
+    use super::*;
+
+    #[test]
+    fn worktree_restore_slots_cannot_overwrite_primary_or_other_worktrees() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        let primary = SessionStore::new(temp.path().join("profile/session.json"));
+        let window_a = primary.isolated_for_workspace(&a).unwrap();
+        let window_b = primary.isolated_for_workspace(&b).unwrap();
+        assert_ne!(primary.path, window_a.path);
+        assert_ne!(window_a.path, window_b.path);
+        let state = |root: &Path| SessionState {
+            workspace_root: root.to_string_lossy().into_owned(),
+            groups: vec![SessionGroup {
+                paths: vec![],
+                active_path: None,
+            }],
+            active_group: 0,
+            panels: SessionPanels::default(),
+            markdown_views: HashMap::new(),
+            split_vertical: false,
+        };
+        primary.save(state(&a)).unwrap();
+        window_b.save(state(&b)).unwrap();
+        primary.save(state(&a)).unwrap();
+        assert_eq!(
+            window_b.load().unwrap().unwrap().workspace_root,
+            crate::CoreWorkspace::open(&b).unwrap().workspace().root
+        );
+        assert_eq!(
+            primary.load().unwrap().unwrap().workspace_root,
+            crate::CoreWorkspace::open(&a).unwrap().workspace().root
+        );
+        assert!(!window_b
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains(b.to_string_lossy().as_ref()));
+    }
 }

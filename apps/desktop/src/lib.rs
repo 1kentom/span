@@ -15,6 +15,7 @@ mod external_files;
 mod file_import;
 mod file_index;
 mod git;
+mod git_extra;
 mod git_management;
 mod github;
 #[doc(hidden)]
@@ -58,6 +59,7 @@ pub struct DesktopState {
     pub health: Arc<Mutex<Option<span_acp::HealthMonitor>>>,
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) window_session: Option<span_core::SessionStore>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
     /// Canonical paths of the latest native drop, the only ones `read_dropped_file` may read.
     pub dropped_paths: Arc<Mutex<Vec<PathBuf>>>,
@@ -982,6 +984,18 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             open_workspace,
             git::git_context,
+            git_extra::git_open_worktree_window,
+            git_extra::git_amend,
+            git_extra::git_remote_selected,
+            git_extra::git_worktree_window_path,
+            git_extra::git_history_tools,
+            git_extra::git_revision_content,
+            git_extra::git_revision_diff,
+            git_extra::git_reflog_page,
+            git_extra::git_line_history,
+            git_extra::git_signing_configuration,
+            git_extra::git_review_lines,
+            git_extra::git_apply_lines,
             git_management::git_checkout_pull_request,
             git_management::git_initialize_repository,
             git_management::git_clone_repository,
@@ -1245,8 +1259,9 @@ pub fn export_bindings() -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     window::mark_process_start();
-    let action = cli::parse_args(std::env::args().skip(1), &std::env::current_dir()?)?;
-    let request = match action {
+    let (isolated_window, arguments) = cli::split_window_mode(std::env::args().skip(1));
+    let action = cli::parse_args(arguments, &std::env::current_dir()?)?;
+    let mut request = match action {
         cli::CliAction::Help => {
             print!("{}", cli::HELP);
             return Ok(());
@@ -1257,14 +1272,36 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         cli::CliAction::Open(request) => request,
     };
-    let state = DesktopState::default();
+    cli::isolate_request_root(&mut request, isolated_window)?;
+    let window_session = if isolated_window {
+        let root = request
+            .workspace_root
+            .as_ref()
+            .ok_or("An isolated window requires a folder or file")?;
+        Some(
+            span_core::SessionStore::for_current_user()?
+                .isolated_for_workspace(std::path::Path::new(root))?,
+        )
+    } else {
+        None
+    };
+    let state = DesktopState {
+        window_session,
+        ..DesktopState::default()
+    };
     startup::enqueue(&state, request)?;
     let builder = ipc_builder();
-    // Production launches must not write development files into the source checkout.
-    #[cfg(debug_assertions)]
+    // Only Tauri development launches export contracts. Installed debug builds
+    // must not overwrite a checkout with contracts from an older binary.
+    #[cfg(dev)]
     export_bindings()?;
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(startup::forwarded))
+    // Each isolated window has its own process and DesktopState. Sharing that
+    // state between webviews would let one window replace another's workspace.
+    let mut app_builder = tauri::Builder::default();
+    if !isolated_window {
+        app_builder = app_builder.plugin(tauri_plugin_single_instance::init(startup::forwarded));
+    }
+    let app = app_builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(state)

@@ -581,12 +581,47 @@ describe("workspace views and session state", () => {
 
 
 describe("native startup and asset boundaries", () => {
-  it("honors explicit startup projects before considering the saved session", async () => {
+  it("honors an explicit startup project instead of restoring a different saved workspace", async () => {
     client.takeStartupRequests.mockResolvedValue([{ workspaceRoot: "/explicit-cli-project", files: [] }]);
+    client.getSession.mockResolvedValue({ workspaceRoot: "/unrelated-saved-project" });
     const workbench = testWorkbench();
     await workbench.initialize(async request => { if (request.workspaceRoot) await workbench.openWorkspace(request.workspaceRoot); });
     expect(workbench.workspace()?.root).toBe("/explicit-cli-project");
-    expect(client.getSession).not.toHaveBeenCalled();
+    expect(client.getSession).toHaveBeenCalledOnce();
+    expect(client.openWorkspace).toHaveBeenCalledExactlyOnceWith("/explicit-cli-project");
+  });
+
+  it("still applies every explicit startup request when the saved session cannot be read", async () => {
+    const requests = [{ workspaceRoot: "/explicit-cli-project", files: [], impliedRoot: false }, { workspaceRoot: "/second-project", files: [], impliedRoot: false }];
+    client.takeStartupRequests.mockResolvedValue(requests);
+    client.getSession.mockRejectedValue(new Error("Corrupt saved session JSON"));
+    const workbench = testWorkbench();
+    const onStartup = vi.fn(async request => { await workbench.openWorkspace(request.workspaceRoot); });
+    await workbench.initialize(onStartup);
+    expect(onStartup.mock.calls.map(([request]) => request)).toEqual(requests);
+    expect(client.openWorkspace.mock.calls).toEqual([["/explicit-cli-project"], ["/second-project"]]);
+    expect(workbench.workspace()?.root).toBe("/second-project");
+    expect(workbench.error()).toContain("Could not restore the saved session: Corrupt saved session JSON");
+  });
+
+  it("restores matching explicit workspace groups before applying every startup request", async () => {
+    for (const path of ["left.ts", "right.ts", "startup.ts"]) server.set(path, { ...initial(), path });
+    const requests = [{ workspaceRoot: "/workspace", files: [{ path: "/workspace/startup.ts", line: null, column: null }], impliedRoot: false }, { workspaceRoot: "/workspace", files: [], impliedRoot: false }];
+    client.takeStartupRequests.mockResolvedValue(requests);
+    client.getSession.mockResolvedValue({ workspaceRoot: "/workspace", groups: [{ paths: ["left.ts"], activePath: "left.ts" }, { paths: ["right.ts"], activePath: "right.ts" }], activeGroup: 1, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: true }, markdownViews: {}, splitVertical: true } satisfies SessionState);
+    const workbench = testWorkbench();
+    const onStartup = vi.fn(async request => {
+      expect(workbench.workspace()?.root).toBe("/workspace");
+      expect(workbench.groups()[0].tabs).toEqual(["left.ts"]);
+      expect(workbench.groups()[1].tabs).toContain("right.ts");
+      for (const file of request.files) await workbench.openFile(file.path.slice("/workspace/".length));
+    });
+    await workbench.initialize(onStartup);
+    expect(client.openWorkspace).toHaveBeenCalledExactlyOnceWith("/workspace");
+    expect(workbench.groups()[1].tabs).toEqual(["right.ts", "startup.ts"]);
+    expect(workbench.activePath()).toBe("startup.ts"); expect(workbench.splitVertical()).toBe(true);
+    expect(onStartup.mock.calls.map(([request]) => request)).toEqual(requests);
+    expect(workbench.error()).toBe("");
   });
 
   it("restores the saved project for a dropped or forwarded file and never opens the file's folder", async () => {

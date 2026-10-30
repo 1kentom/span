@@ -164,6 +164,54 @@ function previewEntries(path: string): FileEntry[] {
 }
 
 export const api = {
+  async gitAmend(...args: Parameters<typeof commands.gitAmend>) {
+    if (!isDesktop) nativeRequired('Amending a Git commit');
+    return commands.gitAmend(...args);
+  },
+  async gitOpenWorktreeWindow(...args: Parameters<typeof commands.gitOpenWorktreeWindow>) {
+    if (!isDesktop) nativeRequired('Opening a worktree window');
+    return commands.gitOpenWorktreeWindow(...args);
+  },
+  async gitRemoteSelected(...args: Parameters<typeof commands.gitRemoteSelected>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitRemoteSelected(...args);
+  },
+  async gitWorktreeWindowPath(...args: Parameters<typeof commands.gitWorktreeWindowPath>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitWorktreeWindowPath(...args);
+  },
+  async gitHistoryTools(...args: Parameters<typeof commands.gitHistoryTools>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitHistoryTools(...args);
+  },
+  async gitRevisionContent(...args: Parameters<typeof commands.gitRevisionContent>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitRevisionContent(...args);
+  },
+  async gitRevisionDiff(...args: Parameters<typeof commands.gitRevisionDiff>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitRevisionDiff(...args);
+  },
+  async gitReflogPage(...args: Parameters<typeof commands.gitReflogPage>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitReflogPage(...args);
+  },
+  async gitLineHistory(...args: Parameters<typeof commands.gitLineHistory>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitLineHistory(...args);
+  },
+  async gitSigningConfiguration(...args: Parameters<typeof commands.gitSigningConfiguration>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitSigningConfiguration(...args);
+  },
+  async gitReviewLines(...args: Parameters<typeof commands.gitReviewLines>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitReviewLines(...args);
+  },
+  async gitApplyLines(...args: Parameters<typeof commands.gitApplyLines>) {
+    if (!isDesktop) nativeRequired('Using native Git workflows');
+    return commands.gitApplyLines(...args);
+  },
   async gitCheckoutPullRequest(...args: Parameters<typeof commands.gitCheckoutPullRequest>) {
     if (!isDesktop) nativeRequired('Checking out a pull request');
     return commands.gitCheckoutPullRequest(...args);

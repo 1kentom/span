@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { type JSX, createRoot, createSignal } from "solid-js";
 import { render } from "solid-js/web";
-import type { GitCommit, GitContext, GitHistoryPage, GitStatus } from "../../bindings";
+import type { GitCommit, GitContext_Serialize as GitContext, GitHistoryPage, GitStatus_Serialize as GitStatus } from "../../bindings";
 vi.mock("../../lib/client", () => ({ api: {} }));
 import { createGitWorkbench } from "../../stores/git";
 import { GIT_SUBVIEW_KEY, createGitView } from "../../stores/git-view";
@@ -22,7 +22,7 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 function fixture(storage = memoryStorage()) {
-  const transport = { gitContext: vi.fn(async () => context), gitEnable: vi.fn(async () => status), gitStatus: vi.fn(async () => status), gitDiff: vi.fn(), gitHistory: vi.fn(async (): Promise<GitHistoryPage> => ({ repositoryId: "repo", commits: [commit], anchor: commit.id, nextSkip: null })), gitCommitDiff: vi.fn(), gitStage: vi.fn(), gitUnstage: vi.fn(), gitCommit: vi.fn() };
+  const transport = { gitRemotes: vi.fn(async () => ({ configFingerprint: "review-1", remotes: [{ name: "origin", fetchUrl: "https://example.test/a", pushUrl: "https://example.test/a", current: true }, { name: "backup", fetchUrl: "https://example.test/b", pushUrl: "https://example.test/b", current: false }] })), gitRemoteSelected: vi.fn(async () => ({ operation: { status, output: "Published" }, remoteSucceeded: true, upstreamConfigured: false, warning: "Upstream could not be saved" })), gitContext: vi.fn(async () => context), gitEnable: vi.fn(async () => status), gitStatus: vi.fn(async () => status), gitDiff: vi.fn(), gitHistory: vi.fn(async (): Promise<GitHistoryPage> => ({ repositoryId: "repo", commits: [commit], anchor: commit.id, nextSkip: null })), gitCommitDiff: vi.fn(), gitStage: vi.fn(), gitUnstage: vi.fn(), gitAmend: vi.fn(async () => ({ commitId: commit.id, commit, warning: null, status })), gitCommit: vi.fn() };
   const { git, view } = createRoot(cleanup => { dispose.push(cleanup); return { git: createGitWorkbench({ root: () => "/repo/project", generation: () => 1, active: () => false, blocked: () => false, available: true, transport, onOpenView: vi.fn() }), view: createGitView(storage) }; });
   const host = document.createElement("div"); document.body.append(host);
   const mount = (node: () => JSX.Element) => dispose.push(render(node, host));
@@ -32,6 +32,36 @@ const tabs = (host: HTMLElement) => [...host.querySelectorAll<HTMLButtonElement>
 const radio = (host: HTMLElement, name: string) => [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(node => node.textContent?.trim() === name)!;
 
 describe("Git source control view", () => {
+  it("requires explicit amend intent and displays the captured commit for message-only amend", async () => {
+    const f = fixture(); await f.git.refresh(); f.git.setMessage("Reviewed replacement");
+    f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
+    const amend = [...f.host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(node => node.parentElement?.textContent?.includes("Amend last commit"))!;
+    expect(amend.checked).toBe(false); expect(f.git.canCommit()).toBe(false);
+    amend.click(); expect(amend.checked).toBe(true);
+    expect(f.host.textContent).toContain("No force push runs automatically");
+    const submit = [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.trim() === "Amend aaaaaaaa")!;
+    expect(submit.disabled).toBe(false); submit.click();
+    await vi.waitFor(() => expect(f.transport.gitAmend).toHaveBeenCalledWith(context, "Reviewed replacement", context.repository!.head, "index", "tree"));
+    expect(f.transport.gitCommit).not.toHaveBeenCalled(); expect(f.transport.gitStage).not.toHaveBeenCalled();
+  });
+  it("keeps selected remote and target after failure and requires another review after partial success", async () => {
+    const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes");
+    f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
+    const remote = f.host.querySelector<HTMLSelectElement>("#git-network-remote")!;
+    remote.value = "backup"; remote.dispatchEvent(new Event("change", { bubbles: true }));
+    const target = f.host.querySelector<HTMLInputElement>("#git-network-branch")!;
+    target.value = "publish-here"; target.dispatchEvent(new Event("input", { bubbles: true }));
+    const review = [...f.host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(node => node.parentElement?.textContent?.includes("I reviewed"))!;
+    const push = [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Push")!;
+    expect(push.disabled).toBe(true); review.click();
+    f.transport.gitRemoteSelected.mockRejectedValueOnce(new Error("Network unavailable")); push.click();
+    await vi.waitFor(() => expect(f.git.error()).toBe("Network unavailable"));
+    expect(remote.value).toBe("backup"); expect(target.value).toBe("publish-here");
+    push.click(); await vi.waitFor(() => expect(f.git.warning()).toContain("remote action completed"));
+    expect(remote.value).toBe("backup"); expect(target.value).toBe("publish-here"); expect(push.disabled).toBe(true);
+    expect(f.transport.gitRemoteSelected).toHaveBeenLastCalledWith(context, "push", "backup", "publish-here", "index", "review-1", true);
+    expect(f.transport.gitRemoteSelected).toHaveBeenCalledTimes(2);
+  });
   it("shows Changes and History sub-views in one panel, defaulting to Changes", async () => {
     const f = fixture(); await f.git.refresh();
     f.mount(() => <GitSourceControl git={f.git} view={f.view} available active activePath="src/main.ts" />);

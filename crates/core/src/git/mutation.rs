@@ -93,6 +93,46 @@ impl GitService {
         expected_staged_snapshot: &str,
         cancellation: CancellationToken,
     ) -> Result<GitCommitResult> {
+        self.commit_options(
+            context_id,
+            message,
+            None,
+            expected_index_revision,
+            expected_staged_snapshot,
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn amend(
+        &self,
+        context_id: &str,
+        message: String,
+        expected_head: &str,
+        expected_index_revision: &str,
+        expected_staged_snapshot: &str,
+        cancellation: CancellationToken,
+    ) -> Result<GitCommitResult> {
+        self.commit_options(
+            context_id,
+            message,
+            Some(expected_head),
+            expected_index_revision,
+            expected_staged_snapshot,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn commit_options(
+        &self,
+        context_id: &str,
+        message: String,
+        amend_head: Option<&str>,
+        expected_index_revision: &str,
+        expected_staged_snapshot: &str,
+        cancellation: CancellationToken,
+    ) -> Result<GitCommitResult> {
         if message.trim().is_empty() || message.contains('\0') || message.len() > 64 * 1024 {
             return Err(error(
                 "Commit message must be nonblank, contain no NUL and be at most 64 KiB",
@@ -108,12 +148,19 @@ impl GitService {
             expected_index_revision,
             Some(expected_staged_snapshot),
         )?;
+        if let Some(expected) = amend_head {
+            if reviewed.repository.head.as_deref() != Some(expected) {
+                return Err(error(
+                    "HEAD changed or does not exist. Refresh and review before amending.",
+                ));
+            }
+        }
         let staged = reviewed
             .entries
             .iter()
             .filter(|entry| !entry.untracked && entry.index_status != ".")
             .collect::<Vec<_>>();
-        if staged.is_empty() {
+        if staged.is_empty() && amend_head.is_none() {
             return Err(error("There are no staged changes to commit"));
         }
         if let Some(entry) = staged
@@ -174,6 +221,31 @@ impl GitService {
             .head
             .clone()
             .unwrap_or_else(|| "0".repeat(tree.len()));
+        let amend_parents = if let Some(head) = amend_head {
+            let output = self
+                .checked(
+                    &repo,
+                    vec![
+                        "show".into(),
+                        "--no-patch".into(),
+                        "--format=%P".into(),
+                        head.into(),
+                        "--".into(),
+                    ],
+                    vec![],
+                    None,
+                    &cancellation,
+                )
+                .await?;
+            Some(
+                String::from_utf8(output.stdout)
+                    .map_err(|_| error("Invalid commit parent metadata"))?
+                    .trim()
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
         let guard = HookGuard::new(&repo, &hooks)?;
         let mut environment = transaction.environment();
         let program =
@@ -187,6 +259,12 @@ impl GitService {
             ("SPAN_GIT_EXPECTED_OLD".into(), old.into()),
             ("SPAN_GIT_EXPECTED_REF".into(), expected_ref.into()),
         ]);
+        if let Some(parents) = amend_parents {
+            environment.push(("SPAN_GIT_AMEND_PARENTS".into(), parents.into()));
+            environment.push(("SPAN_GIT_IS_AMEND".into(), "true".into()));
+        } else {
+            environment.push(("SPAN_GIT_IS_AMEND".into(), "false".into()));
+        }
         self.check_cancelled(&cancellation)?;
         let current = self.status_for(&repo, &cancellation).await?;
         require_review(
@@ -194,6 +272,9 @@ impl GitService {
             expected_index_revision,
             Some(expected_staged_snapshot),
         )?;
+        if amend_head.is_some() && current.repository.head.as_deref() != amend_head {
+            return Err(error("HEAD changed. Refresh and review before amending."));
+        }
         let mut args = strings(&["-c"]);
         args.push(
             format!(
@@ -205,6 +286,9 @@ impl GitService {
             .into(),
         );
         args.extend(strings(&["commit", "--file=-"]));
+        if amend_head.is_some() {
+            args.push("--amend".into());
+        }
         let outcome = self
             .run_repo(
                 &repo,
@@ -675,6 +759,13 @@ while IFS=' ' read -r old new ref extra; do
   if [ "$tree" != "$SPAN_GIT_EXPECTED_TREE" ]; then
     echo 'Span refused a changed staged tree. A hook or another process changed the reviewed snapshot.' >&2
     exit 1
+  fi
+  if [ "$SPAN_GIT_IS_AMEND" = true ]; then
+    parents=$("$SPAN_GIT_BINARY" --no-optional-locks --no-replace-objects -c core.fsmonitor=false -c log.showSignature=false show --no-patch --format=%P "$new") || exit 1
+    if [ "$parents" != "$SPAN_GIT_AMEND_PARENTS" ]; then
+      echo 'Span refused changed amend parents. Refresh and review before amending.' >&2
+      exit 1
+    fi
   fi
   validated=$new
 done < "$input"

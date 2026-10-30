@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
+sha2 = "0.10"
 serde_json = { workspace = true, features = ["preserve_order", "arbitrary_precision"] }
 specta.workspace = true
 thiserror.workspace = true

@@ -4,6 +4,7 @@ import type { GitHistoryScope } from "../../stores/git-view";
 import Icon, { FileIcon } from "../Icon";
 import { gitCommitGraph, gitCommitDate } from "../../lib/git-format";
 import { GitRepositoryHeader } from "./GitPanel";
+import { GitHistoryTools } from "./GitHistoryTools";
 
 type GitHistoryProps = {
   git: GitWorkbench; available: boolean; active: boolean; filePath?: string;
@@ -17,6 +18,7 @@ const scopes: { id: GitHistoryScope; label: string }[] = [{ id: "all", label: "A
 
 export function GitHistory(props: GitHistoryProps) {
   const g = props.git;
+  const [advanced, setAdvanced] = createSignal(false);
   const [filter, setFilter] = createSignal("");
   const [selected, setSelected] = createSignal<string>();
   const graph = createMemo(() => gitCommitGraph(g.history()?.commits || []));
@@ -55,6 +57,9 @@ export function GitHistory(props: GitHistoryProps) {
   return (
     <section class="git-history" aria-label="Git history">
       <Show when={!props.embedded}><GitRepositoryHeader git={g} available={props.available} onRefresh={refresh} /></Show>
+      <Show when={props.available && enabled()}><button class="button" aria-expanded={advanced()} onClick={() => setAdvanced(value => !value)}>{advanced() ? "Back to commit history" : "Advanced history"}</button></Show>
+      <Show when={advanced()}><GitHistoryTools git={g} path={activeRepoPath()} /></Show>
+      <Show when={!advanced()}>
       <div ref={group} class="git-history-filter" role="radiogroup" aria-label="History scope" onKeyDown={scopeKey}>
         <For each={scopes}>{item => (
           <button
@@ -131,6 +136,7 @@ export function GitHistory(props: GitHistoryProps) {
         </Show>
         <Show when={g.historyLoading()}><div class="git-empty" role="status">Reading commits…</div></Show>
       </div>
+      </Show>
     </section>
   );
 }

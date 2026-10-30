@@ -5,16 +5,16 @@ import { readFileSync } from "node:fs";
 const schema = JSON.parse(readFileSync("crates/core/settings.schema.json", "utf8")).properties;
 const defaults = Object.fromEntries(Object.entries(schema as Record<string, { default?: unknown }>).filter(([key, value]) => !key.includes(".") && key !== "$schema" && "default" in value).map(([key, value]) => [key, value.default]));
 
-async function fixture(page: Page, clean = false) {
+async function fixture(page: Page, clean = false, noRoot = false) {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.addInitScript(({ settings, clean }) => {
+  await page.addInitScript(({ settings, clean, noRoot }) => {
     let callback = 0;
     let revision = 1;
     let enabled = false;
-    const root = "/fixture/repository/project";
+    let root = noRoot ? null : "/fixture/repository/project";
     const repo = { id: "git-fixture-session", root: "/fixture/repository", workspacePrefix: "project", branch: "feature/review", head: "b".repeat(40), detached: false, unborn: false };
-    const trace = { baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false, hosting: [] as any[], conflictReads: [] as any[], conflictSaves: [] as any[], failCreate: true, failReview: true, failDetail: false };
+    const trace = { phase3: [] as any[], noUpstream: false, changeHead: false, failLines: false, failClone: true, baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false, hosting: [] as any[], conflictReads: [] as any[], conflictSaves: [] as any[], failCreate: true, failReview: true, failDetail: false };
     let treeRevision = 1;
     const text = "const value = 3;\nconst stable = true;\nconst other = 4;\nconst tail = true;\n";
     const indexText = "const value = 2;\nconst stable = true;\nconst other = 3;\nconst tail = true;\n";
@@ -44,7 +44,7 @@ async function fixture(page: Page, clean = false) {
         transformCallback: () => ++callback,
         unregisterCallback: () => undefined,
         invoke: async (command: string, args: Record<string, any> = {}) => {
-          if ((command.startsWith("github_") || command.startsWith("git_")) && !["git_context", "git_enable"].includes(command) && !enabled) throw new Error("Git read or mutation ran before activation");
+          if ((command.startsWith("github_") || command.startsWith("git_")) && !["git_context", "git_enable", "git_clone_repository"].includes(command) && !enabled) throw new Error("Git read or mutation ran before activation");
           if (command.startsWith("github_")) {
             trace.hosting.push({ command, ...args });
             const repository = { host: "github.com", owner: "fixture", name: "project", remoteName: "origin" };
@@ -67,7 +67,7 @@ async function fixture(page: Page, clean = false) {
           if (command === "git_save_conflict_resolution") { trace.conflictSaves.push(args); if (args.expectedIndexRevision !== `index-${revision}` || args.expectedWorktreeSnapshot !== `disk-${revision}`) throw new Error("Reviewed conflict changed"); buffer.text = args.content; buffer.revision++; buffer.savedRevision = buffer.revision; revision++; return { status: status(), worktreeSnapshot: `disk-${revision}` }; }
           if (command === "git_file_baseline") { trace.baseline.push(args); return { repositoryId: repo.id, path: args.path, indexRevision: `index-${revision}`, headText: clean ? text : indexText, indexText: clean ? text : indexText, binary: false, truncated: false }; }
           if (command === "git_blame") { trace.blame.push(args); return { repositoryId: repo.id, path: args.path, head: repo.head, lines: [1, 2, 3, 4, 5].map(line => ({ line, originalLine: line, commitId: repo.head, author: "Fixture author", authorEmail: "fixture@example.test", timestamp: commit.timestamp, summary: "Initial fixture" })) }; }
-          if (command === "git_branches") return [{ name: repo.branch, commitId: repo.head, remote: false, current: true, upstream: "origin/feature/review", ahead: 1, behind: 0 }, { name: "main", commitId: "c".repeat(40), remote: false, current: false, upstream: null, ahead: 0, behind: 0 }];
+          if (command === "git_branches") return [{ name: repo.branch, commitId: repo.head, remote: false, current: true, upstream: trace.noUpstream ? null : "origin/feature/review", ahead: 1, behind: 0 }, { name: "main", commitId: "c".repeat(40), remote: false, current: false, upstream: null, ahead: 0, behind: 0 }];
           if (command === "git_checkout") { trace.checkout.push(args); if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Index changed"); repo.branch = args.branch; revision++; return status(); }
           if (command === "git_tags") return structuredClone(tags);
           if (command === "git_create_tag") { trace.tags.push({ command, ...args }); tags.push({ name: args.name, objectId: args.targetId, targetId: args.targetId, annotated: false }); return structuredClone(tags); }
@@ -85,9 +85,21 @@ async function fixture(page: Page, clean = false) {
           if (command === "git_rebase") { trace.integration.push({ command, ...args }); operation = "rebase"; buffer.text = "<<<<<<< HEAD\nconst value = 2;\n=======\nconst value = 3;\n>>>>>>> fixture\n"; buffer.revision++; buffer.savedRevision = buffer.revision; Object.assign(changes[0], { indexStatus: "U", worktreeStatus: "U", conflicted: true }); revision++; return { state: { status: status(), worktreeSnapshot: `disk-${revision}` }, output: "Fixture rebase paused with conflicts.", completed: false }; }
           if (command === "git_mark_resolved" || command === "git_rebase_control") { trace.integration.push({ command, ...args }); if (args.expectedIndexRevision !== `index-${revision}` || args.expectedWorktreeSnapshot !== `disk-${revision}`) throw new Error("Conflict state changed"); if (command === "git_mark_resolved") { if (buffer.text.includes("<<<<<<<") || buffer.savedRevision !== buffer.revision) throw new Error("Save the fixture conflict resolution first"); Object.assign(changes[0], { indexStatus: "M", worktreeStatus: ".", conflicted: false }); revision++; return { status: status(), worktreeSnapshot: `disk-${revision}` }; } operation = null; revision++; return { state: { status: status(), worktreeSnapshot: `disk-${revision}` }, output: "Fixture rebase completed.", completed: true }; }
           if (command === "git_commit_details") return { commit, files: [{ path: "project/src/file.ts", oldPath: null, status: "M" }] };
-          if (command === "git_context") return { workspaceRoot: root, repository: structuredClone(repo), enabled, unavailableReason: null };
+          if (command === "git_clone_repository") { trace.phase3.push({ command, ...args }); if (trace.failClone) throw new Error("Fixture clone failed. Destination was not created."); return { path: args.destination, output: "Fixture cloned." }; }
+          if (command === "git_worktree_window_path") { trace.phase3.push({ command, ...args }); if (!worktrees.some(tree => tree.path === args.path)) throw new Error("Unknown worktree"); return args.path; }
+          if (command === "git_open_worktree_window") { trace.phase3.push({ command, ...args }); return null; }
+          if (command === "git_history_tools") { trace.phase3.push({ command, ...args }); return { heads: [commit.id], refs: [{ name: "refs/heads/feature/review", commitId: commit.id }], commits: [commit], nextSkip: null }; }
+          if (command === "git_reflog_page") { trace.phase3.push({ command, ...args }); return { entries: [{ commitId: commit.id, selector: "HEAD@{0}", subject: "commit: Fixture movement" }], nextSkip: null }; }
+          if (command === "git_revision_content") { trace.phase3.push({ command, ...args }); return { revision: commit.id, path: args.path, text: "<script>literal revision</script>", binary: false, truncated: false }; }
+          if (command === "git_revision_diff") { trace.phase3.push({ command, ...args }); return { from: commit.id, to: null, path: args.path, patch: patch(args.path, "commit").patch, truncated: false }; }
+          if (command === "git_line_history") { trace.phase3.push({ command, ...args }); return { repositoryId: repo.id, anchor: commit.id, commits: [commit], nextSkip: null }; }
+          if (command === "git_review_lines") { trace.phase3.push({ command, ...args }); return { diff: patch(args.path, args.side), worktreeSnapshot: `disk-${revision}`, metadata: [], hunks: [{ id: `hunk-${revision}`, header: "@@ -1 +1 @@", lines: [{ id: `opaque-remove-${revision}`, kind: "delete", text: "before\n", oldLine: 1, newLine: null }, { id: `opaque-add-${revision}`, kind: "insert", text: args.side === "staged" ? "index version\n" : "disk version\n", oldLine: null, newLine: 1 }] }] }; }
+          if (command === "git_apply_lines") { trace.phase3.push({ command, ...args }); if (trace.failLines || args.expectedIndexRevision !== `index-${revision}` || args.expectedWorktreeSnapshot !== `disk-${revision}` || args.lineIds.some((id: string) => ![`opaque-remove-${revision}`, `opaque-add-${revision}`].includes(id))) throw new Error("Reviewed selected lines changed"); revision++; return status(); }
+          if (command === "git_remote_selected") { trace.remotes.push(args); if (args.expectedIndexRevision !== `index-${revision}` || args.remoteName !== "origin") throw new Error("Remote review changed"); if (args.expectedConfigFingerprint !== (trace.remoteConfigChanged ? "changed-config-2" : "reviewed-config-1")) throw new Error("Remote configuration changed. Review remotes again."); if (args.action !== "push") throw new Error("Fixture authentication failed. No remote operation ran."); return { operation: { status: status(), output: "Published fixture branch." }, remoteSucceeded: true, upstreamConfigured: args.setUpstream, warning: null }; }
+          if (command === "git_amend") { trace.phase3.push({ command, ...args }); if (args.expectedHead !== repo.head || args.expectedIndexRevision !== `index-${revision}` || args.expectedStagedSnapshot !== `tree-${revision}`) throw new Error("Reviewed amend changed"); return { commitId: commit.id, commit, status: status(), warning: null }; }
+          if (command === "git_context") return { workspaceRoot: root, repository: !root ? null : structuredClone(repo), enabled, unavailableReason: null };
           if (command === "git_enable") { enabled = true; trace.enables++; return status(); }
-          if (command === "git_status") { trace.statusReads++; if (!enabled) throw new Error("Git status ran before activation"); return status(); }
+          if (command === "git_status") { trace.statusReads++; if (trace.changeHead) { repo.head = "c".repeat(40); trace.changeHead = false; } if (!enabled) throw new Error("Git status ran before activation"); return status(); }
           if (command === "git_diff") { trace.diffs.push(args); if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Git index changed. Refresh before reviewing."); return patch(args.path, args.side); }
           if (command === "git_stage" || command === "git_unstage") {
             if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Git index changed. Refresh before staging.");
@@ -106,8 +118,8 @@ async function fixture(page: Page, clean = false) {
           }
           if (command === "git_history") { trace.history.push(args); return { repositoryId: repo.id, anchor: commit.id, commits: [commit], nextSkip: null }; }
           if (command === "git_commit_diff") return patch(args.path || "project/src/file.ts", "commit");
-          if (command === "get_session") return { workspaceRoot: root, groups: [{ paths: ["src/file.ts"], activePath: "src/file.ts" }], activeGroup: 0, markdownViews: {}, panels: { projectWidth: 320, assistantWidth: 350, terminalHeight: 230, projectCollapsed: false, assistantCollapsed: true, terminalCollapsed: true } };
-          if (command === "open_workspace") return { root, name: "Project folder" };
+          if (command === "get_session") return { workspaceRoot: root, groups: noRoot ? [] : [{ paths: ["src/file.ts"], activePath: "src/file.ts" }], activeGroup: 0, markdownViews: {}, panels: { projectWidth: 320, assistantWidth: 350, terminalHeight: 230, projectCollapsed: false, assistantCollapsed: true, terminalCollapsed: true } };
+          if (command === "open_workspace") { if (noRoot) { trace.phase3.push({ command, ...args }); root = args.path; } return { root, name: "Project folder" }; }
           if (command === "get_settings" || command === "get_settings_for_scope") return { ...settings };
           if (command === "get_settings_jsonc" || command === "get_settings_jsonc_for_scope") return "{}";
           if (["take_startup_requests", "recent_projects", "get_settings_keys_for_scope", "agent_installed", "agent_registry", "agent_presets", "pending_run_approvals", "list_runs", "lsp_status", "sync_native_menu", "session_meta_list", "uploads_list"].includes(command)) return [];
@@ -129,12 +141,12 @@ async function fixture(page: Page, clean = false) {
         },
       },
     });
-  }, { settings: defaults, clean });
+  }, { settings: defaults, clean, noRoot });
   await page.goto("/");
   await expect(page.getByRole("main", { name: "span editor", exact: true })).toHaveAttribute("aria-busy", "false");
   return errors;
 }
-const trace = (page: Page) => page.evaluate(() => (window as unknown as { __gitFixture: { enables: number; statusReads: number; stage: any[]; unstage: any[]; commits: any[]; diffs: any[]; history: any[]; diskSaves: number; baseline: any[]; blame: any[]; checkout: any[]; stashes: any[]; tags: any[]; worktrees: any[]; remotes: any[]; hunk: any[]; integration: any[]; remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean; failDetail: boolean } }).__gitFixture);
+const trace = (page: Page) => page.evaluate(() => (window as unknown as { __gitFixture: { phase3: any[]; enables: number; statusReads: number; stage: any[]; unstage: any[]; commits: any[]; diffs: any[]; history: any[]; diskSaves: number; baseline: any[]; blame: any[]; checkout: any[]; stashes: any[]; tags: any[]; worktrees: any[]; remotes: any[]; hunk: any[]; integration: any[]; remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean; failDetail: boolean } }).__gitFixture);
 
 test("repository-wide saved/index diffs preserve a dirty editor and constrain outside-file opens", async ({ page }, info) => {
   const errors = await fixture(page);
@@ -329,13 +341,15 @@ test("worktree removal is explicit and remote failure retains message and unsave
   const message = panel.getByRole("textbox", { name: "Git commit message", exact: true }); await message.fill("Keep this commit draft");
   const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
   await editor.click(); await editor.press("ControlOrMeta+End"); await page.keyboard.insertText("// keep after remote failure\n");
-  await expect(panel.locator(".git-remote-target")).toContainText("https://example.test/fixture/repo.git");
-  await expect(panel.locator(".git-remote-target")).toContainText("Push: https://example.test/fixture/push.git");
+  await expect(panel.locator("[aria-label=\"Selected remote operations\"]")).toContainText("https://example.test/fixture/repo.git");
+  await expect(panel.locator("[aria-label=\"Selected remote operations\"]")).toContainText("Push: https://example.test/fixture/push.git");
+  await panel.getByRole("checkbox", { name: "I reviewed this remote and target", exact: true }).check();
   await panel.getByRole("button", { name: "Fetch", exact: true }).click();
   await expect(panel.getByRole("alert")).toContainText("Fixture authentication failed");
   await expect(message).toHaveValue("Keep this commit draft"); await expect(editor).toContainText("keep after remote failure");
   expect((await trace(page)).remotes[0]).toMatchObject({ action: "fetch", expectedConfigFingerprint: "reviewed-config-1" }); expect((await trace(page)).diskSaves).toBe(0);
   await page.evaluate(() => { (window as unknown as { __gitFixture: { remoteConfigChanged: boolean; hosting: any[]; conflictReads: any[]; conflictSaves: any[]; failCreate: boolean; failReview: boolean; failDetail: boolean } }).__gitFixture.remoteConfigChanged = true; });
+  await panel.getByRole("checkbox", { name: "I reviewed this remote and target", exact: true }).check();
   await panel.getByRole("button", { name: "Fetch", exact: true }).click();
   await expect(panel.getByRole("alert")).toContainText("Remote configuration changed. Review remotes again.");
   await expect(message).toHaveValue("Keep this commit draft"); await expect(editor).toContainText("keep after remote failure");
@@ -572,4 +586,129 @@ test("GitHub detail failures hide unknown counts and retry the selected PR while
   expect((await trace(page)).checkout).toHaveLength(0);
   await hosting.getByLabel("Review message", { exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({ animations: "disabled", path: info.outputPath("git-github-detail-retry-draft.png") }); expect(errors).toEqual([]);
+});
+
+test("selected remote first push requires review and invalidates it when the target changes", async ({ page }, info) => {
+  const errors = await fixture(page, true);
+  await page.evaluate(() => { (window as any).__gitFixture.noUpstream = true; });
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  const push = panel.getByRole("button", { name: "Push", exact: true });
+  await expect(push).toBeDisabled();
+  await panel.getByLabel("Remote", { exact: true }).selectOption("origin");
+  await panel.getByLabel("Remote branch (pull or push)", { exact: true }).fill("first-push");
+  await panel.getByLabel("I reviewed this remote and target", { exact: true }).check();
+  await panel.getByLabel("Remote branch (pull or push)", { exact: true }).fill("published-branch");
+  await expect(push).toBeDisabled();
+  await page.screenshot({ animations: "disabled", path: info.outputPath("git-first-push-target-review.png") });
+  expect((await trace(page)).remotes).toHaveLength(0);
+  await panel.getByLabel("I reviewed this remote and target", { exact: true }).check();
+  await push.click();
+  await expect(panel).toContainText("Published fixture branch.");
+  await expect(push).toBeDisabled();
+  expect((await trace(page)).remotes).toEqual([expect.objectContaining({ action: "push", remoteName: "origin", targetBranch: "published-branch", setUpstream: true, expectedConfigFingerprint: "reviewed-config-1", expectedIndexRevision: "index-1" })]);
+  expect(errors).toEqual([]);
+});
+
+test("selected lines submit opaque review IDs and preserve a failed selection", async ({ page }) => {
+  const errors = await fixture(page);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  await page.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await page.getByRole("button", { name: "Review working changes in project/src/file.ts", exact: true }).click();
+  const selection = page.getByRole("region", { name: "Select reviewed Git lines", exact: true });
+  await expect(selection.getByRole("button", { name: "Stage selected (0)", exact: true })).toBeDisabled();
+  await selection.getByRole("checkbox", { name: "Select added line 1", exact: true }).click();
+  await page.evaluate(() => { (window as any).__gitFixture.failLines = true; });
+  await selection.getByRole("button", { name: "Stage selected (1)", exact: true }).click();
+  await expect(selection.getByRole("alert").filter({ hasText: "Reviewed selected lines changed" })).toBeVisible();
+  await expect(selection.getByRole("checkbox", { name: "Select added line 1", exact: true })).toBeChecked();
+  expect((await trace(page)).phase3.filter(call => call.command === "git_apply_lines")[0]).toMatchObject({ lineIds: ["opaque-add-1"], includeMetadata: false, expectedIndexRevision: "index-1", expectedWorktreeSnapshot: "disk-1" });
+  await page.evaluate(() => { (window as any).__gitFixture.failLines = false; });
+  await selection.getByRole("button", { name: "Stage selected (1)", exact: true }).click();
+  await expect.poll(async () => (await trace(page)).phase3.filter(call => call.command === "git_apply_lines").length).toBe(2);
+  await expect(page.getByRole("region", { name: "Git source control", exact: true })).toContainText("Staged selected changes.");
+  await expect(selection.getByRole("button", { name: "Stage selected (0)", exact: true })).toBeDisabled();
+  expect((await trace(page)).diskSaves).toBe(0); expect(errors).toEqual([]);
+});
+
+test("amend captures HEAD and blocks submission after an external HEAD change", async ({ page }) => {
+  const errors = await fixture(page, true);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await panel.getByRole("textbox", { name: "Git commit message", exact: true }).fill("Amended message only");
+  await panel.getByLabel("Amend last commit", { exact: true }).check();
+  await expect(panel.getByRole("button", { name: "Amend bbbbbbbb", exact: true })).toBeEnabled();
+  await page.evaluate(() => { (window as any).__gitFixture.changeHead = true; });
+  await expect(panel.getByRole("alert").filter({ hasText: "HEAD changed after amend was selected" })).toBeVisible({ timeout: 8000 });
+  await expect(panel.getByRole("button", { name: "Amend bbbbbbbb", exact: true })).toBeDisabled();
+  expect((await trace(page)).phase3.filter(call => call.command === "git_amend")).toHaveLength(0);
+  await panel.getByLabel("Amend last commit", { exact: true }).uncheck();
+  await panel.getByLabel("Amend last commit", { exact: true }).check();
+  await panel.getByRole("button", { name: "Amend cccccccc", exact: true }).click();
+  await expect.poll(async () => (await trace(page)).phase3.filter(call => call.command === "git_amend").length).toBe(1);
+  expect((await trace(page)).phase3.find(call => call.command === "git_amend")).toMatchObject({ expectedHead: "c".repeat(40), expectedIndexRevision: "index-1", expectedStagedSnapshot: "tree-1", message: "Amended message only" });
+  expect(errors).toEqual([]);
+});
+
+test("advanced history filters, reflog and revision reads stay read only", async ({ page }) => {
+  const errors = await fixture(page);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await panel.getByRole("tab", { name: "History", exact: true }).click();
+  await panel.getByRole("button", { name: "Advanced history", exact: true }).click();
+  const history = panel.getByRole("region", { name: "Git history", exact: true });
+  await history.getByLabel("Author", { exact: true }).fill("Fixture author");
+  await history.getByLabel("Message", { exact: true }).fill("Review staged");
+  await history.getByLabel("Repository path", { exact: true }).fill("project/src/file.ts");
+  await history.getByRole("button", { name: "Search history", exact: true }).click();
+  await expect.poll(async () => (await trace(page)).phase3.filter(call => call.command === "git_history_tools").at(-1)?.query.author).toBe("Fixture author");
+  expect((await trace(page)).phase3.filter(call => call.command === "git_history_tools").at(-1).query).toMatchObject({ author: "Fixture author", message: "Review staged", path: "project/src/file.ts", heads: [], skip: 0 });
+  await history.getByRole("button", { name: "Show HEAD reflog", exact: true }).click();
+  await expect(history).toContainText("HEAD@{0}");
+  await history.getByRole("button", { name: "aaaaaaaa · Use revision", exact: true }).click();
+  await history.locator("summary").filter({ hasText: "Revision content and comparison" }).click();
+  await expect(history.getByLabel("Revision", { exact: true })).toHaveValue("a".repeat(40));
+  await history.getByRole("button", { name: "Read revision file", exact: true }).click();
+  await expect(history.getByLabel("Read-only revision content", { exact: true })).toHaveText("<script>literal revision</script>");
+  expect(await history.locator("script").count()).toBe(0);
+  await history.getByRole("button", { name: "Compare revisions", exact: true }).click();
+  await expect(history).toContainText("Revision comparison");
+  expect((await trace(page)).phase3.find(call => call.command === "git_revision_diff")).toMatchObject({ from: "a".repeat(40), to: null, path: "project/src/file.ts" });
+  expect((await trace(page)).diskSaves).toBe(0); expect((await trace(page)).commits).toHaveLength(0); expect(errors).toEqual([]);
+});
+
+test("no-workspace clone retains failed input without activating repository access", async ({ page }) => {
+  const errors = await fixture(page, false, true);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Clone repository", exact: true }).click();
+  await panel.getByLabel("Repository URL or local path", { exact: true }).fill("https://example.test/new.git");
+  await panel.getByLabel("Absolute destination folder", { exact: true }).fill("/fixture/clone");
+  await panel.getByRole("button", { name: "Clone", exact: true }).click();
+  await expect(panel.getByRole("alert")).toContainText("Fixture clone failed");
+  await expect(panel.getByLabel("Repository URL or local path", { exact: true })).toHaveValue("https://example.test/new.git");
+  await expect(panel.getByLabel("Absolute destination folder", { exact: true })).toHaveValue("/fixture/clone");
+  expect((await trace(page)).phase3).toEqual([{ command: "git_clone_repository", source: "https://example.test/new.git", destination: "/fixture/clone" }]);
+  expect((await trace(page)).enables).toBe(0); expect((await trace(page)).statusReads).toBe(0);
+  await page.evaluate(() => { (window as any).__gitFixture.failClone = false; });
+  await panel.getByRole("button", { name: "Clone", exact: true }).click();
+  await expect.poll(async () => (await trace(page)).phase3.some(call => call.command === "open_workspace" && call.path === "/fixture/clone")).toBe(true);
+  await expect(panel.getByRole("button", { name: "Enable Git", exact: true })).toBeVisible();
+  expect((await trace(page)).enables).toBe(0); expect(errors).toEqual([]);
+});
+
+test("worktree new-window callback uses the backend-validated path without changing this workspace", async ({ page }) => {
+  const errors = await fixture(page, true);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await panel.getByRole("tab", { name: "Worktrees", exact: true }).click();
+  await panel.locator(".git-worktree-entry").filter({ hasText: "/fixture/review" }).getByRole("button", { name: "Open in new window", exact: true }).click();
+  await expect.poll(async () => (await trace(page)).phase3.length).toBe(2);
+  expect((await trace(page)).phase3.map(call => ({ command: call.command, path: call.path }))).toEqual([{ command: "git_worktree_window_path", path: "/fixture/review" }, { command: "git_open_worktree_window", path: "/fixture/review" }]);
+  await expect(page.getByRole("textbox", { name: "Edit file.ts", exact: true })).toBeVisible();
+  await expect(panel.locator(".git-repo-branch")).toContainText("feature/review"); expect(errors).toEqual([]);
 });

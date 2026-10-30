@@ -236,10 +236,13 @@ export function GitPanel(props: GitPanelViewProps) {
               onInput={event => g.setMessage(event.currentTarget.value)}
               onKeyDown={commitShortcut}
             />
+            <label><input type="checkbox" checked={g.amend()} disabled={!g.amend() && !g.canEnableAmend() || !!g.operation()} onChange={event => g.setAmend(event.currentTarget.checked)} /> Amend last commit</label>
+            <Show when={g.amend()}><p class="git-note">Replace commit {g.amendHead()?.slice(0, 8)} with the message above and the reviewed index. This changes existing history. No force push runs automatically.</p></Show>
+            <Show when={g.amendStale()}><p class="git-error" role="alert">HEAD changed after amend was selected. Turn amend off, review the current HEAD, then select it again.</p></Show>
             <div class="git-commit-actions">
               <button class="button primary" disabled={!g.canCommit()} onClick={() => void g.commit()}>
                 <MenuIcon name="save" size={14} />
-                {g.operation() === "commit" ? "Committing…" : `Commit ${g.staged().length} staged ${g.staged().length === 1 ? "file" : "files"}`}
+                {g.operation() === "commit" ? "Committing…" : g.amend() ? `Amend ${g.amendHead()?.slice(0, 8)}` : `Commit ${g.staged().length} staged ${g.staged().length === 1 ? "file" : "files"}`}
               </button>
             </div>
             <span class="git-note">Staging uses saved files on disk. Unsaved editor changes stay in the editor.</span>

@@ -386,7 +386,7 @@ impl GitService {
         Ok(())
     }
 
-    async fn commit_oid(
+    pub(super) async fn commit_oid(
         &self,
         repo: &RepoIdentity,
         id: &str,

@@ -7,6 +7,18 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	openWorkspace: (path: string) => __TAURI_INVOKE<Workspace>("open_workspace", { path }),
 	gitContext: () => __TAURI_INVOKE<GitContext_Serialize>("git_context"),
+	gitOpenWorktreeWindow: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<null>("git_open_worktree_window", { context, path }),
+	gitAmend: (context: GitContext_Deserialize, message: string, expectedHead: string, expectedIndexRevision: string, expectedStagedSnapshot: string) => __TAURI_INVOKE<GitCommitResult_Serialize>("git_amend", { context, message, expectedHead, expectedIndexRevision, expectedStagedSnapshot }),
+	gitRemoteSelected: (context: GitContext_Deserialize, action: GitRemoteAction, remoteName: string, targetBranch: string | null, expectedIndexRevision: string, expectedConfigFingerprint: string, setUpstream: boolean) => __TAURI_INVOKE<GitSelectedRemoteResult_Serialize>("git_remote_selected", { context, action, remoteName, targetBranch, expectedIndexRevision, expectedConfigFingerprint, setUpstream }),
+	gitWorktreeWindowPath: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<string>("git_worktree_window_path", { context, path }),
+	gitHistoryTools: (context: GitContext_Deserialize, query: GitHistoryToolsQuery_Deserialize) => __TAURI_INVOKE<GitHistoryToolsPage_Serialize>("git_history_tools", { context, query }),
+	gitRevisionContent: (context: GitContext_Deserialize, revision: string, path: string) => __TAURI_INVOKE<GitRevisionContent_Serialize>("git_revision_content", { context, revision, path }),
+	gitRevisionDiff: (context: GitContext_Deserialize, from: string, to: string | null, path: string | null) => __TAURI_INVOKE<GitRevisionDiff_Serialize>("git_revision_diff", { context, from, to, path }),
+	gitReflogPage: (context: GitContext_Deserialize, skip: number, limit: number) => __TAURI_INVOKE<GitReflogPage_Serialize>("git_reflog_page", { context, skip, limit }),
+	gitLineHistory: (context: GitContext_Deserialize, revision: string, path: string, start: number, end: number, skip: number, limit: number) => __TAURI_INVOKE<GitHistoryPage_Serialize>("git_line_history", { context, revision, path, start, end, skip, limit }),
+	gitSigningConfiguration: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitSigningConfiguration_Serialize>("git_signing_configuration", { context }),
+	gitReviewLines: (context: GitContext_Deserialize, path: string, side: GitDiffSide, expectedIndexRevision: string) => __TAURI_INVOKE<GitLineReview_Serialize>("git_review_lines", { context, path, side, expectedIndexRevision }),
+	gitApplyLines: (context: GitContext_Deserialize, path: string, side: GitDiffSide, lineIds: string[], expectedIndexRevision: string, expectedWorktreeSnapshot: string, includeMetadata: boolean) => __TAURI_INVOKE<GitStatus_Serialize>("git_apply_lines", { context, path, side, lineIds, expectedIndexRevision, expectedWorktreeSnapshot, includeMetadata }),
 	gitCheckoutPullRequest: (context: GitContext_Deserialize, remoteName: string, number: number, expectedHead: string, localBranch: string, expectedIndexRevision: string, expectedConfigFingerprint: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_checkout_pull_request", { context, remoteName, number, expectedHead, localBranch, expectedIndexRevision, expectedConfigFingerprint }),
 	gitInitializeRepository: () => __TAURI_INVOKE<GitContext_Serialize>("git_initialize_repository"),
 	gitCloneRepository: (source: string, destination: string) => __TAURI_INVOKE<GitCloneResult>("git_clone_repository", { source, destination }),
@@ -2293,6 +2305,11 @@ export type GitFileBaseline_Serialize = {
 	truncated: boolean,
 };
 
+export type GitHistoryDecoration = {
+	name: string,
+	commitId: string,
+};
+
 export type GitHistoryPage = GitHistoryPage_Serialize | GitHistoryPage_Deserialize;
 
 export type GitHistoryPage_Deserialize = {
@@ -2322,6 +2339,42 @@ export type GitHistoryQuery_Serialize = {
 	anchor: string | null,
 	skip: number,
 	limit: number,
+	path: string | null,
+};
+
+export type GitHistoryToolsPage = GitHistoryToolsPage_Serialize | GitHistoryToolsPage_Deserialize;
+
+export type GitHistoryToolsPage_Deserialize = {
+	heads: string[],
+	refs: GitHistoryDecoration[],
+	commits: GitCommit[],
+	nextSkip?: number | null,
+};
+
+export type GitHistoryToolsPage_Serialize = {
+	heads: string[],
+	refs: GitHistoryDecoration[],
+	commits: GitCommit[],
+	nextSkip: number | null,
+};
+
+export type GitHistoryToolsQuery = GitHistoryToolsQuery_Serialize | GitHistoryToolsQuery_Deserialize;
+
+export type GitHistoryToolsQuery_Deserialize = {
+	heads: string[],
+	skip: number,
+	limit: number,
+	author?: string | null,
+	message?: string | null,
+	path?: string | null,
+};
+
+export type GitHistoryToolsQuery_Serialize = {
+	heads: string[],
+	skip: number,
+	limit: number,
+	author: string | null,
+	message: string | null,
 	path: string | null,
 };
 
@@ -2552,6 +2605,38 @@ export type GitIntegrationState_Serialize = {
 	worktreeSnapshot: string,
 };
 
+export type GitLineHunk = GitLineHunk_Serialize | GitLineHunk_Deserialize;
+
+export type GitLineHunk_Deserialize = {
+	id: string,
+	header: string,
+	lines: GitReviewLine_Deserialize[],
+};
+
+export type GitLineHunk_Serialize = {
+	id: string,
+	header: string,
+	lines: GitReviewLine_Serialize[],
+};
+
+export type GitLineReview = GitLineReview_Serialize | GitLineReview_Deserialize;
+
+export type GitLineReview_Deserialize = {
+	diff: GitDiff_Deserialize,
+	worktreeSnapshot: string,
+	hunks: GitLineHunk_Deserialize[],
+	/**  Metadata is applied only when the caller explicitly selects includeMetadata. */
+	metadata: string[],
+};
+
+export type GitLineReview_Serialize = {
+	diff: GitDiff_Serialize,
+	worktreeSnapshot: string,
+	hunks: GitLineHunk_Serialize[],
+	/**  Metadata is applied only when the caller explicitly selects includeMetadata. */
+	metadata: string[],
+};
+
 export type GitOperationResult = GitOperationResult_Serialize | GitOperationResult_Deserialize;
 
 export type GitOperationResult_Deserialize = {
@@ -2565,6 +2650,24 @@ export type GitOperationResult_Serialize = {
 };
 
 export type GitRebaseAction = "continue" | "abort";
+
+export type GitReflogEntry = {
+	commitId: string,
+	selector: string,
+	subject: string,
+};
+
+export type GitReflogPage = GitReflogPage_Serialize | GitReflogPage_Deserialize;
+
+export type GitReflogPage_Deserialize = {
+	entries: GitReflogEntry[],
+	nextSkip?: number | null,
+};
+
+export type GitReflogPage_Serialize = {
+	entries: GitReflogEntry[],
+	nextSkip: number | null,
+};
 
 export type GitRemote = {
 	name: string,
@@ -2604,6 +2707,94 @@ export type GitRepository_Serialize = {
 	head: string | null,
 	detached: boolean,
 	unborn: boolean,
+};
+
+export type GitReviewLine = GitReviewLine_Serialize | GitReviewLine_Deserialize;
+
+export type GitReviewLine_Deserialize = {
+	/**  Opaque review identity. Only changed rows have selectable identities. */
+	id: string,
+	kind: string,
+	/**  Exact index-normalized UTF-8, including its final LF if present. */
+	text: string,
+	oldLine?: number | null,
+	newLine?: number | null,
+};
+
+export type GitReviewLine_Serialize = {
+	/**  Opaque review identity. Only changed rows have selectable identities. */
+	id: string,
+	kind: string,
+	/**  Exact index-normalized UTF-8, including its final LF if present. */
+	text: string,
+	oldLine: number | null,
+	newLine: number | null,
+};
+
+export type GitRevisionContent = GitRevisionContent_Serialize | GitRevisionContent_Deserialize;
+
+export type GitRevisionContent_Deserialize = {
+	revision: string,
+	path: string,
+	text?: string | null,
+	binary: boolean,
+	truncated: boolean,
+};
+
+export type GitRevisionContent_Serialize = {
+	revision: string,
+	path: string,
+	text: string | null,
+	binary: boolean,
+	truncated: boolean,
+};
+
+export type GitRevisionDiff = GitRevisionDiff_Serialize | GitRevisionDiff_Deserialize;
+
+export type GitRevisionDiff_Deserialize = {
+	from: string,
+	to?: string | null,
+	path?: string | null,
+	patch: string,
+	truncated: boolean,
+};
+
+export type GitRevisionDiff_Serialize = {
+	from: string,
+	to: string | null,
+	path: string | null,
+	patch: string,
+	truncated: boolean,
+};
+
+export type GitSelectedRemoteResult = GitSelectedRemoteResult_Serialize | GitSelectedRemoteResult_Deserialize;
+
+export type GitSelectedRemoteResult_Deserialize = {
+	operation: GitOperationResult_Deserialize,
+	remoteSucceeded: boolean,
+	upstreamConfigured: boolean,
+	warning?: string | null,
+};
+
+export type GitSelectedRemoteResult_Serialize = {
+	operation: GitOperationResult_Serialize,
+	remoteSucceeded: boolean,
+	upstreamConfigured: boolean,
+	warning: string | null,
+};
+
+export type GitSigningConfiguration = GitSigningConfiguration_Serialize | GitSigningConfiguration_Deserialize;
+
+export type GitSigningConfiguration_Deserialize = {
+	format?: string | null,
+	commitSigning?: string | null,
+	tagSigning?: string | null,
+};
+
+export type GitSigningConfiguration_Serialize = {
+	format: string | null,
+	commitSigning: string | null,
+	tagSigning: string | null,
 };
 
 export type GitStash = {

@@ -6,9 +6,9 @@ export function GitSetup(props: { git: GitWorkbench; allowInitialize?: boolean }
   const [source, setSource] = createSignal("");
   const [destination, setDestination] = createSignal("");
   return <div class="git-inline-form">
-    <p class="git-note">Clone into a new folder, or initialize the open folder when it has no repository. Git access still requires enabling the repository.</p>
+    <p class="git-note">{props.allowInitialize === false ? "Clone a repository into a new folder." : "Clone into a new folder, or initialize the open folder when it has no repository."} Git access still requires enabling the repository.</p>
     <div class="git-inline-actions"><Show when={props.allowInitialize !== false}><button class="button" disabled={!!props.git.operation()} onClick={() => void props.git.initializeRepository()}>Initialize repository</button></Show><button class="button" aria-expanded={cloning()} onClick={() => setCloning(value => !value)}>Clone repository</button></div>
-    <Show when={cloning()}><form onSubmit={async event => { event.preventDefault(); if (await props.git.cloneRepository(source().trim(), destination().trim())) { setCloning(false); setSource(""); setDestination(""); } }}>
+    <Show when={cloning()}><form onSubmit={async event => { event.preventDefault(); const originalRoot = props.git.context()?.workspaceRoot; const originalSource = source(); const originalDestination = destination(); if (await props.git.cloneRepository(originalSource.trim(), originalDestination.trim()) && props.git.context()?.workspaceRoot === originalRoot && source() === originalSource && destination() === originalDestination) { setCloning(false); setSource(""); setDestination(""); } }}>
       <label for="git-clone-source">Repository URL or local path</label><input id="git-clone-source" required value={source()} onInput={event => setSource(event.currentTarget.value)} />
       <label for="git-clone-destination">Absolute destination folder</label><input id="git-clone-destination" required value={destination()} onInput={event => setDestination(event.currentTarget.value)} />
       <p class="git-note">Choose a new folder that does not yet exist. Public HTTPS or an already configured SSH agent can authenticate the clone.</p>
