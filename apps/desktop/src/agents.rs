@@ -1193,6 +1193,31 @@ async fn set_config_key(
         .await
 }
 
+/// Change the focused thread's Span permission mode (ADR 0015). Only the
+/// user's mode control calls this; no agent or tool can reach it.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_set_permission_mode(
+    state: State<'_, DesktopState>,
+    mode: span_core::ThreadPermissionMode,
+) -> Result<(), String> {
+    let key = focused_key(state.inner())?;
+    set_permission_mode_key(state.inner(), &key, mode).await
+}
+
+async fn set_permission_mode_key(
+    state: &DesktopState,
+    key: &SessionKey,
+    mode: span_core::ThreadPermissionMode,
+) -> Result<(), String> {
+    state
+        .sessions
+        .service(&key.connection_id)
+        .ok_or("Unknown or disconnected connection")?
+        .set_permission_mode(key.session_id.clone(), mode)
+        .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_cancel(state: State<'_, DesktopState>) -> Result<(), String> {
@@ -1602,6 +1627,17 @@ pub async fn agent_set_config_keyed(
     value: String,
 ) -> Result<(), String> {
     set_config_key(state.inner(), &key, config_id, value).await
+}
+
+/// Change the Span permission mode of the session `key` (ADR 0015).
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_set_permission_mode_keyed(
+    state: State<'_, DesktopState>,
+    key: SessionKey,
+    mode: span_core::ThreadPermissionMode,
+) -> Result<(), String> {
+    set_permission_mode_key(state.inner(), &key, mode).await
 }
 
 /// The service a keyed review runs on: only the connection of `key`.

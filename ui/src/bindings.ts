@@ -325,6 +325,11 @@ export const commands = {
 	/**  Answer an agent input request. `action` is accept, decline or cancel. */
 	agentElicitation: (requestId: string, action: string, contentJson: string | null) => __TAURI_INVOKE<null>("agent_elicitation", { requestId, action, contentJson }),
 	agentSetConfig: (configId: string, value: string) => __TAURI_INVOKE<null>("agent_set_config", { configId, value }),
+	/**
+	 *  Change the focused thread's Span permission mode (ADR 0015). Only the
+	 *  user's mode control calls this; no agent or tool can reach it.
+	 */
+	agentSetPermissionMode: (mode: ThreadPermissionMode) => __TAURI_INVOKE<null>("agent_set_permission_mode", { mode }),
 	agentCancel: () => __TAURI_INVOKE<null>("agent_cancel"),
 	agentDisconnect: () => __TAURI_INVOKE<null>("agent_disconnect"),
 	agentPermission: (requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_permission", { requestId, optionId }),
@@ -444,6 +449,8 @@ export const commands = {
 	agentElicitationKeyed: (key: SessionKey, requestId: string, action: string, contentJson: string | null) => __TAURI_INVOKE<null>("agent_elicitation_keyed", { key, requestId, action, contentJson }),
 	/**  Change a config option of the session `key`. */
 	agentSetConfigKeyed: (key: SessionKey, configId: string, value: string) => __TAURI_INVOKE<null>("agent_set_config_keyed", { key, configId, value }),
+	/**  Change the Span permission mode of the session `key` (ADR 0015). */
+	agentSetPermissionModeKeyed: (key: SessionKey, mode: ThreadPermissionMode) => __TAURI_INVOKE<null>("agent_set_permission_mode_keyed", { key, mode }),
 	/**
 	 *  Accept or reject a proposal of the session `key`, on its connection
 	 *  only. User only.
@@ -644,7 +651,31 @@ internal?: boolean | null; hint?: AgentHint | null } | { kind: "permission"; ses
 /**  The tool call content blocks as sent, for example diff previews. */
 content?: Value | null; locations?: ToolLocation_Deserialize[]; diffs?: ToolDiff_Deserialize[];
 /**  The tool call `_meta` as sent. */
-meta?: Value | null; internal?: boolean | null } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string;
+meta?: Value | null; internal?: boolean | null } | { kind: "permissionResolved"; sessionId: string; requestId: string } |
+/**
+ *  The thread's Span permission mode (ADR 0015), sent when a session
+ *  starts or is restored and after every change. `supported` lists the
+ *  modes this session can run in; `child` is true for a delegated child,
+ *  which can never be looser than Ask.
+ */
+{ kind: "permissionMode"; sessionId: string; mode: ThreadPermissionMode; supported: ThreadPermissionMode[]; child: boolean } |
+/**
+ *  Span answered a permission request itself under the thread's mode,
+ *  without prompting (ADR 0015): `rejected` in Plan mode, `allowed` in
+ *  Accept edits, Auto and Full. Logged in the feed.
+ */
+{ kind: "permissionAuto"; sessionId: string; toolCallId: string; title: string; toolKind?: string | null;
+/**  `allowed` or `rejected`. */
+decision: string; reason: PolicyReason; rawInput?: Value | null } |
+/**
+ *  The agent reports a mode other than the one the thread's Span mode
+ *  needs (it switched itself, or reset a setting). `resolved` false: the
+ *  mismatch was seen, Span keeps enforcing the thread's mode and tries
+ *  once to set the agent back; `resolved` true: the agent is back.
+ */
+{ kind: "modeMismatch"; sessionId: string; mode: ThreadPermissionMode;
+/**  The agent option id that differs. */
+configId: string; expected: string; actual: string; resolved: boolean } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string;
 /**  Token usage from the prompt response, when the agent sent it. */
 usage?: Value | null;
 /**  The prompt response `_meta`, when the agent sent it. */
@@ -705,7 +736,31 @@ internal?: boolean; hint?: AgentHint } | { kind: "permission"; sessionId: string
 /**  The tool call content blocks as sent, for example diff previews. */
 content?: Value; locations?: ToolLocation_Serialize[]; diffs?: ToolDiff_Serialize[];
 /**  The tool call `_meta` as sent. */
-meta?: Value; internal?: boolean } | { kind: "permissionResolved"; sessionId: string; requestId: string } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string;
+meta?: Value; internal?: boolean } | { kind: "permissionResolved"; sessionId: string; requestId: string } |
+/**
+ *  The thread's Span permission mode (ADR 0015), sent when a session
+ *  starts or is restored and after every change. `supported` lists the
+ *  modes this session can run in; `child` is true for a delegated child,
+ *  which can never be looser than Ask.
+ */
+{ kind: "permissionMode"; sessionId: string; mode: ThreadPermissionMode; supported: ThreadPermissionMode[]; child: boolean } |
+/**
+ *  Span answered a permission request itself under the thread's mode,
+ *  without prompting (ADR 0015): `rejected` in Plan mode, `allowed` in
+ *  Accept edits, Auto and Full. Logged in the feed.
+ */
+{ kind: "permissionAuto"; sessionId: string; toolCallId: string; title: string; toolKind?: string;
+/**  `allowed` or `rejected`. */
+decision: string; reason: PolicyReason; rawInput?: Value } |
+/**
+ *  The agent reports a mode other than the one the thread's Span mode
+ *  needs (it switched itself, or reset a setting). `resolved` false: the
+ *  mismatch was seen, Span keeps enforcing the thread's mode and tries
+ *  once to set the agent back; `resolved` true: the agent is back.
+ */
+{ kind: "modeMismatch"; sessionId: string; mode: ThreadPermissionMode;
+/**  The agent option id that differs. */
+configId: string; expected: string; actual: string; resolved: boolean } | { kind: "proposal"; sessionId: string; proposal: EditProposal } | { kind: "proposalResolved"; sessionId: string; proposalId: string; accepted: boolean } | { kind: "log"; direction: string; line: string } | { kind: "complete"; sessionId: string; stopReason: string;
 /**  Token usage from the prompt response, when the agent sent it. */
 usage?: Value;
 /**  The prompt response `_meta`, when the agent sent it. */
@@ -3836,6 +3891,17 @@ export type PlanEntry = {
 	status: string,
 };
 
+/**  Why Span answered without asking. Sent to the UI and logged in the feed. */
+export type PolicyReason =
+/**  Plan mode: writes and commands are refused (reject once). */
+"plan_mode_read_only" |
+/**  Accept edits (or Auto): an edit inside the workspace. */
+"accept_edits_workspace" |
+/**  Auto: a command on the safe allowlist. */
+"auto_safe_command" |
+/**  Full access: allowed without asking, logged. */
+"full_access";
+
 /**  UTF-16 based LSP position (`character` counts UTF-16 code units, like CodeMirror). */
 export type PositionDto = {
 	line: number,
@@ -4433,6 +4499,8 @@ export type SessionMetaPatch_Deserialize = {
 	changesTracked?: boolean | null,
 	/**  A finished turn's usage (ADR 0012). */
 	usage?: UsagePatch_Deserialize | null,
+	/**  The thread's permission mode (ADR 0015). Set, not merged. */
+	permissionMode?: ThreadPermissionMode | null,
 };
 
 /**
@@ -4460,6 +4528,8 @@ export type SessionMetaPatch_Serialize = {
 	changesTracked?: boolean | null,
 	/**  A finished turn's usage (ADR 0012). */
 	usage?: UsagePatch_Serialize | null,
+	/**  The thread's permission mode (ADR 0015). Set, not merged. */
+	permissionMode?: ThreadPermissionMode | null,
 };
 
 /**
@@ -4503,6 +4573,11 @@ export type SessionMeta_Deserialize = {
 	 *  only: no prompt text, replies or file contents.
 	 */
 	usage?: SessionUsage_Deserialize | null,
+	/**
+	 *  The thread's permission mode (ADR 0015), by name only, restored with
+	 *  the thread. An unknown name reads as absent.
+	 */
+	permissionMode?: ThreadPermissionMode | null,
 };
 
 /**
@@ -4546,6 +4621,11 @@ export type SessionMeta_Serialize = {
 	 *  only: no prompt text, replies or file contents.
 	 */
 	usage?: SessionUsage_Serialize,
+	/**
+	 *  The thread's permission mode (ADR 0015), by name only, restored with
+	 *  the thread. An unknown name reads as absent.
+	 */
+	permissionMode?: ThreadPermissionMode,
 };
 
 /**  Who started a session. */
@@ -5113,6 +5193,25 @@ export type TextEditDto = {
 };
 
 export type Theme = "Dark" | "Light" | "Purple";
+
+/**
+ *  The permission mode of one thread. Stored by name only (`ask`,
+ *  `acceptEdits`, `plan`, `auto`, `full`).
+ */
+export type ThreadPermissionMode =
+/**  Ask every time: every write or command request prompts the user. */
+"ask" |
+/**  Accept edits: edits inside the workspace are allowed, commands prompt. */
+"acceptEdits" |
+/**  Plan (read only): writes and commands are refused without prompting. */
+"plan" |
+/**
+ *  Auto (safe commands): workspace edits and a small allowlist of
+ *  read-only or test commands are allowed, everything else prompts.
+ */
+"auto" |
+/**  Full access: nothing prompts; every request is still logged. */
+"full";
 
 /**  Token counts of one turn, or a sum of turns. Zero means not reported. */
 export type TokenCounts = TokenCounts_Serialize | TokenCounts_Deserialize;
