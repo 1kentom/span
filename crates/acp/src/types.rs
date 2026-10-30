@@ -175,6 +175,51 @@ pub enum AuthCredential {
     },
 }
 
+/// Why a sign-in did not finish. Callers match `kind`, never the message.
+/// No variant carries a credential: messages are Span's own text or the
+/// agent's error, never the key, token or gateway headers that were sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthError {
+    /// Another sign-in is already in flight on this connection. Nothing was sent.
+    AuthenticationInProgress { message: String },
+    /// The user cancelled the sign-in, or the connection closed or was
+    /// replaced before it finished. Its result, if any, was dropped.
+    Cancelled { message: String },
+    /// Any other failure, with the message for the user.
+    Failed { message: String },
+}
+
+impl AuthError {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::AuthenticationInProgress { message }
+            | Self::Cancelled { message }
+            | Self::Failed { message } => message,
+        }
+    }
+}
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl From<String> for AuthError {
+    fn from(message: String) -> Self {
+        Self::Failed { message }
+    }
+}
+
+impl From<&str> for AuthError {
+    fn from(message: &str) -> Self {
+        Self::Failed {
+            message: message.to_owned(),
+        }
+    }
+}
+
 impl std::fmt::Debug for AuthCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

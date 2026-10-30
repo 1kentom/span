@@ -99,7 +99,9 @@ input.on('line', line => {
     const authMethods = needsAuth ? [{ id: 'token', name: 'Token', description: 'API token' }, { type: 'terminal', id: 'tui', name: 'Terminal login', args: ['login'] }] : [];
     result(message.id, { protocolVersion: 1, agentCapabilities, authMethods, agentInfo: { name: agentName, title: 'Span Test Peer', version: '1.0.0' } });
   } else if (message.method === 'authenticate') {
-    if (message.params.methodId === 'token') { authenticated = true; result(message.id, {}); }
+    // --slow-auth answers after 1.5 s, so a test can cancel or disconnect while the sign-in is in flight.
+    if (message.params.methodId === 'token' && process.argv.includes('--slow-auth')) setTimeout(() => { authenticated = true; result(message.id, {}); }, 1500);
+    else if (message.params.methodId === 'token') { authenticated = true; result(message.id, {}); }
     else send({ id: message.id, error: { code: -32602, message: 'Unknown method' } });
   } else if (message.method === 'session/new') {
     if (process.argv.includes('--missing-session')) { send({ id: message.id, error: { code: -32601, message: 'Method not found: session/new' } }); return; }

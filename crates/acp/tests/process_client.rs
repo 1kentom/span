@@ -1,4 +1,4 @@
-use span_acp::{AgentCommand, AgentEvent, AgentService};
+use span_acp::{AgentCommand, AgentEvent, AgentService, AuthError};
 use span_core::{CoreWorkspace, TextEdit};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -962,16 +962,143 @@ async fn auth_required_surfaces_methods_then_authenticate_and_retry_succeeds() {
         .authenticate("nope".into())
         .await
         .unwrap_err()
+        .to_string()
         .contains("Unknown"));
     assert!(service
         .authenticate("tui".into())
         .await
         .unwrap_err()
+        .to_string()
         .contains("Terminal sign-in"));
     service.authenticate("token".into()).await.unwrap();
     assert!(!service.auth_required());
     let session = service.new_session().await.expect("retry after sign-in");
     assert_eq!(session, "fixture-1");
+}
+
+/// Waits until the service reports a sign-in in flight.
+async fn signing_in(service: &AgentService) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !service.auth_in_progress() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("sign-in did not start");
+}
+
+/// A connection whose first session/new asked for sign-in.
+async fn waiting_for_sign_in(flags: &[&str]) -> (tempfile::TempDir, AgentService, Events) {
+    let (directory, service, events) = start_with(flags).await;
+    assert!(service.new_session().await.is_err());
+    assert!(service.auth_required());
+    (directory, service, events)
+}
+
+#[tokio::test]
+async fn a_second_sign_in_and_new_work_are_refused_while_one_is_in_flight() {
+    let (_directory, service, _events) = waiting_for_sign_in(&["--auth", "--slow-auth"]).await;
+    let first = tokio::spawn({
+        let service = service.clone();
+        async move { service.authenticate("token".into()).await }
+    });
+    signing_in(&service).await;
+    let second = service.authenticate("token".into()).await.unwrap_err();
+    assert!(
+        matches!(second, AuthError::AuthenticationInProgress { .. }),
+        "{second:?}"
+    );
+    // The typed kind the UI matches.
+    assert_eq!(
+        serde_json::to_value(&second).unwrap()["kind"],
+        "authentication_in_progress"
+    );
+    let refused = service.new_session().await.unwrap_err();
+    assert!(refused.contains("Signing in"), "{refused}");
+    first.await.unwrap().expect("the first sign-in finishes");
+    assert!(!service.auth_in_progress());
+    assert!(!service.auth_required());
+    assert_eq!(service.new_session().await.unwrap(), "fixture-1");
+}
+
+#[tokio::test]
+async fn shutdown_cancels_a_pending_sign_in_at_once() {
+    let (_directory, service, _events) = waiting_for_sign_in(&["--auth", "--slow-auth"]).await;
+    let pending = tokio::spawn({
+        let service = service.clone();
+        async move { service.authenticate("token".into()).await }
+    });
+    signing_in(&service).await;
+    let started = std::time::Instant::now();
+    service.shutdown().unwrap();
+    let error = pending.await.unwrap().unwrap_err();
+    assert!(matches!(error, AuthError::Cancelled { .. }), "{error:?}");
+    // Well before the agent's own answer at 1.5 s.
+    assert!(started.elapsed() < std::time::Duration::from_millis(1000));
+    assert!(!service.auth_in_progress());
+    let after = service.authenticate("token".into()).await.unwrap_err();
+    assert!(matches!(after, AuthError::Cancelled { .. }), "{after:?}");
+}
+
+#[tokio::test]
+async fn shutdown_cancels_a_pending_session_creation_and_records_no_session() {
+    let (_directory, service, mut events) = start_with(&["--hang-session"]).await;
+    let pending = tokio::spawn({
+        let service = service.clone();
+        async move { service.new_session().await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let started = std::time::Instant::now();
+    service.shutdown().unwrap();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+        .await
+        .expect("session creation still waiting after shutdown")
+        .unwrap()
+        .unwrap_err();
+    assert!(error.contains("cancelled"), "{error}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while service.is_open() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the connection did not close");
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event, AgentEvent::Session { .. }),
+            "a session was recorded on a closed connection"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_sign_in_ignores_the_agents_late_answer() {
+    let (_directory, service, mut events) = waiting_for_sign_in(&["--auth", "--slow-auth"]).await;
+    let pending = tokio::spawn({
+        let service = service.clone();
+        async move { service.authenticate("token".into()).await }
+    });
+    signing_in(&service).await;
+    assert!(service.cancel_authentication());
+    let error = pending.await.unwrap().unwrap_err();
+    assert_eq!(
+        error,
+        AuthError::Cancelled {
+            message: "Sign-in was cancelled".into()
+        }
+    );
+    assert!(!service.auth_in_progress());
+    // The agent answers the dropped request at 1.5 s; Span keeps waiting for sign-in.
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    assert!(service.auth_required());
+    while let Ok(event) = events.try_recv() {
+        assert!(!matches!(event, AgentEvent::Session { .. }), "{event:?}");
+    }
+    assert!(!service.cancel_authentication());
+    // A new sign-in can start and applies normally.
+    service.authenticate("token".into()).await.unwrap();
+    assert!(!service.auth_required());
 }
 
 #[tokio::test]

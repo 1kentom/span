@@ -288,9 +288,15 @@ async fn replay(agent: &str, name: &str) {
                 Some(credential) => {
                     let credential: AuthCredential =
                         serde_json::from_value(credential.clone()).unwrap();
-                    service.authenticate_with(text("method"), credential).await
+                    service
+                        .authenticate_with(text("method"), credential)
+                        .await
+                        .map_err(|error| error.to_string())
                 }
-                None => service.authenticate(text("method")).await,
+                None => service
+                    .authenticate(text("method"))
+                    .await
+                    .map_err(|error| error.to_string()),
             },
             "cancelAfter" => {
                 let runner = service.clone();
