@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FeedItem, PermissionEvent, ToolEvent } from "./agent-session";
-import { buildBlocks, buildPrompt, changedFiles, classifyFailure, coerceAnswer, configFilesIn, configViews, diffLines, formFields, levelOf, permissionDetails, saveName, slashGroups, splitCommandLine, stopView, toStep, warningParts, workSummary } from "./agent-view";
+import { buildBlocks, buildPrompt, changedFiles, classifyFailure, coerceAnswer, configFilesIn, configViews, diffLines, formFields, levelOf, permissionDetails, saveName, slashGroups, splitCommandLine, stopView, TERMINAL_TAIL, toStep, warningParts, workSummary } from "./agent-view";
 import { createFileAttachment, createPastedText, createWorkspaceFile } from "./attachments";
 
 const tool = (id: string, patch: Partial<ToolEvent> = {}): ToolEvent => ({ kind: "tool", sessionId: "s", toolCallId: id, title: id, status: "completed", toolKind: "read", parentToolCallId: null, contentJson: "{}", ...patch });
@@ -39,6 +39,22 @@ describe("feed blocks", () => {
     const step = toStep(tool("x", { toolKind: "execute", status: "in_progress", contentJson: JSON.stringify({ rawInput: { command: ["npm", "test"] }, rawOutput: { stdout: "ok\n", stderr: "warn", exit_code: 1 } }) }), [tool("c", { status: "in_progress", title: "child" })]);
     expect(step.detail).toEqual({ type: "terminal", lines: [{ kind: "cmd", text: "npm test" }, { kind: "out", text: "ok" }, { kind: "out", text: "" }, { kind: "err", text: "warn" }], exitCode: 1, running: true });
     expect(step.children).toEqual([{ id: "c", kind: "read", verb: "child", target: undefined, meta: "in progress" }]);
+  });
+
+  it("keeps the tail of a long output and reads earlier lines from the event only on demand", () => {
+    const stdout = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join("\n");
+    const step = toStep(tool("x", { toolKind: "execute", contentJson: JSON.stringify({ rawInput: { command: ["cargo", "build"] }, rawOutput: { stdout, exit_code: 0 } }) }), []);
+    const detail = step.detail as Extract<NonNullable<typeof step.detail>, { type: "terminal" }>;
+    expect(detail.lines).toHaveLength(1 + TERMINAL_TAIL);
+    expect(detail.lines.at(-1)).toEqual({ kind: "out", text: "line 4999" });
+    expect(detail.hidden).toBe(5000 - TERMINAL_TAIL);
+    const full = detail.full!();
+    expect(full).toHaveLength(5000);
+    expect(full[0]).toEqual({ kind: "out", text: "line 0" });
+    // A short output carries no reader.
+    const short = toStep(tool("y", { toolKind: "execute", contentJson: JSON.stringify({ rawOutput: { stdout: "ok" } }) }), []).detail as typeof detail;
+    expect(short.hidden).toBeUndefined();
+    expect(short.full).toBeUndefined();
   });
 
   it("adds no detail when the agent sent none", () => {

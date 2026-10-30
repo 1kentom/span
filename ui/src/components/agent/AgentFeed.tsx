@@ -259,7 +259,7 @@ function Work(props: { agent: AgentController; block: () => Extract<Block, { typ
   const bypass = () => Boolean(a.state().agent?.features.editsBypassReview) && steps().some((step) => step.kind === "edit" && !step.internal);
   return (
     <>
-      <WorkGroup headline={summary().headline} counts={summary().counts} steps={steps()} />
+      <WorkGroup headline={summary().headline} counts={summary().counts} steps={steps()} onCopyText={(text) => void api.writeClipboard(text).catch(() => undefined)} />
       <Show when={bypass()}><EditsBypassNote agent={a.agentLabel()} /></Show>
     </>
   );
