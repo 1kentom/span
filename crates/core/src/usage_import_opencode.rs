@@ -648,9 +648,10 @@ mod tests {
         scan_in(&roots, cache, &ImportLimits::default(), work, &mut |_| {})
     }
 
-    fn by_model(
-        cache: &ImportCache,
-    ) -> std::collections::BTreeMap<String, (u64, u64, u64, u64, u64, u64, u32)> {
+    /// Input, output, cache read, cache write, reasoning, cost and turns.
+    type Sums = (u64, u64, u64, u64, u64, u64, u32);
+
+    fn by_model(cache: &ImportCache) -> std::collections::BTreeMap<String, Sums> {
         let mut out = std::collections::BTreeMap::new();
         for s in imported_sessions(cache, 0, &HashSet::new()) {
             for b in s.usage.unwrap().buckets {
