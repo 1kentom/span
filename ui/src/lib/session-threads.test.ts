@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionMeta_Serialize as SessionMeta } from "../bindings";
-import { exportTranscript, hasUntrackedEdits, hunkLineDelta, listedTitle, sameFolder, threadOf, threadRowMeta, visibleThreadRows } from "./session-threads";
+import { exportTranscript, hasUntrackedEdits, hunkLineDelta, isHealthCheckSession, isRenamedHealthTitle, listedTitle, sameFolder, threadOf, threadRowMeta, visibleThreadRows } from "./session-threads";
 import type { FeedItem } from "./agent-session";
 
 const meta = (patch: Partial<SessionMeta> = {}): SessionMeta => ({
@@ -160,5 +160,27 @@ describe("exportTranscript", () => {
         { kind: "diff", path: "/w/a.rs", oldText: "a\n", newText: "b\n" },
       ],
     });
+  });
+});
+
+describe("isRenamedHealthTitle", () => {
+  it("matches only the explicit set of titles agents regenerate for old health check sessions", () => {
+    for (const title of ["Health check", "Health check response", "Health check response request", "Health check reply", "Health check request", "Health check result", "Health check ping", "Health check one word", "One-word health check", "Health check status", "Health check response.", "HEALTH CHECK PING", "  Health check reply.  "]) {
+      expect(isRenamedHealthTitle(title), title).toBe(true);
+      expect(isHealthCheckSession({ title }), title).toBe(true);
+    }
+    for (const title of ["Health check of the CI pipeline", "Health check endpoint", "Health checks for k8s", "Health checks", "Health check..", "Health check response for the API", "Add a health check", "Re: Health check", "Health-check", "One word health check", "Health check \u2014 response", "", null, undefined]) {
+      expect(isRenamedHealthTitle(title), String(title)).toBe(false);
+      expect(isHealthCheckSession({ title }), String(title)).toBe(false);
+    }
+  });
+
+  it("keeps a chat with more than two messages even when it is named exactly like a health check", () => {
+    expect(isRenamedHealthTitle("Health check", 3)).toBe(false);
+    expect(isHealthCheckSession({ title: "Health check response", messageCount: 12 })).toBe(false);
+    expect(isHealthCheckSession({ title: "Health check response", messageCount: 2 })).toBe(true);
+    expect(isHealthCheckSession({ title: "Health check response", messageCount: null })).toBe(true);
+    // The original prompt prefix is hidden whatever the count.
+    expect(isHealthCheckSession({ title: "Health check. Reply with exactly one word: OK", messageCount: 9 })).toBe(true);
   });
 });

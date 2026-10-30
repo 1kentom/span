@@ -155,6 +155,28 @@ describe("agent menu", () => {
     expect(mocks.resumeSession).toHaveBeenCalledWith("earlier-chat");
     expect(mocks.remove).not.toHaveBeenCalled();
   });
+  it("leaves health check sessions renamed by the agent out of Recent in this workspace", async () => {
+    mocks.listSessions.mockResolvedValue([
+      { sessionId: "h1", title: "Health check response", updatedAt: null },
+      { sessionId: "h2", title: "Health check response request", updatedAt: null },
+      { sessionId: "ci", title: "Health check of the CI pipeline", updatedAt: null },
+      { sessionId: "earlier-chat", title: "Earlier fixture chat", updatedAt: null },
+    ]);
+    const { root, open, connectButton } = mount(); await open(); connectButton("codex-acp").click(); await flush();
+    const receive = listener();
+    receive({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] });
+    receive({ kind: "capabilities", canLoadSession: true, canListSessions: true });
+    await flush();
+    // Opening History lists the sessions (renamed health sessions left out); going back shows the empty state's recents.
+    root.querySelector<HTMLButtonElement>('button[aria-label="Earlier sessions"]')!.click(); await flush();
+    await vi.waitFor(() => expect(root.querySelector('section[aria-label="Earlier sessions"]')?.textContent ?? "").toContain("Earlier fixture chat"));
+    expect(root.querySelector('section[aria-label="Earlier sessions"]')?.textContent).not.toContain("Health check response");
+    root.querySelector<HTMLButtonElement>('[aria-label="Back to session"]')!.click(); await flush();
+    await vi.waitFor(() => expect(root.querySelector('[aria-label="Recent in this workspace"]')?.textContent ?? "").toContain("Earlier fixture chat"));
+    const recents = root.querySelector('[aria-label="Recent in this workspace"]')!.textContent ?? "";
+    expect(recents).toContain("Health check of the CI pipeline");
+    expect(recents).not.toContain("Health check response");
+  });
   it("shows Claude Code with compact explicit text slots and hides raw executable paths", async () => {
     const { root, open } = mount();
     await open();

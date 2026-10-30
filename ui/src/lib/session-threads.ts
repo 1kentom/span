@@ -129,9 +129,38 @@ export function visibleThreadRows(listed: readonly string[], metas: readonly Ses
  */
 const HEALTH_TITLE_PREFIX = "Health check. Reply with exactly one word";
 
+/**
+ * Whole titles an agent regenerated for an old health check session from the exchange (ADR 0010, amendment). Matches
+ * RENAMED_HEALTH_TITLES in crates/acp: the whole trimmed title, case insensitive, one trailing period allowed. Nothing
+ * broader, so "Health check of the CI pipeline" or "Health checks for k8s" stay.
+ */
+const RENAMED_HEALTH_TITLES = new Set([
+  "health check",
+  "health check response",
+  "health check response request",
+  "health check reply",
+  "health check request",
+  "health check result",
+  "health check ping",
+  "health check one word",
+  "one-word health check",
+  "health check status",
+]);
+
+/**
+ * True for a title an agent regenerated for an old health check session. A user may name a chat exactly "Health
+ * check", so when the listing reports a message count only a session of at most two messages matches.
+ */
+export function isRenamedHealthTitle(title: string | null | undefined, messageCount?: number | null): boolean {
+  if (typeof messageCount === "number" && messageCount > 2) return false;
+  const text = title?.trim();
+  if (!text) return false;
+  return RENAMED_HEALTH_TITLES.has((text.endsWith(".") ? text.slice(0, -1) : text).toLowerCase());
+}
+
 /** True for a session Span opened for its health check: never shown in History, never resumed, never counted. */
-export function isHealthCheckSession(session: { title?: string | null }): boolean {
-  return Boolean(session.title?.trimStart().startsWith(HEALTH_TITLE_PREFIX));
+export function isHealthCheckSession(session: { title?: string | null; messageCount?: number | null }): boolean {
+  return Boolean(session.title?.trimStart().startsWith(HEALTH_TITLE_PREFIX)) || isRenamedHealthTitle(session.title, session.messageCount);
 }
 
 /** The header Span puts ahead of carried context (agent-handoff.ts). An agent that titles a session by its first prompt shows it. */

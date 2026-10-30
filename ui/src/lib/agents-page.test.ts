@@ -200,6 +200,19 @@ describe("railRows", () => {
     expect(rows[0].unavailable).toBeUndefined();
   });
 
+  it("never makes a row of a health check session, renamed or not, and keeps near misses", () => {
+    const rows = railRows(base({
+      listed: [
+        { sessionId: "h1", title: "Health check response", updatedAt: null, cwd: "/work" },
+        { sessionId: "h2", title: "Health check response request", updatedAt: null, cwd: "/work" },
+        { sessionId: "h3", title: "Health check. Reply with exactly one word...", updatedAt: null, cwd: "/work" },
+        { sessionId: "ci", title: "Health check of the CI pipeline", updatedAt: null, cwd: "/work" },
+        { sessionId: "ep", title: "Health check endpoint", updatedAt: null, cwd: "/work" },
+      ],
+    }));
+    expect(rows.map((row) => row.id)).toEqual(["ci", "ep"]);
+  });
+
   it("adds the open thread before the agent lists it, with the controller's own state", () => {
     const rows = railRows(base({ current: { sessionId: "fresh", title: "", state: "working", statusText: "Working", agents: [{ id: "codex-acp", name: "Codex" }] } }));
     expect(rows).toEqual([expect.objectContaining({ id: "fresh", title: "New session", state: "working", current: true, updatedAt: NOW })]);

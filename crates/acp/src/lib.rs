@@ -43,6 +43,7 @@ pub use native_subagents::{
 };
 pub use registry::{fetch_registry, install_registry_agent, list_installed_agents};
 pub use service::{
-    is_health_title, is_hidden_session, remember_hidden_sessions, AgentService, EventSink,
+    is_health_title, is_hidden_session, is_renamed_health_title, remember_hidden_sessions,
+    AgentService, EventSink,
 };
 pub use types::*;

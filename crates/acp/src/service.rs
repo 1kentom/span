@@ -158,6 +158,41 @@ pub fn is_health_title(title: Option<&str>) -> bool {
     title.is_some_and(|t| t.trim_start().starts_with(HEALTH_TITLE_PREFIX))
 }
 
+/// Whole titles an agent gave an old health check session after renaming it
+/// from the exchange (the prompt and its one word answer). Compared case
+/// insensitively against the whole trimmed title, one trailing period
+/// allowed. Nothing broader: "Health check of the CI pipeline" stays.
+const RENAMED_HEALTH_TITLES: &[&str] = &[
+    "health check",
+    "health check response",
+    "health check response request",
+    "health check reply",
+    "health check request",
+    "health check result",
+    "health check ping",
+    "health check one word",
+    "one-word health check",
+    "health check status",
+];
+
+/// True for a title an agent regenerated for an old health check session
+/// (see [`RENAMED_HEALTH_TITLES`]). A user may name a chat exactly "Health
+/// check", so when the listing reports how many messages the session holds,
+/// only a session of at most two messages (one prompt, one answer) matches.
+/// Display only: cleanup never deletes by this rule.
+pub fn is_renamed_health_title(title: Option<&str>, message_count: Option<u64>) -> bool {
+    if message_count.is_some_and(|count| count > 2) {
+        return false;
+    }
+    let Some(title) = title else { return false };
+    let title = title.trim();
+    let title = title
+        .strip_suffix('.')
+        .unwrap_or(title)
+        .to_ascii_lowercase();
+    RENAMED_HEALTH_TITLES.contains(&title.as_str())
+}
+
 /// True for a session Span opened for itself: one recorded in this process
 /// (or remembered from an earlier run, see [`remember_hidden_sessions`]),
 /// or one titled with the health check prompt.
@@ -1331,7 +1366,7 @@ async fn run(
                                 list_all_sessions(&list_cx, None, health, |_, _| {}).await
                             } else {
                                 // Health sessions and delegated children (ADR 0003) are dropped page by page, so they never use up the cap.
-                                list_all_sessions(&list_cx, folder, move |summary| !health(summary) && !crate::delegated::is_delegated_session(&summary.session_id), move |summary, meta| list_adapter.mark_listed(summary, meta)).await.map(|found| {
+                                list_all_sessions(&list_cx, folder, move |summary| !health(summary) && !is_renamed_health_title(summary.title.as_deref(), None) && !crate::delegated::is_delegated_session(&summary.session_id), move |summary, meta| list_adapter.mark_listed(summary, meta)).await.map(|found| {
                                     let mut kept = hide_deleted(&list_state, &list_emit, found);
                                     kept.truncate(LIST_MAX_SESSIONS);
                                     kept
@@ -1689,6 +1724,7 @@ fn hide_deleted(
                 .filter(|summary| {
                     !span_own.contains(&summary.session_id)
                         && !is_hidden_session(&summary.session_id, summary.title.as_deref())
+                        && !is_renamed_health_title(summary.title.as_deref(), None)
                 })
                 .partition(|summary| bridge.deleted.contains(&summary.session_id));
             for summary in hidden {
@@ -2039,6 +2075,69 @@ fn merge_meta(params: &mut Value, meta: Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renamed_health_titles_match_only_the_explicit_set() {
+        for title in [
+            "Health check",
+            "Health check response",
+            "Health check response request",
+            "Health check reply",
+            "Health check request",
+            "Health check result",
+            "Health check ping",
+            "Health check one word",
+            "One-word health check",
+            "Health check status",
+            "Health check response.",
+            "health check RESPONSE REQUEST",
+            "  Health check reply.  ",
+        ] {
+            assert!(is_renamed_health_title(Some(title), None), "{title}");
+            assert!(is_renamed_health_title(Some(title), Some(2)), "{title}");
+        }
+        for title in [
+            "Health check of the CI pipeline",
+            "Health check endpoint",
+            "Health checks for k8s",
+            "Health checks",
+            "Health check..",
+            "Health check response for the API",
+            "Add a health check",
+            "Re: Health check",
+            "Health-check",
+            "One word health check",
+            "Health check \u{2014} response",
+            "",
+        ] {
+            assert!(!is_renamed_health_title(Some(title), None), "{title}");
+        }
+        assert!(!is_renamed_health_title(None, None));
+    }
+
+    #[test]
+    fn a_renamed_health_title_with_a_real_conversation_stays_visible() {
+        assert!(!is_renamed_health_title(Some("Health check"), Some(3)));
+        assert!(!is_renamed_health_title(
+            Some("Health check response"),
+            Some(40)
+        ));
+        assert!(is_renamed_health_title(
+            Some("Health check response"),
+            Some(0)
+        ));
+    }
+
+    #[test]
+    fn listing_filters_drop_renamed_health_titles_but_cleanup_does_not_use_them() {
+        // The cleanup rule (ids and the prompt prefix) is unchanged, so a chat the
+        // user named "Health check" is hidden from lists but never deleted.
+        assert!(!is_hidden_session(
+            "not-recorded",
+            Some("Health check response")
+        ));
+        assert!(!is_health_title(Some("Health check response")));
+    }
 
     const SECRET: &str = "s3cr3t-token-value";
 
