@@ -1,7 +1,8 @@
 # 0012: Usage page
 
 Status: accepted by the owner on 2026-10-29, who delegated the individual
-decisions below and approved them as recorded. Builds on 0003 (span-agents
+decisions below and approved them as recorded. Amended on 2026-10-30: the
+local log importers are on by default (see f). Builds on 0003 (span-agents
 budget meter), 0005 (session metadata, amended by this record) and 0011
 (agent mode). Stage A (counters and page) shipped with this record in
 #189; stage B (opt-in local log importers) followed in its own change.
@@ -121,10 +122,11 @@ UNVERIFIED for what was not confirmed.
   - Health check sessions (ADR 0010) are left out.
   - The aggregation is pure, in `crates/core/src/usage.rs`.
 
-### b. Source B: opt-in local log importers (stage B)
+### b. Source B: local log importers (stage B)
 
-- Setting `agents.usage.importLocalLogs`, off by default, user only (dropped
-  from workspace settings like the other user-only keys).
+- Setting `agents.usage.importLocalLogs`, user only (dropped from workspace
+  settings like the other user-only keys). It was off by default; amendment
+  f turned it on by default.
 - Read-only importers for Claude Code (`projects/**/*.jsonl` under
   `CLAUDE_CONFIG_DIR` or `~/.claude`) and Codex (`sessions/**/rollout-*.jsonl`
   under `CODEX_HOME` or `~/.codex`). They show all-time usage, including
@@ -282,6 +284,60 @@ The owner rejected the first layout as too loud. The page was rebuilt:
 - Checked visually only in a browser preview with invented fixtures, at
   1000, 1440, 2560 and 3440 px in the dark theme and at 1440 px in the light
   theme.
+
+### f. Amendment (2026-10-30): local logs read by default
+
+The owner reversed decision b's opt-in. He wants the page to "read
+everything like T3 does" without being asked first. T3 Code scans local
+transcripts as soon as its Usage page opens.
+
+- `agents.usage.importLocalLogs` is on by default. It stays user only and
+  read only. Nothing is uploaded, and only counters, model ids, session ids
+  and times are kept, never prompt text. A user's `false` turns it off. A
+  workspace file cannot turn it on or off.
+- On the first visit the page header shows one quiet notice: "Reading local
+  usage from Claude Code, Codex, Gemini CLI and OpenCode logs. Turn off in
+  Settings." The word Settings opens Settings. The notice is not shown
+  again.
+- Coverage widened:
+  - Claude Code subagent transcripts (`<session>/subagents/*.jsonl`) and
+    sidechains were already walked. Their repeated messages count once by
+    message id plus request id, across all files.
+  - Gemini CLI, from `~/.gemini/tmp/<project>/chats/*.json[l]`. Each
+    `type: "gemini"` message with `tokens` counts once by id, and the last
+    version wins. A `$rewindTo` does not refund tokens already spent.
+    Google counts cached tokens inside input, and thoughts are billed as
+    output. Agent id `gemini-logs`.
+  - OpenCode's JSON message files (`storage/message/<session>/<id>.json`,
+    version 1.1 and earlier). From 1.2 OpenCode keeps usage in
+    `opencode.db` (SQLite). The workspace has no SQLite crate, and adding
+    one was not justified for this change. The scan therefore notes the
+    database on the page instead of reading it. OpenCode reports input
+    apart from cache, so for OpenAI and Google models cached tokens are
+    folded into input to match the ledger's convention. Agent id
+    `opencode-logs`.
+  - Gzip Codex rollouts (`rollout-*.jsonl.gz`) are read with `flate2`,
+    which was already in the lockfile, with the decoded size capped. `.zst`
+    rollouts are counted and listed as skipped, because the workspace has no
+    zstd decoder.
+- Whole files are read again when their length or first bytes change: gzip
+  rollouts, OpenCode message files and Gemini chats. Plain JSONL still
+  resumes at a byte offset. The cache format version is now 2, so the first
+  scan after upgrading reads everything again.
+- `ScanReport` adds `compressedRead`, `compressedSkipped`, `kinds` and
+  `notes`. "Pricing and estimates" lists every source that was not read.
+- Days carry per-model slices (`DayUsage.models`), so the chart can switch
+  to a by-model view. The five largest models in view keep a colour slot
+  each, and the rest fold into Other.
+- Not done:
+  - file watching; the page scans when it opens and on refresh;
+  - a five hour block view;
+  - OpenCode's SQLite database;
+  - zstd.
+- Unverified: none of this was checked against real logs. The formats come
+  from the agents' public sources (T3 Code's readers, the Gemini CLI chat
+  recording service, OpenCode's message schema), and the tests use
+  generated samples only.
 
 ## Consequences
 
