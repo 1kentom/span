@@ -459,6 +459,10 @@ impl Env {
                         lines.push(format!("install {:?} {:?}", i.server, i.phase));
                     }
                 }
+                LspEvent::WatchRecovery(r) => lines.push(format!(
+                    "watch recovery {:?} {:?}: {}",
+                    r.server, r.phase, r.message
+                )),
             }
         }
         lines.join("\n  ")
