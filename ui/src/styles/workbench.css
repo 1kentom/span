@@ -70,6 +70,6 @@
 .workbench-main.managed-panel-layout>.explorer-panel.sidebar-overlay{left:8px}
 .workbench-main.managed-panel-layout>.assistant-panel.sidebar-overlay{right:8px}
 /* Data visualisation series (ADR 0012, Usage page): five categorical slots in a fixed, colour-blind checked order (adjacent CVD separation at least 8.4 in every theme), stepped per theme for its surface, plus a neutral "Other". Charts read these tokens only. */
-.ide{--viz-1:#3987e5;--viz-2:#d95926;--viz-3:#199e70;--viz-4:#c98500;--viz-5:#d55181;--viz-other:#6e747b;--viz-grid:#2c2d30}
-.ide.theme-light{--viz-1:#2a78d6;--viz-2:#eb6834;--viz-3:#1baf7a;--viz-4:#eda100;--viz-5:#e87ba4;--viz-other:#9a9fa6;--viz-grid:#e6e7ea}
+.ide{--viz-1:#b87342;--viz-2:#3e78b1;--viz-3:#3ca78f;--viz-4:#965d91;--viz-5:#a69140;--viz-other:#6e747b;--viz-grid:#232427}
+.ide.theme-light{--viz-1:#ac6734;--viz-2:#2a669f;--viz-3:#2a9a82;--viz-4:#844b80;--viz-5:#a18b32;--viz-other:#9a9fa6;--viz-grid:#ececee}
 .ide.theme-purple{--viz-grid:#2a2a52}
