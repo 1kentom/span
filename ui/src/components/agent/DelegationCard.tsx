@@ -27,6 +27,8 @@ type DelegationCardProps = {
   budgetNote?: string;
   /** What the lead asked the child to hand back, already formatted. */
   deliverables?: string;
+  /** The `delegate_many` batch this task belongs to: finished tasks over all of them. */
+  group?: { done: number; total: number };
   /** Stops the task. Called from the Cancel button only. */
   onCancel?: (taskId: string) => Promise<void>;
   /** Opens a workspace-relative path through the validated open path. False when nothing opened. */
@@ -41,6 +43,9 @@ const GLYPH: Partial<Record<DelegationStatusKind, { name: string; tone: string }
   completed: { name: "TickCircle", tone: "sb-ok" },
   failed: { name: "CloseCircle", tone: "sb-bad" },
   cancelled: { name: "Stop", tone: "dim" },
+  queued: { name: "Clock", tone: "dim" },
+  needs_user: { name: "MessageQuestion", tone: "sb-glyph warn" },
+  lost: { name: "Warning2", tone: "sb-bad" },
   unknown: { name: "InfoCircle", tone: "dim" },
 };
 
@@ -79,12 +84,13 @@ export function DelegationCard(props: DelegationCardProps) {
   const canOpenSession = () => Boolean(props.onOpenSession && props.taskId && props.status !== "starting");
   const openArtifact = (path: string) => setOpenError(props.onOpenArtifact?.(path) ? undefined : `Could not open ${path}`);
   return (
-    <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}${props.model ? ` (${props.model})` : ""}: ${STATUS_TEXT[props.status]}`}>
+    <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed" || props.status === "lost", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}${props.model ? ` (${props.model})` : ""}: ${STATUS_TEXT[props.status]}`}>
       <div class="sb-delegation-head">
         <BrandIcon name={props.agent} size={14} />
         <span class="sb-delegation-name sb-ellipsis">{props.agent}</span>
         <Show when={props.model}><span class="sb-delegation-model sb-ellipsis" title={props.model}>{props.model}</span></Show>
         <span class="sb-chip">Delegated</span>
+        <Show when={props.group}>{(group) => <span class="sb-chip sb-delegation-group" title="Tasks of this batch that finished">Batch {group().done} of {group().total} done</span>}</Show>
         <span class="sb-flex" />
         <span class="sb-delegation-status" role="status">
           <Show when={glyph()} fallback={<span class="sb-spinner" aria-hidden="true" />}>
