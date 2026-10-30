@@ -146,6 +146,20 @@ describe("native drops on the agent panel", () => {
     expect(readCalls()).toEqual([]);
     expect(view.folderOutline).not.toHaveBeenCalled();
   });
+  it("attaches a dropped archive as an outline of its entries without reading or extracting it", async () => {
+    const view = mount(); await flush();
+    fakeDrop([{ path: "/elsewhere/build.zip", name: "build.zip", isDir: false, size: 50, bytes: enc.encode("PK not read") }]);
+    const base = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => command === "archive_list"
+      ? { format: "ZIP", method: "Deflate", truncated: false, declaredSize: 4, archiveSize: 50, entries: [{ path: "a.txt", dir: false, kind: "file", size: 4, packed: 4, modified: null, encrypted: false, executable: false, unsafeReason: null }] }
+      : base(command, args as never));
+    native({ type: "drop", paths: ["/elsewhere/build.zip"], position: { x: 2100, y: 300 } }); await flush(); await flush();
+    expect(view.names()).toEqual(["build.zip"]);
+    expect(view.tiles()[0].dataset.kind).toBe("folder");
+    expect(mocks.invoke).toHaveBeenCalledWith("archive_list", { source: { kind: "dropped", path: "/elsewhere/build.zip" } });
+    expect(readCalls()).toEqual([]);
+    expect(mocks.invoke.mock.calls.some(([command]) => String(command).startsWith("archive_extract"))).toBe(false);
+  });
   it("outlines a dropped folder inside the project with the existing folder outline", async () => {
     const view = mount(); await flush();
     fakeDrop([{ path: "/w/proj/src", name: "src", isDir: true, size: 0 }]);

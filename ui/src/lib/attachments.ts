@@ -249,6 +249,20 @@ export async function folderOutline(name: string, list: (relative: string) => Pr
   return { text: [head, '', ...lines].join('\n'), files, truncated };
 }
 
+/**
+ * Text outline of an archive for a chat attachment (ADR 0016): entry names and sizes from the native listing, at
+ * most `limit` lines. The archive is never extracted and no entry is read, so its contents never reach the model.
+ */
+export function archiveOutline(name: string, listing: { format: string; truncated: boolean; entries: readonly { path: string; dir: boolean; size: number; unsafeReason?: string | null }[] }, limit = FOLDER_OUTLINE_LIMIT): { text: string; files: number; truncated: boolean } {
+  const files = listing.entries.filter(entry => !entry.dir).length;
+  const truncated = listing.truncated || listing.entries.length > limit;
+  const lines = listing.entries.slice(0, limit).map(entry => entry.unsafeReason ? `${entry.path} (not extractable: ${entry.unsafeReason})` : entry.dir ? entry.path.replace(/\/?$/, '/') : `${entry.path} (${formatBytes(entry.size)})`);
+  const count = `${files}${truncated ? '+' : ''} ${files === 1 && !truncated ? 'file' : 'files'}${truncated ? `, first ${Math.min(limit, listing.entries.length)} entries` : ''}`;
+  const head = `Archive outline of ${name} (${listing.format}, ${count}). Listed by Span: the archive was not extracted and no entry was read. Added by Span, not an ACP content type.`;
+  return { text: [head, '', ...lines].join('\n'), files, truncated };
+}
+const formatBytes = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+
 /** A folder attachment: the outline as text, and the folder path (workspace-relative) for the link when known. */
 export function createFolderAttachment(input: { name: string; text: string; files: number; truncated: boolean; path?: string; source: 'workspace-file' | 'dropped'; id?: string }): Attachment {
   return { id: input.id ?? newAttachmentId(), kind: 'folder', name: input.name, mime: 'text/plain', size: utf8.encode(input.text).length, source: input.source, text: input.text, path: input.path, folder: { files: input.files, truncated: input.truncated }, status: 'ready' };
