@@ -6,7 +6,7 @@ import { LanguageServerSettings } from "./LanguageServerSettings";
 // Fixture tests: the settings write callback is a spy. They prove which key and scope each control writes.
 const disposers: (() => void)[] = [];
 afterEach(() => { disposers.splice(0).forEach(d => d()); document.body.replaceChildren(); });
-const value = { autoInstall: true, enabled: {}, javaHome: "/jdk", nodePath: null, runProjectCode: false, trustedWorkspaces: [] };
+const value = { autoInstall: true, enabled: {}, javaHome: "/jdk", nodePath: null, runProjectCode: false, trustedWorkspaces: [], watchIncludeDirectories: [], silencedWatchWarnings: [] };
 function mount() {
   const root = document.createElement("div"); document.body.append(root);
   const onChange = vi.fn(async () => undefined);

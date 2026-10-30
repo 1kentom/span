@@ -973,6 +973,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::LanguageServerWorkProgress,
             language_servers::DiagnosticsPublished,
             language_servers::LanguageServerError,
+            language_servers::LanguageServerWatchRecovery,
             language_servers::WorkspaceTrustChanged,
             startup::StartupRequestError,
             agents::AgentSessionStatesChanged,
