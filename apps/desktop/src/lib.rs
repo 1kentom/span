@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
+mod archives;
 mod checkpoints;
 mod cli;
 mod clipboard_files;
@@ -67,6 +68,8 @@ pub struct DesktopState {
     /// Canonical file paths of the latest OS clipboard read, the only other sources `import_paths` accepts.
     pub clipboard_paths: Arc<Mutex<Vec<PathBuf>>>,
     pub(crate) import_job: file_import::ImportJob,
+    /// Running archive extractions by job ID (ADR 0016).
+    pub(crate) archive_jobs: archives::ArchiveJobs,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     pub formatter_jobs: FormatterJobs,
@@ -177,6 +180,7 @@ async fn open_workspace(
     // Background agents run in the old folder; they end with it.
     agents::background(&state).shutdown();
     services::cancel_all_formatter_jobs(&state);
+    archives::cancel_all(&state);
     let (result, settings, workspace) = tauri::async_runtime::spawn_blocking(move || {
         let result = workspace.workspace();
         let settings = workspace.get_settings().unwrap_or_default();
@@ -1144,6 +1148,11 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             file_import::import_paths,
             file_import::import_progress,
             file_import::cancel_import,
+            archives::archive_list,
+            archives::archive_read_entry,
+            archives::archive_plan_extract,
+            archives::archive_extract,
+            archives::archive_cancel,
             clipboard_files::clipboard_files,
             clipboard_files::set_clipboard_files,
             clipboard_files::paste_clipboard_file,

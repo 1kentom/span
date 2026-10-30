@@ -207,6 +207,11 @@ export const commands = {
 	importProgress: () => __TAURI_INVOKE<ImportProgress | null>("import_progress"),
 	/**  Asks the running import to stop. Items already copied stay and are listed in its report. */
 	cancelImport: () => __TAURI_INVOKE<void>("cancel_import"),
+	archiveList: (source: ArchiveRef) => __TAURI_INVOKE<ArchiveListing_Serialize>("archive_list", { source }),
+	archiveReadEntry: (source: ArchiveRef, path: string) => __TAURI_INVOKE<ArchiveEntryData>("archive_read_entry", { source, path }),
+	archivePlanExtract: (source: ArchiveRef, request: ArchiveExtractRequest_Deserialize) => __TAURI_INVOKE<ArchivePlan>("archive_plan_extract", { source, request }),
+	archiveExtract: (jobId: string, source: ArchiveRef, request: ArchiveExtractRequest_Deserialize, onProgress: Channel<ArchiveExtractProgress>) => __TAURI_INVOKE<ArchiveExtractReport_Serialize>("archive_extract", { jobId, source, request, onProgress }),
+	archiveCancel: (jobId: string) => __TAURI_INVOKE<null>("archive_cancel", { jobId }),
 	/**  Reads the OS clipboard. Its file paths become the only clipboard paths `import_paths` accepts. */
 	clipboardFiles: () => __TAURI_INVOKE<ClipboardContents>("clipboard_files"),
 	/**  Puts workspace files and folders on the OS clipboard as a file list. */
@@ -1251,6 +1256,190 @@ export type AppUpdate_Serialize = {
 	status: AppUpdateStatus,
 	/**  The error, or the reason the check is not configured. */
 	message: string | null,
+};
+
+export type ArchiveEntry = ArchiveEntry_Serialize | ArchiveEntry_Deserialize;
+
+export type ArchiveEntryData = {
+	kind: ArchivePreviewKind,
+	dataBase64: string,
+	truncated: boolean,
+};
+
+export type ArchiveEntryKind = "file" | "directory" | "symlink" | "hardLink" | "special";
+
+export type ArchiveEntry_Deserialize = {
+	/**  Stored name, truncated for display at 1,024 bytes. */
+	path: string,
+	dir: boolean,
+	kind: ArchiveEntryKind,
+	/**  Declared uncompressed size. Reported, not trusted. */
+	size: number,
+	/**  Compressed size (equal to `size` for tar). */
+	packed: number,
+	/**  Milliseconds since the epoch, when the archive records it. */
+	modified?: number | null,
+	encrypted: boolean,
+	executable: boolean,
+	/**  Why this entry is never previewed or extracted. */
+	unsafeReason?: string | null,
+};
+
+export type ArchiveEntry_Serialize = {
+	/**  Stored name, truncated for display at 1,024 bytes. */
+	path: string,
+	dir: boolean,
+	kind: ArchiveEntryKind,
+	/**  Declared uncompressed size. Reported, not trusted. */
+	size: number,
+	/**  Compressed size (equal to `size` for tar). */
+	packed: number,
+	/**  Milliseconds since the epoch, when the archive records it. */
+	modified: number | null,
+	encrypted: boolean,
+	executable: boolean,
+	/**  Why this entry is never previewed or extracted. */
+	unsafeReason: string | null,
+};
+
+export type ArchiveExtractOptions = ArchiveExtractOptions_Serialize | ArchiveExtractOptions_Deserialize;
+
+export type ArchiveExtractOptions_Deserialize = {
+	/**  Exact listing paths (files or folders). `None` means every safe file. */
+	paths?: string[] | null,
+	keepStructure: boolean,
+	skipHidden: boolean,
+	/**  Keep the executable bit of entries that had it. Off by default. */
+	keepExecutable: boolean,
+};
+
+export type ArchiveExtractOptions_Serialize = {
+	/**  Exact listing paths (files or folders). `None` means every safe file. */
+	paths: string[] | null,
+	keepStructure: boolean,
+	skipHidden: boolean,
+	/**  Keep the executable bit of entries that had it. Off by default. */
+	keepExecutable: boolean,
+};
+
+export type ArchiveExtractProgress = {
+	entries: number,
+	totalEntries: number,
+	bytes: number,
+	totalBytes: number,
+	current: string,
+};
+
+export type ArchiveExtractReport = ArchiveExtractReport_Serialize | ArchiveExtractReport_Deserialize;
+
+export type ArchiveExtractReport_Deserialize = {
+	/**
+	 *  Workspace relative path of the new folder. Nothing is created on
+	 *  cancellation or failure.
+	 */
+	created?: string | null,
+	/**  Set when Replace moved an existing item to the system Trash. */
+	replaced?: string | null,
+	/**  The Skip policy left an existing folder alone. */
+	skippedExisting: boolean,
+	skipped: ArchiveSkip[],
+	entries: number,
+	bytes: number,
+	cancelled: boolean,
+	error?: string | null,
+};
+
+export type ArchiveExtractReport_Serialize = {
+	/**
+	 *  Workspace relative path of the new folder. Nothing is created on
+	 *  cancellation or failure.
+	 */
+	created: string | null,
+	/**  Set when Replace moved an existing item to the system Trash. */
+	replaced: string | null,
+	/**  The Skip policy left an existing folder alone. */
+	skippedExisting: boolean,
+	skipped: ArchiveSkip[],
+	entries: number,
+	bytes: number,
+	cancelled: boolean,
+	error: string | null,
+};
+
+export type ArchiveExtractRequest = ArchiveExtractRequest_Serialize | ArchiveExtractRequest_Deserialize;
+
+export type ArchiveExtractRequest_Deserialize = {
+	/**  Existing workspace folder that receives the new folder ("" is the root). */
+	targetDir: string,
+	/**  Name of the new folder. Defaults to the archive name without its extension. */
+	folderName?: string | null,
+	policy: ConflictPolicy,
+	options: ArchiveExtractOptions_Deserialize,
+};
+
+export type ArchiveExtractRequest_Serialize = {
+	/**  Existing workspace folder that receives the new folder ("" is the root). */
+	targetDir: string,
+	/**  Name of the new folder. Defaults to the archive name without its extension. */
+	folderName: string | null,
+	policy: ConflictPolicy,
+	options: ArchiveExtractOptions_Serialize,
+};
+
+export type ArchiveListing = ArchiveListing_Serialize | ArchiveListing_Deserialize;
+
+export type ArchiveListing_Deserialize = {
+	/**  "ZIP", "TAR" or "TAR.GZ". */
+	format: string,
+	/**  Compression methods seen, for ZIP. */
+	method?: string | null,
+	entries: ArchiveEntry_Deserialize[],
+	/**  More than the entry cap: only the first entries are listed. */
+	truncated: boolean,
+	/**  Sum of the declared sizes of listed files. Reported, not trusted. */
+	declaredSize: number,
+	/**  Size of the archive file itself. */
+	archiveSize: number,
+};
+
+export type ArchiveListing_Serialize = {
+	/**  "ZIP", "TAR" or "TAR.GZ". */
+	format: string,
+	/**  Compression methods seen, for ZIP. */
+	method: string | null,
+	entries: ArchiveEntry_Serialize[],
+	/**  More than the entry cap: only the first entries are listed. */
+	truncated: boolean,
+	/**  Sum of the declared sizes of listed files. Reported, not trusted. */
+	declaredSize: number,
+	/**  Size of the archive file itself. */
+	archiveSize: number,
+};
+
+export type ArchivePlan = {
+	/**  Workspace relative path the new folder would get without a clash. */
+	destination: string,
+	files: number,
+	bytes: number,
+	/**  The destination name when it is already taken. */
+	conflicts: string[],
+	skipped: ArchiveSkip[],
+};
+
+export type ArchivePreviewKind = "text" | "image";
+
+/**  Where an archive comes from. */
+export type ArchiveRef =
+/**  A file in the open workspace (workspace relative or absolute inside it). */
+{ kind: "workspace"; path: string } |
+/**  An upload the user opened in the Uploads view. */
+{ kind: "upload"; id: string } |
+/**  A file from the latest native drop (listed for a chat attachment outline). */
+{ kind: "dropped"; path: string };
+
+export type ArchiveSkip = {
+	path: string,
+	reason: string,
 };
 
 /**  A file the child produced or changed, inside the workspace. */
@@ -4956,6 +5145,11 @@ export type Settings_Deserialize = {
 	updates?: UpdateSettings_Deserialize,
 	/**  Explorer preferences. Optional in TypeScript like `agents`. */
 	explorer?: ExplorerSettings_Deserialize,
+	/**
+	 *  `archiveExtractLimitMb`: most MiB one archive extraction may write
+	 *  (ADR 0016). Honoured only from the user's own settings file.
+	 */
+	archiveExtractLimitMb?: number,
 };
 
 export type Settings_Serialize = {
@@ -4994,6 +5188,11 @@ export type Settings_Serialize = {
 	updates?: UpdateSettings_Serialize,
 	/**  Explorer preferences. Optional in TypeScript like `agents`. */
 	explorer?: ExplorerSettings_Serialize,
+	/**
+	 *  `archiveExtractLimitMb`: most MiB one archive extraction may write
+	 *  (ADR 0016). Honoured only from the user's own settings file.
+	 */
+	archiveExtractLimitMb?: number,
 };
 
 export type SignatureHelpDto = SignatureHelpDto_Serialize | SignatureHelpDto_Deserialize;
