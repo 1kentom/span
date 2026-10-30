@@ -165,6 +165,36 @@ Mostly invisible; check that nothing regressed.
   same agent still asks.
 - A workspace `.span/settings.jsonc` that tries to set a mode has no effect.
 
+### Permission modes (ADR 0015, native pass)
+
+Use a scratch folder and Claude, Codex, Gemini CLI and OpenCode where
+installed.
+
+- A new thread's composer shows the mode chip "Ask every time"; the chip is
+  always visible while an agent is connected, in the sidebar and on the
+  Agents page.
+- The mode popover lists Ask every time, Accept edits, Plan (read only),
+  Auto (safe commands) and Full access with a description and risk label;
+  Full has the warning colour; on Gemini CLI, Plan is disabled with a reason.
+- Shift+Tab in the composer cycles Ask, Accept edits, Plan and back to Ask;
+  it never lands on Auto or Full.
+- Full access asks "Full access lets the agent run commands and edit files
+  without asking" the first time in a thread; Cancel keeps the old mode.
+- Plan: ask Claude to change a file. No prompt appears, the feed shows
+  "Blocked in Plan mode: ..." and no file changes. When Claude finishes its
+  plan, a "Plan ready" card shows it; Implement plan with Accept edits
+  switches the chip and sends "Implement the plan"; Refine plan keeps Plan.
+- Accept edits: an edit inside the folder runs without a prompt (feed row
+  "Allowed by Accept edits"); an edit outside the folder and any command
+  still prompt.
+- Auto: `git status` runs without a prompt; `git status && ls` prompts.
+- Close and reopen a thread left in Plan: it comes back in Plan. A new
+  thread on the same agent starts in the mode last used with that agent.
+- A delegated child still asks before editing whatever the lead's mode is.
+- Mode mismatch: if an agent leaves its mode on its own (for example
+  Claude after an approved plan, outside Span), a warning banner appears
+  above the composer and clears once Span sets the mode back.
+
 ### Turn checkpoints (ADR 0013, native pass)
 
 Use a scratch Git repository and an agent that writes files directly
