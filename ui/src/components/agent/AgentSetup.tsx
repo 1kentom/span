@@ -156,6 +156,8 @@ export function AgentSetup(props: AgentSetupProps) {
                 .methods.filter((method) => method.supported || method.input)
                 .map((method) => ({ id: method.id, name: method.name, description: method.description ?? undefined, input: method.input ?? undefined, protocol: method.gatewayProtocol ?? undefined }))}
               busy={a.pendingAction() === "auth"}
+              signingIn={a.signingIn()}
+              onCancelSignIn={() => void a.cancelSignIn()}
               onPick={(id) => void a.authenticate(id)}
               onRetry={a.reconnect}
               models={signInModels()}

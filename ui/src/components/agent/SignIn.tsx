@@ -18,6 +18,10 @@ type SignInProps = Brand & {
   /** The agent reported something other than a sign-in request, shown above: no method is the primary action. */
   secondary?: boolean;
   busy?: boolean;
+  /** A sign-in is in flight: the methods are disabled and a calm "Signing in…" line offers Cancel. */
+  signingIn?: boolean;
+  /** Cancels the sign-in in flight. */
+  onCancelSignIn?: () => void;
   onPick: (methodId: string) => void;
   /** Reconnects once the user has signed in elsewhere, for agents that sign in from a terminal. */
   onRetry?: () => void;
@@ -169,6 +173,14 @@ export function SignIn(props: SignInProps) {
         <Show when={props.text}><p class="sb-lede">{props.text}</p></Show>
         <Show when={props.hint && !folded()}><p class="sb-lede sb-auth-hint" role="note"><HintLine text={props.hint!} /></p></Show>
       </header>
+      <Show when={props.signingIn}>
+        <div class="sb-signing-in" role="status" aria-live="polite">
+          <span class="sb-signing-in-text">Signing in…</span>
+          <Show when={props.onCancelSignIn}>
+            <button type="button" class="sb-btn" onClick={() => props.onCancelSignIn?.()}>Cancel</button>
+          </Show>
+        </div>
+      </Show>
       <Show when={hasModels()}>
         <ModelFallback id={props.id} name={props.name} models={props.models!} onUse={props.onUseModel!} busy={props.busy} />
       </Show>
@@ -197,7 +209,7 @@ export function SignIn(props: SignInProps) {
                 <button
                   class="sb-method"
                   classList={{ primary: !props.secondary && index() === 0 && !method.input }}
-                  disabled={props.busy}
+                  disabled={props.busy || props.signingIn}
                   aria-expanded={method.input ? asking() === method.id : undefined}
                   onClick={() => (method.input ? setAsking(asking() === method.id ? undefined : method.id) : props.onPick(method.id))}
                 >
@@ -209,7 +221,7 @@ export function SignIn(props: SignInProps) {
                     kind={method.input!}
                     methodName={methodLabel(method, props.methods)}
                     protocol={method.protocol}
-                    busy={props.busy}
+                    busy={props.busy || props.signingIn}
                     onSubmit={(secret) => props.onSubmit?.(method.id, secret)}
                     onCancel={() => setAsking(undefined)}
                   />

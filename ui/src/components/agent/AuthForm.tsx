@@ -158,7 +158,20 @@ export function AuthForm(props: AuthFormProps) {
       <Show when={error()}><p class="sb-fine sb-bad-text" role="alert">{error()}</p></Show>
       <div class="sb-actions">
         <button class="sb-btn primary" type="submit" disabled={props.busy || !ready()}>Sign in</button>
-        <Show when={props.onCancel}><button class="sb-btn" type="button" onClick={() => props.onCancel?.()}>Cancel</button></Show>
+        <Show when={props.onCancel}>
+          <button
+            class="sb-btn"
+            type="button"
+            onClick={() => {
+              // A cancelled form keeps nothing it was given.
+              clear();
+              setError("");
+              props.onCancel?.();
+            }}
+          >
+            Cancel
+          </button>
+        </Show>
       </div>
       <p class="sb-fine">Sent to the agent once. Span does not store it or show it again.</p>
     </form>
