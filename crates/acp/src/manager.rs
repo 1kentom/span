@@ -548,6 +548,9 @@ pub(crate) fn event_session(event: &AgentEvent) -> Option<String> {
         | Tool { session_id, .. }
         | Permission { session_id, .. }
         | PermissionResolved { session_id, .. }
+        | PermissionMode { session_id, .. }
+        | PermissionAuto { session_id, .. }
+        | ModeMismatch { session_id, .. }
         | Proposal { session_id, .. }
         | ProposalResolved { session_id, .. }
         | Complete { session_id, .. } => Some(session_id.clone()),
