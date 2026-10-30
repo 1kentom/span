@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
+import { FullAccessConfirm, ModeMismatchBanner } from "./PermissionMode";
 import { FileIcon, Icon } from "../Icon";
 import { AttachMenu, AttachmentNotices, AttachmentTray, SessionPicker, type AttachMenuItemId } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
@@ -488,6 +489,12 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             </Show>
           </div>
         </Show>
+        <Show when={a.connected() ? a.state().modeMismatch : undefined}>
+          {(mismatch) => <ModeMismatchBanner agent={props.label} mismatch={mismatch()} busy={a.permissionModes.busy()} onRetry={() => void a.permissionModes.reapply()} />}
+        </Show>
+        <Show when={a.permissionModes.confirming() && a.permissionModes.confirming() === a.state().sessionId}>
+          <FullAccessConfirm onConfirm={() => void a.permissionModes.confirmFull()} onCancel={() => { a.permissionModes.cancelFull(); input?.focus(); }} />
+        </Show>
         <label class="sb-visually-hidden" for="agent-prompt">
           Message to agent
         </label>
@@ -520,6 +527,11 @@ export function AgentComposer(props: { agent: AgentController; brand: Brand; lab
             if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && !event.isComposing && !a.prompt() && a.queue().length) {
               event.preventDefault();
               setEditLast((token) => token + 1);
+              return;
+            }
+            // Shift+Tab cycles the thread's permission mode: Ask, Accept edits, Plan. Never into Full (ADR 0015).
+            if (event.key === "Tab" && event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && !event.isComposing && a.connected() && a.permissionModes.cycle()) {
+              event.preventDefault();
               return;
             }
             a.recallPrompt(event);
