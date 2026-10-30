@@ -9,6 +9,7 @@ import { friendlyAgentName } from "../../lib/live-agents";
 import { NARROW_WINDOW, RAIL_WIDTH, SIDE_WIDTH, SIDE_WIDTH_KEY, clampWidth, currentThreadState, planLimits, railRows, readSideWidth, readStored, readWidth, sidePanelDefault, sidePanelMax, sidePanelOpenByDefault, writeStored, type RailRow } from "../../lib/agents-page";
 import { createAgentsPanels, type AgentsPanels } from "../../lib/agents-page-panels";
 import { threadRowMeta } from "../../lib/session-threads";
+import { createCheckpoints } from "../../lib/checkpoints";
 import { Modal } from "../Modal";
 import { NewSessionPicker, type PickerAgent } from "./NewSessionPicker";
 import { PlanLimits } from "./PlanLimits";
@@ -52,6 +53,8 @@ export function AgentsPage(props: AgentsPageProps) {
   const [railWidth, setRailWidth] = createSignal(readWidth("railWidth", RAIL_WIDTH));
   // The side panel's width is the user's choice once made; until then it follows the window.
   const [sideWidth, setSideWidth] = createSignal<number | undefined>(readSideWidth());
+  /** Turn checkpoints (ADR 0013) of the open thread, shared by the thread timeline and the Changes tab. */
+  const checkpoints = isDesktop ? createCheckpoints(() => a.state().sessionId ?? undefined) : undefined;
   const storedTab = readStored("sideTab");
   const [sideTab, setSideTab] = createSignal<SideTab>(isSideTab(storedTab) ? storedTab : "changes");
   const [searchRequest, setSearchRequest] = createSignal(0);
@@ -263,6 +266,12 @@ export function AgentsPage(props: AgentsPageProps) {
           setSideTab("agents");
           setSideOpen(true);
         }}
+        checkpoints={checkpoints}
+        onShowChanges={(turn) => {
+          checkpoints?.viewTurn(turn);
+          setSideTab("changes");
+          setSideOpen(true);
+        }}
         sideOpen={sideOpen()}
         onToggleSide={() => panels.toggleSide()}
         onChooseAgent={setup}
@@ -285,7 +294,7 @@ export function AgentsPage(props: AgentsPageProps) {
       />
       <Show when={sideOpen()}>
         <PageGrip label="Resize side panel" side="right" value={shownSideWidth()} min={SIDE_WIDTH.min} max={sideMax()} onResize={setSideWidth} onReset={() => (setSideWidth(undefined), writeStored(SIDE_WIDTH_KEY, ""))} />
-        <SidePanel agent={a} tab={sideTab()} onTab={setSideTab} onClose={() => setSideOpen(false)} onOpenFile={props.onOpenFile} onShowTask={showTask} />
+        <SidePanel agent={a} checkpoints={checkpoints} tab={sideTab()} onTab={setSideTab} onClose={() => setSideOpen(false)} onOpenFile={props.onOpenFile} onShowTask={showTask} />
       </Show>
       <Show when={renaming()}>
         {(open) => (

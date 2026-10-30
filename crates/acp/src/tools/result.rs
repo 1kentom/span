@@ -389,6 +389,31 @@ pub fn failure(agent: &str, reason: FailureReason, detail: &str) -> Value {
     })
 }
 
+/// A delegate call refused before the child got a task because the lead
+/// asked for a model, effort or mode the agent does not offer (or Span does
+/// not allow). `error` is a short code such as `model_unavailable`;
+/// `choices` lists what the lead may pass instead, as `{id, name}`.
+pub fn choice_error(agent: &str, error: &str, detail: &str, choices: Value) -> Value {
+    let structured = json!({
+        "status": "failed",
+        "agent": agent,
+        "sessionId": Value::Null,
+        "stopReason": Value::Null,
+        "artifacts": [],
+        "error": error,
+        "detail": detail,
+        "choices": choices,
+    });
+    json!({
+        "content": [
+            {"type": "text", "text": format!("Delegation to {agent} failed ({error}): {detail}")},
+            {"type": "text", "text": structured.to_string()},
+        ],
+        "structuredContent": structured,
+        "isError": true,
+    })
+}
+
 /// A plain successful result with structured content.
 pub fn ok(summary: String, structured: Value) -> Value {
     json!({

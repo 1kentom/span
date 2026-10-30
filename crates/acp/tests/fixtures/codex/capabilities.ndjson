@@ -1,0 +1,3 @@
+// Source-derived Codex ACP 2.3.0 shape. Native app-server edits bypass client filesystem callbacks.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}, "agentInfo": {"name": "codex-acp", "version": "2.3.0"}}}
+{"on": "session/new", "result": {"sessionId": "codex_1"}}

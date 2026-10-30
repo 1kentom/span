@@ -52,6 +52,7 @@ import { editQueuedEntry, mergeQueued } from "./agent-threads/thread-queue";
 import { createUsageRecorder } from "./usage";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
 import { createFeedFollow } from "./feed-follow";
+import { rememberFollow, rememberedFollow } from "./checkpoints";
 
 const DELEGATION_POLL_MS = 3000;
 
@@ -233,8 +234,8 @@ export function createAgentController(props: AgentPanelProps) {
   const [online, setOnline] = createSignal(typeof navigator === "undefined" ? true : navigator.onLine !== false);
   const [bannerDismissed, setBannerDismissed] = createSignal(false);
   const [pinned, setPinned] = threadField("pinned");
-  /** Follow the agent: open files from tool call locations. Kept in memory only, so it resets on reload. */
-  const [following, setFollowing] = createSignal(false);
+  /** Follow the agent: open files from tool call locations without taking focus. Off by default, remembered per device. */
+  const [following, setFollowing] = createSignal(rememberedFollow());
   /** Name of the file the UI just opened for the user. `equals: false` restarts the toast for the same name. */
   const [toast, setToast] = createSignal<string | undefined>(undefined, { equals: false });
   /** A click that could not open its path (outside the workspace), with the reason. Cleared by the note. */
@@ -2187,6 +2188,7 @@ export function createAgentController(props: AgentPanelProps) {
   const toggleFollow = () => {
     followed.clear();
     setFollowing(!following());
+    rememberFollow(following());
   };
   /** Brings the editor selection back into the prompt after it was removed from the context list. */
   const showSelection = () => {

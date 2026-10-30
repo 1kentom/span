@@ -9,6 +9,8 @@ import { ChangesCard, DiffView } from "../agent/WorkGroup";
 import { AttachmentIcon, tileMeta } from "../attachments";
 import { BrandIcon } from "../BrandIcon";
 import { FileIcon, Icon } from "../Icon";
+import type { CheckpointStore } from "../../lib/checkpoints";
+import { CheckpointChanges } from "./Checkpoints";
 
 export type SideTab = "changes" | "agents" | "files";
 export const SIDE_TABS: { id: SideTab; label: string; icon: string }[] = [
@@ -57,7 +59,7 @@ function Empty(props: { title: string; text: string }) {
   );
 }
 
-function ChangesTab(props: { agent: AgentController; onOpenFile: (path: string) => void }) {
+function ChangesTab(props: { agent: AgentController; checkpoints?: CheckpointStore; onOpenFile: (path: string) => void }) {
   const a = props.agent;
   const proposals = createMemo(() => a.feed().filter((item): item is ProposalItem => item.kind === "proposal"));
   const files = createMemo(() => changedFiles(proposals()));
@@ -66,9 +68,25 @@ function ChangesTab(props: { agent: AgentController; onOpenFile: (path: string) 
   const act = (ids: string[], accept: boolean) => {
     if (!a.pendingAction()) void a.reviewMany(ids, accept);
   };
+  const checkpointed = () => Boolean(props.checkpoints?.turns().length && props.checkpoints?.status()?.available);
+  const disk = () => (
+    <Show when={props.checkpoints}>
+      {(store) => (
+<CheckpointChanges store={store()} running={a.running()} onOpenFile={props.onOpenFile} showUnavailable />
+      )}
+    </Show>
+  );
   return (
-    <Show when={files().length} fallback={<Empty title="No changes yet" text="Edits the agent proposes in this thread show up here for review." />}>
+    <Show
+      when={files().length}
+      fallback={
+        <Show when={checkpointed()} fallback={<><Empty title="No changes yet" text="Edits the agent proposes in this thread show up here for review." /><div class="ap-tab-pad">{disk()}</div></>}>
+          <div class="ap-tab-scroll ap-tab-pad">{disk()}</div>
+        </Show>
+      }
+    >
       <div class="ap-tab-scroll ap-tab-pad">
+        {disk()}
         <ChangesCard
           headline={files().length === 1 ? "1 proposed edit" : `${files().length} proposed edits`}
           files={files()}
@@ -268,7 +286,7 @@ function FilesTab(props: { agent: AgentController }) {
  * The Agents page side panel: Changes (the thread's proposals and review state), Agents (the lead and its
  * delegates, from live-agents.ts) and Files (the thread's attachments). Tabs follow the ARIA tabs pattern.
  */
-export function SidePanel(props: { agent: AgentController; tab: SideTab; onTab: (tab: SideTab) => void; onClose: () => void; onOpenFile: (path: string) => void; onShowTask: (taskId: string) => void }) {
+export function SidePanel(props: { agent: AgentController; checkpoints?: CheckpointStore; tab: SideTab; onTab: (tab: SideTab) => void; onClose: () => void; onOpenFile: (path: string) => void; onShowTask: (taskId: string) => void }) {
   const a = props.agent;
   const ids = { tabs: createUniqueId(), panel: createUniqueId() };
   let list: HTMLDivElement | undefined;
@@ -320,7 +338,7 @@ export function SidePanel(props: { agent: AgentController; tab: SideTab; onTab: 
       <div class="ap-side-body" role="tabpanel" id={ids.panel} aria-labelledby={`${ids.tabs}-${props.tab}`}>
         <Switch>
           <Match when={props.tab === "changes"}>
-            <ChangesTab agent={a} onOpenFile={props.onOpenFile} />
+            <ChangesTab agent={a} checkpoints={props.checkpoints} onOpenFile={props.onOpenFile} />
           </Match>
           <Match when={props.tab === "agents"}>
             <AgentsTab agent={a} onShowTask={props.onShowTask} />

@@ -324,6 +324,7 @@ mod tests {
                 child: SessionKey::new("conn-2", "child-s"),
                 task_id: "t".into(),
                 agent_name: "Codex".into(),
+                model: None,
             },
         };
         let patches = patches_from_event("claude", &delegated);

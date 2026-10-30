@@ -142,7 +142,8 @@ pub(crate) struct SessionState {
 /// as seen in live runs and adapter source: Claude `bypassPermissions`,
 /// Codex `agent-full-access` (and its `never` approval policy), Gemini
 /// `yolo`. Other values are not guessed.
-const BYPASS_VALUES: &[&str] = &["bypassPermissions", "agent-full-access", "yolo", "never"];
+pub(crate) const BYPASS_VALUES: &[&str] =
+    &["bypassPermissions", "agent-full-access", "yolo", "never"];
 /// The `noticeId` of the permission bypass notice.
 pub(crate) const BYPASS_NOTICE: &str = "span/permission-bypass";
 

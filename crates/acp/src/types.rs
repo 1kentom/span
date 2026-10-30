@@ -28,7 +28,7 @@ pub struct PlanEntry {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigChoice {
     pub value: String,
@@ -36,7 +36,7 @@ pub struct ConfigChoice {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigGroup {
     /// Empty for options the agent did not group.
@@ -45,7 +45,7 @@ pub struct ConfigGroup {
 }
 
 /// A select-style session option such as the model or the mode.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigOption {
     pub id: String,

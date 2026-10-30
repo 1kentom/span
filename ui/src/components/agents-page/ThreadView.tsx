@@ -12,6 +12,9 @@ import { AttachmentViewer, DropOverlay, attachmentBlockReason } from "../attachm
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { PageFailure } from "./PageFailure";
+import { FollowPill } from "../agent/FollowPill";
+import type { CheckpointStore } from "../../lib/checkpoints";
+import { CheckpointTimeline, CheckpointUndoToast } from "./Checkpoints";
 
 export type ThreadViewProps = {
   agent: AgentController;
@@ -24,6 +27,10 @@ export type ThreadViewProps = {
   onToggleSide: () => void;
   /** Opens the in-page connect view (choose, install or connect an agent). Never the editor sidebar. */
   onChooseAgent: () => void;
+  /** Turn checkpoints of this thread (ADR 0013); without it no timeline shows. */
+  checkpoints?: CheckpointStore;
+  /** Show one turn's checkpoint changes in the side panel. */
+  onShowChanges?: (turn: number) => void;
   /** The new-session picker, shown in place of the thread while set. */
   picker?: JSX.Element;
 };
@@ -133,6 +140,9 @@ export function ThreadView(props: ThreadViewProps) {
             <span>Live agents</span>
           </button>
         </Show>
+        <Show when={isDesktop && a.connected()}>
+          <FollowPill following={a.following()} onToggle={a.toggleFollow} />
+        </Show>
         <button type="button" class="ap-btn" onClick={() => props.onOpenEditor()}>
           <Icon name="Code1" size={12} />
           Open in editor
@@ -154,6 +164,9 @@ export function ThreadView(props: ThreadViewProps) {
           <Show when={body() === "picker"}>{props.picker}</Show>
           <Show when={body() === "feed"}>
             <AgentFeed agent={a} ref={setFeedElement} />
+            <Show when={props.checkpoints}>
+              {(store) => <CheckpointTimeline store={store()} running={a.running()} onViewChanges={(turn) => props.onShowChanges?.(turn)} />}
+            </Show>
           </Show>
           <Show when={body() === "empty"}>
             <div class="ap-thread-empty">
@@ -252,6 +265,7 @@ export function ThreadView(props: ThreadViewProps) {
         )}
       </Show>
       <DropOverlay visible={a.intake.dragging()} capabilities={a.caps()} />
+      <Show when={props.checkpoints}>{(store) => <CheckpointUndoToast store={store()} />}</Show>
       <EditorToast name={a.toast()} onDismiss={a.clearToast} />
       <OpenRefusal refusal={a.openRefusal()} onCopy={(path) => api.writeClipboard(path)} onDismiss={a.clearOpenRefusal} />
     </section>
