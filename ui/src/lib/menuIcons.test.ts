@@ -47,7 +47,7 @@ describe("user-provided Iconsax interface assets", () => {
   it("verifies provenance hashes, inert SVG content, and monochrome currentColor rendering", () => {
     const root = resolve(process.cwd(), "public/icons/rounded-linear");
     const manifest = JSON.parse(readFileSync(resolve(root, "provenance.json"), "utf8")) as { sourceCollection: string; assets: { asset: string; source: string; sourceSha256: string; assetSha256: string }[] };
-    expect(manifest.sourceCollection).toContain("icons/rounded/linear"); expect(manifest.assets).toHaveLength(24);
+    expect(manifest.sourceCollection).toContain("icons/rounded/linear"); expect(manifest.assets).toHaveLength(25);
     expect(JSON.stringify(manifest)).not.toMatch(/\/Users\/|[A-Z]:\\/);
     for (const record of manifest.assets) {
       const svg = readFileSync(resolve(root, record.asset), "utf8");

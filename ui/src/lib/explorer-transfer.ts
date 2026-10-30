@@ -2,6 +2,7 @@ import { commands } from "../bindings";
 import { droppedPathInfo, droppedRelative, pointInside, type DropPoint, type DroppedPath } from "./native-drop";
 import { copyName } from "./explorer-ops";
 import { fileName, parentPath } from "./navigation";
+import { desktopArchiveCommands, type ArchiveCommands, type ArchiveReport } from "./archive-desktop";
 
 /**
  * Copying files into the Explorer from outside Span: a native drop from Finder or Explorer, or files on the OS
@@ -24,6 +25,8 @@ export type ExplorerTransfer = {
   readClipboard(): Promise<ClipboardContents>;
   writeClipboard(paths: string[]): Promise<void>;
   pasteFile(path: string, kind: PastedKind): Promise<{ path: string }>;
+  /** Archive extraction (ADR 0016). Absent in tests that do not need it. */
+  archive?: ArchiveCommands;
 };
 
 export const desktopTransfer: ExplorerTransfer = {
@@ -34,7 +37,19 @@ export const desktopTransfer: ExplorerTransfer = {
   readClipboard: () => commands.clipboardFiles(),
   writeClipboard: paths => commands.setClipboardFiles(paths).then(() => undefined),
   pasteFile: (path, kind) => commands.pasteClipboardFile(path, kind),
+  archive: desktopArchiveCommands,
 };
+
+/** "Extracted 12 files from site.zip to docs/site/", with what was skipped, replaced or stopped. */
+export function archiveSummary(report: ArchiveReport, name: string): string {
+  if (report.cancelled) return `Extraction of ${name} cancelled. Nothing was extracted.`;
+  if (report.skippedExisting) return `${name} was not extracted: the folder exists and Skip was chosen.`;
+  if (!report.created) return `Nothing was extracted from ${name}.`;
+  const parts = [`Extracted ${report.entries === 1 ? "1 file" : `${report.entries} files`} from ${name} to ${report.created}/`];
+  if (report.replaced) parts.push("the old folder is in the Trash");
+  if (report.skipped.length) parts.push(`${report.skipped.length} ${report.skipped.length === 1 ? "entry" : "entries"} skipped as unsafe`);
+  return parts.join(", ");
+}
 
 /**
  * Folder a native drop at `point` (CSS pixels) copies into: the folder row under the pointer, the folder of a
