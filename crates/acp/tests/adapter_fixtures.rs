@@ -460,8 +460,10 @@ fixture!(
     "stop-deadline"
 );
 fixture!(claude_stdio_mcp_without_type, "claude", "mcp-stdio");
+fixture!(claude_edits_bypass_review_flag, "claude", "capabilities");
 fixture!(claude_subagent_parent, "claude", "subagent-parent");
 fixture!(codex_mcp_filter, "codex", "mcp-filter");
+fixture!(codex_edits_bypass_review_flag, "codex", "capabilities");
 fixture!(codex_image_generation, "codex", "image-generation");
 fixture!(
     generic_permission_forwards_tool_call,
