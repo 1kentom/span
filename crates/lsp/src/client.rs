@@ -808,6 +808,39 @@ impl LspClient {
             .await
     }
 
+    /// Re-announce what a server may have missed after lost filesystem notifications:
+    /// project configuration plus files modified since `since`, found by a bounded scan
+    /// of the server roots limited to its own registrations, sent in capped batches.
+    /// Returns the number of changes offered and whether a scan limit was hit.
+    pub async fn resync_watched_files(
+        &self,
+        since: Option<std::time::SystemTime>,
+        exclusions: crate::watch_sync::Exclusions,
+        limits: crate::watch_sync::ScanLimits,
+    ) -> Result<(usize, bool)> {
+        let snapshot = self.watched_files.lock().await.clone();
+        let scan = tokio::task::spawn_blocking(move || {
+            let mut changes = Vec::new();
+            let mut truncated = false;
+            for root in snapshot.roots() {
+                let wanted = |path: &Path| snapshot.matches(path, WatchKind::Change);
+                let found =
+                    crate::watch_sync::resync_scan(root, since, &exclusions, &wanted, limits);
+                truncated |= found.truncated;
+                changes.extend(found.changes);
+            }
+            (changes, truncated)
+        })
+        .await
+        .map_err(|e| LspError::Protocol(format!("watched-file resync failed: {e}")))?;
+        let (changes, truncated) = scan;
+        let count = changes.len();
+        for batch in crate::watch_sync::batches(changes, crate::watch_sync::MAX_NOTIFY_BATCH) {
+            self.did_change_watched_files(batch).await?;
+        }
+        Ok((count, truncated))
+    }
+
     pub async fn cancel_request(&self, id: RequestId) -> Result<()> {
         if let Some(pending) = self.pending_requests.write().await.remove(&id) {
             let _ = pending.sender.send(Err(LspError::Cancelled));

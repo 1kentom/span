@@ -23,6 +23,7 @@ mod merge;
 #[cfg(test)]
 mod partial_tests;
 pub use management_types::*;
+mod checkpoint_git;
 mod extended;
 mod history;
 #[cfg(test)]

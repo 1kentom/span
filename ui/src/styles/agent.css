@@ -144,6 +144,9 @@
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--scroll) transparent;
+  /* feed-follow.ts pins a following feed and anchors a detached one itself, the same in WebKit (which has no scroll
+     anchoring) and Chromium (whose own anchoring would correct twice). */
+  overflow-anchor: none;
 }
 .agent-body {
   display: flex;

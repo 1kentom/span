@@ -32,6 +32,42 @@ const tabs = (host: HTMLElement) => [...host.querySelectorAll<HTMLButtonElement>
 const radio = (host: HTMLElement, name: string) => [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(node => node.textContent?.trim() === name)!;
 
 describe("Git source control view", () => {
+  it("closes Repository actions on Escape and restores summary focus", async () => {
+    const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes");
+    f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
+    const summary = f.host.querySelector<HTMLElement>('summary[aria-label="Repository actions"]')!;
+    const details = summary.parentElement as HTMLDetailsElement;
+    expect(details.open).toBe(false); summary.click(); expect(details.open).toBe(true);
+    const field = f.host.querySelector<HTMLInputElement>("#git-network-branch")!; field.focus();
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    field.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true); expect(details.open).toBe(false);
+    expect(summary.getAttribute("aria-expanded")).toBe("false"); expect(document.activeElement).toBe(summary);
+  });
+  it("closes Repository actions on outside pointer without stealing focus", async () => {
+    const f = fixture(); await f.git.refresh();
+    f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
+    const summary = f.host.querySelector<HTMLElement>('summary[aria-label="Repository actions"]')!;
+    summary.click(); expect((summary.parentElement as HTMLDetailsElement).open).toBe(true);
+    const outside = f.host.querySelector<HTMLTextAreaElement>('[aria-label="Git commit message"]')!;
+    outside.focus(); outside.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect((summary.parentElement as HTMLDetailsElement).open).toBe(false);
+    expect(document.activeElement).toBe(outside);
+  });
+  it("retains network and commit drafts across Repository actions toggles without starting network operations", async () => {
+    const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes"); f.git.setMessage("Keep commit draft");
+    f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
+    const summary = f.host.querySelector<HTMLElement>('summary[aria-label="Repository actions"]')!;
+    const reads = f.transport.gitRemotes.mock.calls.length;
+    summary.click();
+    const field = f.host.querySelector<HTMLInputElement>("#git-network-branch")!;
+    field.value = "retain-network-target"; field.dispatchEvent(new Event("input", { bubbles: true }));
+    summary.click(); summary.click();
+    expect(field.isConnected).toBe(true); expect(field.value).toBe("retain-network-target");
+    expect(f.host.querySelector<HTMLTextAreaElement>('[aria-label="Git commit message"]')?.value).toBe("Keep commit draft");
+    expect(f.transport.gitRemoteSelected).not.toHaveBeenCalled(); expect(f.transport.gitRemotes).toHaveBeenCalledTimes(reads);
+    expect(f.git.autoFetchEnabled()).toBe(false); expect(f.transport.gitCommit).not.toHaveBeenCalled(); expect(f.transport.gitStage).not.toHaveBeenCalled();
+  });
   it("requires explicit amend intent and displays the captured commit for message-only amend", async () => {
     const f = fixture(); await f.git.refresh(); f.git.setMessage("Reviewed replacement");
     f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);

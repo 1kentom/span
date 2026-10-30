@@ -1,4 +1,4 @@
-import { For, Show, createEffect, type JSX } from "solid-js";
+import { For, Show, createEffect, createSignal, on, onCleanup, type JSX } from "solid-js";
 import type { GitWorkbench } from "../../stores/git";
 import type { GitSubView, GitView } from "../../stores/git-view";
 import { GitRepositoryViews } from "./GitRepositoryViews";
@@ -6,6 +6,7 @@ import { GitRemotes } from "./GitRemotes";
 import { GitSetup } from "./GitSetup";
 import { GitHistory } from "./GitHistory";
 import { GitOperationNotice, GitPanel, GitRepositoryHeader } from "./GitPanel";
+import Icon from "../Icon";
 
 type GitSourceControlProps = {
   git: GitWorkbench; view: GitView; available: boolean;
@@ -15,12 +16,23 @@ type GitSourceControlProps = {
   activePath?: string; github?: JSX.Element; onResolveConflict?: (path: string) => void;
 };
 
-const subViews: { id: GitSubView; label: string }[] = [{ id: "changes", label: "Changes" }, { id: "history", label: "History" }, { id: "branches", label: "Branches" }, { id: "stashes", label: "Stash" }, { id: "worktrees", label: "Worktrees" }, { id: "github", label: "GitHub" }];
+const subViews: { id: GitSubView; label: string; icon: string }[] = [{ id: "changes", label: "Changes", icon: "DocumentText" }, { id: "history", label: "History", icon: "Clock" }, { id: "branches", label: "Branches", icon: "Hierarchy" }, { id: "stashes", label: "Stash", icon: "u-box" }, { id: "worktrees", label: "Worktrees", icon: "Folder2" }, { id: "github", label: "GitHub", icon: "Code1" }];
 
 /** One Source Control view keeps repository workflows within the same consent boundary. */
 export function GitSourceControl(props: GitSourceControlProps) {
   const g = props.git;
   const v = props.view;
+  const [toolsOpen, setToolsOpen] = createSignal(false);
+  let tools!: HTMLDetailsElement;
+  let toolsSummary!: HTMLElement;
+  createEffect(on(() => g.context()?.repository?.id, () => setToolsOpen(false)));
+  createEffect(() => { if (!props.active || !g.context()?.enabled) setToolsOpen(false); });
+  createEffect(() => {
+    if (!toolsOpen()) return;
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !tools?.contains(event.target)) setToolsOpen(false); };
+    document.addEventListener("pointerdown", outside, true);
+    onCleanup(() => document.removeEventListener("pointerdown", outside, true));
+  });
   createEffect(() => { if (props.active && g.context()?.enabled && !g.remotes() && !g.resourceLoading().remotes && !g.resourceErrors().remotes) void g.loadResource("remotes"); });
   let list!: HTMLDivElement;
   const refresh = () => {
@@ -39,30 +51,36 @@ export function GitSourceControl(props: GitSourceControlProps) {
   }
   return (
     <section class="git-source-control" tabIndex={-1} aria-label="Git source control">
+      <GitRepositoryHeader git={g} available={props.available} onRefresh={refresh} tools={<Show when={g.context()?.enabled}>
+        <details ref={tools} class="git-repo-tools" open={toolsOpen()} onToggle={event => setToolsOpen(event.currentTarget.open)} onKeyDown={event => { if (event.key === "Escape" && toolsOpen()) { event.preventDefault(); event.stopPropagation(); setToolsOpen(false); toolsSummary?.focus(); } }}>
+          <summary ref={toolsSummary} aria-label="Repository actions" title="Repository actions" aria-expanded={toolsOpen()} aria-controls="git-repository-actions" onClick={event => { event.preventDefault(); setToolsOpen(value => !value); }}><Icon name="3DotsMore" size={14} /></summary>
+          <div id="git-repository-actions" class="git-repo-tools-body" role="group" aria-label="Repository actions"><GitRemotes git={g} /></div>
+        </details>
+      </Show>} />
       <div ref={list} class="git-subview-switch" role="tablist" aria-label="Source control view" onKeyDown={keydown}>
         <For each={subViews}>{item => (
           <button
             type="button"
             role="tab"
+            aria-label={item.label}
+            title={item.label}
             id={`git-subview-${item.id}`}
             aria-selected={v.subView() === item.id}
             aria-controls={`git-subview-panel-${item.id}`}
             tabIndex={v.subView() === item.id ? 0 : -1}
             onClick={() => v.setSubView(item.id)}
           >
-            {item.label}
+            <Icon name={item.icon} size={14} /><span class="git-subview-label">{item.label}</span>
           </button>
         )}</For>
       </div>
-      <GitRepositoryHeader git={g} available={props.available} onRefresh={refresh} />
       <Show when={props.available && (!g.hasWorkspace() || (g.context() && !g.context()?.repository))}><GitSetup git={g} allowInitialize={g.hasWorkspace()} /></Show>
       <Show when={g.context()?.enabled}>
         <Show when={g.resourceErrors().remotes}><div class="git-error" role="alert">{g.resourceErrors().remotes}<button class="git-text-action" onClick={() => void g.loadResource("remotes")}>Review remotes</button></div></Show>
-        <GitRemotes git={g} />
-        <div class="git-remote-actions" aria-label="Remote operations">
+        <Show when={g.resourceLoading().remotes || g.operation()}><div class="git-remote-actions" aria-label="Remote operations">
           <Show when={g.resourceLoading().remotes}><span role="status">Reading remotes…</span></Show>
           <Show when={g.operation()}><span role="status">{g.operation()}…</span></Show>
-        </div>
+        </div></Show>
       </Show>
       <Show when={g.warning() && v.subView() !== "changes"}><div class="git-warning" role="status">{g.warning()}</div></Show>
       <Show when={v.subView() === "history"}><GitOperationNotice git={g} /></Show>

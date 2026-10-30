@@ -17,7 +17,9 @@
 //!   has no settings file, so every agent starts in the approval mode.
 //! - A `newChildSession` step opens a delegated child session.
 //! - A `listSessions` step's `expectSessions` lists the session ids the
-//!   client returns, in order.
+//!   client returns, in order. Its `expectNative` lists, in order, the
+//!   returned sessions marked as native subagents, each as
+//!   `[sessionId, parentSessionId or null]`.
 use serde_json::{json, Value};
 use span_acp::{AgentCommand, AgentEvent, AgentService, AuthCredential};
 use span_core::CoreWorkspace;
@@ -299,6 +301,14 @@ async fn replay(agent: &str, name: &str) {
                 if let Some(want) = step.get("expectSessions") {
                     assert_eq!(&Value::Array(ids), want, "{step}: listed sessions");
                 }
+                if let Some(want) = step.get("expectNative") {
+                    let native: Vec<Value> = found
+                        .iter()
+                        .filter(|s| s.native_subagent)
+                        .map(|s| json!([s.session_id, s.parent_session_id]))
+                        .collect();
+                    assert_eq!(&Value::Array(native), want, "{step}: native subagents");
+                }
             }),
             "deleteSession" => service.delete_session(text("session")).await,
             other => panic!("unknown drive step {other}"),
@@ -427,6 +437,11 @@ fixture!(
     "replay-attachments"
 );
 fixture!(opencode_child_session_parent, "opencode", "child-session");
+fixture!(
+    opencode_native_subagents_are_marked_in_the_list,
+    "opencode",
+    "native-subagents"
+);
 fixture!(opencode_message_id_starts_bubble, "opencode", "message-id");
 fixture!(opencode_mcp_filter, "opencode", "mcp-filter");
 fixture!(
@@ -445,8 +460,10 @@ fixture!(
     "stop-deadline"
 );
 fixture!(claude_stdio_mcp_without_type, "claude", "mcp-stdio");
+fixture!(claude_edits_bypass_review_flag, "claude", "capabilities");
 fixture!(claude_subagent_parent, "claude", "subagent-parent");
 fixture!(codex_mcp_filter, "codex", "mcp-filter");
+fixture!(codex_edits_bypass_review_flag, "codex", "capabilities");
 fixture!(codex_image_generation, "codex", "image-generation");
 fixture!(
     generic_permission_forwards_tool_call,

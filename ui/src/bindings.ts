@@ -38,6 +38,32 @@ export const commands = {
 	githubRead: (contextId: string, remoteName: string, request: GitHubRead, expectedRepository: GitHubRepository) => __TAURI_INVOKE<GitHubResponse_Serialize>("github_read", { contextId, remoteName, request, expectedRepository }),
 	githubCreatePullRequest: (contextId: string, remoteName: string, request: GitHubCreatePullRequest, expectedRepository: GitHubRepository) => __TAURI_INVOKE<string>("github_create_pull_request", { contextId, remoteName, request, expectedRepository }),
 	githubReviewPullRequest: (contextId: string, remoteName: string, request: GitHubReview, expectedRepository: GitHubRepository) => __TAURI_INVOKE<string>("github_review_pull_request", { contextId, remoteName, request, expectedRepository }),
+	/**  Whether checkpoints work in the open folder, and why not. */
+	checkpointStatus: () => __TAURI_INVOKE<CheckpointStatus_Serialize>("checkpoint_status"),
+	/**
+	 *  "Enable checkpoints": create a Git repository in the open folder. Only
+	 *  ever run from this explicit user action.
+	 */
+	checkpointEnable: () => __TAURI_INVOKE<CheckpointStatus_Serialize>("checkpoint_enable"),
+	/**  The session's checkpointed turns, oldest first. */
+	checkpointList: (sessionId: string) => __TAURI_INVOKE<CheckpointTurn[]>("checkpoint_list", { sessionId }),
+	/**  Files and hunks one turn changed, or every turn of the session when `turn` is null. */
+	checkpointTurnChanges: (sessionId: string, turn: number | null) => __TAURI_INVOKE<CheckpointChanges_Serialize>("checkpoint_turn_changes", { sessionId, turn }),
+	/**
+	 *  Undo hunks of a change set on disk. Each hunk is refused, and reported,
+	 *  when the file no longer holds the post-turn text around it.
+	 */
+	checkpointRevertHunks: (sessionId: string, revision: string, hunks: CheckpointHunkRef[]) => __TAURI_INVOKE<CheckpointRevertReport_Serialize>("checkpoint_revert_hunks", { sessionId, revision, hunks }),
+	/**  Undo whole files of a change set; a file changed since is refused. */
+	checkpointRevertFiles: (sessionId: string, revision: string, paths: string[]) => __TAURI_INVOKE<CheckpointRevertReport_Serialize>("checkpoint_revert_files", { sessionId, revision, paths }),
+	/**
+	 *  Put the folder's files back to how they were before `turn`. The agent
+	 *  conversation is not rolled back. A snapshot is taken first; pass the
+	 *  returned `undoId` to `checkpoint_undo_restore`.
+	 */
+	checkpointRestore: (sessionId: string, turn: number) => __TAURI_INVOKE<CheckpointRestoreReport_Serialize>("checkpoint_restore", { sessionId, turn }),
+	/**  Undo a restore or revert, leaving files changed since then as they are. */
+	checkpointUndoRestore: (sessionId: string, undoId: string) => __TAURI_INVOKE<CheckpointRestoreReport_Serialize>("checkpoint_undo_restore", { sessionId, undoId }),
 	gitEnable: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStatus_Serialize>("git_enable", { context }),
 	gitStatus: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStatus_Serialize>("git_status", { context }),
 	gitDiff: (context: GitContext_Deserialize, path: string, side: GitDiffSide, expectedIndexRevision: string) => __TAURI_INVOKE<GitDiff_Serialize>("git_diff", { context, path, side, expectedIndexRevision }),
@@ -218,8 +244,8 @@ export const commands = {
 	/**  The price table in use, with the user's overrides first. */
 	usagePrices: () => __TAURI_INVOKE<PriceTable_Serialize>("usage_prices"),
 	/**
-	 *  Starts a background scan of the local logs when the user turned the
-	 *  importer on and no scan is running. Returns at once; poll
+	 *  Starts a background scan of the local logs when the importer is on (the
+	 *  default) and no scan is running. Returns at once; poll
 	 *  `usage_import_status` for progress.
 	 */
 	usageImportScan: () => __TAURI_INVOKE<UsageImportStatus_Serialize>("usage_import_scan"),
@@ -512,11 +538,13 @@ export const events = {
 	agentHealthChanged: makeEvent<AgentHealthChanged_Serialize, AgentHealthChanged_Deserialize>("agent-health-changed"),
 	agentKeyedEvent: makeEvent<AgentKeyedEvent_Serialize, AgentKeyedEvent_Deserialize>("agent-keyed-event"),
 	agentSessionStatesChanged: makeEvent<AgentSessionStatesChanged_Serialize, AgentSessionStatesChanged_Deserialize>("agent-session-states-changed"),
+	checkpointsChanged: makeEvent<CheckpointsChanged, CheckpointsChanged>("checkpoints-changed"),
 	diagnosticsPublished: makeEvent<DiagnosticsPublished_Serialize, DiagnosticsPublished_Deserialize>("diagnostics-published"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
 	languageServerError: makeEvent<LanguageServerError_Serialize, LanguageServerError_Deserialize>("language-server-error"),
 	languageServerInstallProgress: makeEvent<LanguageServerInstallProgress_Serialize, LanguageServerInstallProgress_Deserialize>("language-server-install-progress"),
 	languageServerStateChanged: makeEvent<LanguageServerStateChanged_Serialize, LanguageServerStateChanged_Deserialize>("language-server-state-changed"),
+	languageServerWatchRecovery: makeEvent<LanguageServerWatchRecovery, LanguageServerWatchRecovery>("language-server-watch-recovery"),
 	languageServerWorkProgress: makeEvent<LanguageServerWorkProgress_Serialize, LanguageServerWorkProgress_Deserialize>("language-server-work-progress"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
 	runApprovalsChanged: makeEvent<RunApprovalsChanged, RunApprovalsChanged>("run-approvals-changed"),
@@ -1045,9 +1073,10 @@ export type AgentUsageSettings_Deserialize = {
 	 */
 	prices?: { [key in string]: PriceOverride_Deserialize },
 	/**
-	 *  `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
-	 *  local usage logs (read only, counters only) so the Usage page also
-	 *  shows sessions run outside Span. Off by default.
+	 *  `agents.usage.importLocalLogs`: read the agents' own local usage logs
+	 *  (Claude Code, Codex, Gemini CLI, OpenCode; read only, counters only)
+	 *  so the Usage page also shows sessions run outside Span. On by default
+	 *  since the owner reversed the opt-in (ADR 0012, amendment).
 	 */
 	importLocalLogs?: boolean,
 };
@@ -1061,9 +1090,10 @@ export type AgentUsageSettings_Serialize = {
 	 */
 	prices?: { [key in string]: PriceOverride_Serialize },
 	/**
-	 *  `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
-	 *  local usage logs (read only, counters only) so the Usage page also
-	 *  shows sessions run outside Span. Off by default.
+	 *  `agents.usage.importLocalLogs`: read the agents' own local usage logs
+	 *  (Claude Code, Codex, Gemini CLI, OpenCode; read only, counters only)
+	 *  so the Usage page also shows sessions run outside Span. On by default
+	 *  since the owner reversed the opt-in (ADR 0012, amendment).
 	 */
 	importLocalLogs?: boolean,
 };
@@ -1324,6 +1354,128 @@ export type CapabilitiesDto = {
 	signatureHelp: boolean,
 };
 
+export type CheckpointChanges = CheckpointChanges_Serialize | CheckpointChanges_Deserialize;
+
+export type CheckpointChanges_Deserialize = {
+	sessionId: string,
+	/**  `None` for all turns of the session. */
+	turn?: number | null,
+	/**  Identifies the two snapshots compared; pass it back to revert. */
+	revision?: string | null,
+	files: CheckpointFileChange[],
+};
+
+export type CheckpointChanges_Serialize = {
+	sessionId: string,
+	/**  `None` for all turns of the session. */
+	turn: number | null,
+	/**  Identifies the two snapshots compared; pass it back to revert. */
+	revision: string | null,
+	files: CheckpointFileChange[],
+};
+
+export type CheckpointConflict = CheckpointConflict_Serialize | CheckpointConflict_Deserialize;
+
+export type CheckpointConflict_Deserialize = {
+	path: string,
+	hunkId?: string | null,
+	reason: string,
+};
+
+export type CheckpointConflict_Serialize = {
+	path: string,
+	hunkId: string | null,
+	reason: string,
+};
+
+export type CheckpointFileChange = {
+	/**  Relative to the workspace folder. */
+	path: string,
+	kind: CheckpointFileKind,
+	additions: number,
+	deletions: number,
+	/**  Binary or too large for line hunks; only whole-file revert applies. */
+	binary: boolean,
+	/**  Line hunks in the pre-turn file's UTF-16 coordinates, as in edit proposals. */
+	hunks: ProposalHunk[],
+};
+
+export type CheckpointFileKind = "added" | "modified" | "deleted";
+
+export type CheckpointHunkRef = {
+	path: string,
+	hunkId: string,
+};
+
+export type CheckpointRestoreReport = CheckpointRestoreReport_Serialize | CheckpointRestoreReport_Deserialize;
+
+export type CheckpointRestoreReport_Deserialize = {
+	restored: string[],
+	/**  Left alone: symlinks, files over the size cap, or (on undo) files changed since. */
+	skipped: CheckpointConflict_Deserialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId?: string | null,
+};
+
+export type CheckpointRestoreReport_Serialize = {
+	restored: string[],
+	/**  Left alone: symlinks, files over the size cap, or (on undo) files changed since. */
+	skipped: CheckpointConflict_Serialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId: string | null,
+};
+
+export type CheckpointRevertReport = CheckpointRevertReport_Serialize | CheckpointRevertReport_Deserialize;
+
+export type CheckpointRevertReport_Deserialize = {
+	reverted: CheckpointHunkRef[],
+	revertedFiles: string[],
+	conflicts: CheckpointConflict_Deserialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId?: string | null,
+};
+
+export type CheckpointRevertReport_Serialize = {
+	reverted: CheckpointHunkRef[],
+	revertedFiles: string[],
+	conflicts: CheckpointConflict_Serialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId: string | null,
+};
+
+export type CheckpointStatus = CheckpointStatus_Serialize | CheckpointStatus_Deserialize;
+
+export type CheckpointStatus_Deserialize = {
+	available: boolean,
+	/**  Why checkpoints are off (for example, not a Git repository). */
+	reason?: string | null,
+	/**  The folder is not in a Git repository, so "Enable checkpoints" (git init) may be offered. */
+	canInit: boolean,
+};
+
+export type CheckpointStatus_Serialize = {
+	available: boolean,
+	/**  Why checkpoints are off (for example, not a Git repository). */
+	reason: string | null,
+	/**  The folder is not in a Git repository, so "Enable checkpoints" (git init) may be offered. */
+	canInit: boolean,
+};
+
+export type CheckpointTurn = {
+	turn: number,
+	/**  Unix seconds of the newest snapshot of this turn. */
+	capturedAt: number,
+	hasStart: boolean,
+	hasEnd: boolean,
+	/**  Files that differ between the turn's start and end; 0 while running. */
+	changedFiles: number,
+};
+
+/**  Checkpoints of a session changed (a turn was captured, a restore ran). */
+export type CheckpointsChanged = {
+	sessionId: string,
+};
+
 /**  What `UploadStore::clear` removed. */
 export type ClearedUploads = {
 	/**  Indexed uploads plus orphaned blobs. */
@@ -1463,6 +1615,14 @@ export type CurrentFileRun_Serialize = {
 	reason: string | null,
 };
 
+/**  One model of one agent on one day, for the chart's by-model view. */
+export type DayModelSlice = {
+	agentId: string,
+	model: string,
+	tokens: number,
+	cost: UsageCost,
+};
+
 /**  One agent's share of a day. */
 export type DaySlice = {
 	agentId: string,
@@ -1470,9 +1630,20 @@ export type DaySlice = {
 	cost: UsageCost,
 };
 
-export type DayUsage = {
+export type DayUsage = DayUsage_Serialize | DayUsage_Deserialize;
+
+export type DayUsage_Deserialize = {
 	day: string,
 	agents: DaySlice[],
+	/**  The same day by agent and model. */
+	models?: DayModelSlice[],
+};
+
+export type DayUsage_Serialize = {
+	day: string,
+	agents: DaySlice[],
+	/**  The same day by agent and model. */
+	models: DayModelSlice[],
 };
 
 /**  A decision the lead recorded with `record_decision` (#54). */
@@ -1501,7 +1672,16 @@ export type DelegationEvent_Deserialize =
 /**  The lead recorded a decision (`record_decision`, #54). */
 { kind: "decision"; lead: SessionKey; decision: DecisionRecord } |
 /**  The lead started a child. */
-{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string } |
+{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string;
+/**
+ *  Display name of the model the child runs, when the agent
+ *  reported one (the lead's `model` choice, else the agent default).
+ */
+model?: string | null;
+/**  What the lead expects back (ADR 0014 `deliverables`). */
+deliverables?: Deliverables_Deserialize | null;
+/**  The `delegate_many` group the task belongs to. */
+groupId?: string | null } |
 /**  A task finished, successfully or not. */
 { kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason?: FailureReason | null } |
 /**
@@ -1550,7 +1730,16 @@ export type DelegationEvent_Serialize =
 /**  The lead recorded a decision (`record_decision`, #54). */
 { kind: "decision"; lead: SessionKey; decision: DecisionRecord } |
 /**  The lead started a child. */
-{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string } |
+{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string;
+/**
+ *  Display name of the model the child runs, when the agent
+ *  reported one (the lead's `model` choice, else the agent default).
+ */
+model?: string;
+/**  What the lead expects back (ADR 0014 `deliverables`). */
+deliverables?: Deliverables_Serialize;
+/**  The `delegate_many` group the task belongs to. */
+groupId?: string } |
 /**  A task finished, successfully or not. */
 { kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason: FailureReason | null } |
 /**
@@ -1657,7 +1846,12 @@ export type DelegationTask_Deserialize = {
 	lead: SessionKey,
 	child: SessionKey,
 	agentName: string,
-	/**  `queued`, `running`, `completed` or `failed`. */
+	/**  Display name of the model the child runs, when the agent reported one. */
+	model?: string | null,
+	/**
+	 *  `queued`, `running`, `completed`, `failed` or `lost` (the child
+	 *  session is gone, ADR 0014).
+	 */
 	status: string,
 	stopReason?: string | null,
 	reason?: FailureReason | null,
@@ -1680,6 +1874,8 @@ export type DelegationTask_Deserialize = {
 	 *  only set when the agent reports it.
 	 */
 	budgetUsed: UsageReport_Deserialize,
+	/**  What the lead expects back (ADR 0014 `deliverables`). */
+	deliverables?: Deliverables_Deserialize | null,
 };
 
 /**  One delegated task, for listing. */
@@ -1688,7 +1884,12 @@ export type DelegationTask_Serialize = {
 	lead: SessionKey,
 	child: SessionKey,
 	agentName: string,
-	/**  `queued`, `running`, `completed` or `failed`. */
+	/**  Display name of the model the child runs, when the agent reported one. */
+	model?: string,
+	/**
+	 *  `queued`, `running`, `completed`, `failed` or `lost` (the child
+	 *  session is gone, ADR 0014).
+	 */
 	status: string,
 	stopReason: string | null,
 	reason: FailureReason | null,
@@ -1711,6 +1912,8 @@ export type DelegationTask_Serialize = {
 	 *  only set when the agent reports it.
 	 */
 	budgetUsed: UsageReport_Serialize,
+	/**  What the lead expects back (ADR 0014 `deliverables`). */
+	deliverables?: Deliverables_Serialize,
 };
 
 /**
@@ -1738,6 +1941,37 @@ export type DelegationTranscript_Deserialize = {
 export type DelegationTranscript_Serialize = {
 	task: DelegationTask_Serialize,
 	text: string,
+};
+
+/**
+ *  What a lead expects back from a delegated task (ADR 0014): files the
+ *  child should create or update and the shape of its summary. Shown on the
+ *  delegation card and appended to the child's task text.
+ */
+export type Deliverables = Deliverables_Serialize | Deliverables_Deserialize;
+
+/**
+ *  What a lead expects back from a delegated task (ADR 0014): files the
+ *  child should create or update and the shape of its summary. Shown on the
+ *  delegation card and appended to the child's task text.
+ */
+export type Deliverables_Deserialize = {
+	/**  Workspace relative paths, forward slashes. */
+	files: string[],
+	/**  `summary`, `diff` or `json`. */
+	format?: string | null,
+};
+
+/**
+ *  What a lead expects back from a delegated task (ADR 0014): files the
+ *  child should create or update and the shape of its summary. Shown on the
+ *  delegation card and appended to the child's task text.
+ */
+export type Deliverables_Serialize = {
+	/**  Workspace relative paths, forward slashes. */
+	files: string[],
+	/**  `summary`, `diff` or `json`. */
+	format: string | null,
 };
 
 export type DetectedRunTask = DetectedRunTask_Serialize | DetectedRunTask_Deserialize;
@@ -1955,7 +2189,22 @@ export type ExternalFilesUpdate_Serialize = {
 };
 
 /**  Why a delegation failed. Closed set: the lead can branch on it. */
-export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout";
+export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout" |
+/**
+ *  The child session is gone (its agent exited, the session ended, or
+ *  Span restarted) while the task was queued or running (ADR 0014).
+ */
+"lost" |
+/**
+ *  The task was delegated with `onApproval: "fail"` and the child raised
+ *  a permission request or an edit review: Span cancelled its turn and
+ *  never answered the request (ADR 0014).
+ */
+"permission_required" |
+/**  The agent has no mode the child may run in for this request. */
+"mode_unavailable" |
+/**  `workspace: "worktree"` was asked for; worktrees are not available yet. */
+"worktree_unavailable";
 
 /**  What a file holds, as far as the editor is concerned. */
 export type FileContentKind = "text" | "binary" | "missing" | "directory";
@@ -2910,6 +3159,9 @@ export type ImportItem = {
 	policy: ConflictPolicy,
 };
 
+/**  Which agent's logs a root holds. */
+export type ImportKind = "claude" | "codex" | "gemini" | "openCode";
+
 /**  Copied and total entries and bytes of a running import. */
 export type ImportProgress = {
 	entries: number,
@@ -3112,6 +3364,14 @@ export type LanguageServerSettings_Deserialize = {
 	 *  global override meaning "trust every folder".
 	 */
 	trustedWorkspaces?: string[],
+	/**
+	 *  Directory names from the built in watched-file exclusions (`node_modules`, `target`,
+	 *  `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) that
+	 *  language servers should be told about anyway. Version control folders stay excluded.
+	 */
+	watchIncludeDirectories?: string[],
+	/**  Server ids whose "fell behind on file changes" warning the user turned off. */
+	silencedWatchWarnings?: string[],
 };
 
 /**
@@ -3149,6 +3409,14 @@ export type LanguageServerSettings_Serialize = {
 	 *  global override meaning "trust every folder".
 	 */
 	trustedWorkspaces: string[],
+	/**
+	 *  Directory names from the built in watched-file exclusions (`node_modules`, `target`,
+	 *  `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) that
+	 *  language servers should be told about anyway. Version control folders stay excluded.
+	 */
+	watchIncludeDirectories: string[],
+	/**  Server ids whose "fell behind on file changes" warning the user turned off. */
+	silencedWatchWarnings: string[],
 };
 
 export type LanguageServerStateChanged = LanguageServerStateChanged_Serialize | LanguageServerStateChanged_Deserialize;
@@ -3192,6 +3460,13 @@ export type LanguageServerStateDto_Serialize = { kind: "notStarted" } | { kind: 
  *  then `lsp_restart`.
  */
 { kind: "runtimeMissing"; runtime: string; requiredVersion: number; found: string[] };
+
+/**  A server fell behind on filesystem notifications and is being brought back in step. */
+export type LanguageServerWatchRecovery = {
+	server: LanguageServerId,
+	phase: WatchRecoveryPhase,
+	message: string,
+};
 
 /**
  *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
@@ -3484,7 +3759,7 @@ export type ModelUse_Serialize = {
 	subagent?: boolean,
 };
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "showUsage" | "nextGitChange" | "previousGitChange" | "toggleGitBlame" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "showUsage" | "nextGitChange" | "previousGitChange" | "toggleGitBlame" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleZenMode" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
@@ -3938,6 +4213,14 @@ export type ScanReport = {
 	skipped: number,
 	/**  True when a cap stopped the file listing early. */
 	truncated: boolean,
+	/**  Compressed files read (gzip rollouts). */
+	compressedRead: number,
+	/**  Compressed files found but not read (`.zst`: no zstd decoder). */
+	compressedSkipped: number,
+	/**  Kinds that had at least one log file, in a fixed order. */
+	kinds: ImportKind[],
+	/**  Plain notes about sources found but not read. */
+	notes: string[],
 };
 
 export type SearchMatch = {
@@ -4381,6 +4664,18 @@ export type SessionSummary_Deserialize = {
 	 *  History scope chips tell this workspace from other folders.
 	 */
 	cwd?: string | null,
+	/**
+	 *  The session that spawned this one with the agent's own subagent tool,
+	 *  when the agent named it. Set only together with `native_subagent`.
+	 */
+	parentSessionId?: string | null,
+	/**
+	 *  True for a session the agent created with its own subagent tool (not
+	 *  a Span delegation). History hides these by default and nests them
+	 *  under `parent_session_id`. Derived at list time; nothing is stored
+	 *  but the session ids (ADR 0005, amendment of 2026-10-29).
+	 */
+	nativeSubagent?: boolean,
 };
 
 /**  A past conversation the agent can restore. */
@@ -4393,6 +4688,18 @@ export type SessionSummary_Serialize = {
 	 *  History scope chips tell this workspace from other folders.
 	 */
 	cwd: string | null,
+	/**
+	 *  The session that spawned this one with the agent's own subagent tool,
+	 *  when the agent named it. Set only together with `native_subagent`.
+	 */
+	parentSessionId: string | null,
+	/**
+	 *  True for a session the agent created with its own subagent tool (not
+	 *  a Span delegation). History hides these by default and nests them
+	 *  under `parent_session_id`. Derived at list time; nothing is stored
+	 *  but the session ids (ADR 0005, amendment of 2026-10-29).
+	 */
+	nativeSubagent: boolean,
 };
 
 /**
@@ -5343,7 +5650,7 @@ export type UsageSummary_Deserialize = {
 	 *  Every day of the range, oldest first, with zero days filled in. For
 	 *  an open range it starts at the first recorded day.
 	 */
-	days: DayUsage[],
+	days: DayUsage_Deserialize[],
 	/**  Most tokens first. */
 	agents: AgentUsage_Deserialize[],
 	/**  Most tokens first. */
@@ -5362,7 +5669,7 @@ export type UsageSummary_Serialize = {
 	 *  Every day of the range, oldest first, with zero days filled in. For
 	 *  an open range it starts at the first recorded day.
 	 */
-	days: DayUsage[],
+	days: DayUsage_Serialize[],
 	/**  Most tokens first. */
 	agents: AgentUsage_Serialize[],
 	/**  Most tokens first. */
@@ -5419,6 +5726,14 @@ export type UserAttachment_Serialize = {
 };
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
+
+export type WatchRecoveryPhase =
+/**  An automatic restart is about to happen. Shown quietly in the status popover. */
+"refreshing" |
+/**  The automatic restart finished. */
+"refreshed" |
+/**  Automatic restarts are used up for now. The user may restart it. */
+"exhausted";
 
 export type WorkProgressKindDto = "begin" | "report" | "end";
 

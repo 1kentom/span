@@ -121,78 +121,79 @@ impl GitService {
             self.validate_branch(&repo, target_branch, &token).await?;
         }
         let mut pull_ref = None;
-        let mut args =
-            match action {
-                GitRemoteAction::Fetch => strings(&[
+        let mut args = match action {
+            GitRemoteAction::Fetch => strings(&[
+                "fetch",
+                "--no-recurse-submodules",
+                "--no-write-fetch-head",
+                "--",
+                remote_name,
+            ]),
+            GitRemoteAction::Pull => {
+                let branch = reviewed
+                    .repository
+                    .branch
+                    .as_deref()
+                    .ok_or_else(|| error("Pull requires a local branch"))?;
+                self.validate_branch(&repo, branch, &token).await?;
+                let remote = remote_name;
+                let merge_value = format!("refs/heads/{target_branch}");
+                let merge = merge_value.as_str();
+                let branch = merge
+                    .strip_prefix("refs/heads/")
+                    .ok_or_else(|| error("Pull requires a branch upstream"))?;
+                self.validate_branch(&repo, branch, &token).await?;
+                // Fetch into a unique private ref instead of racing shared FETCH_HEAD.
+                let reference = format!(
+                    "refs/span/pull/{}/{}",
+                    self.0.instance,
+                    NEXT_SERVICE.fetch_add(1, Ordering::Relaxed)
+                );
+                let args = strings(&[
                     "fetch",
                     "--no-recurse-submodules",
+                    "--no-tags",
                     "--no-write-fetch-head",
                     "--",
-                    remote_name,
-                ]),
-                GitRemoteAction::Pull => {
-                    let branch =
-                        reviewed.repository.branch.as_deref().ok_or_else(|| {
-                            error("Pull requires a local branch")
-                        })?;
-                    self.validate_branch(&repo, branch, &token).await?;
-                    let remote = remote_name;
-                    let merge_value = format!("refs/heads/{target_branch}");
-                    let merge = merge_value.as_str();
-                    let branch = merge
-                        .strip_prefix("refs/heads/")
-                        .ok_or_else(|| error("Pull requires a branch upstream"))?;
-                    self.validate_branch(&repo, branch, &token).await?;
-                    // Fetch into a unique private ref instead of racing shared FETCH_HEAD.
-                    let reference = format!(
-                        "refs/span/pull/{}/{}",
-                        self.0.instance,
-                        NEXT_SERVICE.fetch_add(1, Ordering::Relaxed)
-                    );
-                    let args = strings(&[
-                        "fetch",
-                        "--no-recurse-submodules",
-                        "--no-tags",
-                        "--no-write-fetch-head",
-                        "--",
-                        remote,
-                        &format!("{merge}:{reference}"),
-                    ]);
-                    pull_ref = Some(reference);
-                    args
-                }
-                GitRemoteAction::Push => {
-                    let branch =
-                        reviewed.repository.branch.as_deref().ok_or_else(|| {
-                            error("Push requires a local branch")
-                        })?;
-                    self.validate_branch(&repo, branch, &token).await?;
-                    let remote = remote_name;
-                    let merge_value = format!("refs/heads/{target_branch}");
-                    let merge = merge_value.as_str();
-                    let target = merge
-                        .strip_prefix("refs/heads/")
-                        .ok_or_else(|| error("Push requires a branch upstream"))?;
-                    self.validate_branch(&repo, target, &token).await?;
-                    // Push only this branch to its explicit upstream. Configured multi-ref push rules do not widen this action.
-                    strings(&[
-                        "push",
-                        "--no-follow-tags",
-                        "--no-mirror",
-                        "--recurse-submodules=no",
-                        "--",
-                        remote,
-                        &format!(
-                            "{}:{merge}",
-                            reviewed
-                                .repository
-                                .head
-                                .as_deref()
-                                .ok_or_else(|| error("Create a commit before pushing"))?
-                        ),
-                    ])
-                }
-            };
+                    remote,
+                    &format!("{merge}:{reference}"),
+                ]);
+                pull_ref = Some(reference);
+                args
+            }
+            GitRemoteAction::Push => {
+                let branch = reviewed
+                    .repository
+                    .branch
+                    .as_deref()
+                    .ok_or_else(|| error("Push requires a local branch"))?;
+                self.validate_branch(&repo, branch, &token).await?;
+                let remote = remote_name;
+                let merge_value = format!("refs/heads/{target_branch}");
+                let merge = merge_value.as_str();
+                let target = merge
+                    .strip_prefix("refs/heads/")
+                    .ok_or_else(|| error("Push requires a branch upstream"))?;
+                self.validate_branch(&repo, target, &token).await?;
+                // Push only this branch to its explicit upstream. Configured multi-ref push rules do not widen this action.
+                strings(&[
+                    "push",
+                    "--no-follow-tags",
+                    "--no-mirror",
+                    "--recurse-submodules=no",
+                    "--",
+                    remote,
+                    &format!(
+                        "{}:{merge}",
+                        reviewed
+                            .repository
+                            .head
+                            .as_deref()
+                            .ok_or_else(|| error("Create a commit before pushing"))?
+                    ),
+                ])
+            }
+        };
         let mut configuration = strings(&[
             "-c",
             "merge.autoStash=false",

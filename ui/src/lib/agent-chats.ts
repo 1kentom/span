@@ -1,3 +1,4 @@
+import type { FeedPosition } from "./feed-follow";
 import type {
   AgentEvent,
   ConfigOption,
@@ -45,6 +46,8 @@ export type ChatSnapshot = {
   queueHeld: boolean;
   pinned: boolean;
   scrollTop?: number;
+  /** Where the reader left the feed, by content position, so a restore survives re-rendered heights. */
+  scrollAnchor?: FeedPosition;
   turnStart: number;
   /** When the chat was last open or changed, for eviction. */
   touchedAt: number;

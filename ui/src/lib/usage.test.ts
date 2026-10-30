@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, SessionUsageRow_Serialize as SessionUsageRow, UsageCost } from "../bindings";
-import { assignSlots, compactTokens, costText, createUsageRecorder, rangeFor, turnTokenCounts, usageCsv } from "./usage";
+import { assignSlots, chartColumns, compactTokens, costShort, costText, createUsageRecorder, deltaText, percentChange, previousRangeFor, providerKey, rangeFor, relativeTime, shareText, sparkline, sumTotals, turnTokenCounts, usageCsv, usdShort } from "./usage";
 
 const cost = (patch: Partial<UsageCost>): UsageCost => ({ usd: 0, reportedUsd: 0, estimatedUsd: 0, unpricedTokens: 0, known: false, complete: true, ...patch });
 
@@ -95,5 +97,79 @@ describe("usage CSV", () => {
     const [header, line] = usageCsv([row]).trim().split("\n");
     expect(header.split(",")).toContain("cost_usd_estimate");
     expect(line).toBe(`tracked,"Claude, Code",claude,s-1,'=SUM(A1),,2026-10-29T00:00:00.000Z,opus,1,1,2,3,4,0,10,,,`);
+  });
+});
+
+describe("usage aggregation helpers", () => {
+  const totals = (input: number, c: UsageCost, sessions = 1) => ({ tokens: { input, output: 0, cacheRead: 0, cacheWrite: 0, thought: 0, total: input }, turns: 1, turnsWithTokens: 1, sessions, cost: c });
+
+  it("sums totals, keeps unknown cost out of the dollars and marks the sum partial", () => {
+    const sum = sumTotals([totals(10, cost({ known: true, usd: 2, estimatedUsd: 2 })), totals(5, cost({ known: false, complete: false, unpricedTokens: 5 }), 2)]);
+    expect(sum.tokens.total).toBe(15);
+    expect(sum.sessions).toBe(3);
+    expect(sum.cost).toMatchObject({ known: true, usd: 2, complete: false, unpricedTokens: 5 });
+    expect(sumTotals([]).cost.known).toBe(false);
+  });
+
+  it("groups imported and tracked agents of one family into one provider", () => {
+    expect(["claude", "claude-acp", "claude-code-logs", "codex-logs", "codex-acp", "gemini-cli", "opencode", "zed-agent"].map(providerKey)).toEqual(["claude", "claude", "claude", "codex", "codex", "gemini", "opencode", "zed-agent"]);
+  });
+
+  it("builds even chart columns, fills gaps, filters series and folds long ranges into weeks", () => {
+    const priced = cost({ known: true, usd: 1, estimatedUsd: 1 });
+    const days = [
+      { day: "2026-10-01", agents: [{ agentId: "claude", tokens: 10, cost: priced }, { agentId: "claude-code-logs", tokens: 5, cost: priced }, { agentId: "codex", tokens: 3, cost: priced }] },
+      { day: "2026-10-03", agents: [{ agentId: "codex", tokens: 7, cost: priced }] },
+    ];
+    const { columns, weekly } = chartColumns(days, providerKey);
+    expect(weekly).toBe(false);
+    expect(columns.map((column) => column.start)).toEqual(["2026-10-01", "2026-10-02", "2026-10-03"]);
+    expect(columns[0].values.get("claude")).toMatchObject({ tokens: 15, cost: { usd: 2 } });
+    expect(columns[1].values.size).toBe(0);
+    expect(chartColumns(days, providerKey, new Set(["codex"])).columns[0].values.has("claude")).toBe(false);
+    const long = Array.from({ length: 130 }, (_, index) => ({ day: `2026-${String(1 + Math.floor(index / 28)).padStart(2, "0")}-${String(1 + (index % 28)).padStart(2, "0")}`, agents: [] }));
+    expect(chartColumns(long, providerKey, undefined, 120).weekly).toBe(true);
+  });
+
+  it("finds the previous period of equal length and formats deltas", () => {
+    const now = new Date(2026, 9, 29, 15, 0);
+    expect(previousRangeFor("7d", now)).toMatchObject({ from: "2026-10-16", to: "2026-10-22" });
+    expect(previousRangeFor("today", now)).toMatchObject({ from: "2026-10-28", to: "2026-10-28" });
+    expect(previousRangeFor("all", now)).toBeUndefined();
+    expect(rangeFor("90d", now)).toMatchObject({ from: "2026-08-01", to: "2026-10-29" });
+    expect(percentChange(112, 100)).toBe(12);
+    expect(percentChange(5, 0)).toBeUndefined();
+    expect(deltaText(12)).toBe("+12%");
+    expect(deltaText(-4)).toBe("\u22124%");
+    expect(deltaText(0)).toBe("No change");
+  });
+
+  it("formats short costs, shares, sparklines and relative times", () => {
+    expect(usdShort(0.1291)).toBe("$0.13");
+    expect(usdShort(0.004)).toBe("<$0.01");
+    expect(costShort(cost({ known: true, usd: 3.456, complete: false, unpricedTokens: 1 })).text).toBe("$3.46+");
+    expect(costShort(cost({ known: false })).text).toBe("No price");
+    expect(shareText(1, 1000)).toBe("<1%");
+    expect(shareText(0, 10)).toBe("0%");
+    expect(shareText(27, 100)).toBe("27%");
+    expect(sparkline([1, 2, 3, 4], 2)).toEqual([3, 7]);
+    expect(sparkline([1, 2], 24)).toEqual([1, 2]);
+    const now = Date.UTC(2026, 9, 29, 12);
+    expect(relativeTime(now - 10_000, now)).toBe("just now");
+    expect(relativeTime(now - 4 * 60_000, now)).toBe("4 min ago");
+    expect(relativeTime(now - 3 * 3600_000, now)).toBe("3 h ago");
+  });
+});
+
+describe("usage styles", () => {
+  it("use theme tokens only: no hex colours in usage.css, and every chart slot defined for Dark and Light", () => {
+    const root = resolve(__dirname, "../..");
+    const source = readFileSync(resolve(root, "src/styles/usage.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(source.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
+    const workbench = readFileSync(resolve(root, "src/styles/workbench.css"), "utf8").split("\n");
+    for (const selector of [".ide{--viz-1", ".ide.theme-light{--viz-1"]) {
+      const line = workbench.find((entry) => entry.startsWith(selector)) ?? "";
+      for (const slot of ["--viz-1", "--viz-2", "--viz-3", "--viz-4", "--viz-5", "--viz-other", "--viz-grid"]) expect(line).toContain(`${slot}:`);
+    }
   });
 });

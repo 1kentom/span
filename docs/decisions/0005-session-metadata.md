@@ -278,3 +278,31 @@ ADR 0012 adds an optional `usage` field to each session: token and cost
 counters in day and model buckets, the last reported cumulative cost, and
 the context peak. Counters only; the store still holds no prompt text,
 replies, file contents, paths or credentials. No schema version bump.
+
+## Amendment (2026-10-29): native subagent sessions are not History rows
+
+Some agents list sessions they created with their OWN subagent tool beside
+the user's chats. OpenCode 2.x (`listSessions` in its ACP service) returns
+every session of the folder, children included, with no parent field; 1.x
+hid them with `roots: true`. Codex (`thread/list` with `sourceKinds: []`)
+and Claude (top-level transcripts only) leave them out.
+
+- `SessionSummary` gains `native_subagent` and `parent_session_id`, derived
+  at list time.
+- The OpenCode adapter learns a child from `_meta["opencode/child-session"]`
+  on updates in the parent's stream, from the subagent tool result's
+  `rawOutput.metadata.sessionID`, and from a first replayed user message
+  that starts with OpenCode's exact subagent preamble. When listing, the
+  titles "Child session - <ISO time>" and the 1.x " (@agent subagent)"
+  suffix also mark a child. Near-miss titles stay rows.
+- Learned ids live in `agent-native-subagents.json` beside the metadata
+  store: child and parent session ids only, no prompt text or titles.
+- The UI reads one filtered list (`ui/src/lib/subagent-sessions.ts`) for
+  History, the Agents rail, recents, resume-last and the counters. A parent
+  row gets a "Subagents (n)" disclosure; a child opens read-only with no
+  composer. The "Subagents" pill turns on the show-subagents preference.
+  Span never offers delete on these rows: they belong to the agent.
+
+Limit: an OpenCode child is hidden only once Span has seen it (while
+watching its parent run, or by opening it) or its title has a known shape.
+A child spawned while Span was not watching shows until then.

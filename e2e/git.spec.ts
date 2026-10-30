@@ -5,16 +5,16 @@ import { readFileSync, mkdirSync } from "node:fs";
 const schema = JSON.parse(readFileSync("crates/core/settings.schema.json", "utf8")).properties;
 const defaults = Object.fromEntries(Object.entries(schema as Record<string, { default?: unknown }>).filter(([key, value]) => !key.includes(".") && key !== "$schema" && "default" in value).map(([key, value]) => [key, value.default]));
 
-async function fixture(page: Page, clean = false, noRoot = false) {
+async function fixture(page: Page, clean = false, noRoot = false, sidebarVariant = false) {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.addInitScript(({ settings, clean, noRoot }) => {
+  await page.addInitScript(({ settings, clean, noRoot, sidebarVariant }) => {
     let callback = 0;
     let currentSettings = { ...settings };
     let revision = 1;
     let enabled = false;
-    let root = noRoot ? null : "/fixture/repository/project";
-    const repo = { id: "git-fixture-session", root: "/fixture/repository", workspacePrefix: "project", branch: "feature/review", head: "b".repeat(40), detached: false, unborn: false };
+    let root = noRoot ? null : sidebarVariant ? "/fixture/span-infrastructure-editor-workspace-with-long-name/project" : "/fixture/repository/project";
+    const repo = { id: "git-fixture-session", root: sidebarVariant ? "/fixture/span-infrastructure-editor-workspace-with-long-name" : "/fixture/repository", workspacePrefix: "project", branch: sidebarVariant ? "feature/source-control-sidebar-redesign-with-long-branch-name" : "feature/review", head: "b".repeat(40), detached: false, unborn: false };
     const trace = { phase3: [] as any[], noRemotes: false, stagedBaseline: false, folds: false, noUpstream: false, changeHead: false, failLines: false, failClone: true, baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false, hosting: [] as any[], conflictReads: [] as any[], conflictSaves: [] as any[], failCreate: true, failReview: true, failDetail: false };
     let treeRevision = 1;
     const text = "const value = 3;\nconst stable = true;\nconst other = 4;\nconst tail = true;\n";
@@ -32,6 +32,11 @@ async function fixture(page: Page, clean = false, noRoot = false) {
       { id: "source", path: "project/src/file.ts", displayPath: "project/src/file.ts", oldPath: null, displayOldPath: null, indexStatus: "M", worktreeStatus: "M", untracked: false, conflicted: false, submodule: false, unsupportedReason: null },
       { id: "outside", path: "outside.md", displayPath: "outside.md", oldPath: null, displayOldPath: null, indexStatus: "A", worktreeStatus: ".", untracked: false, conflicted: false, submodule: false, unsupportedReason: null },
     ];
+    if (sidebarVariant) {
+      changes[0].displayPath = "project/packages/desktop/components/source-control/ExtremelyLongSourceControlSidebarComponent.tsx";
+      changes[1].displayPath = "docs/audit.md";
+      changes.push({ ...changes[0], id: "short", path: "project/src/app.ts", displayPath: "src/app.ts", indexStatus: ".", worktreeStatus: "M" });
+    }
     if (clean) for (const entry of changes) { entry.indexStatus = "."; entry.worktreeStatus = "."; }
     const commit = { id: "a".repeat(40), parents: [repo.head], author: "Fixture author", authorEmail: "fixture@example.test", timestamp: 1700000000, subject: "Review staged changes", body: "Review staged changes\n\nFull commit details" };
     const status = () => ({ repository: structuredClone(repo), indexRevision: `index-${revision}`, stagedSnapshot: `tree-${revision}`, entries: structuredClone(changes.filter(entry => entry.indexStatus !== "." || entry.worktreeStatus !== ".")), operation, truncated: false });
@@ -144,7 +149,7 @@ async function fixture(page: Page, clean = false, noRoot = false) {
         },
       },
     });
-  }, { settings: defaults, clean, noRoot });
+  }, { settings: defaults, clean, noRoot, sidebarVariant });
   await page.goto("/");
   await expect(page.getByRole("main", { name: "span editor", exact: true })).toHaveAttribute("aria-busy", "false");
   return errors;
@@ -160,7 +165,8 @@ test("repository-wide saved/index diffs preserve a dirty editor and constrain ou
   await expect(panel).toContainText("/fixture/repository");
   expect((await trace(page)).statusReads).toBe(0); expect((await trace(page)).enables).toBe(0);
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
-  await expect(panel).toContainText("/fixture/repository"); await expect(panel).toContainText("whole repository");
+  await expect(panel.locator(".git-repo-identity")).toHaveAttribute("title", "/fixture/repository");
+  await expect(panel.locator(".git-repo-identity > strong")).toHaveText("repository");
   await panel.getByRole("button", { name: "Review staged changes in project/src/file.ts", exact: true }).click();
   const comparison = page.getByRole("region", { name: "Git comparison", exact: true });
   await expect(comparison).toContainText("HEAD compared with index"); await expect(comparison).toContainText("+index version");
@@ -184,8 +190,10 @@ test("explicit stage/unstage and staged-only commit preserve a failed message an
   await page.getByRole("button", { name: "Git", exact: true }).click();
   const panel = page.getByRole("region", { name: "Git source control", exact: true });
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await panel.getByRole("button", { name: "Review staged changes in project/src/file.ts", exact: true }).hover();
   await panel.getByRole("button", { name: "Unstage project/src/file.ts", exact: true }).click();
   await expect.poll(async () => (await trace(page)).unstage.length).toBe(1);
+  await panel.getByRole("button", { name: "Review working changes in project/src/file.ts", exact: true }).hover();
   await panel.getByRole("button", { name: "Stage project/src/file.ts", exact: true }).click();
   await expect.poll(async () => (await trace(page)).stage.length).toBe(1);
   const message = panel.getByRole("textbox", { name: "Git commit message", exact: true });
@@ -344,6 +352,7 @@ test("worktree removal is explicit and remote failure retains message and unsave
   const message = panel.getByRole("textbox", { name: "Git commit message", exact: true }); await message.fill("Keep this commit draft");
   const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
   await editor.click(); await editor.press("ControlOrMeta+End"); await page.keyboard.insertText("// keep after remote failure\n");
+  await openRepositoryActions(panel);
   await expect(panel.locator(".git-network-actions")).not.toHaveAttribute("open", "");
   await panel.locator("summary").filter({ hasText: /^Remote actions$/ }).click();
   await expect(panel.locator("[aria-label=\"Selected remote operations\"]")).toContainText("https://example.test/fixture/repo.git");
@@ -599,6 +608,7 @@ test("selected remote first push requires review and invalidates it when the tar
   await page.getByRole("button", { name: "Git", exact: true }).click();
   const panel = page.getByRole("region", { name: "Git source control", exact: true });
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await openRepositoryActions(panel);
   await expect(panel.locator(".git-network-actions")).not.toHaveAttribute("open", "");
   await overhaulScreenshot(page, "remote-compact-after");
   await panel.locator("summary").filter({ hasText: /^Remote actions$/ }).click();
@@ -616,7 +626,8 @@ test("selected remote first push requires review and invalidates it when the tar
   await panel.getByLabel("I reviewed this remote and target", { exact: true }).check();
   await push.click();
   await expect(panel).toContainText("Published fixture branch.");
-  if (!await panel.locator(".git-network-actions").evaluate(node => (node as HTMLDetailsElement).open)) await panel.locator("summary").filter({ hasText: /^Remote actions$/ }).click();
+  await openRepositoryActions(panel);
+  await openGitDetails(panel, ".git-network-actions");
   await expect(push).toBeDisabled();
   expect((await trace(page)).remotes).toEqual([expect.objectContaining({ action: "push", remoteName: "origin", targetBranch: "published-branch", setUpstream: true, expectedConfigFingerprint: "reviewed-config-1", expectedIndexRevision: "index-1" })]);
   expect(errors).toEqual([]);
@@ -649,6 +660,7 @@ test("amend captures HEAD and blocks submission after an external HEAD change", 
   const panel = page.getByRole("region", { name: "Git source control", exact: true });
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
   await panel.getByRole("textbox", { name: "Git commit message", exact: true }).fill("Amended message only");
+  await openGitDetails(panel, ".git-commit-options");
   await panel.getByLabel("Amend last commit", { exact: true }).check();
   await expect(panel.getByRole("button", { name: "Amend bbbbbbbb", exact: true })).toBeEnabled();
   await page.evaluate(() => { (window as any).__gitFixture.changeHead = true; });
@@ -888,6 +900,7 @@ test("no-remotes summary keeps changes visible and opens management only after A
   await page.getByRole("button", { name: "Git", exact: true }).click();
   const panel = page.getByRole("region", { name: "Git source control", exact: true });
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await openRepositoryActions(panel);
   const remotes = panel.getByRole("region", { name: "Remotes", exact: true });
   await expect(remotes).toContainText("No remotes configured");
   await expect(remotes.locator(".git-network-actions")).toHaveCount(0);
@@ -900,4 +913,141 @@ test("no-remotes summary keeps changes visible and opens management only after A
   await expect(remotes.getByLabel("URL", { exact: true })).toBeVisible();
   await expect(remotes.locator(".git-network-management")).toHaveAttribute("open", "");
   expect((await trace(page)).remotes).toHaveLength(0); expect(errors).toEqual([]);
+});
+
+async function openGitDetails(panel: Locator, selector: string) {
+  const details = panel.locator(selector);
+  if (!await details.evaluate(node => (node as HTMLDetailsElement).open)) await details.locator(":scope > summary").click();
+  await expect(details).toHaveAttribute("open", "");
+}
+async function openRepositoryActions(panel: Locator) {
+  await openGitDetails(panel, ".git-repo-tools");
+  await expect(panel.getByRole("group", { name: "Repository actions", exact: true })).toBeVisible();
+}
+
+async function resizeGitSidebar(page: Page, width: number) {
+  const sidebar = page.getByRole("complementary", { name: "Project", exact: true });
+  const handle = page.getByRole("separator", { name: "Resize project panel", exact: true });
+  const current = (await sidebar.boundingBox())!.width;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + width - current, box.y + box.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(async () => Math.abs((await sidebar.boundingBox())!.width - width)).toBeLessThanOrEqual(1);
+}
+
+async function sidebarScreenshot(page: Page, name: string) {
+  mkdirSync("artifacts/git-sidebar-redesign", { recursive: true });
+  await page.screenshot({ animations: "disabled", path: `artifacts/git-sidebar-redesign/${name}.png` });
+}
+
+for (const width of [230, 348, 500]) {
+  test(`redesigned sidebar keeps long names, navigation and row actions aligned at ${width}px`, async ({ page }) => {
+    const errors = await fixture(page, false, false, true);
+    await page.getByRole("button", { name: "Git", exact: true }).click();
+    const panel = page.getByRole("region", { name: "Git source control", exact: true });
+    await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+    await resizeGitSidebar(page, width);
+    await expect(panel.locator(".git-repo-identity > strong")).toHaveText("span-infrastructure-editor-workspace-with-long-name");
+    await expect(panel.locator(".git-repo-branch")).toContainText("feature/source-control-sidebar-redesign-with-long-branch-name");
+    await expect(panel.locator(".git-remote-actions")).toHaveCount(0);
+    await expect(panel.locator(".git-repo-tools")).not.toHaveAttribute("open", "");
+    const message = panel.getByRole("textbox", { name: "Git commit message", exact: true });
+    expect((await message.boundingBox())!.height).toBe(64);
+    const commit = panel.getByRole("button", { name: "Commit 2 staged files", exact: true });
+    await expect(commit).toBeDisabled();
+    const color = await commit.evaluate(node => getComputedStyle(node).backgroundColor.match(/[\d.]+/g)!.slice(0, 3).map(Number));
+    expect(Math.max(...color) - Math.min(...color)).toBeLessThanOrEqual(32);
+    const nav = panel.getByRole("tablist", { name: "Source control view", exact: true });
+    expect(await nav.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+    for (const name of ["History", "Branches", "Stash", "Worktrees", "GitHub", "Changes"]) {
+      const tab = nav.getByRole("tab", { name, exact: true });
+      await tab.click();
+      await expect(tab).toHaveAttribute("aria-selected", "true");
+      expect(await nav.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+      const label = tab.locator(".git-subview-label");
+      if (width < 260) await expect(label).toBeHidden();
+      else {
+        await expect(label).toBeVisible();
+        const bounds = await label.evaluate(node => {
+          const range = document.createRange(); range.selectNodeContents(node);
+          const text = range.getBoundingClientRect(), button = node.parentElement!.getBoundingClientRect();
+          return { left: text.left - button.left, right: button.right - text.right };
+        });
+        expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeGreaterThanOrEqual(0);
+      }
+    }
+    const rows = panel.locator(".git-change-row");
+    await expect(rows).toHaveCount(4);
+    const alignment = await rows.evaluateAll(nodes => nodes.map(node => {
+      const row = node.getBoundingClientRect(), status = node.querySelector(".git-change-status")!.getBoundingClientRect(), actions = node.querySelector(".git-row-actions")!.getBoundingClientRect();
+      return { statusX: status.x, actionsX: actions.x, actionsWidth: actions.width, right: actions.right, rowRight: row.right };
+    }));
+    expect(Math.max(...alignment.map(value => value.statusX)) - Math.min(...alignment.map(value => value.statusX))).toBeLessThanOrEqual(1);
+    expect(Math.max(...alignment.map(value => value.actionsX)) - Math.min(...alignment.map(value => value.actionsX))).toBeLessThanOrEqual(1);
+    for (const value of alignment) { expect(value.actionsWidth).toBe(48); expect(value.right).toBeLessThanOrEqual(value.rowRight + 1); }
+    await page.mouse.move(1200, 600);
+    await expect(rows.first().locator(".git-row-actions")).toHaveCSS("opacity", "0");
+    await rows.first().hover();
+    await expect(rows.first().locator(".git-row-actions")).toHaveCSS("opacity", "1");
+    const statusX = (await rows.first().locator(".git-change-status").boundingBox())!.x;
+    expect(statusX).toBeCloseTo(alignment[0].statusX, 1);
+    await sidebarScreenshot(page, `sidebar-${width}-long-paths-dark`);
+    expect(await panel.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+    const panelBox = (await panel.boundingBox())!;
+    for (const control of [panel.getByRole("button", { name: "Refresh Git", exact: true }), panel.locator(".git-repo-tools > summary")]) {
+      const box = (await control.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(panelBox.x); expect(box.x + box.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 1);
+    }
+    for (const filename of ["app.ts", "audit.md"]) {
+      const label = panel.locator(".git-change-name").filter({ hasText: new RegExp(`^${filename.replace(".", "\\.")}$`) });
+      const fits = await label.evaluate(node => { const range = document.createRange(); range.selectNodeContents(node); return range.getBoundingClientRect().width <= node.getBoundingClientRect().width + 1; });
+      expect(fits, `Short filename ${filename} should fit at ${width}px`).toBe(true);
+    }
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("theme");
+    await page.getByRole("radio", { name: "Light theme", exact: true }).click();
+    await expect(page.locator(".ide")).toHaveClass(/theme-light/);
+    await page.getByRole("tab", { name: "file.ts", exact: true }).click();
+    await page.mouse.move(1200, 600);
+    await sidebarScreenshot(page, `sidebar-${width}-long-paths-light`);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("repository actions keyboard and outside dismissal preserve commit, remote and editor drafts", async ({ page }) => {
+  const errors = await fixture(page);
+  const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
+  await editor.click(); await editor.press("ControlOrMeta+End"); await page.keyboard.insertText("// sidebar menu keeps unsaved editor text\n");
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  const message = panel.getByRole("textbox", { name: "Git commit message", exact: true });
+  await message.fill("Preserve the sidebar commit draft");
+  const summary = panel.locator(".git-repo-tools > summary");
+  await summary.focus(); await summary.press("Enter");
+  await expect(summary).toHaveAttribute("aria-expanded", "true");
+  await openGitDetails(panel, ".git-network-actions");
+  const target = panel.getByLabel("Remote branch (pull or push)", { exact: true });
+  await target.fill("preserved-remote-target");
+  await target.press("Escape");
+  await expect(summary).toHaveAttribute("aria-expanded", "false"); await expect(summary).toBeFocused();
+  await expect(message).toHaveValue("Preserve the sidebar commit draft");
+  await summary.press("Space");
+  await expect(summary).toHaveAttribute("aria-expanded", "true");
+  await expect(target).toHaveValue("preserved-remote-target");
+  await editor.click({ position: { x: 700, y: 300 } });
+  await expect(summary).toHaveAttribute("aria-expanded", "false"); await expect(editor).toBeFocused();
+  await expect(message).toHaveValue("Preserve the sidebar commit draft");
+  await expect(editor).toContainText("sidebar menu keeps unsaved editor text");
+  const row = panel.getByRole("button", { name: "Review working changes in project/src/file.ts", exact: true });
+  await row.focus();
+  await expect(row.locator("..").locator(".git-row-actions")).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Tab");
+  await expect(panel.getByRole("button", { name: "Discard saved changes in project/src/file.ts", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(panel.getByRole("button", { name: "Stage project/src/file.ts", exact: true })).toBeFocused();
+  await sidebarScreenshot(page, "sidebar-keyboard-row-focus");
+  expect((await trace(page)).diskSaves).toBe(0); expect((await trace(page)).stage).toHaveLength(0); expect((await trace(page)).remotes).toHaveLength(0); expect(errors).toEqual([]);
 });

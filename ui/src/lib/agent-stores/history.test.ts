@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../client", () => ({ isDesktop: true, api: mocks.api, sessionMetaList: mocks.sessionMetaList, sessionMetaUpdate: mocks.sessionMetaUpdate }));
 
+import { setShowSubagentSessions } from "../subagent-sessions";
 import { agentHistory } from "./history";
 
 const held = () => createRoot((dispose) => ({ history: agentHistory.use(), dispose }));
@@ -54,6 +55,30 @@ describe("agent history store", () => {
     // Resuming the last chat only picks a session History lists (agent-controller restoreLastSession), so a health
     // session saved by an earlier version is never resumed.
     expect(listed.some((id) => ["h1", "h2", "h3"].includes(id))).toBe(false);
+    dispose();
+  });
+
+  it("hides native subagent sessions unless the preference shows them, and nests them under their parent", async () => {
+    mocks.api.agentListSessions.mockResolvedValue([
+      { sessionId: "parent", title: "Draw a car" },
+      { sessionId: "child", title: "Generate BMW M2 PNG image", nativeSubagent: true, parentSessionId: "parent" },
+      { sessionId: "orphan", title: "Child session - 2026-10-29T10:00:00.000Z", nativeSubagent: true, parentSessionId: null },
+      { sessionId: "lookalike", title: "Child session notes", nativeSubagent: false },
+    ]);
+    mocks.sessionMetaList.mockResolvedValue([]);
+    setShowSubagentSessions(false);
+    const { history, dispose } = held();
+    history.setSessionScope("workspace");
+    await history.loadSessions(() => true);
+    expect(history.sessions().map((entry) => entry.sessionId)).toEqual(["parent", "lookalike"]);
+    expect(history.subagentsFor("parent").map((entry) => entry.sessionId)).toEqual(["child"]);
+    expect(history.subagentsFor("lookalike")).toEqual([]);
+    expect(history.subagentCount()).toBe(2);
+    expect(history.isSubagent("child")).toBe(true);
+    expect(history.isSubagent("parent")).toBe(false);
+    setShowSubagentSessions(true);
+    expect(history.sessions().map((entry) => entry.sessionId)).toEqual(["parent", "child", "orphan", "lookalike"]);
+    setShowSubagentSessions(false);
     dispose();
   });
 

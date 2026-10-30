@@ -482,7 +482,7 @@ function reduceDelegation(state: AgentState, event: DelegationEvent): AgentState
     case "delegated":
     case "taskFinished": {
       if (otherLead(event.lead)) return state;
-      const patch = event.kind === "delegated" ? { taskId: event.taskId, child: event.child, agentName: event.agentName } : { taskId: event.taskId, child: event.child, status: event.status, reason: event.reason };
+      const patch = event.kind === "delegated" ? { taskId: event.taskId, child: event.child, agentName: event.agentName, model: event.model, deliverables: event.deliverables } : { taskId: event.taskId, child: event.child, status: event.status, reason: event.reason };
       return upsertTask(state, patch);
     }
   }
@@ -500,7 +500,7 @@ export function applyDelegationStatus(state: AgentState, status: DelegationStatu
   if (status.lead && state.sessionId && status.lead.sessionId !== state.sessionId) return state;
   return status.tasks.reduce((current, task) => {
     if (!current.feed.some((item) => item.kind === "delegation" && item.task.taskId === task.taskId)) return current;
-    return upsertTask(current, { taskId: task.taskId, child: task.child, agentName: task.agentName, status: task.status, reason: task.reason, stopReason: task.stopReason, detail: task.detail, startedAtMs: task.startedAtMs, finishedAtMs: task.finishedAtMs, progressText: task.progressText ?? null, resultSummary: task.resultSummary, artifacts: task.artifacts, budgetUsed: task.budgetUsed });
+    return upsertTask(current, { taskId: task.taskId, child: task.child, agentName: task.agentName, model: task.model, status: task.status, reason: task.reason, stopReason: task.stopReason, detail: task.detail, startedAtMs: task.startedAtMs, finishedAtMs: task.finishedAtMs, progressText: task.progressText ?? null, resultSummary: task.resultSummary, artifacts: task.artifacts, budgetUsed: task.budgetUsed, deliverables: task.deliverables });
   }, state);
 }
 

@@ -21,9 +21,9 @@ The previous phase 2 exact-head hosted run [40905440358](https://github.com/1ken
 
 Phase 3 was published as `d59f982` in [PR #195](https://github.com/1kentom/span/pull/195). Exact-head hosted checks have not yet been verified. The user rejected the visual polish and opened [#210](https://github.com/1kentom/span/issues/210) for a complete overhaul. Earlier completed verification checkboxes record executed checks, not visual acceptance.
 
-The current uncommitted overhaul adds full-lane editor hunk button rails, dashed staged and solid working markers, a keyboard/accessibility CodeMirror bridge with one Tab stop per hunk, retained untouched rails during typing and clearing of touched rails, and a structured preview bounded at 40 rows for index/live content. Its Review saved action preserves the draft and its prefix. Remotes are compact and collapsed, with explicit empty state and checkbox fixes, and the repository path becomes compact after consent. Summary chevron cleanup is still in progress.
+The earlier rail overhaul added full-lane editor hunk button rails, dashed staged and solid working markers, a keyboard/accessibility CodeMirror bridge with one Tab stop per hunk, retained untouched rails during typing and clearing of touched rails, and a structured preview bounded at 40 rows for index/live content. Its Review saved action preserves the draft and its prefix. Remotes are compact and collapsed, with explicit empty state and checkbox fixes, and the repository path becomes compact after consent. That revision was subsequently rejected; the current structural revision is recorded below.
 
-The overhaul passed 3,104 UI tests in 279 files (117.68 seconds), TypeScript, the production build and 24 browser workflows (60 seconds). Browser IPC remains mocked; actual rendering checks cover geometry, accessibility, light theme, 20-pixel editor font, wrapping, folding, scrolling and narrow layouts. A locally ad hoc signed test bundle was built, but actual native overhaul and zoom acceptance remain pending. Inspection of the older native UI showed the faint staged marker and remote wall that supported the user's feedback. Issue #210 remains open.
+The earlier rail overhaul passed 3,104 UI tests in 279 files (117.68 seconds), TypeScript, the production build and 24 browser workflows (60 seconds). Browser IPC remains mocked; actual rendering checks cover geometry, accessibility, light theme, 20-pixel editor font, wrapping, folding, scrolling and narrow layouts. A locally ad hoc signed test bundle was built, but actual native overhaul and zoom acceptance remain pending. Inspection of the older native UI showed the faint staged marker and remote wall that supported the user's feedback. Issue #210 remains open.
 
 ## Unfinished scope
 
@@ -37,7 +37,25 @@ The overhaul passed 3,104 UI tests in 279 files (117.68 seconds), TypeScript, th
 - [x] Exercise phase 3 browser workflows with explicit IPC fixtures (20 passed), recorded separately from native operation.
 - [ ] Exercise phase 3 rebuilt native clone, first push, amend, selected-line staging, history and separate-process worktree/session restoration paths.
 - [ ] Pass exact-head hosted checks for published phase 3 `d59f982`, then publish and verify the current overhaul.
-- [ ] Complete and obtain acceptance for the visual overhaul in #210, including actual native and zoom checks. Automated passes do not close this issue.
+- [ ] Complete and obtain acceptance for the current structural sidebar redesign in #210, including actual native and zoom checks. Both earlier visual revisions were rejected.
+- [x] Pass final merged desktop (203 tests), full UI (3,194 tests in 286 files), strict Clippy and the final production UI rebuild after the recorded corrections.
+- [ ] Keep the separately reported native caret defect #222 open for user review; its fix is outside the current authorized review task.
 - [ ] Audit completion against every original requirement. Keep the objective active while any requirement is missing or unverified.
 
 Raw supplied design references and machine-specific acceptance artifacts remain local. Earlier runtime provenance and hosted failures remain in [the verification ledger](git-integration-verification.md). No stable release, notarization or full reference-product parity is claimed.
+
+## Current structural sidebar revision
+
+The user also rejected the initial rail overhaul at local head `54645eb`, rating the sidebar 0/10. The current structural redesign integrates incoming main revision `83cc464`; that hash identifies incoming main, not a completed integration commit. Neither visual revision has acceptance. #210 remains open.
+
+The current source puts repository basename and branch in the header, provides six icon navigation items with a responsive selected label, and moves repository management into a header popup instead of an idle body band. A 64-pixel two-row composer keeps Amend options collapsed, with concise commit/count feedback, a hint and a neutral disabled state. Changes are collapsible, separate filename from directory, use 14-pixel status indicators and fixed 48-pixel actions shown on hover or focus, and omit empty sections. Narrow overflow at 230 pixels and short-name truncation were caught and corrected. Direct inspection covered 230-pixel dark and 348-pixel light renders.
+
+Twenty-eight Git browser workflows passed in 60 seconds. They use mocked IPC with real rendered CSS/geometry checks at 230, 348 and 500 pixels in dark/light themes, plus menu, draft, focus and safety coverage. This is not native acceptance. The merged core suite passed 311 tests with two ignored in 324.36 seconds. The combined Specta binding export, including checkpoint and Git commands, and TypeScript passed. The final production UI build passed in 3.96 seconds, and strict workspace Clippy passed in 14.40 seconds.
+
+The first merged desktop run passed 199 tests and failed three. These exposed an excluded-path watcher rescan-budget regression, an outdated unsupported Rename Any fixture after main added support, and an asynchronous LSP didOpen log race. After the source corrections, the final desktop rerun passed all 203 tests in 12.72 seconds. The full UI run passed 3,193 tests and failed one outdated closed FailureReason list after main added four reasons. Only that explicit test list was updated; the final full UI rerun passed all 3,194 tests in 286 files in 128.83 seconds.
+
+Integration source excludes private `refs/span` entries from all-ref history. Checkpoint disk mutations share the editor workspace gate and dirty/refresh authority. New desktop dirty-buffer, serialization and partial-reload tests passed in the final 203-test suite. Actual native and exact-head hosted acceptance for this source remain open.
+
+[Issue #222](https://github.com/1kentom/span/issues/222) records a separately reproduced native caret defect at `54645eb`: moving Up from 3:3 reached 2:8 with blame enabled versus 2:3 with blame disabled; Undo restored the blank text but left the caret at 2:37. The issue includes native proof and a source audit. Its fix is outside the authorized current review task and remains open for user review.
+
+No visual acceptance, completed Git/GitHub objective, release readiness or hosted verification is inferred from these results. The remaining hosted merge, issue actions, review threads, signing setup, interactive rebase, submodule and multi-repository scope stays active. Raw native proof, screenshots and machine-specific artifacts remain local.

@@ -1138,15 +1138,16 @@ fn agent_usage_prices_are_honoured_only_from_user_settings() {
         .unwrap()
         .with_user_settings(Some(user.clone()));
     assert!(Settings::default().agents.usage.prices.is_empty());
-    assert!(!Settings::default().agents.usage.import_local_logs);
+    // On by default (ADR 0012 amendment); a workspace cannot turn it off.
+    assert!(Settings::default().agents.usage.import_local_logs);
     fs::create_dir_all(directory.path().join(".span")).unwrap();
     fs::write(
         directory.path().join(".span/settings.jsonc"),
-        "{ \"agents\": { \"usage\": { \"importLocalLogs\": true, \"prices\": { \"gpt-5.5\": { \"input\": 0, \"output\": 0 } } } } }",
+        "{ \"agents\": { \"usage\": { \"importLocalLogs\": false, \"prices\": { \"gpt-5.5\": { \"input\": 0, \"output\": 0 } } } } }",
     )
     .unwrap();
     assert!(
-        !workspace
+        workspace
             .get_settings()
             .unwrap()
             .agents
@@ -1177,6 +1178,25 @@ fn agent_usage_prices_are_honoured_only_from_user_settings() {
     assert_eq!(
         schema["properties"]["agents"]["properties"]["usage"]["properties"]["prices"]["default"],
         serde_json::json!({})
+    );
+    assert_eq!(
+        schema["properties"]["agents"]["properties"]["usage"]["properties"]["importLocalLogs"]
+            ["default"],
+        serde_json::json!(true)
+    );
+    // The user's own file turns it off.
+    fs::write(
+        &user,
+        "{ \"agents\": { \"usage\": { \"importLocalLogs\": false } } }",
+    )
+    .unwrap();
+    assert!(
+        !workspace
+            .get_settings()
+            .unwrap()
+            .agents
+            .usage
+            .import_local_logs
     );
 }
 

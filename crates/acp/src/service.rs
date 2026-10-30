@@ -900,6 +900,27 @@ impl AgentService {
     }
 }
 
+/// Workspace root as sent to the agent in `session/new`, `session/load` and
+/// `session/list`. `fs::canonicalize` gives a Windows verbatim path
+/// (`\\?\C:\w`); agents join file names onto the cwd they are told, often with
+/// `/`, and under a verbatim prefix `/` is a literal name character, so every
+/// path the agent then names falls outside the workspace. The prefix is dropped
+/// where a plain spelling exists (`\\?\C:\w` to `C:\w`, `\\?\UNC\h\s` to
+/// `\\h\s`); any other path is returned unchanged.
+fn agent_protocol_cwd(cwd: &std::path::Path) -> std::path::PathBuf {
+    let text = cwd.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}").into();
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return rest.into();
+        }
+    }
+    cwd.to_owned()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run(
     config: AgentCommand,
@@ -911,6 +932,9 @@ async fn run(
     mut rx: mpsc::UnboundedReceiver<Command>,
     ready: Reply<()>,
 ) -> agent_client_protocol::Result<()> {
+    // The adapter keeps the canonical root for its own path checks; the agent is
+    // told the plain spelling (see `agent_protocol_cwd`).
+    let protocol_cwd = agent_protocol_cwd(&cwd);
     let logger = emit.clone();
     let agent = AcpAgent::new(
         AcpAgentConfig::new(config.command)
@@ -1157,7 +1181,7 @@ async fn run(
                         // cannot be read the session starts in the approval mode. A
                         // delegated child always does: no permission laundering.
                         let approval = opened == Opened::Child || workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
-                        let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
+                        let mut params = serde_json::to_value(NewSessionRequest::new(protocol_cwd.clone())).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { merge_meta(&mut params, meta); }
                         if let Some(meta) = adapter.ephemeral_session_meta().filter(|_| ephemeral) { merge_meta(&mut params, meta); }
@@ -1297,16 +1321,17 @@ async fn run(
                     }
                     Command::ListSessions(listing, reply) => {
                         if !can_list { let _ = reply.send(Err("This agent cannot list earlier sessions".into())); continue; }
-                        let list_cx = cx.clone(); let list_cwd = cwd.clone(); let list_state = state.clone(); let list_emit = emit.clone();
+                        let list_cx = cx.clone(); let list_cwd = protocol_cwd.clone(); let list_state = state.clone(); let list_emit = emit.clone();
+                        let list_adapter = state.lock().map(|bridge| bridge.adapter.clone()).unwrap_or_default();
                         cx.spawn(async move {
                             let span_own = list_state.lock().ok().and_then(|bridge| bridge.hidden.lock().ok().map(|h| h.ids.clone())).unwrap_or_default();
                             let health = move |summary: &SessionSummary| span_own.contains(&summary.session_id) || is_hidden_session(&summary.session_id, summary.title.as_deref());
                             let folder = (listing == Listing::Folder).then_some(list_cwd);
                             let result = if listing == Listing::Health {
-                                list_all_sessions(&list_cx, None, health).await
+                                list_all_sessions(&list_cx, None, health, |_, _| {}).await
                             } else {
                                 // Health sessions and delegated children (ADR 0003) are dropped page by page, so they never use up the cap.
-                                list_all_sessions(&list_cx, folder, move |summary| !health(summary) && !crate::delegated::is_delegated_session(&summary.session_id)).await.map(|found| {
+                                list_all_sessions(&list_cx, folder, move |summary| !health(summary) && !crate::delegated::is_delegated_session(&summary.session_id), move |summary, meta| list_adapter.mark_listed(summary, meta)).await.map(|found| {
                                     let mut kept = hide_deleted(&list_state, &list_emit, found);
                                     kept.truncate(LIST_MAX_SESSIONS);
                                     kept
@@ -1319,7 +1344,7 @@ async fn run(
                     Command::LoadSession(id, servers, reply) => {
                         if !can_load { let _ = reply.send(Err("This agent cannot restore earlier sessions".into())); continue; }
                         if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
-                        let load_cx = cx.clone(); let load_emit = emit.clone(); let load_cwd = cwd.clone(); let load_state = state.clone(); let load_adapter = adapter.clone();
+                        let load_cx = cx.clone(); let load_emit = emit.clone(); let load_cwd = protocol_cwd.clone(); let load_state = state.clone(); let load_adapter = adapter.clone();
                         let mut params = serde_json::to_value(LoadSessionRequest::new(id.clone(), load_cwd)).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         if profile.replay_quiet.is_some() {
@@ -1586,6 +1611,7 @@ async fn list_all_sessions(
     cx: &ConnectionTo<Agent>,
     cwd: Option<std::path::PathBuf>,
     keep: impl Fn(&SessionSummary) -> bool,
+    mark: impl Fn(&mut SessionSummary, Option<&Value>),
 ) -> Result<Vec<SessionSummary>, String> {
     let deadline = tokio::time::Instant::now() + LIST_BUDGET;
     let mut found: Vec<SessionSummary> = Vec::new();
@@ -1605,11 +1631,17 @@ async fn list_all_sessions(
                 found.extend(
                     page.sessions
                         .into_iter()
-                        .map(|info| SessionSummary {
-                            session_id: info.session_id.to_string(),
-                            title: info.title,
-                            updated_at: info.updated_at,
-                            cwd: Some(info.cwd.to_string_lossy().into_owned()),
+                        .map(|info| {
+                            let mut summary = SessionSummary {
+                                session_id: info.session_id.to_string(),
+                                title: info.title,
+                                updated_at: info.updated_at,
+                                cwd: Some(info.cwd.to_string_lossy().into_owned()),
+                                parent_session_id: None,
+                                native_subagent: false,
+                            };
+                            mark(&mut summary, info.meta.map(Value::Object).as_ref());
+                            summary
                         })
                         .filter(|summary| keep(summary)),
                 );
@@ -2009,6 +2041,24 @@ mod tests {
     use super::*;
 
     const SECRET: &str = "s3cr3t-token-value";
+
+    #[test]
+    fn the_agent_is_told_a_plain_cwd_without_the_verbatim_prefix() {
+        let plain = |text: &str| agent_protocol_cwd(std::path::Path::new(text));
+        assert_eq!(
+            plain(r"\\?\C:\Users\runner\Temp\.tmpX"),
+            std::path::PathBuf::from(r"C:\Users\runner\Temp\.tmpX")
+        );
+        assert_eq!(
+            plain(r"\\?\UNC\host\share\w"),
+            std::path::PathBuf::from(r"\\host\share\w")
+        );
+        // Verbatim forms without a drive spelling and ordinary paths are kept.
+        let guid = r"\\?\Volume{0b1c2d3e-0000-0000-0000-000000000000}\w";
+        assert_eq!(plain(guid), std::path::PathBuf::from(guid));
+        assert_eq!(plain(r"C:\w"), std::path::PathBuf::from(r"C:\w"));
+        assert_eq!(plain("/private/w"), std::path::PathBuf::from("/private/w"));
+    }
 
     #[test]
     fn a_child_session_meta_keeps_the_approval_options_and_adds_persist_session() {

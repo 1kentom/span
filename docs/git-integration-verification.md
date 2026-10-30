@@ -100,12 +100,28 @@ The active completion checklist retains both the new acceptance gates and the br
 
 During phase 3 verification, launching an older installed debug runtime overwrote the generated bindings through its startup exporter. The authoritative bindings were regenerated and verified, and the startup export guard now uses `#[cfg(dev)]` instead of `debug_assertions`, so bundled debug apps do not export source bindings on launch. TypeScript, production build and strict workspace Clippy passed after this correction. The native bundle built; no actual phase 3 native mutation is counted yet.
 
-## Rejected polish and current visual overhaul
+## Rejected polish and earlier rail overhaul
 
 The user rejected the visual polish published in phase 3 commit `d59f982` in [PR #195](https://github.com/1kentom/span/pull/195), and [issue #210](https://github.com/1kentom/span/issues/210) remains open for a complete overhaul. Earlier completed checkboxes represent checks that ran, not accepted visual quality. Inspection of the older native UI showed a faint staged marker and an expanded wall of remote controls, supporting the user's feedback.
 
-The current uncommitted overhaul adds full-lane hunk button rails, dashed staged and solid working markers, a keyboard/accessibility CodeMirror bridge with one Tab stop per hunk, retained untouched rails while typing and cleared touched rails, and structured 40-row index/live previews. Review saved preserves the current draft and prefix. Remotes are compact and collapsed with an explicit empty state and checkbox correction; the repository path is compact after consent. Remote summaries use the project Iconsax chevrons.
+The earlier rail overhaul added full-lane hunk button rails, dashed staged and solid working markers, a keyboard/accessibility CodeMirror bridge with one Tab stop per hunk, retained untouched rails while typing and cleared touched rails, and structured 40-row index/live previews. Review saved preserves the current draft and prefix. Remotes are compact and collapsed with an explicit empty state and checkbox correction; the repository path is compact after consent. Remote summaries use the project Iconsax chevrons.
 
 The full overhaul UI run passed 3,104 tests across 279 files in 117.68 seconds. TypeScript and the production build passed. Twenty-four dedicated browser workflows passed in 60 seconds with mocked IPC. These include actual rendered geometry and accessibility checks, light theme, 20-pixel editor font, wrapping, folding, scrolling and narrow layouts. They do not establish native Git behavior or installed acceptance.
 
 A locally ad hoc signed native overhaul test bundle was built. Actual native overhaul and zoom acceptance are pending, as are exact-head hosted checks and the broader functional completion gates. Issue #210 is not complete. Raw screenshots, visual artifacts and local logs remain ignored and outside publication.
+
+## Current structural sidebar revision
+
+The user also rejected the initial rail overhaul at local head `54645eb`, rating the sidebar 0/10. The current structural redesign integrates incoming main revision `83cc464`; that hash identifies incoming main, not a completed integration commit. Neither visual revision has acceptance. #210 remains open.
+
+The current source puts repository basename and branch in the header, provides six icon navigation items with a responsive selected label, and moves repository management into a header popup instead of an idle body band. A 64-pixel two-row composer keeps Amend options collapsed, with concise commit/count feedback, a hint and a neutral disabled state. Changes are collapsible, separate filename from directory, use 14-pixel status indicators and fixed 48-pixel actions shown on hover or focus, and omit empty sections. Narrow overflow at 230 pixels and short-name truncation were caught and corrected. Direct inspection covered 230-pixel dark and 348-pixel light renders.
+
+Twenty-eight Git browser workflows passed in 60 seconds. They use mocked IPC with real rendered CSS/geometry checks at 230, 348 and 500 pixels in dark/light themes, plus menu, draft, focus and safety coverage. This is not native acceptance. The merged core suite passed 311 tests with two ignored in 324.36 seconds. The combined Specta binding export, including checkpoint and Git commands, and TypeScript passed. The final production UI build passed in 3.96 seconds, and strict workspace Clippy passed in 14.40 seconds.
+
+The first merged desktop run passed 199 tests and failed three. These exposed an excluded-path watcher rescan-budget regression, an outdated unsupported Rename Any fixture after main added support, and an asynchronous LSP didOpen log race. After the source corrections, the final desktop rerun passed all 203 tests in 12.72 seconds. The full UI run passed 3,193 tests and failed one outdated closed FailureReason list after main added four reasons. Only that explicit test list was updated; the final full UI rerun passed all 3,194 tests in 286 files in 128.83 seconds.
+
+Integration source excludes private `refs/span` entries from all-ref history. Checkpoint disk mutations share the editor workspace gate and dirty/refresh authority. New desktop dirty-buffer, serialization and partial-reload tests passed in the final 203-test suite. Actual native and exact-head hosted acceptance for this source remain open.
+
+[Issue #222](https://github.com/1kentom/span/issues/222) records a separately reproduced native caret defect at `54645eb`: moving Up from 3:3 reached 2:8 with blame enabled versus 2:3 with blame disabled; Undo restored the blank text but left the caret at 2:37. The issue includes native proof and a source audit. Its fix is outside the authorized current review task and remains open for user review.
+
+No visual acceptance, completed Git/GitHub objective, release readiness or hosted verification is inferred from these results. The remaining hosted merge, issue actions, review threads, signing setup, interactive rebase, submodule and multi-repository scope stays active. Raw native proof, screenshots and machine-specific artifacts remain local.

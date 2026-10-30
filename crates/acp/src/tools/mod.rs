@@ -17,7 +17,8 @@ mod tasks;
 pub use budget::{Budget, BudgetRequest, Meter};
 pub use host::{LeadDelegation, LeadServers};
 pub use result::{
-    base64, file_uri, inside_workspace, mime_type, sha256_hex, Artifact, FailureReason, UsageReport,
+    base64, file_uri, inside_workspace, mime_type, sha256_hex, Artifact, Deliverables,
+    FailureReason, UsageReport,
 };
 pub use run_tools::{
     RunConfigurationEntry, RunToolBackend, RunToolCatalog, RunToolFuture, RunToolProgress,
@@ -25,7 +26,7 @@ pub use run_tools::{
 pub use server::{tool_definitions, ToolServer, MCP_PROTOCOL_VERSIONS, SERVER_NAME};
 pub use tasks::DecisionRecord;
 
-use crate::{AgentFeatures, BackgroundAgents, InstalledAgent, SessionKey};
+use crate::{AgentFeatures, BackgroundAgents, HealthMonitor, InstalledAgent, SessionKey};
 use serde::{Deserialize, Serialize};
 use span_core::CoreWorkspace;
 use specta::Type;
@@ -116,6 +117,19 @@ pub enum DelegationEvent {
         child: SessionKey,
         task_id: String,
         agent_name: String,
+        /// Display name of the model the child runs, when the agent
+        /// reported one (the lead's `model` choice, else the agent default).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        model: Option<String>,
+        /// What the lead expects back (ADR 0014 `deliverables`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        deliverables: Option<Deliverables>,
+        /// The `delegate_many` group the task belongs to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        group_id: Option<String>,
     },
     /// A task finished, successfully or not.
     TaskFinished {
@@ -218,7 +232,12 @@ pub struct DelegationTask {
     pub lead: SessionKey,
     pub child: SessionKey,
     pub agent_name: String,
-    /// `queued`, `running`, `completed` or `failed`.
+    /// Display name of the model the child runs, when the agent reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub model: Option<String>,
+    /// `queued`, `running`, `completed`, `failed` or `lost` (the child
+    /// session is gone, ADR 0014).
     pub status: String,
     pub stop_reason: Option<String>,
     pub reason: Option<FailureReason>,
@@ -237,6 +256,10 @@ pub struct DelegationTask {
     /// Usage of the whole delegation (all its prompts) so far. `tokens` is
     /// only set when the agent reports it.
     pub budget_used: UsageReport,
+    /// What the lead expects back (ADR 0014 `deliverables`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub deliverables: Option<Deliverables>,
 }
 
 /// One delegated task and the text its child session wrote so far, for the
@@ -268,6 +291,8 @@ pub struct ToolServerConfig {
     /// Starts installed agents on demand. Without it, an installed agent
     /// that is not running cannot be delegated to.
     pub background: Option<BackgroundAgents>,
+    /// The latest health check results, listed per agent for the lead.
+    pub health: Option<HealthMonitor>,
     pub events: Option<DelegationEventSink>,
 }
 

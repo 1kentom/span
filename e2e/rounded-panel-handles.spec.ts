@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { modifier, ready, screenshot } from "./helpers";
+import { gripHoverScale, modifier, ready, scaleMatrix, screenshot } from "./helpers";
 
 for (const panel of [
   { side: "left", name: "project", toggle: "Toggle project panel", cursor: "col-resize" },
@@ -29,11 +29,11 @@ for (const panel of [
     if (panel.side === "right") expect(Math.abs(rest!.x + rest!.width - center!.x - center!.width)).toBeLessThanOrEqual(1);
     if (panel.side === "bottom") expect(Math.abs(rest!.y + rest!.height - center!.y - center!.height)).toBeLessThanOrEqual(1);
     await rail.hover();
-    await expect(grip).toHaveCSS("transform", "matrix(1.03, 0, 0, 1.03, 0, 0)");
+    await expect(grip).toHaveCSS("transform", scaleMatrix(gripHoverScale("")));
     await expect(grip).toHaveCSS("opacity", "1");
     const hovered = await grip.evaluate(node => ({ fill: getComputedStyle(node, "::before").backgroundColor, dots: getComputedStyle(node.querySelector("i")!).transform }));
     expect(hovered.fill).toBe(base.color);
-    expect(hovered.dots).toBe("matrix(1.1, 0, 0, 1.1, 0, 0)");
+    expect(hovered.dots).toBe(scaleMatrix(gripHoverScale(" i")));
     await expect(rail.getByRole("tooltip")).toBeVisible();
     await screenshot(page, testInfo, `rounded-handle-${panel.side}-1440`);
     const view = (await grip.boundingBox())!;
@@ -66,7 +66,7 @@ test("rounded bump feedback is immediate for reduced motion", async ({ page }) =
   const grip = rail.locator(".panel-rail-grip");
   await expect(grip).toHaveCSS("transition-duration", "0s");
   await expect(grip.locator("i").first()).toHaveCSS("transition-duration", "0s");
-  await expect(grip).toHaveCSS("transform", "matrix(1.03, 0, 0, 1.03, 0, 0)");
+  await expect(grip).toHaveCSS("transform", scaleMatrix(gripHoverScale("")));
   await expect(rail.getByRole("tooltip")).toBeVisible();
 });
 

@@ -690,6 +690,7 @@ mod tests {
                 run_tools: Some(backend),
                 installed: Vec::new(),
                 background: None,
+                health: None,
                 events: None,
             },
         )

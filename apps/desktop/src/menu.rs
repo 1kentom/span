@@ -35,6 +35,7 @@ pub enum NativeAction {
     ToggleProject,
     ToggleAssistant,
     ToggleTerminal,
+    ToggleZenMode,
     ToggleWordWrap,
     MarkdownPreview,
     FormatDocument,
@@ -135,6 +136,11 @@ const ACTIONS: &[(&str, &str, NativeAction)] = &[
         "toggleTerminal",
         "Toggle Terminal Panel",
         NativeAction::ToggleTerminal,
+    ),
+    (
+        "toggleZenMode",
+        "Toggle Zen Mode",
+        NativeAction::ToggleZenMode,
     ),
     (
         "markdownPreview",
@@ -316,6 +322,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["toggleProject"],
             &items["toggleAssistant"],
             &items["toggleTerminal"],
+            &items["toggleZenMode"],
             &items["markdownPreview"],
             &items["toggleWordWrap"],
             &items["zoomIn"],

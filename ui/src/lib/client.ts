@@ -982,6 +982,7 @@ export const lspPort: LspPort = {
   onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : hubPreview!.onState(listener),
   onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : hubPreview!.onInstallProgress(listener),
   onError: listener => isDesktop ? events.languageServerError.listen(event => listener(event.payload)) : noListener(),
+  onWatchRecovery: listener => isDesktop ? events.languageServerWatchRecovery.listen(event => listener(event.payload)) : noListener(),
 };
 
 /** Sign in with a method whose `input` is `apiKey` or `gateway`. The secret goes to the agent only; Span does not log or store it. Returns the session id. */
@@ -1145,7 +1146,7 @@ export async function usageSessions(range: import('../bindings').UsageRange_Dese
   return isDesktop ? commands.usageSessions(range) : [];
 }
 
-/** Starts a background scan of Claude Code's and Codex's local logs when `agents.usage.importLocalLogs` is on (ADR 0012). Returns at once. */
+/** Starts a background scan of the agents' local usage logs when `agents.usage.importLocalLogs` is on (the default, ADR 0012). Returns at once. */
 export async function usageImportScan(): Promise<import('../bindings').UsageImportStatus_Serialize | undefined> {
   return isDesktop ? commands.usageImportScan() : undefined;
 }
