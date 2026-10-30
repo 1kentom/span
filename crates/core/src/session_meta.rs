@@ -133,6 +133,7 @@ pub struct SessionMeta {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "lenient_mode"
     )]
+    #[specta(type = Option<ThreadPermissionMode>)]
     pub permission_mode: Option<ThreadPermissionMode>,
 }
 
@@ -366,7 +367,7 @@ pub struct SessionMetaPatch {
     pub usage: Option<UsagePatch>,
     /// The thread's permission mode (ADR 0015). Set, not merged.
     #[serde(default, deserialize_with = "lenient_mode")]
-    #[specta(optional)]
+    #[specta(optional, type = Option<ThreadPermissionMode>)]
     pub permission_mode: Option<ThreadPermissionMode>,
 }
 

@@ -104,14 +104,19 @@ pub struct RequestFacts {
 /// - Plan: edit, delete, move, execute, mode switches and unknown tools are
 ///   rejected once with `plan_mode_read_only`; read, search, fetch and think
 ///   prompt as in Ask.
-/// - Accept edits: an edit whose paths are all inside the workspace is
-///   allowed; everything else prompts (commands too).
+/// - Accept edits: an edit whose paths are all inside the workspace (and
+///   that carries no command) is allowed; everything else prompts, commands
+///   too.
 /// - Auto: Accept edits, plus a command on the safe allowlist is allowed;
 ///   everything else prompts.
 /// - Full: everything is allowed (and logged by the caller).
 pub fn decide(mode: ThreadPermissionMode, facts: RequestFacts) -> PolicyDecision {
     use ThreadPermissionMode::*;
-    let workspace_edit = facts.kind == ToolKind::Edit && facts.paths == PathScope::Inside;
+    // An edit that also carries a command is not trusted as an edit: the
+    // kind is the agent's own label.
+    let workspace_edit = facts.kind == ToolKind::Edit
+        && facts.paths == PathScope::Inside
+        && facts.command == CommandClass::None;
     match mode {
         Ask => PolicyDecision::Prompt,
         Plan if facts.kind.read_only() => PolicyDecision::Prompt,
@@ -519,7 +524,9 @@ mod tests {
 
     /// The expected answer, written out independently of `decide`.
     fn expected(mode: ThreadPermissionMode, f: RequestFacts) -> PolicyDecision {
-        let edit_inside = f.kind == ToolKind::Edit && f.paths == PathScope::Inside;
+        let edit_inside = f.kind == ToolKind::Edit
+            && f.paths == PathScope::Inside
+            && f.command == CommandClass::None;
         let safe_exec = f.kind == ToolKind::Execute && f.command == CommandClass::Safe;
         match mode {
             Ask => Prompt,
@@ -632,6 +639,12 @@ mod tests {
             (
                 AcceptEdits,
                 f(ToolKind::Edit, PathScope::Outside, CommandClass::None),
+                Prompt,
+            ),
+            // An "edit" that carries a command is not auto allowed.
+            (
+                AcceptEdits,
+                f(ToolKind::Edit, PathScope::Inside, CommandClass::Other),
                 Prompt,
             ),
             (
