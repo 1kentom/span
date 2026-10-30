@@ -1180,6 +1180,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             agents::agent_session_states,
             agents::agent_authenticate,
             agents::agent_authenticate_with,
+            agents::agent_cancel_authentication,
             agents::agent_presets,
             agents::agent_elicitation,
             agents::agent_set_config,
