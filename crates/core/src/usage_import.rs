@@ -1,9 +1,9 @@
 //! Importers for agents' own local usage logs (ADR 0012, source B), on by
 //! default: Claude Code's `projects/**/*.jsonl` (subagent transcripts
-//! included), Codex's `sessions/**/rollout-*.jsonl` (and `.jsonl.gz`), Gemini
-//! CLI's `tmp/*/chats/*.json[l]` and OpenCode's legacy
-//! `storage/message/**/*.json`. Compressed `.zst` rollouts and OpenCode's
-//! SQLite database are found and reported, not read.
+//! included), Codex's `sessions/**/rollout-*.jsonl` (and `.jsonl.gz` and
+//! `.jsonl.zst`), Gemini CLI's `tmp/*/chats/*.json[l]`, OpenCode's legacy
+//! `storage/message/**/*.json` and OpenCode 1.2+'s `opencode.db` (see
+//! [`crate::usage_import_opencode`]).
 //!
 //! Read only. Only token counts, model ids, session ids, timestamps and a
 //! reported cost leave a log line; prompt text, replies and tool output are
@@ -27,7 +27,8 @@ pub const IMPORTED_CLAUDE_ID: &str = "claude-code-logs";
 pub const IMPORTED_CODEX_ID: &str = "codex-logs";
 pub const IMPORTED_GEMINI_ID: &str = "gemini-logs";
 pub const IMPORTED_OPENCODE_ID: &str = "opencode-logs";
-const CACHE_VERSION: u32 = 2;
+/// 3: compressed and database file states (zstd rollouts, `opencode.db`).
+const CACHE_VERSION: u32 = 3;
 const HEAD_BYTES: usize = 4096;
 
 pub fn is_imported_agent(agent_id: &str) -> bool {
@@ -94,10 +95,15 @@ impl ImportKind {
     fn whole_file(self, path: &Path) -> bool {
         match self {
             ImportKind::Claude => false,
-            ImportKind::Codex => path.extension().is_some_and(|e| e == "gz"),
+            ImportKind::Codex => is_compressed(path),
             ImportKind::Gemini | ImportKind::OpenCode => true,
         }
     }
+}
+
+/// A gzip or zstd compressed rollout.
+fn is_compressed(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "gz" || e == "zst")
 }
 
 /// Bounds on one scan.
@@ -107,6 +113,12 @@ pub struct ImportLimits {
     pub max_files: usize,
     pub max_file_bytes: u64,
     pub max_line_bytes: usize,
+    /// Decoded bytes kept from one compressed rollout; a larger one is
+    /// skipped and reported.
+    pub max_decompressed_bytes: u64,
+    /// Rows read from one database query page, and from one database in all.
+    pub db_page_rows: usize,
+    pub max_db_rows: usize,
 }
 
 impl Default for ImportLimits {
@@ -116,6 +128,9 @@ impl Default for ImportLimits {
             max_files: 20_000,
             max_file_bytes: 512 * 1024 * 1024,
             max_line_bytes: 16 * 1024 * 1024,
+            max_decompressed_bytes: 256 * 1024 * 1024,
+            db_page_rows: 2_000,
+            max_db_rows: 2_000_000,
         }
     }
 }
@@ -226,6 +241,13 @@ pub struct FileState {
     pub buckets: Vec<ImportBucket>,
     /// Claude: dedupe keys (message id and request id) this file contributed.
     pub keys: Vec<u64>,
+    /// A gzip or zstd rollout: a plain copy of the same session wins.
+    pub compressed: bool,
+    /// An OpenCode database: its sessions replace the same sessions read from
+    /// OpenCode's older JSON message files.
+    pub database: bool,
+    /// Database: the largest `time_updated` read, the incremental watermark.
+    pub watermark: i64,
 }
 
 /// The importer's cache: one entry per log file, keyed by a hash of its path.
@@ -277,10 +299,12 @@ pub struct ScanReport {
     pub skipped: u32,
     /// True when a cap stopped the file listing early.
     pub truncated: bool,
-    /// Compressed files read (gzip rollouts).
+    /// Compressed files read (gzip and zstd rollouts).
     pub compressed_read: u32,
-    /// Compressed files found but not read (`.zst`: no zstd decoder).
+    /// Compressed files skipped because they decode past the size cap.
     pub compressed_skipped: u32,
+    /// OpenCode databases read.
+    pub databases_read: u32,
     /// Kinds that had at least one log file, in a fixed order.
     pub kinds: Vec<ImportKind>,
     /// Plain notes about sources found but not read.
@@ -288,7 +312,7 @@ pub struct ScanReport {
 }
 
 /// 64-bit FNV-1a, stable across platforms and releases.
-fn fnv(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
@@ -338,11 +362,26 @@ fn list_files(
 }
 
 /// Reads new bytes of every log file into `cache`. `progress` sees the report
-/// after each file. Files that disappeared are dropped from the cache.
+/// after each file. Files that disappeared are dropped from the cache. A live
+/// OpenCode database is copied into a folder under the system temp folder;
+/// [`scan_in`] picks that folder.
 pub fn scan(
     roots: &[(ImportKind, PathBuf)],
     cache: &mut ImportCache,
     limits: &ImportLimits,
+    progress: &mut dyn FnMut(&ScanReport),
+) -> ScanReport {
+    let work = std::env::temp_dir().join("span-usage-import");
+    scan_in(roots, cache, limits, &work, progress)
+}
+
+/// [`scan`], copying a live (WAL) OpenCode database into a fresh folder under
+/// `work_dir`, removed again after the read.
+pub fn scan_in(
+    roots: &[(ImportKind, PathBuf)],
+    cache: &mut ImportCache,
+    limits: &ImportLimits,
+    work_dir: &Path,
     progress: &mut dyn FnMut(&ScanReport),
 ) -> ScanReport {
     let mut files = vec![];
@@ -353,29 +392,42 @@ pub fn scan(
             report.truncated |= list_files(*kind, root, limits, &mut files);
         }
     }
+    let mut databases: Vec<PathBuf> = vec![];
+    for (_, root) in roots.iter().filter(|(k, _)| *k == ImportKind::OpenCode) {
+        for db in crate::usage_import_opencode::databases(root) {
+            if !databases.contains(&db) {
+                databases.push(db);
+            }
+        }
+    }
     for kind in [
         ImportKind::Claude,
         ImportKind::Codex,
         ImportKind::Gemini,
         ImportKind::OpenCode,
     ] {
-        if files.iter().any(|(k, _)| *k == kind) {
+        if files.iter().any(|(k, _)| *k == kind)
+            || (kind == ImportKind::OpenCode && !databases.is_empty())
+        {
             report.kinds.push(kind);
         }
     }
-    if roots
-        .iter()
-        .filter(|(kind, _)| *kind == ImportKind::OpenCode)
-        .any(|(_, root)| opencode_database(root))
-    {
-        report.notes.push(
-            "OpenCode 1.2 and later keep usage in opencode.db, which Span does not read yet. Only OpenCode's older JSON message files are counted.".into(),
-        );
-    }
-    report.files_total = files.len() as u32;
+    report.files_total = (files.len() + databases.len()) as u32;
     progress(&report);
-    let present: HashSet<String> = files.iter().map(|(_, p)| path_key(p)).collect();
+    let present: HashSet<String> = files
+        .iter()
+        .map(|(_, p)| path_key(p))
+        .chain(databases.iter().map(|p| path_key(p)))
+        .collect();
     cache.files.retain(|key, _| present.contains(key));
+    for db in &databases {
+        let key = path_key(db);
+        let mut state = cache.files.remove(&key).unwrap_or_default();
+        crate::usage_import_opencode::read_database(db, &mut state, limits, work_dir, &mut report);
+        cache.files.insert(key, state);
+        report.files_done += 1;
+        progress(&report);
+    }
     let mut seen: HashSet<u64> = cache
         .files
         .values()
@@ -395,22 +447,6 @@ pub fn scan(
     report
 }
 
-/// True when OpenCode's data folder (two levels above `storage/message`)
-/// holds an `opencode*.db` file.
-fn opencode_database(message_root: &Path) -> bool {
-    let Some(data) = message_root.parent().and_then(Path::parent) else {
-        return false;
-    };
-    fs::read_dir(data).is_ok_and(|entries| {
-        entries.filter_map(|e| e.ok()).any(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            name.starts_with("opencode")
-                && name.ends_with(".db")
-                && e.file_type().is_ok_and(|t| t.is_file())
-        })
-    })
-}
-
 fn read_file(
     kind: ImportKind,
     path: &Path,
@@ -426,10 +462,6 @@ fn read_file(
     let len = metadata.len();
     if len > limits.max_file_bytes {
         return Err(CoreError::Settings("Log file is over the size cap".into()));
-    }
-    if path.extension().is_some_and(|e| e == "zst") {
-        report.compressed_skipped += 1;
-        return Ok(());
     }
     let mut file = File::open(path).map_err(|e| io_error("Read log file", path, e))?;
     let mut head = vec![0u8; HEAD_BYTES.min(len as usize)];
@@ -498,7 +530,7 @@ fn fallback_session(path: &Path) -> String {
 }
 
 /// Adds entries to the file's hour, model and session buckets.
-fn add_entries(
+pub(crate) fn add_entries(
     kind: ImportKind,
     state: &mut FileState,
     entries: Vec<Entry>,
@@ -559,8 +591,10 @@ fn first_seen(
 }
 
 /// A file read from the start whenever its length or first bytes change:
-/// its earlier counts and dedupe keys are replaced. Gzip is decoded with
-/// the decoded size capped like a plain file.
+/// its earlier counts and dedupe keys are replaced. Gzip and zstd are decoded
+/// as a stream with the decoded size capped; a compressed file past the cap is
+/// skipped and reported, and a corrupt one keeps the complete lines decoded
+/// before the damage.
 #[allow(clippy::too_many_arguments)]
 fn read_whole(
     kind: ImportKind,
@@ -579,26 +613,38 @@ fn read_whole(
     for key in &state.keys {
         seen.remove(key);
     }
+    let compressed = kind == ImportKind::Codex && is_compressed(path);
     *state = FileState {
         kind: Some(kind),
         head: head_hash,
         len,
         offset: len,
+        compressed,
         ..FileState::default()
     };
     file.seek(SeekFrom::Start(0))
         .map_err(|e| io_error("Read log file", path, e))?;
     let mut bytes = vec![];
-    let compressed = path.extension().is_some_and(|e| e == "gz");
     if compressed {
-        flate2::read::MultiGzDecoder::new(file)
-            .take(limits.max_file_bytes + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| io_error("Decompress log file", path, e))?;
-        if bytes.len() as u64 > limits.max_file_bytes {
-            return Err(CoreError::Settings(
-                "Decompressed log is over the size cap".into(),
-            ));
+        let cap = limits.max_decompressed_bytes;
+        let outcome = if path.extension().is_some_and(|e| e == "zst") {
+            read_zstd(file, cap, &mut bytes)
+        } else {
+            flate2::read::MultiGzDecoder::new(file)
+                .take(cap + 1)
+                .read_to_end(&mut bytes)
+                .map(|_| ())
+        };
+        if bytes.len() as u64 > cap {
+            report.compressed_skipped += 1;
+            return Ok(());
+        }
+        if let Err(error) = outcome {
+            // Keep the complete lines decoded before the damage, if any.
+            match bytes.iter().rposition(|b| *b == b'\n') {
+                Some(end) => bytes.truncate(end + 1),
+                None => return Err(io_error("Decompress log file", path, error)),
+            }
         }
         report.compressed_read += 1;
     } else {
@@ -647,14 +693,33 @@ fn read_whole(
     Ok(())
 }
 
+/// Decodes every zstd frame of `file` into `out`, stopping one byte past `cap`
+/// (the caller checks the length). Pure Rust, streaming.
+fn read_zstd(file: File, cap: u64, out: &mut Vec<u8>) -> std::io::Result<()> {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(file);
+    loop {
+        if reader.fill_buf()?.is_empty() {
+            return Ok(());
+        }
+        let decoder = ruzstd::decoding::StreamingDecoder::new(&mut reader)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        let room = (cap + 1).saturating_sub(out.len() as u64);
+        decoder.take(room).read_to_end(out)?;
+        if out.len() as u64 > cap {
+            return Ok(());
+        }
+    }
+}
+
 /// Hours since the epoch of Unix milliseconds.
-fn hour_of_ms(ms: f64) -> Option<u32> {
+pub(crate) fn hour_of_ms(ms: f64) -> Option<u32> {
     (ms.is_finite() && ms > 0.0).then(|| (ms / 3_600_000.0) as u32)
 }
 
 /// Whether a model's prices count cached tokens inside input (OpenAI and
 /// Google), so tokens reported apart are folded in to match the ledger.
-fn input_includes_cache(model: &str) -> bool {
+pub(crate) fn input_includes_cache(model: &str) -> bool {
     let id = model
         .rsplit('/')
         .next()
@@ -666,6 +731,35 @@ fn input_includes_cache(model: &str) -> bool {
         || id.starts_with("o1")
         || id.starts_with("o3")
         || id.starts_with("o4")
+}
+
+/// OpenCode's token fields as ledger counts: its input excludes cache, and
+/// reasoning is billed as output.
+pub(crate) fn opencode_counts(
+    model: &str,
+    uncached: u64,
+    output: u64,
+    reasoning: u64,
+    cache_read: u64,
+    cache_write: u64,
+) -> TokenCounts {
+    let output = output.saturating_add(reasoning);
+    let input = if input_includes_cache(model) {
+        uncached.saturating_add(cache_read)
+    } else {
+        uncached
+    };
+    TokenCounts {
+        input,
+        output,
+        cache_read,
+        cache_write,
+        thought: reasoning,
+        total: uncached
+            .saturating_add(cache_read)
+            .saturating_add(cache_write)
+            .saturating_add(output),
+    }
 }
 
 /// One OpenCode assistant message file (`storage/message/<session>/<id>.json`):
@@ -696,24 +790,14 @@ fn opencode_entry(bytes: &[u8], session_dir: &str, file_id: &str) -> Option<(Ent
     .find(|m| !m.is_empty())?;
     let tokens = message.get("tokens")?;
     let n = |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_u64).unwrap_or(0);
-    let uncached = n(tokens.get("input"));
-    let reasoning = n(tokens.get("reasoning"));
-    let output = n(tokens.get("output")) + reasoning;
-    let cache_read = n(tokens.get("cache").and_then(|c| c.get("read")));
-    let cache_write = n(tokens.get("cache").and_then(|c| c.get("write")));
-    let input = if input_includes_cache(&model) {
-        uncached + cache_read
-    } else {
-        uncached
-    };
-    let counts = TokenCounts {
-        input,
-        output,
-        cache_read,
-        cache_write,
-        thought: reasoning,
-        total: uncached + cache_read + cache_write + output,
-    };
+    let counts = opencode_counts(
+        &model,
+        n(tokens.get("input")),
+        n(tokens.get("output")),
+        n(tokens.get("reasoning")),
+        n(tokens.get("cache").and_then(|c| c.get("read"))),
+        n(tokens.get("cache").and_then(|c| c.get("write"))),
+    );
     if counts.is_empty() {
         return None;
     }
@@ -865,12 +949,12 @@ fn gemini_entries(bytes: &[u8], limits: &ImportLimits) -> Vec<(Entry, u64)> {
     out
 }
 
-struct Entry {
-    hour: u32,
-    model: String,
-    session: String,
-    tokens: TokenCounts,
-    cost_micros: u64,
+pub(crate) struct Entry {
+    pub(crate) hour: u32,
+    pub(crate) model: String,
+    pub(crate) session: String,
+    pub(crate) tokens: TokenCounts,
+    pub(crate) cost_micros: u64,
 }
 
 /// Hours since the Unix epoch of an RFC 3339 time such as
@@ -1078,21 +1162,67 @@ fn codex_entry(line: &[u8], state: &mut FileState) -> Option<Entry> {
     }
 }
 
+/// File keys whose counts are left out because another file holds the same
+/// session: a compressed Codex rollout when a plain copy of that session
+/// exists (or, among compressed copies only, all but the one with most
+/// turns), and OpenCode JSON message files for a session its database holds.
+fn superseded(cache: &ImportCache) -> (HashSet<&str>, HashSet<&str>) {
+    let mut codex: HashMap<&str, Vec<(&str, &FileState)>> = HashMap::new();
+    for (key, state) in &cache.files {
+        if state.kind == Some(ImportKind::Codex) && !state.session.is_empty() {
+            codex.entry(state.session.as_str()).or_default().push((key, state));
+        }
+    }
+    let mut dropped = HashSet::new();
+    for copies in codex.values() {
+        if copies.len() < 2 || copies.iter().all(|(_, s)| !s.compressed) {
+            continue;
+        }
+        let turns = |s: &FileState| s.buckets.iter().map(|b| u64::from(b.turns)).sum::<u64>();
+        let keep = copies
+            .iter()
+            .max_by_key(|(key, s)| (!s.compressed, turns(s), std::cmp::Reverse(*key)))
+            .map(|(key, _)| *key);
+        for (key, state) in copies {
+            // Every plain copy counts; compressed copies give way.
+            if state.compressed && Some(*key) != keep {
+                dropped.insert(*key);
+            }
+        }
+    }
+    let database_sessions: HashSet<&str> = cache
+        .files
+        .values()
+        .filter(|s| s.database)
+        .flat_map(|s| s.buckets.iter().map(|b| b.session.as_str()))
+        .collect();
+    (dropped, database_sessions)
+}
+
 /// The cache as sessions the usage ledger can sum, with local days from
 /// `utc_offset_minutes`. Sessions in `tracked` (ids Span recorded itself)
-/// are left out so a session is never counted twice.
+/// are left out so a session is never counted twice, as are copies of one
+/// session in two logs (see [`superseded`]).
 pub fn imported_sessions(
     cache: &ImportCache,
     utc_offset_minutes: i32,
     tracked: &HashSet<String>,
 ) -> Vec<SessionMeta> {
     let mut sessions: HashMap<(ImportKind, String), SessionMeta> = HashMap::new();
-    for state in cache.files.values() {
+    let (dropped, database_sessions) = superseded(cache);
+    for (key, state) in &cache.files {
         let Some(kind) = state.kind else {
             continue;
         };
+        if dropped.contains(key.as_str()) {
+            continue;
+        }
+        let json_opencode = kind == ImportKind::OpenCode && !state.database;
         for bucket in &state.buckets {
             if bucket.session.is_empty() || tracked.contains(&bucket.session) {
+                continue;
+            }
+            if json_opencode && database_sessions.contains(bucket.session.as_str()) {
                 continue;
             }
             let ms = u64::from(bucket.hour) * 3_600_000;

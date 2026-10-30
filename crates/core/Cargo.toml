@@ -25,6 +25,11 @@ dprint-plugin-typescript = "=0.96.1"
 libc = "0.2"
 # Already in the lockfile (span-lsp); reads gzip compressed Codex rollouts.
 flate2 = "1"
+# Reads OpenCode 1.2+ usage from opencode.db, strictly read only. Bundled
+# SQLite: no system library, builds with the CI runners' C compiler.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Pure Rust streaming zstd decoder for compressed Codex rollouts.
+ruzstd = "0.9"
 
 [dev-dependencies]
 tempfile = "3"
