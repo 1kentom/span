@@ -1445,6 +1445,74 @@ async fn cancel_cascades_and_the_server_ends_with_its_lead() {
     assert!(h.manager.session(&alpha_child).is_none());
 }
 
+/// ADR 0015: no tool, argument or MCP method sets a thread's permission
+/// mode. The lead's own thread stays in Ask whatever the lead calls.
+#[tokio::test]
+async fn no_tool_sets_a_permission_mode() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let (lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+    let service = h.manager.service(&lead_connection).unwrap();
+    assert_eq!(
+        service.permission_mode(&lead.session_id),
+        span_core::ThreadPermissionMode::Ask
+    );
+
+    let tools = client.rpc("tools/list", json!({})).await.response;
+    for tool in tools["result"]["tools"].as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap().to_lowercase();
+        assert!(
+            !name.contains("mode") && !name.contains("permission"),
+            "{name}"
+        );
+        let schema = tool["inputSchema"].to_string().to_lowercase();
+        for word in [
+            "permissionmode",
+            "acceptedits",
+            "bypass",
+            "fullaccess",
+            "yolo",
+        ] {
+            assert!(!schema.contains(word), "{name} mentions {word}");
+        }
+    }
+    for name in [
+        "set_permission_mode",
+        "permission_mode",
+        "set_mode",
+        "mode",
+        "set_config",
+    ] {
+        for mode in ["full", "auto", "acceptEdits", "bypassPermissions"] {
+            let reply = client
+                .rpc(
+                    "tools/call",
+                    json!({"name": name, "arguments": {"mode": mode, "sessionId": lead.session_id}}),
+                )
+                .await;
+            assert_eq!(reply.response["error"]["code"], -32602, "{name}");
+        }
+    }
+    for method in [
+        "session/set_mode",
+        "session/set_config_option",
+        "span/set_permission_mode",
+    ] {
+        let reply = client
+            .rpc(
+                method,
+                json!({"sessionId": lead.session_id, "modeId": "bypassPermissions"}),
+            )
+            .await;
+        assert_eq!(reply.response["error"]["code"], -32601, "{method}");
+    }
+    assert_eq!(
+        service.permission_mode(&lead.session_id),
+        span_core::ThreadPermissionMode::Ask
+    );
+}
+
 #[tokio::test]
 async fn a_child_permission_cannot_be_answered_through_any_tool() {
     let mut h = harness();

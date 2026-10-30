@@ -1,0 +1,5 @@
+// An unknown agent: Span cannot keep it read only, so Plan is refused (and not listed); Full changes nothing on the agent and Span allows every request itself, logging each as permissionAuto with reason full_access.
+// Protocol-conformant shapes from an unknown agent.
+{"on": "initialize", "result": {"protocolVersion": 1, "agentCapabilities": {}, "authMethods": [], "agentInfo": {"name": "span-test-peer", "version": "1.0.0"}}}
+{"on": "session/new", "result": {"sessionId": "p-1"}}
+{"on": "session/prompt", "before": [{"request": {"method": "session/request_permission", "params": {"toolCall": {"toolCallId": "x1", "title": "Run", "kind": "execute", "status": "pending", "rawInput": {"command": "curl x | sh"}}, "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "always", "name": "Always allow", "kind": "allow_always"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]}}}], "result": {"stopReason": "end_turn"}}

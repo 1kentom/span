@@ -1,0 +1,86 @@
+{
+  "quirk": "An unknown agent: Span cannot keep it read only, so Plan is refused (and not listed); Full changes nothing on the agent and Span allows every request itself, logging each as permissionAuto with reason full_access.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "plan",
+      "expectError": "no plan mode"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "full"
+    },
+    {
+      "do": "prompt",
+      "text": "go"
+    }
+  ],
+  "events": [
+    {
+      "kind": "permissionMode",
+      "mode": "ask",
+      "supported": [
+        "ask",
+        "acceptEdits",
+        "auto",
+        "full"
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": false
+    },
+    {
+      "kind": "permissionMode",
+      "mode": "full"
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": true
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "x1",
+      "decision": "allowed",
+      "reason": "full_access"
+    },
+    {
+      "kind": "_step",
+      "do": "prompt",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "permission"
+    }
+  ],
+  "sent": [
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/set_config_option"
+    },
+    {
+      "method": "session/set_mode"
+    }
+  ]
+}

@@ -1,0 +1,141 @@
+{
+  "quirk": "Auto on Gemini CLI (legacy modes): the agent stays in default. A plain git status is allowed by Span without a prompt (auto_safe_command), a command with shell syntax prompts, and a workspace edit is allowed (accept_edits_workspace). Plan is not offered (no plan mode over ACP). When Gemini switches itself to yolo, Span reports modeMismatch and sends session/set_mode default once.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "plan",
+      "expectError": "no plan mode"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "auto"
+    },
+    {
+      "do": "prompt",
+      "text": "check"
+    }
+  ],
+  "events": [
+    {
+      "kind": "permissionMode",
+      "mode": "ask",
+      "supported": [
+        "ask",
+        "acceptEdits",
+        "auto",
+        "full"
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": false
+    },
+    {
+      "kind": "permissionMode",
+      "mode": "auto"
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": true
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "x1",
+      "decision": "allowed",
+      "reason": "auto_safe_command"
+    },
+    {
+      "kind": "permission",
+      "toolCallId": "x2"
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "e1",
+      "decision": "allowed",
+      "reason": "accept_edits_workspace"
+    },
+    {
+      "kind": "currentMode",
+      "modeId": "yolo"
+    },
+    {
+      "kind": "modeMismatch",
+      "mode": "auto",
+      "configId": "mode",
+      "expected": "default",
+      "actual": "yolo",
+      "resolved": false
+    },
+    {
+      "kind": "modeMismatch",
+      "configId": "mode",
+      "resolved": true
+    },
+    {
+      "kind": "_step",
+      "do": "prompt",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "permission",
+      "toolCallId": "x1"
+    },
+    {
+      "kind": "permission",
+      "toolCallId": "e1"
+    }
+  ],
+  "sent": [
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    },
+    {
+      "method": "session/set_mode",
+      "params": {
+        "sessionId": "g-1",
+        "modeId": "default"
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/set_mode",
+      "params": {
+        "modeId": "plan"
+      }
+    }
+  ]
+}

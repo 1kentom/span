@@ -1,18 +1,16 @@
 {
-  "quirk": "The legacy mode yolo auto-approves every tool call: switching to it raises the permissionsBypassed warning Notice and switching back to default clears it.",
+  "quirk": "The legacy mode yolo auto-approves every tool call: choosing the Span mode Full sends session/set_mode yolo and raises the permissionsBypassed warning Notice; choosing Ask sends default and clears it.",
   "drive": [
     {
       "do": "newSession"
     },
     {
-      "do": "setConfig",
-      "id": "mode",
-      "value": "yolo"
+      "do": "setPermissionMode",
+      "mode": "full"
     },
     {
-      "do": "setConfig",
-      "id": "mode",
-      "value": "default"
+      "do": "setPermissionMode",
+      "mode": "ask"
     }
   ],
   "events": [
@@ -35,7 +33,7 @@
     },
     {
       "kind": "_step",
-      "do": "setConfig"
+      "do": "setPermissionMode"
     },
     {
       "kind": "config"
@@ -46,7 +44,7 @@
     },
     {
       "kind": "_step",
-      "do": "setConfig"
+      "do": "setPermissionMode"
     }
   ],
   "counts": [

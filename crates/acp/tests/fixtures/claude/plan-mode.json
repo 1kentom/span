@@ -1,0 +1,186 @@
+{
+  "quirk": "Plan mode on Claude: the user picks Plan, Span sets mode plan. While the thread is in Plan, Span answers edit, execute and switch_mode (ExitPlanMode) requests itself with reject once and reason plan_mode_read_only, logged as permissionAuto and never shown as a prompt; a read request still prompts. When Claude leaves plan mode on its own (current_mode_update default), Span reports modeMismatch, sets plan back once and reports it resolved.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "plan"
+    },
+    {
+      "do": "prompt",
+      "text": "plan it"
+    }
+  ],
+  "events": [
+    {
+      "kind": "permissionMode",
+      "sessionId": "c-1",
+      "mode": "ask",
+      "supported": [
+        "ask",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "full"
+      ],
+      "child": false
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "plan"
+        },
+        {
+          "id": "model"
+        }
+      ]
+    },
+    {
+      "kind": "permissionMode",
+      "mode": "plan"
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": true
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "e1",
+      "toolKind": "edit",
+      "decision": "rejected",
+      "reason": "plan_mode_read_only"
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "x1",
+      "toolKind": "execute",
+      "decision": "rejected",
+      "reason": "plan_mode_read_only"
+    },
+    {
+      "kind": "permission",
+      "toolCallId": "r1",
+      "toolKind": "read"
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "p1",
+      "toolKind": "switch_mode",
+      "decision": "rejected",
+      "reason": "plan_mode_read_only",
+      "rawInput": {
+        "plan": "1. Add the module\n2. Test it"
+      }
+    },
+    {
+      "kind": "currentMode",
+      "modeId": "default"
+    },
+    {
+      "kind": "modeMismatch",
+      "mode": "plan",
+      "configId": "mode",
+      "expected": "plan",
+      "actual": "default",
+      "resolved": false
+    },
+    {
+      "kind": "modeMismatch",
+      "mode": "plan",
+      "configId": "mode",
+      "resolved": true
+    },
+    {
+      "kind": "_step",
+      "do": "prompt",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "permission",
+      "toolKind": "edit"
+    },
+    {
+      "kind": "permission",
+      "toolKind": "execute"
+    },
+    {
+      "kind": "permission",
+      "toolKind": "switch_mode"
+    },
+    {
+      "kind": "permissionAuto",
+      "decision": "allowed"
+    }
+  ],
+  "counts": [
+    {
+      "match": {
+        "kind": "modeMismatch",
+        "resolved": false
+      },
+      "count": 1
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "c-1",
+        "configId": "mode",
+        "value": "plan"
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "reject"
+        }
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "reject"
+        }
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "reject"
+        }
+      }
+    },
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "c-1",
+        "configId": "mode",
+        "value": "plan"
+      }
+    }
+  ]
+}
