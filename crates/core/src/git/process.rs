@@ -243,6 +243,9 @@ async fn pump<R: tokio::io::AsyncRead + Unpin>(
 
 const ROUTING_ENV: &[&str] = &[
     "GIT_DIR",
+    "GIT_EXEC_PATH",
+    "GIT_TEMPLATE_DIR",
+    "GIT_PROXY_COMMAND",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
     "GIT_COMMON_DIR",

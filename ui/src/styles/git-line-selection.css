@@ -1,0 +1,12 @@
+.git-line-selection { min-width: 0; }
+.git-line-selection .git-review-toolbar { flex-wrap: wrap; }
+.git-line-selection .git-review-toolbar > span { color: var(--text-muted); font-size: 11px; }
+.git-line-metadata { display: flex; align-items: center; gap: 6px; padding: 8px 12px; font-size: 12px; }
+.git-line-review-scroll { overflow: auto; }
+.git-selectable-line { display: flex; align-items: center; min-height: 24px; width: max-content; min-width: 100%; }
+.git-selectable-line code { white-space: pre; font-size: 12px; padding-right: 12px; }
+.git-line-selector { display: inline-flex; flex: 0 0 24px; width: 24px; height: 22px; align-items: center; justify-content: center; border: 1px solid transparent; background: transparent; color: inherit; }
+button.git-line-selector { cursor: pointer; }
+button.git-line-selector:focus-visible { outline: 2px solid currentColor; outline-offset: -3px; }
+.git-line-selected { box-shadow: inset 3px 0 currentColor; }
+.git-line-selected .git-line-selector { border-color: currentColor; }

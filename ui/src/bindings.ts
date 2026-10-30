@@ -7,6 +7,37 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	openWorkspace: (path: string) => __TAURI_INVOKE<Workspace>("open_workspace", { path }),
 	gitContext: () => __TAURI_INVOKE<GitContext_Serialize>("git_context"),
+	gitOpenWorktreeWindow: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<null>("git_open_worktree_window", { context, path }),
+	gitAmend: (context: GitContext_Deserialize, message: string, expectedHead: string, expectedIndexRevision: string, expectedStagedSnapshot: string) => __TAURI_INVOKE<GitCommitResult_Serialize>("git_amend", { context, message, expectedHead, expectedIndexRevision, expectedStagedSnapshot }),
+	gitRemoteSelected: (context: GitContext_Deserialize, action: GitRemoteAction, remoteName: string, targetBranch: string | null, expectedIndexRevision: string, expectedConfigFingerprint: string, setUpstream: boolean) => __TAURI_INVOKE<GitSelectedRemoteResult_Serialize>("git_remote_selected", { context, action, remoteName, targetBranch, expectedIndexRevision, expectedConfigFingerprint, setUpstream }),
+	gitWorktreeWindowPath: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<string>("git_worktree_window_path", { context, path }),
+	gitHistoryTools: (context: GitContext_Deserialize, query: GitHistoryToolsQuery_Deserialize) => __TAURI_INVOKE<GitHistoryToolsPage_Serialize>("git_history_tools", { context, query }),
+	gitRevisionContent: (context: GitContext_Deserialize, revision: string, path: string) => __TAURI_INVOKE<GitRevisionContent_Serialize>("git_revision_content", { context, revision, path }),
+	gitRevisionDiff: (context: GitContext_Deserialize, from: string, to: string | null, path: string | null) => __TAURI_INVOKE<GitRevisionDiff_Serialize>("git_revision_diff", { context, from, to, path }),
+	gitReflogPage: (context: GitContext_Deserialize, skip: number, limit: number) => __TAURI_INVOKE<GitReflogPage_Serialize>("git_reflog_page", { context, skip, limit }),
+	gitLineHistory: (context: GitContext_Deserialize, revision: string, path: string, start: number, end: number, skip: number, limit: number) => __TAURI_INVOKE<GitHistoryPage_Serialize>("git_line_history", { context, revision, path, start, end, skip, limit }),
+	gitSigningConfiguration: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitSigningConfiguration_Serialize>("git_signing_configuration", { context }),
+	gitReviewLines: (context: GitContext_Deserialize, path: string, side: GitDiffSide, expectedIndexRevision: string) => __TAURI_INVOKE<GitLineReview_Serialize>("git_review_lines", { context, path, side, expectedIndexRevision }),
+	gitApplyLines: (context: GitContext_Deserialize, path: string, side: GitDiffSide, lineIds: string[], expectedIndexRevision: string, expectedWorktreeSnapshot: string, includeMetadata: boolean) => __TAURI_INVOKE<GitStatus_Serialize>("git_apply_lines", { context, path, side, lineIds, expectedIndexRevision, expectedWorktreeSnapshot, includeMetadata }),
+	gitCheckoutPullRequest: (context: GitContext_Deserialize, remoteName: string, number: number, expectedHead: string, localBranch: string, expectedIndexRevision: string, expectedConfigFingerprint: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_checkout_pull_request", { context, remoteName, number, expectedHead, localBranch, expectedIndexRevision, expectedConfigFingerprint }),
+	gitInitializeRepository: () => __TAURI_INVOKE<GitContext_Serialize>("git_initialize_repository"),
+	gitCloneRepository: (source: string, destination: string) => __TAURI_INVOKE<GitCloneResult>("git_clone_repository", { source, destination }),
+	gitConfigureRemote: (context: GitContext_Deserialize, action: GitRemoteConfigAction, name: string, url: string | null, expectedConfigFingerprint: string) => __TAURI_INVOKE<GitRemotes>("git_configure_remote", { context, action, name, url, expectedConfigFingerprint }),
+	gitManageBranch: (context: GitContext_Deserialize, action: GitBranchManagementAction, branch: string, value: string | null, expectedOid: string, expectedHead: string | null, expectedConfigFingerprint: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_manage_branch", { context, action, branch, value, expectedOid, expectedHead, expectedConfigFingerprint }),
+	gitFetchBackground: (context: GitContext_Deserialize, expectedConfigFingerprint: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_fetch_background", { context, expectedConfigFingerprint }),
+	gitWorktreePruneReview: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitWorktreePruneReview>("git_worktree_prune_review", { context }),
+	gitWorktreePrune: (context: GitContext_Deserialize, expectedSnapshot: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_worktree_prune", { context, expectedSnapshot }),
+	gitWorktreeSetLocked: (context: GitContext_Deserialize, path: string, locked: boolean, expectedSnapshot: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_worktree_set_locked", { context, path, locked, expectedSnapshot }),
+	gitWorktreeCreate: (context: GitContext_Deserialize, path: string, mode: GitWorktreeCreateMode, branch: string | null, expectedHead: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_worktree_create", { context, path, mode, branch, expectedHead }),
+	gitIntegrationStart: (context: GitContext_Deserialize, kind: GitIntegrationKind, targetId: string, expectedIndexRevision: string) => __TAURI_INVOKE<GitIntegrationResult_Serialize>("git_integration_start", { context, kind, targetId, expectedIndexRevision }),
+	gitIntegrationControl: (context: GitContext_Deserialize, kind: GitIntegrationKind, action: GitRebaseAction, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitIntegrationResult_Serialize>("git_integration_control", { context, kind, action, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitConflictResource: (context: GitContext_Deserialize, path: string, expectedIndexRevision: string) => __TAURI_INVOKE<GitConflictResource_Serialize>("git_conflict_resource", { context, path, expectedIndexRevision }),
+	gitSaveConflictResolution: (context: GitContext_Deserialize, path: string, content: string, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitIntegrationState_Serialize>("git_save_conflict_resolution", { context, path, content, expectedIndexRevision, expectedWorktreeSnapshot }),
+	githubRepositories: (contextId: string) => __TAURI_INVOKE<GitHubRepository[]>("github_repositories", { contextId }),
+	githubStatus: (contextId: string, remoteName: string, expectedRepository: GitHubRepository) => __TAURI_INVOKE<GitHubStatus>("github_status", { contextId, remoteName, expectedRepository }),
+	githubRead: (contextId: string, remoteName: string, request: GitHubRead, expectedRepository: GitHubRepository) => __TAURI_INVOKE<GitHubResponse_Serialize>("github_read", { contextId, remoteName, request, expectedRepository }),
+	githubCreatePullRequest: (contextId: string, remoteName: string, request: GitHubCreatePullRequest, expectedRepository: GitHubRepository) => __TAURI_INVOKE<string>("github_create_pull_request", { contextId, remoteName, request, expectedRepository }),
+	githubReviewPullRequest: (contextId: string, remoteName: string, request: GitHubReview, expectedRepository: GitHubRepository) => __TAURI_INVOKE<string>("github_review_pull_request", { contextId, remoteName, request, expectedRepository }),
 	/**  Whether checkpoints work in the open folder, and why not. */
 	checkpointStatus: () => __TAURI_INVOKE<CheckpointStatus_Serialize>("checkpoint_status"),
 	/**
@@ -41,6 +72,29 @@ export const commands = {
 	gitStage: (context: GitContext_Deserialize, paths: string[], expectedIndexRevision: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_stage", { context, paths, expectedIndexRevision }),
 	gitUnstage: (context: GitContext_Deserialize, paths: string[], expectedIndexRevision: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_unstage", { context, paths, expectedIndexRevision }),
 	gitCommit: (context: GitContext_Deserialize, message: string, expectedIndexRevision: string, expectedStagedSnapshot: string) => __TAURI_INVOKE<GitCommitResult_Serialize>("git_commit", { context, message, expectedIndexRevision, expectedStagedSnapshot }),
+	gitIntegrationState: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitIntegrationState_Serialize>("git_integration_state", { context }),
+	gitRebase: (context: GitContext_Deserialize, targetId: string, expectedIndexRevision: string) => __TAURI_INVOKE<GitIntegrationResult_Serialize>("git_rebase", { context, targetId, expectedIndexRevision }),
+	gitRebaseControl: (context: GitContext_Deserialize, action: GitRebaseAction, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitIntegrationResult_Serialize>("git_rebase_control", { context, action, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitMarkResolved: (context: GitContext_Deserialize, path: string, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitIntegrationState_Serialize>("git_mark_resolved", { context, path, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitHunkDiff: (context: GitContext_Deserialize, path: string, side: GitDiffSide, expectedIndexRevision: string) => __TAURI_INVOKE<GitHunkDiff_Serialize>("git_hunk_diff", { context, path, side, expectedIndexRevision }),
+	gitApplyHunk: (context: GitContext_Deserialize, path: string, side: GitDiffSide, hunkId: string, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_apply_hunk", { context, path, side, hunkId, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitTags: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitTag[]>("git_tags", { context }),
+	gitCreateTag: (context: GitContext_Deserialize, name: string, targetId: string) => __TAURI_INVOKE<GitTag[]>("git_create_tag", { context, name, targetId }),
+	gitDeleteTag: (context: GitContext_Deserialize, name: string, expectedObjectId: string) => __TAURI_INVOKE<GitTag[]>("git_delete_tag", { context, name, expectedObjectId }),
+	gitMergeFastForward: (context: GitContext_Deserialize, targetId: string, expectedIndexRevision: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_merge_fast_forward", { context, targetId, expectedIndexRevision }),
+	gitFileBaseline: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<GitFileBaseline_Serialize>("git_file_baseline", { context, path }),
+	gitBlame: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<GitBlame_Serialize>("git_blame", { context, path }),
+	gitBranches: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitBranch_Serialize[]>("git_branches", { context }),
+	gitCheckout: (context: GitContext_Deserialize, branch: string, create: boolean, expectedIndexRevision: string) => __TAURI_INVOKE<GitStatus_Serialize>("git_checkout", { context, branch, create, expectedIndexRevision }),
+	gitRemote: (context: GitContext_Deserialize, action: GitRemoteAction, expectedConfigFingerprint: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_remote", { context, action, expectedConfigFingerprint }),
+	gitDiscardFile: (context: GitContext_Deserialize, path: string, expectedIndexRevision: string, expectedWorktreeSnapshot: string) => __TAURI_INVOKE<GitDiscardResult_Serialize>("git_discard_file", { context, path, expectedIndexRevision, expectedWorktreeSnapshot }),
+	gitRemotes: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitRemotes>("git_remotes", { context }),
+	gitStashes: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStash[]>("git_stashes", { context }),
+	gitStash: (context: GitContext_Deserialize, action: GitStashAction, stashId: string | null, message: string | null, expectedIndexRevision: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_stash", { context, action, stashId, message, expectedIndexRevision }),
+	gitWorktrees: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitWorktree_Serialize[]>("git_worktrees", { context }),
+	gitWorktreeAdd: (context: GitContext_Deserialize, path: string, branch: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_worktree_add", { context, path, branch }),
+	gitWorktreeRemove: (context: GitContext_Deserialize, path: string) => __TAURI_INVOKE<GitOperationResult_Serialize>("git_worktree_remove", { context, path }),
+	gitCommitDetails: (context: GitContext_Deserialize, commitId: string) => __TAURI_INVOKE<GitCommitDetails_Serialize>("git_commit_details", { context, commitId }),
 	runConfigurations: () => __TAURI_INVOKE<RunCatalog_Serialize>("run_configurations"),
 	runContext: () => __TAURI_INVOKE<RunContext_Serialize>("run_context"),
 	pendingRunApprovals: () => __TAURI_INVOKE<RunApprovalRequest[]>("pending_run_approvals"),
@@ -2274,6 +2328,56 @@ export type FormatWarning = {
 	message: string,
 };
 
+export type GitBlame = GitBlame_Serialize | GitBlame_Deserialize;
+
+export type GitBlameLine = {
+	line: number,
+	originalLine: number,
+	commitId: string,
+	author: string,
+	authorEmail: string,
+	timestamp: number,
+	summary: string,
+};
+
+export type GitBlame_Deserialize = {
+	repositoryId: string,
+	path: string,
+	head?: string | null,
+	lines: GitBlameLine[],
+};
+
+export type GitBlame_Serialize = {
+	repositoryId: string,
+	path: string,
+	head: string | null,
+	lines: GitBlameLine[],
+};
+
+export type GitBranch = GitBranch_Serialize | GitBranch_Deserialize;
+
+export type GitBranchManagementAction = "rename" | "delete" | "setUpstream" | "unsetUpstream";
+
+export type GitBranch_Deserialize = {
+	name: string,
+	commitId: string,
+	remote: boolean,
+	current: boolean,
+	upstream?: string | null,
+	ahead: number,
+	behind: number,
+};
+
+export type GitBranch_Serialize = {
+	name: string,
+	commitId: string,
+	remote: boolean,
+	current: boolean,
+	upstream: string | null,
+	ahead: number,
+	behind: number,
+};
+
 export type GitChange = GitChange_Serialize | GitChange_Deserialize;
 
 export type GitChange_Deserialize = {
@@ -2306,6 +2410,10 @@ export type GitChange_Serialize = {
 	unsupportedReason: string | null,
 };
 
+export type GitCloneResult = {
+	path: string,
+};
+
 export type GitCommit = {
 	id: string,
 	parents: string[],
@@ -2314,6 +2422,32 @@ export type GitCommit = {
 	timestamp: number,
 	subject: string,
 	body: string,
+};
+
+export type GitCommitDetails = GitCommitDetails_Serialize | GitCommitDetails_Deserialize;
+
+export type GitCommitDetails_Deserialize = {
+	commit: GitCommit,
+	files: GitCommitFile_Deserialize[],
+};
+
+export type GitCommitDetails_Serialize = {
+	commit: GitCommit,
+	files: GitCommitFile_Serialize[],
+};
+
+export type GitCommitFile = GitCommitFile_Serialize | GitCommitFile_Deserialize;
+
+export type GitCommitFile_Deserialize = {
+	path: string,
+	oldPath?: string | null,
+	status: string,
+};
+
+export type GitCommitFile_Serialize = {
+	path: string,
+	oldPath: string | null,
+	status: string,
 };
 
 export type GitCommitResult = GitCommitResult_Serialize | GitCommitResult_Deserialize;
@@ -2332,6 +2466,26 @@ export type GitCommitResult_Serialize = {
 	status: GitStatus_Serialize | null,
 	/**  A commit can succeed before a post-commit hook times out or fails. */
 	warning: string | null,
+};
+
+export type GitConflictResource = GitConflictResource_Serialize | GitConflictResource_Deserialize;
+
+export type GitConflictResource_Deserialize = {
+	path: string,
+	base?: string | null,
+	ours?: string | null,
+	theirs?: string | null,
+	working: string,
+	state: GitIntegrationState_Deserialize,
+};
+
+export type GitConflictResource_Serialize = {
+	path: string,
+	base: string | null,
+	ours: string | null,
+	theirs: string | null,
+	working: string,
+	state: GitIntegrationState_Serialize,
 };
 
 export type GitContext = GitContext_Serialize | GitContext_Deserialize;
@@ -2384,6 +2538,47 @@ export type GitDiff_Serialize = {
 	commitId: string | null,
 };
 
+export type GitDiscardResult = GitDiscardResult_Serialize | GitDiscardResult_Deserialize;
+
+export type GitDiscardResult_Deserialize = {
+	state: GitIntegrationState_Deserialize,
+	/**  Local recovery copy of the discarded working bytes. Never staged by this action. */
+	recoveryPath: string,
+};
+
+export type GitDiscardResult_Serialize = {
+	state: GitIntegrationState_Serialize,
+	/**  Local recovery copy of the discarded working bytes. Never staged by this action. */
+	recoveryPath: string,
+};
+
+export type GitFileBaseline = GitFileBaseline_Serialize | GitFileBaseline_Deserialize;
+
+export type GitFileBaseline_Deserialize = {
+	repositoryId: string,
+	path: string,
+	indexRevision: string,
+	headText?: string | null,
+	indexText?: string | null,
+	binary: boolean,
+	truncated: boolean,
+};
+
+export type GitFileBaseline_Serialize = {
+	repositoryId: string,
+	path: string,
+	indexRevision: string,
+	headText: string | null,
+	indexText: string | null,
+	binary: boolean,
+	truncated: boolean,
+};
+
+export type GitHistoryDecoration = {
+	name: string,
+	commitId: string,
+};
+
 export type GitHistoryPage = GitHistoryPage_Serialize | GitHistoryPage_Deserialize;
 
 export type GitHistoryPage_Deserialize = {
@@ -2416,6 +2611,349 @@ export type GitHistoryQuery_Serialize = {
 	path: string | null,
 };
 
+export type GitHistoryToolsPage = GitHistoryToolsPage_Serialize | GitHistoryToolsPage_Deserialize;
+
+export type GitHistoryToolsPage_Deserialize = {
+	heads: string[],
+	refs: GitHistoryDecoration[],
+	commits: GitCommit[],
+	nextSkip?: number | null,
+};
+
+export type GitHistoryToolsPage_Serialize = {
+	heads: string[],
+	refs: GitHistoryDecoration[],
+	commits: GitCommit[],
+	nextSkip: number | null,
+};
+
+export type GitHistoryToolsQuery = GitHistoryToolsQuery_Serialize | GitHistoryToolsQuery_Deserialize;
+
+export type GitHistoryToolsQuery_Deserialize = {
+	heads: string[],
+	skip: number,
+	limit: number,
+	author?: string | null,
+	message?: string | null,
+	path?: string | null,
+};
+
+export type GitHistoryToolsQuery_Serialize = {
+	heads: string[],
+	skip: number,
+	limit: number,
+	author: string | null,
+	message: string | null,
+	path: string | null,
+};
+
+export type GitHubActor = GitHubActor_Serialize | GitHubActor_Deserialize;
+
+export type GitHubActor_Deserialize = {
+	login?: string,
+};
+
+export type GitHubActor_Serialize = {
+	login: string,
+};
+
+export type GitHubBranch = GitHubBranch_Serialize | GitHubBranch_Deserialize;
+
+export type GitHubBranch_Deserialize = {
+	name?: string,
+};
+
+export type GitHubBranch_Serialize = {
+	name: string,
+};
+
+export type GitHubCheck = GitHubCheck_Serialize | GitHubCheck_Deserialize;
+
+export type GitHubCheck_Deserialize = {
+	name?: string,
+	context?: string,
+	status?: string,
+	conclusion?: string | null,
+	state?: string | null,
+	detailsUrl?: string | null,
+	targetUrl?: string | null,
+};
+
+export type GitHubCheck_Serialize = {
+	name: string,
+	context: string,
+	status: string,
+	conclusion: string | null,
+	state: string | null,
+	detailsUrl: string | null,
+	targetUrl: string | null,
+};
+
+export type GitHubComment = GitHubComment_Serialize | GitHubComment_Deserialize;
+
+export type GitHubComment_Deserialize = {
+	author?: GitHubActor_Deserialize | null,
+	body?: string,
+	state?: string,
+	submittedAt?: string | null,
+	url?: string,
+};
+
+export type GitHubComment_Serialize = {
+	author: GitHubActor_Serialize | null,
+	body: string,
+	state: string,
+	submittedAt: string | null,
+	url: string,
+};
+
+export type GitHubCreatePullRequest = {
+	title: string,
+	body: string,
+	base: string,
+	head: string,
+	draft: boolean,
+};
+
+export type GitHubFile = GitHubFile_Serialize | GitHubFile_Deserialize;
+
+export type GitHubFile_Deserialize = {
+	path?: string,
+	additions?: number,
+	deletions?: number,
+};
+
+export type GitHubFile_Serialize = {
+	path: string,
+	additions: number,
+	deletions: number,
+};
+
+export type GitHubItem = GitHubItem_Serialize | GitHubItem_Deserialize;
+
+export type GitHubItem_Deserialize = {
+	number?: number,
+	title?: string,
+	body?: string,
+	state?: string,
+	url?: string,
+	author?: GitHubActor_Deserialize | null,
+	baseRefName?: string,
+	headRefName?: string,
+	headRefOid?: string,
+	isDraft?: boolean,
+	reviewDecision?: string,
+	statusCheckRollup?: GitHubCheck_Deserialize[],
+	reviews?: GitHubComment_Deserialize[],
+	comments?: GitHubComment_Deserialize[],
+	files?: GitHubFile_Deserialize[],
+	changedFiles?: number,
+	additions?: number,
+	deletions?: number,
+	nameWithOwner?: string,
+	defaultBranchRef?: GitHubBranch_Deserialize | null,
+	description?: string | null,
+	isPrivate?: boolean,
+	filename?: string,
+	patch?: string | null,
+	previous_filename?: string | null,
+};
+
+export type GitHubItem_Serialize = {
+	number: number,
+	title: string,
+	body: string,
+	state: string,
+	url: string,
+	author: GitHubActor_Serialize | null,
+	baseRefName: string,
+	headRefName: string,
+	headRefOid: string,
+	isDraft: boolean,
+	reviewDecision: string,
+	statusCheckRollup: GitHubCheck_Serialize[],
+	reviews: GitHubComment_Serialize[],
+	comments: GitHubComment_Serialize[],
+	files: GitHubFile_Serialize[],
+	changedFiles: number,
+	additions: number,
+	deletions: number,
+	nameWithOwner: string,
+	defaultBranchRef: GitHubBranch_Serialize | null,
+	description: string | null,
+	isPrivate: boolean,
+	filename: string,
+	patch: string | null,
+	previous_filename: string | null,
+};
+
+export type GitHubRead = { kind: "repository" } | { kind: "pullRequests"; state: string; limit: number } | { kind: "pullRequest"; number: number } | { kind: "issues"; state: string; limit: number } | { kind: "issue"; number: number } | { kind: "currentPullRequest"; branch: string } | { kind: "pullRequestFiles"; number: number; page: number; expectedHead: string } | { kind: "checks"; number: number } | { kind: "reviews"; number: number };
+
+export type GitHubRepository = {
+	host: string,
+	owner: string,
+	name: string,
+	remoteName: string,
+};
+
+export type GitHubResponse = GitHubResponse_Serialize | GitHubResponse_Deserialize;
+
+export type GitHubResponse_Deserialize = {
+	items: GitHubItem_Deserialize[],
+};
+
+export type GitHubResponse_Serialize = {
+	items: GitHubItem_Serialize[],
+};
+
+export type GitHubReview = {
+	number: number,
+	event: GitHubReviewEvent,
+	body: string,
+	expectedHead: string,
+};
+
+export type GitHubReviewEvent = "approve" | "comment" | "requestChanges";
+
+export type GitHubStatus = {
+	available: boolean,
+	authenticated: boolean,
+	message: string,
+	repository: GitHubRepository,
+};
+
+export type GitHunk = {
+	id: string,
+	header: string,
+	patch: string,
+};
+
+export type GitHunkDiff = GitHunkDiff_Serialize | GitHunkDiff_Deserialize;
+
+export type GitHunkDiff_Deserialize = {
+	diff: GitDiff_Deserialize,
+	/**  The disk snapshot is checked for both staging and unstaging. */
+	worktreeSnapshot: string,
+	hunks: GitHunk[],
+};
+
+export type GitHunkDiff_Serialize = {
+	diff: GitDiff_Serialize,
+	/**  The disk snapshot is checked for both staging and unstaging. */
+	worktreeSnapshot: string,
+	hunks: GitHunk[],
+};
+
+export type GitIntegrationKind = "merge" | "cherryPick" | "revert";
+
+export type GitIntegrationResult = GitIntegrationResult_Serialize | GitIntegrationResult_Deserialize;
+
+export type GitIntegrationResult_Deserialize = {
+	state: GitIntegrationState_Deserialize,
+	output: string,
+	/**  False retains the actual in-progress operation and conflicts for review. */
+	completed: boolean,
+};
+
+export type GitIntegrationResult_Serialize = {
+	state: GitIntegrationState_Serialize,
+	output: string,
+	/**  False retains the actual in-progress operation and conflicts for review. */
+	completed: boolean,
+};
+
+export type GitIntegrationState = GitIntegrationState_Serialize | GitIntegrationState_Deserialize;
+
+export type GitIntegrationState_Deserialize = {
+	status: GitStatus_Deserialize,
+	worktreeSnapshot: string,
+};
+
+export type GitIntegrationState_Serialize = {
+	status: GitStatus_Serialize,
+	worktreeSnapshot: string,
+};
+
+export type GitLineHunk = GitLineHunk_Serialize | GitLineHunk_Deserialize;
+
+export type GitLineHunk_Deserialize = {
+	id: string,
+	header: string,
+	lines: GitReviewLine_Deserialize[],
+};
+
+export type GitLineHunk_Serialize = {
+	id: string,
+	header: string,
+	lines: GitReviewLine_Serialize[],
+};
+
+export type GitLineReview = GitLineReview_Serialize | GitLineReview_Deserialize;
+
+export type GitLineReview_Deserialize = {
+	diff: GitDiff_Deserialize,
+	worktreeSnapshot: string,
+	hunks: GitLineHunk_Deserialize[],
+	/**  Metadata is applied only when the caller explicitly selects includeMetadata. */
+	metadata: string[],
+};
+
+export type GitLineReview_Serialize = {
+	diff: GitDiff_Serialize,
+	worktreeSnapshot: string,
+	hunks: GitLineHunk_Serialize[],
+	/**  Metadata is applied only when the caller explicitly selects includeMetadata. */
+	metadata: string[],
+};
+
+export type GitOperationResult = GitOperationResult_Serialize | GitOperationResult_Deserialize;
+
+export type GitOperationResult_Deserialize = {
+	status: GitStatus_Deserialize,
+	output: string,
+};
+
+export type GitOperationResult_Serialize = {
+	status: GitStatus_Serialize,
+	output: string,
+};
+
+export type GitRebaseAction = "continue" | "abort";
+
+export type GitReflogEntry = {
+	commitId: string,
+	selector: string,
+	subject: string,
+};
+
+export type GitReflogPage = GitReflogPage_Serialize | GitReflogPage_Deserialize;
+
+export type GitReflogPage_Deserialize = {
+	entries: GitReflogEntry[],
+	nextSkip?: number | null,
+};
+
+export type GitReflogPage_Serialize = {
+	entries: GitReflogEntry[],
+	nextSkip: number | null,
+};
+
+export type GitRemote = {
+	name: string,
+	fetchUrl: string,
+	pushUrl: string,
+	current: boolean,
+};
+
+export type GitRemoteAction = "fetch" | "pull" | "push";
+
+export type GitRemoteConfigAction = "add" | "setUrl" | "remove";
+
+export type GitRemotes = {
+	remotes: GitRemote[],
+	configFingerprint: string,
+};
+
 export type GitRepository = GitRepository_Serialize | GitRepository_Deserialize;
 
 export type GitRepository_Deserialize = {
@@ -2440,6 +2978,102 @@ export type GitRepository_Serialize = {
 	unborn: boolean,
 };
 
+export type GitReviewLine = GitReviewLine_Serialize | GitReviewLine_Deserialize;
+
+export type GitReviewLine_Deserialize = {
+	/**  Opaque review identity. Only changed rows have selectable identities. */
+	id: string,
+	kind: string,
+	/**  Exact index-normalized UTF-8, including its final LF if present. */
+	text: string,
+	oldLine?: number | null,
+	newLine?: number | null,
+};
+
+export type GitReviewLine_Serialize = {
+	/**  Opaque review identity. Only changed rows have selectable identities. */
+	id: string,
+	kind: string,
+	/**  Exact index-normalized UTF-8, including its final LF if present. */
+	text: string,
+	oldLine: number | null,
+	newLine: number | null,
+};
+
+export type GitRevisionContent = GitRevisionContent_Serialize | GitRevisionContent_Deserialize;
+
+export type GitRevisionContent_Deserialize = {
+	revision: string,
+	path: string,
+	text?: string | null,
+	binary: boolean,
+	truncated: boolean,
+};
+
+export type GitRevisionContent_Serialize = {
+	revision: string,
+	path: string,
+	text: string | null,
+	binary: boolean,
+	truncated: boolean,
+};
+
+export type GitRevisionDiff = GitRevisionDiff_Serialize | GitRevisionDiff_Deserialize;
+
+export type GitRevisionDiff_Deserialize = {
+	from: string,
+	to?: string | null,
+	path?: string | null,
+	patch: string,
+	truncated: boolean,
+};
+
+export type GitRevisionDiff_Serialize = {
+	from: string,
+	to: string | null,
+	path: string | null,
+	patch: string,
+	truncated: boolean,
+};
+
+export type GitSelectedRemoteResult = GitSelectedRemoteResult_Serialize | GitSelectedRemoteResult_Deserialize;
+
+export type GitSelectedRemoteResult_Deserialize = {
+	operation: GitOperationResult_Deserialize,
+	remoteSucceeded: boolean,
+	upstreamConfigured: boolean,
+	warning?: string | null,
+};
+
+export type GitSelectedRemoteResult_Serialize = {
+	operation: GitOperationResult_Serialize,
+	remoteSucceeded: boolean,
+	upstreamConfigured: boolean,
+	warning: string | null,
+};
+
+export type GitSigningConfiguration = GitSigningConfiguration_Serialize | GitSigningConfiguration_Deserialize;
+
+export type GitSigningConfiguration_Deserialize = {
+	format?: string | null,
+	commitSigning?: string | null,
+	tagSigning?: string | null,
+};
+
+export type GitSigningConfiguration_Serialize = {
+	format: string | null,
+	commitSigning: string | null,
+	tagSigning: string | null,
+};
+
+export type GitStash = {
+	id: string,
+	selector: string,
+	subject: string,
+};
+
+export type GitStashAction = "save" | "apply" | "pop" | "drop";
+
 export type GitStatus = GitStatus_Serialize | GitStatus_Deserialize;
 
 export type GitStatus_Deserialize = {
@@ -2458,6 +3092,44 @@ export type GitStatus_Serialize = {
 	entries: GitChange_Serialize[],
 	operation: string | null,
 	truncated: boolean,
+};
+
+export type GitTag = {
+	name: string,
+	objectId: string,
+	targetId: string,
+	annotated: boolean,
+};
+
+export type GitWorktree = GitWorktree_Serialize | GitWorktree_Deserialize;
+
+export type GitWorktreeCreateMode = "newBranch" | "detached";
+
+export type GitWorktreePruneReview = {
+	snapshot: string,
+	output: string,
+};
+
+export type GitWorktree_Deserialize = {
+	path: string,
+	/**  The main worktree, reported first by Git regardless of the open workspace. */
+	main: boolean,
+	head?: string | null,
+	branch?: string | null,
+	bare: boolean,
+	locked: boolean,
+	prunable: boolean,
+};
+
+export type GitWorktree_Serialize = {
+	path: string,
+	/**  The main worktree, reported first by Git regardless of the open workspace. */
+	main: boolean,
+	head: string | null,
+	branch: string | null,
+	bare: boolean,
+	locked: boolean,
+	prunable: boolean,
 };
 
 /**  The outcome of the latest check of one agent. */
@@ -3107,7 +3779,7 @@ export type ModelUse_Serialize = {
 	subagent?: boolean,
 };
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleZenMode" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "showUsage" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "nextGitChange" | "previousGitChange" | "toggleGitBlame" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleZenMode" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "showUsage" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,

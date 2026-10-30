@@ -66,6 +66,53 @@ fn shared_cache() -> PathBuf {
     target.join("span-lsp-test-cache")
 }
 
+/// Match the real-server smoke fixtures: Node entrypoints need ordinary Windows
+/// drive or UNC paths rather than the verbatim paths returned by canonicalize.
+fn canonical(path: &Path) -> PathBuf {
+    let path = std::fs::canonicalize(path).unwrap();
+    #[cfg(windows)]
+    return windows_server_path(&path);
+    #[cfg(not(windows))]
+    path
+}
+
+fn windows_server_path(path: &Path) -> PathBuf {
+    if let Some(text) = path.to_str() {
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            let bytes = rest.as_bytes();
+            if bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'\\'
+            {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path.to_owned()
+}
+
+#[test]
+fn fixture_paths_preserve_drive_and_unc_roots() {
+    for (input, expected) in [
+        (r"\\?\C:\cache\server.js", r"C:\cache\server.js"),
+        (r"\\?\c:\cache\server.js", r"c:\cache\server.js"),
+        (
+            r"\\?\UNC\server\share\cache\server.js",
+            r"\\server\share\cache\server.js",
+        ),
+        (r"C:\cache\server.js", r"C:\cache\server.js"),
+        (r"\\server\share\cache", r"\\server\share\cache"),
+        (r"\\?\GLOBALROOT\Device\disk", r"\\?\GLOBALROOT\Device\disk"),
+        ("/tmp/cache/server.js", "/tmp/cache/server.js"),
+    ] {
+        assert_eq!(windows_server_path(Path::new(input)), Path::new(expected));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Counting download source (real HTTP underneath)
 // ---------------------------------------------------------------------------
@@ -157,6 +204,18 @@ fn force_kill(pid: u32) {
     let _ = Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .status();
+}
+
+#[test]
+fn process_table_uses_native_process_ids() {
+    let table = process_table();
+    assert_eq!(
+        table
+            .iter()
+            .filter(|(pid, _, _)| *pid == std::process::id())
+            .count(),
+        1
+    );
 }
 
 /// Live (non zombie) descendants of this test process.
@@ -295,6 +354,85 @@ fn fresh(d: &DiagnosticsPublished, revision: u64) -> bool {
 
 fn has_message(d: &[DiagnosticDto], needle: &str) -> bool {
     d.iter().any(|d| d.message.contains(needle))
+}
+
+/// Match both bounds of every diagnostic affected by an insertion on line 0.
+/// A current document version alone is insufficient: rust-analyzer can publish
+/// cached syntax diagnostics with the new version before recomputing their ranges.
+fn shifted_diagnostics_match(
+    old: &[DiagnosticDto],
+    new: &[DiagnosticDto],
+    insert_col: u32,
+    delta: u32,
+) -> bool {
+    let mut relevant = old
+        .iter()
+        .filter(|d| d.range.start.line == 0 && d.range.start.character >= insert_col)
+        .peekable();
+    relevant.peek().is_some()
+        && relevant.all(|old| {
+            let mut range = old.range;
+            range.start.character += delta;
+            if range.end.line == 0 {
+                range.end.character += delta;
+            }
+            new.iter()
+                .any(|new| new.message == old.message && new.code == old.code && new.range == range)
+        })
+}
+
+#[test]
+fn shifted_diagnostics_reject_current_version_cached_ranges() {
+    let diagnostic = |column, message: &str| DiagnosticDto {
+        severity: Some(span_desktop_lib::language_servers::DiagnosticSeverityDto::Error),
+        message: message.to_owned(),
+        range: RangeDto {
+            start: PositionDto {
+                line: 0,
+                character: column,
+            },
+            end: PositionDto {
+                line: 0,
+                character: column,
+            },
+        },
+        source: Some("rust-analyzer".to_owned()),
+        code: Some("syntax-error".to_owned()),
+        unnecessary: false,
+        deprecated: false,
+    };
+    let old = vec![
+        diagnostic(32, "Syntax Error: expected expression"),
+        diagnostic(33, "Syntax Error: expected SEMICOLON"),
+    ];
+    let mut published = DiagnosticsPublished {
+        path: "src/main.rs".to_owned(),
+        version: Some(4),
+        revision: Some(3),
+        diagnostics: old.clone(),
+    };
+    let matches = |d: &DiagnosticsPublished| {
+        fresh(d, 3)
+            && has_message(&d.diagnostics, "Syntax Error")
+            && shifted_diagnostics_match(&old, &d.diagnostics, 21, 4)
+    };
+    assert!(fresh(&published, 3));
+    assert!(!matches(&published));
+
+    published.diagnostics = vec![
+        diagnostic(36, "Syntax Error: expected expression"),
+        diagnostic(37, "Syntax Error: expected SEMICOLON"),
+    ];
+    assert!(matches(&published));
+    published.diagnostics[0].range.end.character = 32;
+    assert!(!matches(&published), "both range bounds must shift");
+    published.diagnostics[0].range.end.character = 36;
+    published.diagnostics.truncate(1);
+    assert!(
+        !matches(&published),
+        "every affected diagnostic must reappear"
+    );
+    assert!(!shifted_diagnostics_match(&[], &[], 21, 4));
 }
 
 /// After inserting `delta` UTF-16 units at column `insert_col` of line 0, every old
@@ -581,9 +719,9 @@ impl Env {
     /// the edit arrived 70 ms after the previous publish, cachePriming was cancelled
     /// and restarted, an empty publish for the new version followed, then silence).
     /// An editor recovers on the next keystroke, so this does the same: when no
-    /// fresh syntax error arrives within `SETTLE`, append a space after the final
-    /// newline (which leaves line 0 and its diagnostics untouched) and wait for
-    /// that revision instead. The assertions on the result are unchanged.
+    /// fresh syntax error satisfying `pred` arrives within `SETTLE`, append a space
+    /// after the final newline (which leaves line 0 and its diagnostics untouched)
+    /// and wait for that revision instead. The assertions on the result are unchanged.
     async fn syntax_diagnostics_after(
         &self,
         server: ServerId,
@@ -591,6 +729,7 @@ impl Env {
         what: &str,
         mark: usize,
         edit: BufferRevision,
+        pred: impl Fn(&[DiagnosticDto]) -> bool,
     ) -> DiagnosticsPublished {
         const SETTLE: Duration = Duration::from_secs(30);
         const NUDGES: usize = 6;
@@ -599,7 +738,9 @@ impl Env {
         for attempt in 0..=NUDGES {
             let found = self
                 .try_diagnostics(server, rel, mark, what, SETTLE, |d| {
-                    fresh(d, revision) && has_message(&d.diagnostics, "Syntax Error")
+                    fresh(d, revision)
+                        && has_message(&d.diagnostics, "Syntax Error")
+                        && pred(&d.diagnostics)
                 })
                 .await;
             if let Some(d) = found {
@@ -609,7 +750,7 @@ impl Env {
                 break;
             }
             eprintln!(
-                "[evidence] {server:?} {rel} ({what}): no syntax error for revision {revision} within {SETTLE:?}, nudging with a trailing space"
+                "[evidence] {server:?} {rel} ({what}): no matching syntax error for revision {revision} within {SETTLE:?}, nudging with a trailing space"
             );
             mark = self.mark();
             let end = utf16_len(&self.snapshot(rel).text);
@@ -1440,7 +1581,7 @@ async fn rust_family() {
     let mark = env.mark();
     let rev1 = env.replace("src/main.rs", one_line);
     let d1 = env
-        .syntax_diagnostics_after(id, "src/main.rs", "syntax error", mark, rev1)
+        .syntax_diagnostics_after(id, "src/main.rs", "syntax error", mark, rev1, |_| true)
         .await;
     assert!(d1.diagnostics.iter().all(|x| x.range.start.line == 0));
     let at = one_line.find("\"\"").unwrap() + 1;
@@ -1448,7 +1589,14 @@ async fn rust_family() {
     let mark = env.mark();
     let rev2 = env.insert("src/main.rs", offset16(one_line, at), "😀日本");
     let d2 = env
-        .syntax_diagnostics_after(id, "src/main.rs", "syntax error after unicode", mark, rev2)
+        .syntax_diagnostics_after(
+            id,
+            "src/main.rs",
+            "syntax error after unicode",
+            mark,
+            rev2,
+            |diagnostics| shifted_diagnostics_match(&d1.diagnostics, diagnostics, insert_col, 4),
+        )
         .await;
     assert_shifted(&d1.diagnostics, &d2.diagnostics, insert_col, 4);
 
@@ -1844,7 +1992,7 @@ async fn needs_install_downloads_nothing_until_install_is_called() {
     let id = ServerId::Json;
     let fresh = tempfile::tempdir().unwrap();
     let mut options = EnvOptions::shared();
-    options.cache = std::fs::canonicalize(fresh.path()).unwrap().join("cache");
+    options.cache = canonical(fresh.path()).join("cache");
     options.auto_install = false;
     let mut env = Env::start_with(&[("package.json", "{}"), ("a.json", "{}\n")], options).await;
     env.open("a.json");

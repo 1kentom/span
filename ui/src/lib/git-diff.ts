@@ -33,3 +33,37 @@ export function gitDiffLinesCapped(text: string): boolean {
   }
   return offset < text.length;
 }
+
+export type GitSplitRow = { header?: GitPatchRow; left?: GitPatchRow; right?: GitPatchRow };
+/** Align only adjacent removed/added blocks. Context is never synthesized. */
+export function gitSplitRows(rows: GitPatchRow[]): GitSplitRow[] {
+  const result: GitSplitRow[] = [];
+  for (let i = 0; i < rows.length;) {
+    const row = rows[i];
+    if (row.kind === "header") { result.push({ header: row }); i++; }
+    else if (row.kind === "context") { result.push({ left: row, right: row }); i++; }
+    else {
+      const removed: GitPatchRow[] = [], added: GitPatchRow[] = [];
+      while (i < rows.length && rows[i].kind === "removed") removed.push(rows[i++]);
+      while (i < rows.length && rows[i].kind === "added") added.push(rows[i++]);
+      for (let j = 0; j < Math.max(removed.length, added.length); j++) result.push({ left: removed[j], right: added[j] });
+    }
+  }
+  return result;
+}
+export type GitWordSegment = { text: string; changed: boolean };
+/** Bounded word LCS for the exact displayed line pair, with a whole-line fallback. */
+export function gitWordSegments(left: string, right: string): [GitWordSegment[], GitWordSegment[]] {
+  const a = left.match(/\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]/gu) || [];
+  const b = right.match(/\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]/gu) || [];
+  if (a.length * b.length > 16_384) return [[{ text: left, changed: left !== right }], [{ text: right, changed: left !== right }]];
+  const matrix = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) matrix[i][j] = a[i] === b[j] ? matrix[i + 1][j + 1] + 1 : Math.max(matrix[i + 1][j], matrix[i][j + 1]);
+  const x = a.map(text => ({ text, changed: true })), y = b.map(text => ({ text, changed: true }));
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { x[i++].changed = false; y[j++].changed = false; }
+    else if (matrix[i + 1][j] >= matrix[i][j + 1]) i++; else j++;
+  }
+  return [x, y];
+}

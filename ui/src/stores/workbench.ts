@@ -451,9 +451,23 @@ export function createWorkbench() {
   async function initialize(onStartup?: (request: StartupRequest) => Promise<void>) {
     if (!isDesktop) await openWorkspace();
     else {
-      // A request that names a folder opens it. Requests that only name files never pick their folder as the
-      // project, so the saved session is restored first and the files open inside it when they belong to it.
-      try { const requests = await api.takeStartupRequests(); if (requests.length && onStartup && requests.some(request => !request.impliedRoot)) { for (const request of requests) await onStartup(request); } else { const saved = await api.getSession(); if (saved) await openWorkspace(saved.workspaceRoot, saved); else setSettings(await api.getSettings()); if (onStartup) for (const request of requests) await onStartup(request); } }
+      // Restore tabs for a matching explicit folder before applying its startup files. File-only
+      // requests restore the saved project first, without selecting the file's implied folder.
+      try {
+        const requests = await api.takeStartupRequests();
+        const explicit = onStartup ? requests.find(request => request.workspaceRoot && !request.impliedRoot) : undefined;
+        let sessionWarning: string | undefined;
+        try {
+          const saved = await api.getSession();
+          if (saved && (!explicit || saved.workspaceRoot === explicit.workspaceRoot)) await openWorkspace(saved.workspaceRoot, saved);
+          else if (!explicit) setSettings(await api.getSettings());
+        } catch (cause) {
+          sessionWarning = `Could not restore the saved session: ${cause instanceof Error ? cause.message : String(cause)}`;
+          report(sessionWarning);
+        }
+        if (onStartup) for (const request of requests) await onStartup(request);
+        if (sessionWarning) report(sessionWarning);
+      }
       catch (e) { report(e); }
     }
     if (!workspace()) try { await refreshSettingsScope("user"); } catch (error) { report(error); }
@@ -941,7 +955,14 @@ export function createWorkbench() {
   }
   async function refreshBuffer(path: string) {
     if (dirty(path)) { setError("This file has unsaved changes. Save or close it before loading agent edits."); return; }
-    try { const result = await readBuffer(path); accepted.set(path, result); setBuffers(path, result); setDocuments(current => ({ ...current, [path]: { document: Text.of(result.text.split("\n")) } })); } catch (e) { report(e); }
+    const generation = workspaceVersion, document = documents()[path]?.document, revision = buffers[path]?.revision;
+    try {
+      const result = await readBuffer(path);
+      if (generation !== workspaceVersion || documents()[path]?.document !== document || buffers[path]?.revision !== revision || dirty(path)) return;
+      const nextDocument = Text.of(result.text.split("\n"));
+      if (!document?.eq(nextDocument)) histories.delete(path);
+      accepted.set(path, result); setBuffers(path, result); setDocuments(current => ({ ...current, [path]: { document: nextDocument } }));
+    } catch (e) { if (generation === workspaceVersion) report(e); }
   }
   const autosave = createAutoSaveController({
     read: () => ({ generation: workspaceGeneration(), mode: settings().autoSave, delay: settings().autoSaveDelay, paused: busy() || fileOperationBusy() || !!pendingClose() || pendingWorkspace(), buffers: [...new Set(groups().flatMap(group => group.tabs))].filter(path => !!buffers[path]).map(path => ({ path, revision: editCounters()[path] || 0, dirty: dirty(path), eligible: !isSettingsBuffer(path) && !externalChanges()[path] })) }),

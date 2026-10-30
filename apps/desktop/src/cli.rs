@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 
-pub const HELP: &str = "Usage: span [OPTIONS] [FOLDER | FILE[:LINE[:COLUMN]]]...\n\nOpen a folder or one or more existing files. Relative paths use the invoking\nshell's working directory. Quote paths containing spaces. Line and column\nnumbers are 1-based. Requests sent to an existing window use its unsaved\nchanges confirmation before changing projects.\n\nOptions:\n  --goto FILE[:LINE[:COLUMN]]  Open a file at a location\n  --help, -h                   Print this help without starting the GUI\n  --version, -V                Print the version without starting the GUI\n  --                          Treat following arguments as paths\n\nExamples:\n  span .\n  span \"path/to/my project\"\n  span src/main.rs:12:3\n  span --goto src/main.rs:12 other.rs\n\n--new-window and --wait are not implemented.\n";
+pub const HELP: &str = "Usage: span [OPTIONS] [FOLDER | FILE[:LINE[:COLUMN]]]...\n\nOpen a folder or one or more existing files. Relative paths use the invoking\nshell's working directory. Quote paths containing spaces. Line and column\nnumbers are 1-based. Requests sent to an existing window use its unsaved\nchanges confirmation before changing projects.\n\nOptions:\n  --goto FILE[:LINE[:COLUMN]]  Open a file at a location\n  --new-window                Open in an isolated window process\n  --help, -h                   Print this help without starting the GUI\n  --version, -V                Print the version without starting the GUI\n  --                          Treat following arguments as paths\n\nExamples:\n  span .\n  span \"path/to/my project\"\n  span src/main.rs:12:3\n  span --goto src/main.rs:12 other.rs\n\n--wait is not implemented.\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +27,38 @@ pub enum CliAction {
     Open(StartupRequest),
     Help,
     Version,
+}
+
+/// Window isolation is handled before the single-instance plugin starts.
+pub(crate) fn split_window_mode(args: impl IntoIterator<Item = String>) -> (bool, Vec<String>) {
+    let mut isolated = false;
+    let mut positional = false;
+    let mut remaining = Vec::new();
+    for arg in args {
+        if arg == "--" {
+            positional = true;
+        }
+        if !positional && arg == "--new-window" {
+            isolated = true;
+        } else {
+            remaining.push(arg);
+        }
+    }
+    (isolated, remaining)
+}
+
+pub(crate) fn isolate_request_root(
+    request: &mut StartupRequest,
+    isolated: bool,
+) -> Result<(), String> {
+    if isolated {
+        if request.workspace_root.is_none() {
+            return Err("An isolated window requires a folder or file".into());
+        }
+        // A fresh process has no existing project in which to open an implied file.
+        request.implied_root = false;
+    }
+    Ok(())
 }
 
 /// Arguments exclude argv[0]. This function never starts a GUI or changes files.
@@ -274,5 +306,40 @@ mod tests {
             std::fs::read_to_string(temp.path().join("outside.rs")).unwrap(),
             "precious"
         );
+    }
+}
+
+#[cfg(test)]
+mod window_mode_tests {
+    #[test]
+    fn file_only_isolated_startup_opens_its_derived_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("file.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let super::CliAction::Open(mut request) =
+            super::parse_args([file.to_string_lossy().into_owned()], temp.path()).unwrap()
+        else {
+            panic!("Expected startup request")
+        };
+        assert!(request.implied_root);
+        super::isolate_request_root(&mut request, false).unwrap();
+        assert!(request.implied_root);
+        super::isolate_request_root(&mut request, true).unwrap();
+        assert!(!request.implied_root);
+        assert_eq!(request.files.len(), 1);
+        assert!(request.workspace_root.is_some());
+        assert!(super::isolate_request_root(&mut super::StartupRequest::default(), true).is_err());
+    }
+    #[test]
+    fn isolation_flag_preserves_literal_paths_after_delimiter() {
+        let (isolated, args) =
+            super::split_window_mode(["--new-window", "--", "--new-window"].map(String::from));
+        assert!(isolated);
+        assert_eq!(args, ["--", "--new-window"]);
+        let (isolated, args) =
+            super::split_window_mode(["folder", "--new-window"].map(String::from));
+        assert!(isolated);
+        assert_eq!(args, ["folder"]);
+        assert!(!super::split_window_mode(["--", "--new-window"].map(String::from)).0);
     }
 }

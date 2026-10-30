@@ -1,0 +1,54 @@
+:root {
+  --git-added: #67b77a;
+  --git-modified: #d3af68;
+  --git-deleted: #d97575;
+  --git-renamed: #7aaed5;
+  --git-conflicted: #e68b64;
+}
+.theme-light, [data-theme="light"] {
+  --git-added: #367b47;
+  --git-modified: #906819;
+  --git-deleted: #b34747;
+  --git-renamed: #39759e;
+  --git-conflicted: #a74e24;
+}
+[data-git-status="added"] { --git-status-color: var(--git-added); }
+[data-git-status="modified"] { --git-status-color: var(--git-modified); }
+[data-git-status="deleted"] { --git-status-color: var(--git-deleted); }
+[data-git-status="renamed"] { --git-status-color: var(--git-renamed); }
+[data-git-status="conflicted"] { --git-status-color: var(--git-conflicted); }
+.tree-row[data-git-status] .tree-name,
+.file-tab[data-git-status] > button[role="tab"] > span { color: var(--git-status-color); }
+.git-path-badge { color: var(--git-status-color); flex: 0 0 auto; font-size: 10px; font-weight: 600; min-width: 12px; text-align: center; margin-left: auto; }
+.file-tab .git-path-badge { margin-left: 1px; }
+.git-folder-badge { font-size: 16px; line-height: 12px; }
+.cm-git-gutter { width: 8px; margin-right: 2px; cursor: pointer; }
+.cm-git-gutter .cm-gutterElement { padding: 0; position: relative; }
+.cm-git-marker { display: block; position: absolute; left: 2px; top: 0; bottom: 0; width: 3px; min-height: 100%; opacity: .8; transition: width 120ms ease, opacity 120ms ease; animation: git-marker-appear 140ms ease-out; }
+.cm-git-marker:hover { opacity: 1; width: 5px; }
+.cm-git-added { background: var(--git-added); }
+.cm-git-modified { background: var(--git-modified); }
+.cm-git-deleted { background: transparent; min-height: 0; height: 0; width: 0; bottom: -3px; top: auto; left: 1px; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid var(--git-deleted); z-index: 1; }
+.cm-git-deleted:hover { width: 0; }
+.cm-git-deleted-top { top: -3px; bottom: auto; }
+.cm-git-spacer { display: block; width: 8px; }
+.span-editor { position: relative; }
+.editor-git-changes { position: absolute; z-index: 4; right: 18px; top: 6px; display: flex; align-items: center; gap: 3px; padding: 2px 4px 2px 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--editor-muted, var(--dim)); background: var(--editor-bg, var(--panel-bg)); font: 10px/18px Inter, sans-serif; opacity: .66; transition: opacity 120ms ease; }
+.editor-git-changes:hover, .editor-git-changes:focus-within { opacity: 1; }
+.editor-git-changes button { width: 20px; height: 20px; display: grid; place-items: center; border: 0; border-radius: 3px; color: var(--text); background: transparent; cursor: pointer; }
+.editor-git-changes button:hover { background: var(--hover); }
+.cm-tooltip.cm-git-preview { border: 1px solid var(--border); background: var(--editor-bg, var(--panel-bg)); border-radius: 7px; box-shadow: 0 8px 30px #0003; padding: 10px; max-width: min(640px, 80vw); max-height: 350px; overflow: auto; color: var(--text); }
+.cm-git-preview header { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; font: 11px/20px Inter, sans-serif; }
+.cm-git-preview header strong { margin-right: auto; font-weight: 600; }
+.cm-git-preview header button { display: grid; place-items: center; background: transparent; color: var(--text); border: 0; width: 22px; height: 22px; border-radius: 3px; cursor: pointer; }
+.cm-git-preview header button:hover { background: var(--hover); }
+.cm-git-preview header button span { width: 13px; height: 13px; background: currentColor; mask-position: center; mask-size: contain; mask-repeat: no-repeat; }
+.cm-git-preview-caption { color: var(--editor-muted, var(--dim)); font: 10px/18px Inter, sans-serif; }
+.cm-git-preview pre { font: 11px/18px "JetBrains Mono", monospace; margin: 0 0 6px; padding: 5px 8px; white-space: pre; overflow: auto; border-left: 2px solid; }
+.cm-git-preview-before { border-color: var(--git-deleted) !important; background: color-mix(in srgb, var(--git-deleted) 8%, transparent); }
+.cm-git-preview-after { border-color: var(--git-added) !important; background: color-mix(in srgb, var(--git-added) 8%, transparent); }
+@keyframes git-marker-appear { from { opacity: 0; } to { opacity: .8; } }
+@media (prefers-reduced-motion: reduce) { .cm-git-marker, .editor-git-changes { animation: none; transition: none; } }
+.cm-git-blame { display: inline-block; max-width: 440px; margin-left: 36px; color: var(--dim, var(--editor-muted)); opacity: .8; font-style: italic; font-size: .9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; user-select: none; }
+.cm-git-blame:hover { opacity: .9; }
+.cm-git-staged-gutter .cm-git-marker { opacity: .65; width: 2px; }

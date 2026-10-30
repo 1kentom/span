@@ -1,8 +1,10 @@
-import { For, Show, createEffect, createSignal, on } from "solid-js";
+import { For, Show, createEffect, createSignal, createMemo, on } from "solid-js";
 import type { GitWorkbench } from "../../stores/git";
 import type { GitHistoryScope } from "../../stores/git-view";
-import { gitCommitDate } from "../../lib/git-format";
+import Icon, { FileIcon } from "../Icon";
+import { gitCommitGraph, gitCommitDate } from "../../lib/git-format";
 import { GitRepositoryHeader } from "./GitPanel";
+import { GitHistoryTools } from "./GitHistoryTools";
 
 type GitHistoryProps = {
   git: GitWorkbench; available: boolean; active: boolean; filePath?: string;
@@ -16,6 +18,11 @@ const scopes: { id: GitHistoryScope; label: string }[] = [{ id: "all", label: "A
 
 export function GitHistory(props: GitHistoryProps) {
   const g = props.git;
+  const [advanced, setAdvanced] = createSignal(false);
+  const [filter, setFilter] = createSignal("");
+  const [selected, setSelected] = createSignal<string>();
+  const graph = createMemo(() => gitCommitGraph(g.history()?.commits || []));
+  const graphWidth = () => Math.min(88, Math.max(18, ...graph().map(row => row.width)));
   const [ownScope, setOwnScope] = createSignal<GitHistoryScope>("all");
   const scope = () => props.scope ?? ownScope();
   const setScope = (next: GitHistoryScope) => { if (props.onScope) props.onScope(next); else setOwnScope(next); };
@@ -26,7 +33,7 @@ export function GitHistory(props: GitHistoryProps) {
   const enabled = () => !!g.context()?.enabled && !!g.context()?.repository;
   // Load whenever the shown scope differs from what the store holds; file scope waits for a working file.
   createEffect(on(
-    () => [props.active, g.context()?.repository?.id, g.context()?.enabled, scope(), activeRepoPath()] as const,
+    () => [props.active, g.context()?.repository?.id, g.context()?.enabled, scope(), activeRepoPath(), g.context()?.repository?.head, g.context()?.repository?.branch] as const,
     ([active, repository, isEnabled, current, path]) => {
       if (!active || !repository || !isEnabled) return;
       const wanted = current === "file" ? path : null;
@@ -39,7 +46,7 @@ export function GitHistory(props: GitHistoryProps) {
   const available = (id: GitHistoryScope) => enabled() && (id === "all" || !!activeRepoPath());
   function scopeKey(event: KeyboardEvent) {
     const index = scopes.findIndex(item => item.id === scope());
-    const next = ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key) ? (index + 1) % scopes.length
+    const next = ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key) ? (index + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) + scopes.length) % scopes.length
       : event.key === "Home" ? 0 : event.key === "End" ? scopes.length - 1 : -1;
     if (next < 0) return;
     event.preventDefault();
@@ -50,6 +57,9 @@ export function GitHistory(props: GitHistoryProps) {
   return (
     <section class="git-history" aria-label="Git history">
       <Show when={!props.embedded}><GitRepositoryHeader git={g} available={props.available} onRefresh={refresh} /></Show>
+      <Show when={props.available && enabled()}><button class="button" aria-expanded={advanced()} onClick={() => setAdvanced(value => !value)}>{advanced() ? "Back to commit history" : "Advanced history"}</button></Show>
+      <Show when={advanced()}><GitHistoryTools git={g} path={activeRepoPath()} /></Show>
+      <Show when={!advanced()}>
       <div ref={group} class="git-history-filter" role="radiogroup" aria-label="History scope" onKeyDown={scopeKey}>
         <For each={scopes}>{item => (
           <button
@@ -78,24 +88,44 @@ export function GitHistory(props: GitHistoryProps) {
         </div>
       </Show>
       <Show when={!props.available}><div class="git-empty">Git history requires the desktop app.</div></Show>
+      <Show when={g.history()?.commits.length}><div class="git-resource-filter"><Icon name="SearchNormal1" size={14} /><input type="search" aria-label="Filter loaded commits" placeholder="Filter loaded commits…" value={filter()} onInput={event => setFilter(event.currentTarget.value)} /></div></Show>
       <div class="git-scroll">
-        <For each={g.history()?.commits || []}>{commit => (
-          <button
-            class="git-history-entry"
-            aria-label={`Review commit ${commit.id.slice(0, 8)}: ${commit.subject}`}
-            title={commit.body || commit.subject}
-            onClick={() => g.openDiff(g.historyPath(), "commit", commit)}
-          >
-            <span class="git-history-subject">{commit.subject}</span>
-            <span class="git-history-meta">
-              <code>{commit.id.slice(0, 8)}</code>
-              <span>{commit.author}</span>
-              <time dateTime={gitCommitDate(commit.timestamp).dateTime} title={gitCommitDate(commit.timestamp).detail}>
-                {gitCommitDate(commit.timestamp).label}
-              </time>
-            </span>
-          </button>
+        <For each={g.history()?.commits || []}>{(commit, index) => (
+          <article class="git-history-item" hidden={!!filter() && !`${commit.subject} ${commit.author} ${commit.id}`.toLocaleLowerCase().includes(filter().toLocaleLowerCase())}>
+            <div class="git-history-row">
+              <svg class="git-history-graph" width={scope() === "file" ? 18 : graphWidth()} height="38" viewBox={`0 0 ${scope() === "file" ? 18 : graphWidth()} 38`} aria-hidden="true">
+                <Show when={scope() === "all"}><For each={graph()[index()]?.edges}>{edge => <path d={edge.path} class={`git-graph-lane-${edge.lane % 4}`} />}</For></Show>
+                <circle cx={scope() === "file" ? 8 : graph()[index()]?.x || 8} cy="18" r={commit.parents.length > 1 ? 4 : 3} />
+              </svg>
+              <button
+                class="git-history-entry"
+                aria-label={`Review commit ${commit.id.slice(0, 8)}: ${commit.subject}`}
+                title={commit.body || commit.subject}
+                onClick={() => g.openDiff(g.historyPath(), "commit", commit)}
+              >
+                <span class="git-history-subject">{commit.subject}</span>
+                <span class="git-history-meta">
+                  <span>{commit.author}</span>
+                  <code>{commit.id.slice(0, 8)}</code>
+                  <time dateTime={gitCommitDate(commit.timestamp).dateTime} title={gitCommitDate(commit.timestamp).detail}>{gitCommitDate(commit.timestamp).label}</time>
+                </span>
+              </button>
+              <button class="git-row-action" aria-label={`Show details for commit ${commit.id.slice(0, 8)}`} aria-expanded={selected() === commit.id} onClick={() => { if (selected() === commit.id) setSelected(undefined); else { setSelected(commit.id); void g.loadCommitDetails(commit); } }}><Icon name={selected() === commit.id ? "arrow-down4" : "arrow-right4"} size={12} /></button>
+            </div>
+            <Show when={selected() === commit.id}>
+              <div class="git-history-details">
+                <p>{commit.body || commit.subject}</p>
+                <div class="git-history-meta"><span title={commit.authorEmail}>{commit.author}</span><span>{gitCommitDate(commit.timestamp).detail}</span></div>
+                <code class="git-full-hash">{commit.id}</code>
+                <Show when={commit.parents.length}><div class="git-note">{commit.parents.length > 1 ? "Merge parents" : "Parent"}: {commit.parents.map(parent => parent.slice(0, 8)).join(", ")}</div></Show>
+                <Show when={g.detailsLoading()}><p class="git-note" role="status">Reading commit files…</p></Show>
+                <Show when={g.detailsError()}><div class="git-error" role="alert">{g.detailsError()}<button class="git-text-action" onClick={() => void g.loadCommitDetails(commit)}>Retry</button></div></Show>
+                <Show when={g.commitDetails()?.commit.id === commit.id}><For each={g.commitDetails()?.files}>{file => <button class="git-commit-file" title={file.oldPath ? `${file.oldPath} renamed to ${file.path}` : file.path} onClick={() => g.openDiff(file.path, "commit", commit)}><FileIcon path={file.path} /><span>{file.path}</span><code>{file.status}</code></button>}</For></Show>
+              </div>
+            </Show>
+          </article>
         )}</For>
+        <Show when={filter() && g.history()?.commits.length && !g.history()?.commits.some(commit => `${commit.subject} ${commit.author} ${commit.id}`.toLocaleLowerCase().includes(filter().toLocaleLowerCase()))}><div class="git-empty">No loaded commits match this filter.</div></Show>
         <Show when={g.history()?.nextSkip != null}>
           <button class="button git-more" disabled={g.historyLoading()} onClick={() => void g.loadHistory(g.historyPath(), true)}>
             Load more commits
@@ -106,6 +136,7 @@ export function GitHistory(props: GitHistoryProps) {
         </Show>
         <Show when={g.historyLoading()}><div class="git-empty" role="status">Reading commits…</div></Show>
       </div>
+      </Show>
     </section>
   );
 }

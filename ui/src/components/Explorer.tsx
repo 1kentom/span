@@ -1,5 +1,7 @@
 import { type JSX, For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { FileEntry } from "../bindings";
+import type { GitDecorations } from "../stores/git-decorations";
+import "../styles/git-decorations.css";
 import type { Workbench } from "../stores/workbench";
 import Icon, { FileIcon } from "./Icon";
 import { fileIndexMessage } from "../lib/file-index";
@@ -17,7 +19,7 @@ import "../styles/explorer.css";
 type DragItem = { paths: string[]; generation: number };
 type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: EditorDropTarget } | { kind: "agent" };
 
-export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void; onAgentTarget?: (x: number, y: number) => boolean; onAgentPreview?: (over: boolean) => void; onAgentDrop?: (entries: { path: string; isDir: boolean }[]) => void; nativeDrops?: boolean }) {
+export function Explorer(props: { git?: JSX.Element; gitDecorations?: GitDecorations; workbench: Workbench; view: "Files" | "Search" | "Git"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void; onAgentTarget?: (x: number, y: number) => boolean; onAgentPreview?: (over: boolean) => void; onAgentDrop?: (entries: { path: string; isDir: boolean }[]) => void; nativeDrops?: boolean }) {
   const w = props.workbench; const state = props.state;
   const preferences = () => explorerPreferences(w.settings());
   const mac = currentPlatform() === "mac";
@@ -194,6 +196,7 @@ export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view:
     /** A tail directory discovered below an expanded parent whose listing has not arrived yet. It is shown open so the row does not flip. */
     const awaitingTail = () => { w.discoveryRevision(); const current = chain(); if (!current || current.segments.length < 2 || w.directories[current.deepest]) return false; return w.expanded().has(current.segments[current.segments.length - 2].path) && !attempted.has(attemptKey(current.deepest)) || pending().has(current.deepest); };
     const expanded = () => entry.isDir && (w.expanded().has(target()) || pending().has(target()) || awaitingTail());
+    const gitStatus = () => props.gitDecorations?.status(target(), entry.isDir);
     const merged = () => (chain()?.segments.length ?? 1) > 1;
     createEffect(() => {
       w.discoveryRevision();
@@ -213,17 +216,18 @@ export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view:
     });
     const toggle = () => void toggleChain(chain()?.segments.map(segment => segment.path) ?? [entry.path]);
     return <>
-      <Show when={state.edit()?.mode === "rename" && state.edit()!.path === target()} fallback={<button class={`tree-row internal-drag-source ${w.activePath() === entry.path ? "selected" : ""} ${state.selection().includes(target()) ? "sel" : ""} ${state.clipboard()?.cut && state.clipboard()!.paths.includes(target()) ? "cut" : ""} ${dropFolder() === target() && entry.isDir ? "droptgt" : ""}`} role="treeitem" data-path={target()} tabIndex={state.focus() && state.focus() !== target() ? -1 : 0} aria-busy={entry.isDir && w.loadingDirectories().has(target())} aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-label={entry.isDir && merged() ? target() : undefined} aria-selected={state.selection().includes(target()) || (!entry.isDir && w.activePath() === entry.path)} draggable={false} onPointerDown={event => { if (event.button === 0 && !event.shiftKey && !event.metaKey && !event.ctrlKey) startDrag(event, target()); }} onFocus={() => state.setFocus(target())} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={event => {
+      <Show when={state.edit()?.mode === "rename" && state.edit()!.path === target()} fallback={<button class={`tree-row internal-drag-source ${w.activePath() === entry.path ? "selected" : ""} ${state.selection().includes(target()) ? "sel" : ""} ${state.clipboard()?.cut && state.clipboard()!.paths.includes(target()) ? "cut" : ""} ${dropFolder() === target() && entry.isDir ? "droptgt" : ""}`} role="treeitem" data-path={target()} data-git-status={gitStatus()?.kind} tabIndex={state.focus() && state.focus() !== target() ? -1 : 0} aria-busy={entry.isDir && w.loadingDirectories().has(target())} aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-label={entry.isDir && merged() ? target() : undefined} aria-selected={state.selection().includes(target()) || (!entry.isDir && w.activePath() === entry.path)} draggable={false} onPointerDown={event => { if (event.button === 0 && !event.shiftKey && !event.metaKey && !event.ctrlKey) startDrag(event, target()); }} onFocus={() => state.setFocus(target())} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={event => {
         // WebKit does not focus a clicked button, so focus the row for the tree's keyboard shortcuts.
         event.currentTarget.focus({ preventScroll: true });
         if (event.metaKey || event.ctrlKey) { state.toggleSelect(target()); return; }
         if (event.shiftKey) { state.selectRange(target()); return; }
         state.selectOnly(target());
         if (entry.isDir) toggle(); else props.onNavigate(entry.path);
-      }} title={target()}>
+      }} title={[target(), gitStatus()?.label].filter(Boolean).join(" · ")}>
         <Show when={entry.isDir} fallback={<span class="tree-indent" />}><Icon name={expanded() ? "arrow-down4" : "arrow-right4"} size={13} /></Show>
         <FileIcon path={target()} directory={entry.isDir} open={expanded()} plain={chain()?.inSourceRoot} />
         <span class={`tree-name ${entry.ignored || entry.backgroundExcluded ? "tree-name-muted" : ""}`} title={entry.ignored || entry.backgroundExcluded ? [entry.ignored ? "Ignored by workspace rules" : "", entry.backgroundExcluded ? "Excluded from background indexing" : ""].filter(Boolean).join(". ") : undefined} aria-label={entry.ignored || entry.backgroundExcluded ? `${entry.name}, ${[entry.ignored ? "ignored by workspace rules" : "", entry.backgroundExcluded ? "excluded from background indexing" : ""].filter(Boolean).join(", ")}` : undefined}><Show when={merged()} fallback={entry.name}><For each={chain()!.segments}>{(segment, index) => <>{index() > 0 && <span class="tree-separator" aria-hidden="true">{chain()!.separator}</span>}<span class="tree-segment" data-segment-path={segment.path}>{segment.name}</span></>}</For></Show></span>
+        <Show when={gitStatus()}>{status => <span class={`git-path-badge ${entry.isDir ? "git-folder-badge" : ""}`} title={status().label} aria-label={status().label}>{status().badge}</span>}</Show>
         <Show when={w.dirty(entry.path)}><span class="dirty-dot" aria-label="Unsaved changes" /></Show>
       </button>}><EditRow depth={rowProps.depth} /></Show>
       <Show when={entry.isDir && expanded()}><Show when={w.loadingDirectories().has(target())}><div class="tree-loading" role="status" style={{ "padding-left": `${28 + rowProps.depth * 16}px` }}>Loading folder…</div></Show><TreeRows path={target()} depth={rowProps.depth + 1} /></Show>

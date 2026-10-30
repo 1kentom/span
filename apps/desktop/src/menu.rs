@@ -15,6 +15,9 @@ pub enum NativeAction {
     ToggleFiles,
     FocusFiles,
     ShowSourceControl,
+    NextGitChange,
+    PreviousGitChange,
+    ToggleGitBlame,
     OpenFile,
     CommandPalette,
     FindInFile,
@@ -73,6 +76,21 @@ const ACTIONS: &[(&str, &str, NativeAction)] = &[
         "showSourceControl",
         "Show Source Control",
         NativeAction::ShowSourceControl,
+    ),
+    (
+        "nextGitChange",
+        "Next Git Change",
+        NativeAction::NextGitChange,
+    ),
+    (
+        "previousGitChange",
+        "Previous Git Change",
+        NativeAction::PreviousGitChange,
+    ),
+    (
+        "toggleGitBlame",
+        "Toggle Git Blame",
+        NativeAction::ToggleGitBlame,
     ),
     ("openFile", "Open File...", NativeAction::OpenFile),
     (
@@ -297,6 +315,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["toggleFiles"],
             &items["focusFiles"],
             &items["showSourceControl"],
+            &items["toggleGitBlame"],
             &items["splitEditor"],
             &items["splitEditorDown"],
             &items["toggleProject"],
@@ -318,6 +337,8 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
         &[
             &items["quickOpen"],
             &items["goToLine"],
+            &items["nextGitChange"],
+            &items["previousGitChange"],
             &separator,
             &items["goToDefinition"],
             &items["goToTypeDefinition"],

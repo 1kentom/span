@@ -36,6 +36,43 @@ impl Content {
 }
 
 impl GitService {
+    /// Blob baselines are separate from disk and editor text, so drafts stay untouched.
+    pub async fn file_baseline(
+        &self,
+        context_id: &str,
+        path: &str,
+        cancellation: CancellationToken,
+    ) -> Result<GitFileBaseline> {
+        relative_path(path)?;
+        let repo = self.repo_for(context_id, &cancellation).await?;
+        let before = self.status_for(&repo, &cancellation).await?;
+        let head = self
+            .tree_content(
+                &repo,
+                before.repository.head.as_deref(),
+                path,
+                &cancellation,
+            )
+            .await?;
+        let index = self.index_content(&repo, path, &cancellation).await?;
+        let after = self.status_for(&repo, &cancellation).await?;
+        if before.index_revision != after.index_revision {
+            return Err(error(
+                "Git changed while reading file baselines. Refresh Git.",
+            ));
+        }
+        self.repo_for(context_id, &cancellation).await?;
+        Ok(GitFileBaseline {
+            repository_id: repo.id,
+            path: path.into(),
+            index_revision: before.index_revision,
+            binary: head.binary || index.binary,
+            truncated: head.large || index.large,
+            head_text: head.text,
+            index_text: index.text,
+        })
+    }
+
     pub async fn diff(
         &self,
         context_id: &str,
@@ -119,6 +156,9 @@ impl GitService {
                 "--no-ext-diff",
                 "--no-textconv",
                 "--no-color",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--no-relative",
                 "--no-renames",
             ]);
             if side == GitDiffSide::Staged {
@@ -294,6 +334,9 @@ impl GitService {
                 "--no-ext-diff",
                 "--no-textconv",
                 "--no-color",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--no-relative",
                 "-r",
             ]);
             if let Some(parent) = parent {
@@ -343,7 +386,7 @@ impl GitService {
         Ok(())
     }
 
-    async fn commit_oid(
+    pub(super) async fn commit_oid(
         &self,
         repo: &RepoIdentity,
         id: &str,
@@ -502,7 +545,7 @@ fn make_diff(
     }
 }
 
-fn disk_stamp_for(repo: &RepoIdentity, path: &str) -> Result<String> {
+pub(super) fn disk_stamp_for(repo: &RepoIdentity, path: &str) -> Result<String> {
     let full = repo.root.join(relative_path(path)?);
     let mut parent = full.parent().ok_or_else(|| error("Invalid file parent"))?;
     while !parent.exists() {
@@ -579,7 +622,7 @@ fn disk_content(repo: &RepoIdentity, path: &str) -> Result<(Content, String)> {
 }
 
 #[cfg(unix)]
-fn open_working_file(repo: &RepoIdentity, path: &str) -> Result<fs::File> {
+pub(super) fn open_working_file(repo: &RepoIdentity, path: &str) -> Result<fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let relative = relative_path(path)?;
     let mut directory =
@@ -630,7 +673,7 @@ fn open_working_file(repo: &RepoIdentity, path: &str) -> Result<fs::File> {
 }
 
 #[cfg(not(unix))]
-fn open_working_file(repo: &RepoIdentity, path: &str) -> Result<fs::File> {
+pub(super) fn open_working_file(repo: &RepoIdentity, path: &str) -> Result<fs::File> {
     let full = repo.root.join(relative_path(path)?);
     let canonical = full
         .canonicalize()

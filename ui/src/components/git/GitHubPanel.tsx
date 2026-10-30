@@ -1,0 +1,83 @@
+import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
+import type { GitHubWorkbench } from "../../stores/github";
+import type { GitWorkbench } from "../../stores/git";
+import type { GitHubReviewEvent } from "../../bindings";
+import Icon from "../Icon";
+import "../../styles/github.css";
+
+export function GitHubPanel(props: { github: GitHubWorkbench; git: GitWorkbench; onOpenUrl(url: string): void }) {
+  const h = props.github;
+  const [query, setQuery] = createSignal("");
+  const [creating, setCreating] = createSignal(false);
+  const [title, setTitle] = createSignal("");
+  const [body, setBody] = createSignal("");
+  const [base, setBase] = createSignal("main");
+  const [head, setHead] = createSignal("");
+  const [draft, setDraft] = createSignal(true);
+  const [reviewBody, setReviewBody] = createSignal("");
+  const [reviewEvent, setReviewEvent] = createSignal<GitHubReviewEvent>("comment");
+  const [confirmReview, setConfirmReview] = createSignal(false);
+  const [checkout, setCheckout] = createSignal(false);
+  const [checkoutBranch, setCheckoutBranch] = createSignal("");
+  const [patchLimit, setPatchLimit] = createSignal(400);
+  const shown = createMemo(() => h.items().filter(item => `${item.number} ${item.title} ${item.author?.login || ""}`.toLocaleLowerCase().includes(query().toLocaleLowerCase())));
+  const busy = () => !!h.operation() || !!props.git.operation();
+  const open = (value: string) => { try { const url = new URL(value); if (url.protocol === "https:" && !url.username && !url.password) props.onOpenUrl(url.href); } catch { /* Invalid remote links are not opened. */ } };
+  const createDrafts = new Map<string, { title: string; body: string; base: string; head: string; draft: boolean }>();
+  const reviewDrafts = new Map<string, { body: string; event: GitHubReviewEvent }>();
+  let draftKey = "", reviewKey = "";
+  createEffect(on(() => `${props.git.context()?.repository?.id}:${h.remote()}:${h.status()?.repository.owner}/${h.status()?.repository.name}`, key => {
+    if (draftKey) createDrafts.set(draftKey, { title: title(), body: body(), base: base(), head: head(), draft: draft() });
+    draftKey = key; const saved = createDrafts.get(key);
+    setCreating(false); setTitle(saved?.title || ""); setBody(saved?.body || ""); setBase(saved?.base || "main"); setHead(saved?.head || ""); setDraft(saved?.draft ?? true);
+  }));
+  createEffect(on(() => `${props.git.context()?.repository?.id}:${h.remote()}:${h.status()?.repository.owner}/${h.status()?.repository.name}:${h.selected()?.number}`, key => {
+    if (reviewKey) reviewDrafts.set(reviewKey, { body: reviewBody(), event: reviewEvent() });
+    reviewKey = key; const saved = reviewDrafts.get(key);
+    setReviewBody(saved?.body || ""); setReviewEvent(saved?.event || "comment"); setConfirmReview(false); setCheckout(false); setCheckoutBranch(h.selected() ? `pr/${h.selected()!.number}` : ""); setPatchLimit(400);
+  }));
+  createEffect(on(() => h.selected()?.headRefOid, () => { setConfirmReview(false); setCheckout(false); }));
+  return <section class="github-panel" aria-label="GitHub" aria-busy={h.loading() || busy()}>
+    <header class="github-toolbar"><strong>GitHub</strong><button class="icon-button" aria-label="Refresh GitHub" disabled={h.loading() || busy() || !props.git.context()?.enabled} onClick={() => void (h.selected() ? h.detail(h.selected()!) : h.load())}><Icon name="Refresh2" size={14} /></button></header>
+    <Show when={!props.git.context()?.enabled}><div class="git-empty">Enable Git for this repository to connect to GitHub.</div></Show>
+    <Show when={props.git.context()?.enabled}>
+      <Show when={h.repositories()?.length}><label class="github-field">Repository<select aria-label="GitHub repository" value={h.remote()} disabled={busy() || h.loading()} onChange={event => void h.chooseRemote(event.currentTarget.value)}><For each={h.repositories()}>{repo => <option value={repo.remoteName}>{repo.owner}/{repo.name} ({repo.remoteName})</option>}</For></select></label></Show>
+      <Show when={h.status()}>{status => <p class="git-note" role="status">{status().message}</p>}</Show>
+      <Show when={h.repositories() && !h.repositories()!.length}><div class="git-empty"><strong>No GitHub remote</strong><span>Add a github.com HTTPS or SSH remote in repository settings above.</span></div></Show>
+      <Show when={h.status() && !h.status()?.authenticated}><p class="git-note">Install GitHub CLI if needed, then run <code>gh auth login --hostname github.com</code> in the terminal and refresh. Credentials stay with GitHub CLI.</p></Show>
+      <Show when={h.error()}><div class="git-error" role="alert">{h.error()}<button class="git-text-action" disabled={busy()} onClick={() => void (h.selected() ? h.detail(h.selected()!) : h.load())}>Retry read</button></div></Show>
+      <Show when={props.git.error()}><div class="git-error" role="alert">{props.git.error()}</div></Show>
+      <Show when={h.notice()}><p class="git-notice" role="status">{h.notice()}</p></Show>
+      <Show when={h.loading()}><div class="git-loading" role="status"><span /><span /><span />Reading GitHub…</div></Show>
+      <Show when={h.status()?.authenticated}>
+        <Show when={!h.selected()} fallback={<>
+          <div class="github-toolbar"><button class="git-text-action" disabled={busy()} onClick={h.back}><Icon name="arrow-left4" size={14} />Back to {h.kind() === "issues" ? "issues" : "pull requests"}</button><button class="git-text-action" onClick={() => open(h.selected()!.url)}>Open on GitHub</button></div>
+          <article class="github-detail" aria-busy={h.detailLoading()}>
+            <div class="github-item-meta"><span>#{h.selected()!.number}</span><span class="git-badge">{h.selected()!.isDraft ? "Draft" : h.selected()!.state}</span><Show when={h.selected()!.author}><span>{h.selected()!.author!.login}</span></Show></div>
+            <h3>{h.selected()!.title}</h3>
+            <Show when={h.detailLoading()}><div class="git-loading" role="status"><span /><span /><span />Reading details…</div></Show>
+            <Show when={h.detailsLoaded()} fallback={<Show when={!h.detailLoading()}><p class="git-note" role="status">Details are unavailable. Retry reading this item to view its conversation and review information.</p></Show>}>
+            <Show when={h.kind() === "pullRequests"}><p class="git-note">{h.selected()!.headRefName} <Icon name="arrow-right4" size={12} /> {h.selected()!.baseRefName}<br /><code title={h.selected()!.headRefOid}>{h.selected()!.headRefOid.slice(0, 12)}</code><Show when={h.selected()!.reviewDecision}> · {h.selected()!.reviewDecision.toLocaleLowerCase().replaceAll("_", " ")}</Show></p></Show>
+            <Show when={h.selected()!.body}><pre class="github-body">{h.selected()!.body}</pre></Show>
+            <Show when={h.kind() === "pullRequests"}>
+              <div class="github-toolbar"><button class="button" disabled={!h.ready() || h.detailLoading() || !props.git.ready() || !h.selected()!.headRefOid} aria-expanded={checkout()} onClick={() => setCheckout(value => !value)}>Check out pull request</button></div>
+              <Show when={checkout()}><form class="git-inline-form" onSubmit={async event => { event.preventDefault(); if (!h.detailsLoaded()) return; const item = h.selected()!; if (await props.git.checkoutPullRequest(h.remote(), item.number, item.headRefOid, checkoutBranch().trim())) setCheckout(false); }}><label for="github-checkout-branch">New local branch</label><input id="github-checkout-branch" required value={checkoutBranch()} onInput={event => setCheckoutBranch(event.currentTarget.value)} /><p class="git-note">Fetch and check out the reviewed commit {h.selected()!.headRefOid.slice(0, 8)}. Save or stash working changes first. Existing local branches are preserved.</p><div class="git-inline-actions"><button type="button" class="button" disabled={busy()} onClick={() => setCheckout(false)}>Cancel</button><button class="button primary" disabled={busy() || !props.git.ready() || !checkoutBranch().trim()}>Fetch and check out</button></div></form></Show>
+              <details class="github-section" open><summary>Checks ({h.selected()!.statusCheckRollup.length})</summary><Show when={!h.selected()!.statusCheckRollup.length}><p class="git-note">No checks reported.</p></Show><For each={h.selected()!.statusCheckRollup}>{check => <div class="github-check"><span>{check.name || check.context}</span><strong data-result={(check.conclusion || check.state || check.status).toLocaleLowerCase()}>{(check.conclusion || check.state || check.status || "pending").toLocaleLowerCase().replaceAll("_", " ")}</strong><Show when={check.detailsUrl || check.targetUrl}><button class="git-text-action" aria-label={`Open ${check.name || check.context} check`} onClick={() => open(check.detailsUrl || check.targetUrl!)}>Details</button></Show></div>}</For></details>
+              <details class="github-section"><summary>Changed files ({h.selected()!.changedFiles})</summary><div class="github-toolbar"><span class="git-note">+{h.selected()!.additions} · -{h.selected()!.deletions}</span><button class="git-text-action" disabled={!h.ready() || h.filesLoading()} onClick={() => void h.loadFiles(false)}>Load file patches</button></div><For each={h.files()}>{file => <details class="github-file"><summary title={file.filename}>{file.filename}<span>+{file.additions} -{file.deletions}</span></summary><Show when={file.previous_filename}><p class="git-note">Renamed from {file.previous_filename}</p></Show><Show when={file.patch} fallback={<p class="git-note">GitHub did not provide a text patch for this file. Open the pull request on GitHub to review it.</p>}><pre class="github-patch">{file.patch!.split("\n").slice(0, patchLimit()).join("\n")}</pre><Show when={file.patch!.split("\n").length > patchLimit()}><button class="git-text-action" onClick={() => setPatchLimit(value => Math.min(value + 400, 10000))} disabled={patchLimit() >= 10000}>Show more patch lines</button></Show></Show></details>}</For><Show when={h.filesLoading()}><p class="git-note" role="status">Reading file patches…</p></Show><Show when={h.moreFiles()}><button class="button" disabled={h.filesLoading() || !h.ready()} onClick={() => void h.loadFiles(true)}>Load next 30 files</button></Show></details>
+              <details class="github-section"><summary>Reviews ({h.selected()!.reviews.length})</summary><For each={h.selected()!.reviews}>{review => <article class="github-comment"><strong>{review.author?.login || "GitHub user"} · {review.state.toLocaleLowerCase().replaceAll("_", " ")}</strong><pre>{review.body || "No review comment."}</pre></article>}</For></details>
+              <Show when={h.selected()!.state === "OPEN" && !h.detailLoading()}><form class="git-inline-form github-review" onSubmit={event => { event.preventDefault(); setConfirmReview(true); }}><label for="github-review-event">Review the displayed commit</label><select id="github-review-event" value={reviewEvent()} disabled={busy()} onChange={event => { setReviewEvent(event.currentTarget.value as GitHubReviewEvent); setConfirmReview(false); }}><option value="comment">Comment</option><option value="approve">Approve</option><option value="requestChanges">Request changes</option></select><label for="github-review-body">Review message</label><textarea id="github-review-body" rows={4} required={reviewEvent() !== "approve"} value={reviewBody()} disabled={busy()} onInput={event => { setReviewBody(event.currentTarget.value); setConfirmReview(false); }} /><Show when={confirmReview()} fallback={<button class="button" disabled={!h.ready() || reviewEvent() !== "approve" && !reviewBody().trim()}>Review submission</button>}><p class="git-note">Publish this {reviewEvent() === "requestChanges" ? "request for changes" : reviewEvent()} for commit {h.selected()!.headRefOid.slice(0, 8)} to GitHub?</p><div class="git-inline-actions"><button type="button" class="button" disabled={busy()} onClick={() => setConfirmReview(false)}>Cancel</button><button type="button" class="button primary" disabled={!h.ready()} onClick={async () => { if (await h.review(reviewEvent(), reviewBody())) { setReviewBody(""); setConfirmReview(false); } }}>Submit review</button></div></Show></form></Show>
+            </Show>
+            <details class="github-section"><summary>Conversation ({h.selected()!.comments.length})</summary><For each={h.selected()!.comments}>{comment => <article class="github-comment"><strong>{comment.author?.login || "GitHub user"}</strong><pre>{comment.body}</pre><Show when={comment.url}><button class="git-text-action" onClick={() => open(comment.url)}>Open comment</button></Show></article>}</For></details>
+            </Show>
+          </article>
+        </>}>
+          <div class="github-toolbar"><div class="github-kind" role="group" aria-label="GitHub content"><button aria-pressed={h.kind() === "pullRequests"} disabled={busy()} onClick={() => void h.chooseKind("pullRequests")}>Pull requests</button><button aria-pressed={h.kind() === "issues"} disabled={busy()} onClick={() => void h.chooseKind("issues")}>Issues</button></div><select aria-label="GitHub item state" value={h.filter()} disabled={busy() || h.loading()} onChange={event => void h.chooseFilter(event.currentTarget.value)}><option value="open">Open</option><option value="closed">Closed</option><option value="all">All</option></select></div>
+          <Show when={h.kind() === "pullRequests"}><div class="github-toolbar"><button class="git-text-action" disabled={!h.ready()} onClick={() => { if (!creating()) { if (!base() || base() === "main") setBase(h.repositoryInfo()?.defaultBranchRef?.name || "main"); if (!head()) setHead(props.git.status()?.repository.branch || ""); } setCreating(value => !value); }} aria-expanded={creating()}>New pull request</button><button class="git-text-action" disabled={!h.ready() || !props.git.status()?.repository.branch} onClick={() => void h.currentBranch()}>Current branch</button></div></Show>
+          <Show when={creating() && h.kind() === "pullRequests"}><form class="git-inline-form" onSubmit={async event => { event.preventDefault(); if (await h.createPullRequest({ title: title().trim(), body: body(), base: base().trim(), head: head().trim(), draft: draft() })) { setCreating(false); setTitle(""); setBody(""); await h.load(); } }}><label for="github-pr-title">Title</label><input id="github-pr-title" required value={title()} disabled={busy()} onInput={event => setTitle(event.currentTarget.value)} /><label for="github-pr-base">Base branch</label><input id="github-pr-base" required value={base()} disabled={busy()} onInput={event => setBase(event.currentTarget.value)} /><label for="github-pr-head">Published head branch</label><input id="github-pr-head" required value={head()} disabled={busy()} onInput={event => setHead(event.currentTarget.value)} /><label for="github-pr-body">Description</label><textarea id="github-pr-body" rows={5} value={body()} disabled={busy()} onInput={event => setBody(event.currentTarget.value)} /><label class="github-checkbox"><input type="checkbox" checked={draft()} disabled={busy()} onChange={event => setDraft(event.currentTarget.checked)} />Create as draft</label><p class="git-note">Push the head branch first. Creating the pull request publishes its title and description to the selected repository.</p><div class="git-inline-actions"><button type="button" class="button" disabled={busy()} onClick={() => setCreating(false)}>Cancel</button><button class="button primary" disabled={!h.ready() || !title().trim() || !base().trim() || !head().trim()}>Create pull request</button></div></form></Show>
+          <label class="github-search"><Icon name="SearchNormal1" size={14} /><input type="search" aria-label="Filter GitHub items" placeholder="Filter loaded items…" value={query()} onInput={event => setQuery(event.currentTarget.value)} /></label>
+          <div class="github-list"><For each={shown()}>{item => <button class="github-item" disabled={busy()} onClick={() => void h.detail(item)}><span class="github-item-title">{item.title}</span><span class="github-item-meta">#{item.number} · {item.author?.login || "GitHub user"}<Show when={item.isDraft}> · Draft</Show></span></button>}</For><Show when={!h.loading() && !shown().length}><div class="git-empty">{query() ? "No loaded items match this filter." : `No ${h.filter()} ${h.kind() === "issues" ? "issues" : "pull requests"}.`}</div></Show></div><p class="git-note">Showing up to 50 {h.kind() === "issues" ? "issues" : "pull requests"}. Refresh to read the latest GitHub state.</p>
+        </Show>
+      </Show>
+    </Show>
+  </section>;
+}

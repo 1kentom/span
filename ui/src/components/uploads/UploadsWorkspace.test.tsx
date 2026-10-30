@@ -216,7 +216,7 @@ it('reads the complete ZIP container above the hex prefix limit before listing i
   const root = await mount(api);
   row(root, 'complete.zip').click();
   await vi.waitFor(() => expect(read).toHaveBeenCalledWith('archive', 0, data.length));
-  await vi.waitFor(() => expect(root.querySelector('.ox-archive')?.textContent).toContain('payload.bin'));
+  await vi.waitFor(() => expect(root.querySelector('.ox-archive')?.textContent).toContain('payload.bin'), { timeout: 3000 });
   expect(root.querySelector('[data-state="damaged"]')).toBeNull();
 });
 

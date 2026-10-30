@@ -17,3 +17,18 @@ it("bounds row allocation for newline-heavy text and reports whether content was
   expect(gitNewFileRows("\n".repeat(MAX_GIT_DIFF_LINES))).toHaveLength(MAX_GIT_DIFF_LINES);
   expect(gitDiffLinesCapped("line\n".repeat(MAX_GIT_DIFF_LINES))).toBe(false);
 });
+
+import { gitSplitRows, gitWordSegments } from "./git-diff";
+it("aligns replacement blocks without inventing absent context", () => {
+  const rows = gitSplitRows(gitPatchRows("@@ -1,3 +1,2 @@\n-old one\n-old two\n+new one\n context"));
+  expect(rows[1].right?.text).toBe("+new one");
+  expect(rows[2].left?.text).toBe("-old two");
+  expect(rows[2].right).toBeUndefined();
+  expect(rows[3].right?.newLine).toBe(2);
+});
+it("emphasizes changed words and preserves exact text", () => {
+  const [left, right] = gitWordSegments("const old = 1;", "const next = 1;");
+  expect(left.filter(part => part.changed).map(part => part.text).join("")).toBe("old");
+  expect(right.filter(part => part.changed).map(part => part.text).join("")).toBe("next");
+  expect(right.map(part => part.text).join("")).toBe("const next = 1;");
+});

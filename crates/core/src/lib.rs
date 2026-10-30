@@ -9,6 +9,8 @@ mod format;
 mod format_native;
 mod fs_ops;
 mod git;
+mod github;
+pub use github::*;
 mod images;
 mod java_run;
 mod pdf_pages;
@@ -52,10 +54,7 @@ pub use fs_ops::{
     copy_name, ConflictPolicy, ImportItem, ImportLimits, ImportProgress, ImportReport,
     MAX_IMPORT_BYTES, MAX_IMPORT_ENTRIES,
 };
-pub use git::{
-    GitChange, GitCommit, GitCommitResult, GitContext, GitDiff, GitDiffSide, GitHistoryPage,
-    GitHistoryQuery, GitRepository, GitService, GitStatus,
-};
+pub use git::*;
 pub use images::RasterImage;
 pub use pdf_pages::pdf_page_count;
 pub use recent::{RecentProject, RecentProjectStore};

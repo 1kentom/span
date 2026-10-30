@@ -344,13 +344,15 @@ pub fn cancel_format_buffer(state: State<'_, DesktopState>, path: String, reques
 #[specta::specta]
 pub async fn get_session(state: State<'_, DesktopState>) -> Result<Option<SessionState>, String> {
     let _gate = state.session_gate.lock().await;
-    tauri::async_runtime::spawn_blocking(|| {
-        SessionStore::for_current_user()
-            .and_then(|store| store.load())
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("Load session task failed: {error}"))?
+    let store = state
+        .window_session
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(SessionStore::for_current_user)
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || store.load().map_err(|error| error.to_string()))
+        .await
+        .map_err(|error| format!("Load session task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -360,10 +362,14 @@ pub async fn save_session(
     session: SessionState,
 ) -> Result<(), String> {
     let _gate = state.session_gate.lock().await;
+    let store = state
+        .window_session
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(SessionStore::for_current_user)
+        .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        SessionStore::for_current_user()
-            .and_then(|store| store.save(session))
-            .map_err(|error| error.to_string())
+        store.save(session).map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("Save session task failed: {error}"))?

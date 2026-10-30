@@ -1,9 +1,11 @@
 import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
-import type { GitDiff, GitCommit } from "../../bindings";
+import type { GitDiff, GitCommit, GitHunkDiff, GitLineReview } from "../../bindings";
 import { gitCommitDate } from "../../lib/git-format";
 import Icon from "../Icon";
-import { gitDiffLinesCapped, gitNewFileRows, gitPatchRows, MAX_GIT_DIFF_LINES } from "../../lib/git-diff";
+import { GitLineSelection, type GitLineAction } from "./GitLineSelection";
+import { gitDiffLinesCapped, gitNewFileRows, gitPatchRows, MAX_GIT_DIFF_LINES, gitSplitRows, gitWordSegments } from "../../lib/git-diff";
 import "../../styles/git.css";
+import "../../styles/git-review.css";
 
 type GitDiffViewProps = {
   title: string;
@@ -16,13 +18,24 @@ type GitDiffViewProps = {
   outsideWorkspace?: boolean;
   repositoryRoot?: string;
   commit?: GitCommit;
+  hunkData?: GitHunkDiff;
+  hunkActionDisabled?: boolean;
+  onHunkAction?: (id: string) => void;
+  actionError?: string;
+  lineReview?: GitLineReview;
+  lineReviewError?: string;
+  lineActionDisabled?: boolean;
+  onLineAction?: GitLineAction;
 };
 
 export function GitDiffView(props: GitDiffViewProps) {
+  const [layout, setLayout] = createSignal<"unified" | "split">("unified");
+  const [words, setWords] = createSignal(true);
   const [visible, setVisible] = createSignal(300);
   createEffect(on(() => props.diff, () => setVisible(300)));
   const newFileContent = () => !!props.diff && !props.diff.patch && props.diff.oldText == null && props.diff.newText != null;
   const rows = createMemo(() => newFileContent() ? gitNewFileRows(props.diff!.newText!) : gitPatchRows(props.diff?.patch || ""));
+  const splitRows = createMemo(() => gitSplitRows(rows()));
   const capped = createMemo(() => gitDiffLinesCapped(props.diff?.patch || props.diff?.newText || ""));
   const side = () => props.diff?.side === "staged" ? "HEAD compared with index"
     : props.diff?.side === "commit" ? "Commit changes" : "Index compared with working file";
@@ -59,6 +72,8 @@ export function GitDiffView(props: GitDiffViewProps) {
       <Show when={props.diff?.side !== "commit"}>
         <p class="git-note">Saved disk and index snapshots. Unsaved editor content is not included.</p>
       </Show>
+      <Show when={props.actionError}><div class="git-error" role="alert">{props.actionError}</div></Show>
+      <Show when={props.lineReviewError}><p class="git-note">Selected-line staging unavailable: {props.lineReviewError}</p></Show>
       <Show when={props.error}><div class="git-error" role="alert">{props.error}</div></Show>
       <Show when={props.loading && !props.diff}><div class="git-empty" role="status">Loading comparison…</div></Show>
       <Show when={props.diff}>{diff => (
@@ -71,17 +86,36 @@ export function GitDiffView(props: GitDiffViewProps) {
           <Show when={diff().binary}>
             <div class="git-empty">Binary file changed. A text comparison is unavailable.</div>
           </Show>
+          <Show when={props.lineReview && props.onHunkAction}><div class="git-review-toolbar" role="toolbar" aria-label="Whole hunk actions"><For each={props.hunkData?.hunks}>{hunk => <button class="button" disabled={props.loading || props.hunkActionDisabled} onClick={() => props.onHunkAction?.(hunk.id)}>{props.diff?.side === "staged" ? "Unstage" : "Stage"} hunk {hunk.header}</button>}</For></div></Show>
+          <Show when={props.lineReview}>{review => <GitLineSelection review={review()} disabled={props.loading || props.lineActionDisabled} onAction={props.onLineAction} />}</Show>
+          <Show when={!props.lineReview}>
           <Show
             when={!diff().binary && rows().length > 0}
             fallback={!props.loading && !diff().binary ? <div class="git-empty">{newFileContent() ? "Empty file, no text content." : "No changes in this comparison."}</div> : undefined}
           >
-            <div class="git-patch-scroll" tabIndex={0} role="region" aria-label="Read-only Git patch">
+            <div class="git-review-toolbar" role="toolbar" aria-label="Diff display">
+              <button class="button" aria-pressed={layout() === "unified"} onClick={() => setLayout("unified")}>Unified</button>
+              <button class="button" aria-pressed={layout() === "split"} onClick={() => setLayout("split")}>Split</button>
+              <label><input type="checkbox" checked={words()} onChange={event => setWords(event.currentTarget.checked)} /> Word changes in split view</label>
+            </div>
+            <Show when={layout() === "split"}><div class="git-split-scroll" tabIndex={0} role="region" aria-label="Read-only split comparison">
+              <div class="git-split-labels"><span>Before</span><span>After</span></div>
+              <For each={splitRows().slice(0, visible())}>{row => {
+                const segments = () => row.left?.kind === "removed" && row.right?.kind === "added" && words() ? gitWordSegments(row.left.text.slice(1), row.right.text.slice(1)) : undefined;
+                return <Show when={!row.header} fallback={<div class="git-split-header">{row.header?.text}<Show when={props.onHunkAction && props.hunkData?.hunks.find(hunk => hunk.header === row.header?.text)}>{hunk => <button class="git-hunk-action" disabled={props.loading || props.hunkActionDisabled} onClick={() => props.onHunkAction?.(hunk().id)}>{props.diff?.side === "staged" ? "Unstage hunk" : "Stage hunk"}</button>}</Show></div>}>
+                  <div class="git-split-row"><For each={[row.left, row.right]}>{(cell, index) => <div class={`git-split-cell git-line-${cell?.kind || "empty"}`}><span class="git-line-number" aria-hidden="true">{index() === 0 ? cell?.oldLine : cell?.newLine}</span><code><Show when={segments()} fallback={cell?.text.slice(1) || " "}>{parts => <For each={parts()[index()]}>{part => <span classList={{ "git-word-change": part.changed }}>{part.text}</span>}</For>}</Show></code></div>}</For></div>
+                </Show>;
+              }}</For>
+              <Show when={visible() < splitRows().length}><button class="button git-more" onClick={() => setVisible(value => value + 300)}>Show next lines ({splitRows().length - visible()} remaining)</button></Show>
+            </div></Show>
+            <Show when={layout() === "unified"}><div class="git-patch-scroll" tabIndex={0} role="region" aria-label="Read-only Git patch">
               <pre class="git-patch">
                 <For each={rows().slice(0, visible())}>{row => (
                   <span class={`git-patch-line git-line-${row.kind}`}>
                     <span class="git-line-number" aria-hidden="true">{row.oldLine}</span>
                     <span class="git-line-number" aria-hidden="true">{row.newLine}</span>
-                    <span>{row.text || " "}</span>{"\n"}
+                    <span>{row.text || " "}</span>
+                    <Show when={props.onHunkAction && row.kind === "header" && props.hunkData?.hunks.find(hunk => hunk.header === row.text)}>{hunk => <button class="git-hunk-action" disabled={props.loading || props.hunkActionDisabled} aria-label={`${props.diff?.side === "staged" ? "Unstage" : "Stage"} hunk ${hunk().header}`} onClick={() => props.onHunkAction?.(hunk().id)}>{props.diff?.side === "staged" ? "Unstage hunk" : "Stage hunk"}</button>}</Show>{"\n"}
                   </span>
                 )}</For>
               </pre>
@@ -90,7 +124,8 @@ export function GitDiffView(props: GitDiffViewProps) {
                   Show next {Math.min(300, rows().length - visible())} lines ({rows().length - visible()} remaining)
                 </button>
               </Show>
-            </div>
+            </div></Show>
+          </Show>
           </Show>
         </>
       )}</Show>

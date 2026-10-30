@@ -1,0 +1,21 @@
+.git-review-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--border,#303137)}
+.git-review-toolbar label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim,#aaa)}
+.git-review-toolbar [aria-pressed=true]{background:var(--hover,#353849);border-color:var(--accent,#8b91c9)}
+.git-split-scroll{overflow:auto;max-height:65vh;font:12px/1.65 var(--editor-font-family,monospace)}
+.git-split-labels,.git-split-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.git-split-labels{position:sticky;top:0;background:var(--panel-bg,#25262b);z-index:1;color:var(--dim,#aaa)}
+.git-split-labels>span{padding:7px 14px}.git-split-cell{display:flex;min-width:0;border-right:1px solid var(--border,#303137)}
+.git-split-cell code{white-space:pre;overflow:auto;flex:1;padding-right:8px}.git-split-cell .git-line-number{flex:0 0 45px;text-align:right;padding-right:10px;user-select:none}
+.git-split-header{padding:5px 14px;white-space:pre-wrap;color:var(--dim,#aaa);background:rgba(125,130,155,.08)}
+.git-word-change{background:rgba(150,150,150,.2);border-radius:2px}.git-line-added .git-word-change{background:rgba(65,190,118,.28)}.git-line-removed .git-word-change{background:rgba(231,92,100,.28)}
+.git-merge-editor{height:100%;overflow:auto}.git-merge-sources{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--border,#303137);border-block:1px solid var(--border,#303137)}
+.git-merge-sources section{min-width:0;background:var(--panel-bg,#202126)}.git-merge-sources h3{font-size:12px;margin:0;padding:9px 12px;color:var(--dim,#aaa)}
+.git-merge-sources pre{font:12px/1.6 var(--editor-font-family,monospace);height:190px;overflow:auto;padding:10px 12px;margin:0;border-top:1px solid var(--border,#303137)}
+.git-merge-result-label{display:block;padding:10px 14px;font-size:12px}.git-merge-result{display:block;box-sizing:border-box;width:calc(100% - 28px);margin:0 14px;min-height:260px;resize:vertical;padding:12px;background:var(--panel-bg,#18191d);color:inherit;border:1px solid var(--border,#42434b);border-radius:4px;font:12px/1.65 var(--editor-font-family,monospace);tab-size:4;white-space:pre;overflow:auto}
+.git-merge-result:focus{outline:2px solid var(--accent,#8b91c9);outline-offset:1px}
+@media(max-width:700px){.git-merge-sources{grid-template-columns:1fr}.git-merge-sources pre{height:130px}}
+@media(prefers-reduced-motion:reduce){.git-merge-editor *,.git-split-scroll *{scroll-behavior:auto;transition:none}}
+
+.git-review-modal { width: min(1200px, calc(100vw - 48px)); height: min(850px, calc(100dvh - 48px)); padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.git-review-modal-heading { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.git-review-modal > .git-merge-editor, .git-review-modal > .git-file-blame { flex: 1; min-height: 0; }
