@@ -221,7 +221,7 @@ describe("createFeedFollow", () => {
   function layout(t: ReturnType<typeof setup>, heights: number[]) {
     const content = document.createElement("div");
     t.scroller.append(content);
-    const rows = heights.map((height, index) => {
+    const rows = heights.map((_, index) => {
       const row = document.createElement("div");
       if (index % 3 === 0) row.dataset.feedId = String(100 + index);
       row.getBoundingClientRect = () => {
