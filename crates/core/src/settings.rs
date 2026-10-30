@@ -2,7 +2,11 @@ use crate::{io_error, CoreError, CoreWorkspace, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use specta::Type;
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::Path,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Default)]
 pub enum Theme {
@@ -24,7 +28,7 @@ pub struct LanguageServerSettings {
     /// downloaded until the user asks for an install.
     pub auto_install: bool,
     /// Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
-    /// `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+    /// `rust-analyzer`, `basedpyright`, `jdtls`, `svelte`, `vue`, `astro`). A server that is not listed is enabled.
     pub enabled: HashMap<String, bool>,
     /// JDK home used to run JDT LS, instead of searching the host.
     pub java_home: Option<String>,
@@ -39,12 +43,27 @@ pub struct LanguageServerSettings {
     /// imported into that store once and never written back. `run_project_code` stays as a
     /// global override meaning "trust every folder".
     pub trusted_workspaces: Vec<String>,
+    /// Directory names from the built in watched-file exclusions (`node_modules`, `target`,
+    /// `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) that
+    /// language servers should be told about anyway. Version control folders stay excluded.
+    pub watch_include_directories: Vec<String>,
+    /// Server ids whose "fell behind on file changes" warning the user turned off.
+    pub silenced_watch_warnings: Vec<String>,
 }
 
 /// Settings under `languageServers` that choose executables or trigger downloads. They are
 /// honoured from user settings only: a workspace file is untrusted input.
-pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] =
-    &["autoInstall", "javaHome", "nodePath", "runProjectCode"];
+pub const USER_ONLY_LANGUAGE_SERVER_KEYS: &[&str] = &[
+    "autoInstall",
+    "javaHome",
+    "nodePath",
+    "runProjectCode",
+    "watchIncludeDirectories",
+    "silencedWatchWarnings",
+];
+
+/// Most entries accepted in one of the list valued language server settings.
+const MAX_LANGUAGE_SERVER_LIST: usize = 64;
 
 /// Keys under `languageServers` that older preview builds wrote. They are accepted when
 /// reading (never an error), dropped from workspace files like the user-only keys, and
@@ -70,6 +89,9 @@ pub const LANGUAGE_SERVER_IDS: &[&str] = &[
     "rust-analyzer",
     "basedpyright",
     "jdtls",
+    "svelte",
+    "vue",
+    "astro",
 ];
 
 impl LanguageServerSettings {
@@ -79,6 +101,32 @@ impl LanguageServerSettings {
 
     fn validate(&self) -> Result<()> {
         for server in self.enabled.keys() {
+            if !LANGUAGE_SERVER_IDS.contains(&server.as_str()) {
+                return Err(CoreError::Settings(format!(
+                    "Unknown language server: {server}"
+                )));
+            }
+        }
+        if self.watch_include_directories.len() > MAX_LANGUAGE_SERVER_LIST
+            || self.watch_include_directories.iter().any(|name| {
+                name.is_empty()
+                    || name.len() > 255
+                    || name == "."
+                    || name == ".."
+                    || name.contains(['/', '\\'])
+                    || name.chars().any(char::is_control)
+            })
+        {
+            return Err(CoreError::Settings(
+                "languageServers.watchIncludeDirectories must list at most 64 folder names".into(),
+            ));
+        }
+        if self.silenced_watch_warnings.len() > MAX_LANGUAGE_SERVER_LIST {
+            return Err(CoreError::Settings(
+                "languageServers.silencedWatchWarnings lists too many servers".into(),
+            ));
+        }
+        for server in &self.silenced_watch_warnings {
             if !LANGUAGE_SERVER_IDS.contains(&server.as_str()) {
                 return Err(CoreError::Settings(format!(
                     "Unknown language server: {server}"
@@ -167,6 +215,9 @@ pub struct Settings {
     /// Update checks. Optional in TypeScript like `agents`.
     #[specta(optional)]
     pub updates: UpdateSettings,
+    /// Explorer preferences. Optional in TypeScript like `agents`.
+    #[specta(optional)]
+    pub explorer: ExplorerSettings,
 }
 
 /// `updates.*`: update checks for the app and for agents (ADR 0004).
@@ -176,6 +227,52 @@ pub struct UpdateSettings {
     /// Check once per launch, check-only, with a plain GET. Off by default.
     /// Honoured only from the user's own settings file.
     pub check_on_launch: bool,
+}
+
+/// `explorer.*`: file tree visibility and navigation preferences.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExplorerSettings {
+    /// Keep dotfiles and other hidden files visible, matching the current Explorer behavior.
+    pub show_hidden_files: bool,
+    /// Include files excluded by ignore rules in the Explorer.
+    pub show_ignored_files: bool,
+    /// Render a chain of single-child folders as one compact row.
+    pub compact_folders: bool,
+    /// Reveal the active file in the Explorer when it is outside the visible selection.
+    pub auto_reveal: bool,
+    /// Ask before deleting a file or folder.
+    pub confirm_delete: bool,
+}
+
+/// Settings stored by the earlier local-storage based Explorer preferences.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExplorerLegacyPreferences {
+    pub compact_folders: Option<bool>,
+    pub auto_reveal: Option<bool>,
+    pub confirm_delete: Option<bool>,
+}
+
+/// Result of reconciling legacy Explorer values with the current settings scopes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerPreferenceMigration {
+    pub settings: Settings,
+    /// Legacy leaf names whose values were imported or already configured by the user.
+    pub resolved_legacy_keys: Vec<String>,
+}
+
+impl Default for ExplorerSettings {
+    fn default() -> Self {
+        Self {
+            show_hidden_files: true,
+            show_ignored_files: false,
+            compact_folders: true,
+            auto_reveal: true,
+            confirm_delete: true,
+        }
+    }
 }
 
 /// `agents.*` settings.
@@ -200,6 +297,26 @@ pub struct AgentSettings {
     /// user's own settings file. Optional in TypeScript like `agents`.
     #[specta(optional)]
     pub start_mode: HashMap<String, StartMode>,
+    /// `agents.usage.*`: the Usage page (ADR 0012). Honoured only from the
+    /// user's own settings file. Optional in TypeScript like `agents`.
+    #[specta(optional)]
+    pub usage: AgentUsageSettings,
+}
+
+/// `agents.usage.*` settings (ADR 0012).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentUsageSettings {
+    /// `agents.usage.prices.<model>`: the user's own USD per million token
+    /// prices, keyed by model id or id prefix. They take precedence over the
+    /// bundled price table.
+    #[specta(optional)]
+    pub prices: BTreeMap<String, crate::usage::PriceOverride>,
+    /// `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
+    /// local usage logs (read only, counters only) so the Usage page also
+    /// shows sessions run outside Span. Off by default.
+    #[specta(optional)]
+    pub import_local_logs: bool,
 }
 
 /// How a session Span starts treats the agent's own default mode.
@@ -231,6 +348,7 @@ impl Default for AgentSettings {
             warm_start: true,
             health_check: true,
             start_mode: HashMap::new(),
+            usage: AgentUsageSettings::default(),
         }
     }
 }
@@ -285,6 +403,7 @@ impl Default for Settings {
             syntax_colors: HashMap::new(),
             agents: AgentSettings::default(),
             updates: UpdateSettings::default(),
+            explorer: ExplorerSettings::default(),
         }
     }
 }
@@ -429,6 +548,7 @@ pub const COMMAND_IDS: &[&str] = &[
     "goBack",
     "goForward",
     "focusBreadcrumbs",
+    "showUsage",
 ];
 
 /// Commands introduced after shortcuts could already be saved. Like Toggle Files,
@@ -730,6 +850,7 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("goBack", vec!["Mod+Alt+ArrowLeft"]),
         ("goForward", vec!["Mod+Alt+ArrowRight"]),
         ("focusBreadcrumbs", vec!["Mod+Shift+."]),
+        ("showUsage", vec![]),
     ];
     let claimed = overrides
         .values()
@@ -792,11 +913,69 @@ const USER_ONLY: &[&[&str]] = &[
     &["agents", "healthCheck"],
     // A cloned project must not make agents skip approval prompts.
     &["agents", "startMode"],
+    // A cloned project must not change what the Usage page reports (ADR 0012).
+    &["agents", "usage"],
     // A cloned project must not make Span contact the network at launch.
     &["updates", "checkOnLaunch"],
 ];
 
 impl CoreWorkspace {
+    /// Imports legacy Explorer preferences into user settings only when neither scope has
+    /// configured that typed preference. Callers serialize this operation with other
+    /// workspace commands so the read/check/write is one transaction.
+    pub fn migrate_explorer_preferences(
+        &self,
+        legacy: ExplorerLegacyPreferences,
+    ) -> Result<ExplorerPreferenceMigration> {
+        let user = self.get_settings_jsonc_for_scope(SettingsScope::User)?;
+        let workspace = self.get_settings_jsonc_for_scope(SettingsScope::Workspace)?;
+
+        // Validate both files independently before preparing any write. In particular, a
+        // malformed workspace file must not result in a partial import to user settings.
+        load_with_texts(&user, "{}")?;
+        load_with_texts("{}", &workspace)?;
+
+        let user_configured = explicit_explorer_preferences(&user)?;
+        let workspace_configured = explicit_explorer_preferences(&workspace)?;
+        let candidates = [
+            ("compactFolders", legacy.compact_folders),
+            ("autoReveal", legacy.auto_reveal),
+            ("confirmDelete", legacy.confirm_delete),
+        ];
+        let mut patched = user.clone();
+        let mut resolved_legacy_keys = Vec::new();
+        for (leaf, legacy_value) in candidates {
+            if let Some(value) = legacy_value {
+                if user_configured.contains(leaf) {
+                    resolved_legacy_keys.push(leaf.to_owned());
+                } else if !workspace_configured.contains(leaf) {
+                    patched = patch_in_scope(
+                        SettingsScope::User,
+                        &patched,
+                        &format!("explorer.{leaf}"),
+                        Some(if value { "true" } else { "false" }),
+                    )?;
+                    resolved_legacy_keys.push(leaf.to_owned());
+                }
+            }
+        }
+        let settings = if patched == user {
+            load_with_texts(&user, &workspace)?
+        } else {
+            if self.has_dirty_settings_buffer() {
+                return Err(CoreError::Settings(
+                    "Save or discard the open settings draft before importing Explorer preferences"
+                        .into(),
+                ));
+            }
+            self.update_settings_jsonc_for_scope(SettingsScope::User, &patched)?
+        };
+        Ok(ExplorerPreferenceMigration {
+            settings,
+            resolved_legacy_keys,
+        })
+    }
+
     /// Run tools are an execution capability, so repository settings cannot
     /// enable them for an agent. Read only the user's settings scope.
     pub fn run_tools_enabled(&self) -> Result<bool> {
@@ -1011,7 +1190,9 @@ const STRUCT_PATHS: &[&[&str]] = &[
     &["languageServers"],
     &["agents"],
     &["agents", "delegation"],
+    &["agents", "usage"],
     &["updates"],
+    &["explorer"],
 ];
 
 fn at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -1107,6 +1288,14 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("workbench.editor.limit.perEditorGroup", "tabLimitPerGroup"),
 ];
 
+const EXPLORER_LEAVES: &[&str] = &[
+    "showHiddenFiles",
+    "showIgnoredFiles",
+    "compactFolders",
+    "autoReveal",
+    "confirmDelete",
+];
+
 fn normalize(mut value: Value) -> Result<Value> {
     let object = value.as_object_mut().expect("parsed settings object");
     for (alias, key) in ALIASES {
@@ -1121,7 +1310,32 @@ fn normalize(mut value: Value) -> Result<Value> {
             object.insert((*key).into(), configured);
         }
     }
+    for leaf in EXPLORER_LEAVES {
+        let dotted = format!("explorer.{leaf}");
+        let Some(configured) = object.remove(&dotted) else {
+            continue;
+        };
+        let explorer = object
+            .entry("explorer")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        let Some(explorer) = explorer.as_object_mut() else {
+            return Err(CoreError::Settings("explorer must be an object".into()));
+        };
+        // Dotted settings are the canonical alias when both spellings occur in one file.
+        explorer.insert((*leaf).into(), configured);
+    }
     Ok(value)
+}
+
+pub(crate) fn explicit_explorer_preferences(
+    text: &str,
+) -> Result<std::collections::HashSet<String>> {
+    let normalized = normalize(parse(text)?)?;
+    Ok(normalized
+        .get("explorer")
+        .and_then(Value::as_object)
+        .map(|preferences| preferences.keys().cloned().collect())
+        .unwrap_or_default())
 }
 
 pub(crate) fn load_with_texts(user: &str, workspace: &str) -> Result<Settings> {
@@ -1154,6 +1368,9 @@ pub(crate) fn patch_in_scope(
     key: &str,
     value_json: Option<&str>,
 ) -> Result<String> {
+    if let Some(rest) = key.strip_prefix("explorer.") {
+        return patch_explorer(text, rest, value_json);
+    }
     if let Some(rest) = key
         .strip_prefix("editor.syntaxColors.")
         .or_else(|| key.strip_prefix("syntaxColors."))
@@ -1225,6 +1442,35 @@ pub(crate) fn patch_in_scope(
             ("autoInstall" | "runProjectCode", Some(_)) => {
                 return Err(CoreError::Settings(format!(
                     "languageServers.{rest} must be true or false"
+                )))
+            }
+            ("watchIncludeDirectories" | "silencedWatchWarnings", Some(Value::Array(items))) => {
+                let names: Vec<String> = items
+                    .iter()
+                    .map(|item| item.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| {
+                        CoreError::Settings(format!(
+                            "languageServers.{rest} must be a list of strings"
+                        ))
+                    })?;
+                let candidate = if rest == "watchIncludeDirectories" {
+                    LanguageServerSettings {
+                        watch_include_directories: names,
+                        ..Default::default()
+                    }
+                } else {
+                    LanguageServerSettings {
+                        silenced_watch_warnings: names,
+                        ..Default::default()
+                    }
+                };
+                candidate.validate()?;
+                servers.insert(rest.into(), Value::Array(items));
+            }
+            ("watchIncludeDirectories" | "silencedWatchWarnings", Some(_)) => {
+                return Err(CoreError::Settings(format!(
+                    "languageServers.{rest} must be a list of strings"
                 )))
             }
             (_, Some(Value::String(path))) => {
@@ -1348,6 +1594,168 @@ fn patch_syntax_color(text: &str, rest: &str, value_json: Option<&str>) -> Resul
         patch(text, member, None)
     } else {
         patch(text, member, Some(&Value::Object(colors).to_string()))
+    }
+}
+
+/// Sets or removes one `explorer.<leaf>` preference while preserving other Explorer keys.
+fn patch_explorer(text: &str, leaf: &str, value_json: Option<&str>) -> Result<String> {
+    const KEYS: &[&str] = &[
+        "showHiddenFiles",
+        "showIgnoredFiles",
+        "compactFolders",
+        "autoReveal",
+        "confirmDelete",
+    ];
+    if !KEYS.contains(&leaf) {
+        return Err(CoreError::Settings(format!(
+            "Unsupported setting: explorer.{leaf}"
+        )));
+    }
+    let value = value_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|error| CoreError::Settings(error.to_string()))?
+        .filter(|value| !value.is_null());
+    if value.as_ref().is_some_and(|value| !value.is_boolean()) {
+        return Err(CoreError::Settings(format!(
+            "explorer.{leaf} must be true or false"
+        )));
+    }
+    let root = parse(text)?;
+    let explorer = match root.get("explorer") {
+        None => serde_json::Map::new(),
+        Some(Value::Object(map)) => map.clone(),
+        Some(_) => return Err(CoreError::Settings("explorer must be an object".into())),
+    };
+    let dotted = format!("explorer.{leaf}");
+    let has_dotted = root.get(&dotted).is_some();
+    let has_nested = explorer.contains_key(leaf);
+    if let Some(value) = value {
+        let mut patched = text.to_owned();
+        if has_dotted {
+            patched = patch_nested_key(&patched, &[&dotted], value.clone())?;
+        }
+        if has_nested || !has_dotted {
+            patched = patch_nested_key(&patched, &["explorer", leaf], value)?;
+        }
+        return Ok(patched);
+    }
+
+    let mut patched = text.to_owned();
+    if has_dotted {
+        patched = remove_jsonc_key(&patched, &[&dotted])?;
+    }
+    if has_nested {
+        patched = remove_jsonc_key(&patched, &["explorer", leaf])?;
+    }
+    let after = parse(&patched)?;
+    if after
+        .get("explorer")
+        .and_then(Value::as_object)
+        .is_some_and(serde_json::Map::is_empty)
+    {
+        patched = remove_jsonc_key(&patched, &["explorer"])?;
+    }
+    Ok(patched)
+}
+
+/// Removes one member from a JSONC object while leaving unrelated source bytes untouched.
+fn remove_jsonc_key(text: &str, path: &[&str]) -> Result<String> {
+    let Some((key, rest)) = path.split_first() else {
+        return Err(CoreError::Settings("Empty preference path".into()));
+    };
+    let Some(JsoncMemberSpan {
+        start,
+        value_start,
+        value_end,
+        delimiter,
+        previous_comma,
+    }) = jsonc_member_span(text, key)?
+    else {
+        return Ok(text.to_owned());
+    };
+    if !rest.is_empty() {
+        let child = remove_jsonc_key(&text[value_start..value_end], rest)?;
+        let mut patched = text.to_owned();
+        patched.replace_range(value_start..value_end, &child);
+        parse(&patched)?;
+        return Ok(patched);
+    }
+
+    let mut patched = text.to_owned();
+    if let Some(delimiter) = delimiter {
+        patched.replace_range(start..delimiter + 1, "");
+    } else {
+        let remove_start = previous_comma.unwrap_or(start);
+        patched.replace_range(remove_start..value_end, "");
+    }
+    parse(&patched)?;
+    Ok(patched)
+}
+
+struct JsoncMemberSpan {
+    start: usize,
+    value_start: usize,
+    value_end: usize,
+    delimiter: Option<usize>,
+    previous_comma: Option<usize>,
+}
+
+/// Returns the key/value spans and its separator in one object, respecting JSONC comments.
+fn jsonc_member_span(text: &str, key: &str) -> Result<Option<JsoncMemberSpan>> {
+    parse(text)?;
+    let mask = comment_mask(text);
+    let mut index = skip_space(&mask, 0) + 1;
+    let mut previous_comma = None;
+    loop {
+        index = skip_space(&mask, index);
+        if mask.get(index) == Some(&b'}') {
+            return Ok(None);
+        }
+        let start = index;
+        index = string_end(&mask, index);
+        let member_key: String = serde_json::from_slice(&mask[start..index])
+            .map_err(|error| CoreError::Settings(error.to_string()))?;
+        index = skip_space(&mask, index) + 1;
+        let value_start = skip_space(&mask, index);
+        index = value_start;
+        let mut depth = 0;
+        while index < mask.len() {
+            match mask[index] {
+                b'"' => {
+                    index = string_end(&mask, index);
+                    continue;
+                }
+                b'{' | b'[' => depth += 1,
+                b'}' if depth == 0 => break,
+                b'}' | b']' => depth -= 1,
+                b',' if depth == 0 => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        let mut value_end = index;
+        while value_end > value_start && mask[value_end - 1].is_ascii_whitespace() {
+            value_end -= 1;
+        }
+        let delimiter = if mask.get(index) == Some(&b',') {
+            Some(index)
+        } else {
+            None
+        };
+        if member_key == key {
+            return Ok(Some(JsoncMemberSpan {
+                start,
+                value_start,
+                value_end,
+                delimiter,
+                previous_comma,
+            }));
+        }
+        if delimiter.is_some() {
+            previous_comma = delimiter;
+            index += 1;
+        }
     }
 }
 
@@ -2211,6 +2619,82 @@ mod language_server_key_tests {
         assert!(err.contains("languageServers.nodePath") && err.contains("user settings only"));
         // Removing from the workspace scope is also refused: those keys are not valid there.
         assert!(set(Workspace, b, "languageServers.javaHome", None).is_err());
+    }
+
+    #[test]
+    fn watch_lists_are_user_only_and_round_trip() {
+        let base = "{\n  // keep me\n}\n";
+        let t = set(
+            User,
+            base,
+            "languageServers.watchIncludeDirectories",
+            Some(r#"["node_modules", "dist"]"#),
+        )
+        .unwrap();
+        let t = set(
+            User,
+            &t,
+            "languageServers.silencedWatchWarnings",
+            Some(r#"["vtsls"]"#),
+        )
+        .unwrap();
+        assert!(t.contains("// keep me"));
+        let s = load_with_texts(&t, "{}").unwrap().language_servers;
+        assert_eq!(s.watch_include_directories, ["node_modules", "dist"]);
+        assert_eq!(s.silenced_watch_warnings, ["vtsls"]);
+        let back = set(User, &t, "languageServers.silencedWatchWarnings", None).unwrap();
+        assert!(!back.contains("silencedWatchWarnings"), "{back}");
+        assert!(back.contains("watchIncludeDirectories"));
+
+        // A workspace file cannot set either list, and its values are ignored on read.
+        let ws = r#"{ "languageServers": { "watchIncludeDirectories": ["target"],
+                 "silencedWatchWarnings": ["vtsls"] } }"#;
+        let loaded = load_with_texts("{}", ws).unwrap().language_servers;
+        assert!(loaded.watch_include_directories.is_empty());
+        assert!(loaded.silenced_watch_warnings.is_empty());
+        let err = reject_user_only(ws).unwrap_err().to_string();
+        assert!(err.contains("user settings only"), "{err}");
+        for key in [
+            "languageServers.watchIncludeDirectories",
+            "languageServers.silencedWatchWarnings",
+        ] {
+            let err = set(Workspace, "{}", key, Some(r#"["vtsls"]"#))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("user settings only"), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn watch_lists_reject_bad_entries() {
+        let too_many = format!(
+            "[{}]",
+            (0..65)
+                .map(|i| format!("\"d{i}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        for (key, v) in [
+            (
+                "languageServers.watchIncludeDirectories",
+                "\"node_modules\"",
+            ),
+            ("languageServers.watchIncludeDirectories", "[1]"),
+            ("languageServers.watchIncludeDirectories", r#"[""]"#),
+            ("languageServers.watchIncludeDirectories", r#"[".."]"#),
+            ("languageServers.watchIncludeDirectories", r#"["a/b"]"#),
+            ("languageServers.watchIncludeDirectories", r#"["a\\b"]"#),
+            ("languageServers.watchIncludeDirectories", too_many.as_str()),
+            ("languageServers.silencedWatchWarnings", r#"["gopls"]"#),
+            ("languageServers.silencedWatchWarnings", "true"),
+        ] {
+            assert!(set(User, "{}", key, Some(v)).is_err(), "{key} {v}");
+        }
+        assert!(load_with_texts(
+            r#"{ "languageServers": { "silencedWatchWarnings": ["nope"] } }"#,
+            "{}"
+        )
+        .is_err());
     }
 }
 

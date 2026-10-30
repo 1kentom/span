@@ -4,6 +4,7 @@
  * signed in. Nothing here guesses health from anything else.
  */
 import { agentKey, findHealth, type AgentHealth } from "./agent-health";
+import { friendlyAgentName } from "./live-agents";
 
 export type AgentAlternative = {
   id: string;
@@ -39,4 +40,23 @@ export function rankAlternatives(agents: readonly { id: string; name: string }[]
 /** Free models of the current model list other than `current`, for "free models remain" wording. */
 export function otherFreeModels(choices: readonly { value: string; name: string }[], current: string | undefined, isFree: (choice: { value: string; name: string }) => boolean, limited: ReadonlySet<string> = new Set()): { value: string; name: string }[] {
   return choices.filter((choice) => choice.value !== current && !limited.has(choice.value) && isFree(choice));
+}
+
+/** Trailing words that only say what kind of program it is ("Claude Agent", "Gemini CLI", "Qwen Code"). */
+const KIND_WORDS = new Set(["agent", "acp", "cli", "code"]);
+
+/**
+ * The short name an agent goes by in a sentence: "Claude", "Codex", "Gemini", "OpenCode". A catalog name or id
+ * is cleaned first (friendlyAgentName), then trailing kind words are dropped, never down to nothing.
+ */
+export function shortAgentName(raw: string): string {
+  const words = friendlyAgentName(raw).split(/\s+/);
+  while (words.length > 1 && KIND_WORDS.has(words[words.length - 1].toLowerCase())) words.pop();
+  return words.join(" ");
+}
+
+/** A model's display name without its provider prefix: "opencode/Beam Free" reads "Beam Free". */
+export function shortModelName(name: string): string {
+  const bare = name.replace(/^[\w.-]+\//, "").trim();
+  return bare || name;
 }

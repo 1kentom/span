@@ -4,24 +4,49 @@ import type { Workbench } from "../stores/workbench";
 import Icon, { FileIcon } from "./Icon";
 import { fileIndexMessage } from "../lib/file-index";
 import { MAX_CHAIN_DEPTH, compactChain, isSourceRoot } from "../lib/compact-tree";
-import { compactFolders } from "../lib/explorer-prefs";
+import { explorerPreferences } from "../lib/explorer-prefs";
 import type { ExplorerState } from "../lib/explorer-state";
 import { createInternalDrag, type InternalDragState } from "../lib/internal-drag";
 import type { EditorDropTarget } from "../lib/drop-zones";
 import { currentPlatform } from "../lib/commands";
 import { fileName, parentPath } from "../lib/navigation";
+import { listenNativeDrops } from "../lib/native-drop";
+import { explorerDropFolder } from "../lib/explorer-transfer";
 import "../styles/explorer.css";
 
 type DragItem = { paths: string[]; generation: number };
-type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: EditorDropTarget };
+type DragTarget = { kind: "folder"; path: string } | { kind: "editor"; target: EditorDropTarget } | { kind: "agent" };
 
-export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git" | "History"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void }) {
+export function Explorer(props: { git?: JSX.Element; workbench: Workbench; view: "Files" | "Search" | "Git"; onNavigate: (path: string, line?: number) => void; onOpenToSide: (path: string) => void; state: ExplorerState; onEditorTarget: (x: number, y: number) => EditorDropTarget | undefined; onEditorPreview: (target: EditorDropTarget | undefined) => void; onEditorDrop: (paths: string[], target: EditorDropTarget) => void; onAgentTarget?: (x: number, y: number) => boolean; onAgentPreview?: (over: boolean) => void; onAgentDrop?: (entries: { path: string; isDir: boolean }[]) => void; nativeDrops?: boolean }) {
   const w = props.workbench; const state = props.state;
+  const preferences = () => explorerPreferences(w.settings());
   const mac = currentPlatform() === "mac";
   let treeElement!: HTMLDivElement;
   let dragPaths: string[] = [];
   const [drag, setDrag] = createSignal<InternalDragState<DragItem, DragTarget>>();
-  const dropFolder = () => { const target = drag()?.target; return target?.kind === "folder" ? target.path : undefined; };
+  // Files dragged from Finder or Explorer: the folder under the pointer, "" for the project root.
+  const [nativeFolder, setNativeFolder] = createSignal<string>();
+  const dropFolder = () => { const target = drag()?.target; return target?.kind === "folder" ? target.path : nativeFolder(); };
+  let nativeTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(nativeTimer));
+  onMount(() => {
+    if (!props.nativeDrops) return;
+    let disposed = false; let unlisten: (() => void) | undefined;
+    onCleanup(() => { disposed = true; unlisten?.(); });
+    void listenNativeDrops(drop => {
+      if (drop.kind === "leave") { clearTimeout(nativeTimer); setNativeFolder(undefined); return; }
+      const folder = props.view === "Files" && w.workspace() && !w.busy() ? explorerDropFolder(drop.point, state.isDirectory) : undefined;
+      if (drop.kind === "hover") {
+        if (folder !== nativeFolder()) {
+          setNativeFolder(folder); clearTimeout(nativeTimer);
+          if (folder) nativeTimer = setTimeout(() => { if (nativeFolder() === folder && !w.expanded().has(folder)) void w.toggleDirectory(folder); }, 700);
+        }
+        return;
+      }
+      clearTimeout(nativeTimer); setNativeFolder(undefined);
+      if (folder !== undefined && drop.paths.length) void state.importDropped(drop.paths, folder);
+    }).then(stop => { if (disposed) stop(); else unlisten = stop; }).catch(() => undefined);
+  });
   let hoverTimer: ReturnType<typeof setTimeout> | undefined; let hoverFolder: string | undefined;
   onCleanup(() => clearTimeout(hoverTimer));
   function scroller(): HTMLElement | undefined {
@@ -31,6 +56,8 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
   const dragger = createInternalDrag<DragItem, DragTarget>({
     valid: item => item.generation === w.workspaceGeneration() && !w.busy() && !state.edit(),
     targetAt: (x, y) => {
+      // Rows dropped on the agent panel attach there: files as chips, folders as outlines.
+      if (props.onAgentDrop && props.onAgentTarget?.(x, y)) return { kind: "agent" };
       const editor = dragPaths.every(path => !state.isDirectory(path)) ? props.onEditorTarget(x, y) : undefined;
       if (editor) return { kind: "editor", target: editor };
       const element = document.elementFromPoint(x, y);
@@ -44,6 +71,7 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
     preview: next => {
       setDrag(next);
       props.onEditorPreview(next?.target?.kind === "editor" ? next.target.target : undefined);
+      props.onAgentPreview?.(next?.target?.kind === "agent");
       const folder = next?.target?.kind === "folder" ? next.target.path : undefined;
       if (folder !== hoverFolder) {
         hoverFolder = folder; clearTimeout(hoverTimer);
@@ -51,7 +79,7 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
       }
       if (next) { const box = scroller(); if (box) { const rect = box.getBoundingClientRect(); if (next.y < rect.top + 28) box.scrollTop -= 14; else if (next.y > rect.bottom - 28) box.scrollTop += 14; } }
     },
-    drop: (item, target, copy) => { if (target.kind === "folder") void state.transfer(item.paths, target.path, copy); else props.onEditorDrop(item.paths.filter(path => !state.isDirectory(path)), target.target); },
+    drop: (item, target, copy) => { if (target.kind === "agent") props.onAgentDrop?.(item.paths.map(path => ({ path, isDir: state.isDirectory(path) }))); else if (target.kind === "folder") void state.transfer(item.paths, target.path, copy); else props.onEditorDrop(item.paths.filter(path => !state.isDirectory(path)), target.target); },
   });
   onCleanup(dragger.dispose);
   createEffect(() => { w.workspaceGeneration(); dragger.cancel(); });
@@ -78,21 +106,25 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
     const move = (to: number, extend: boolean) => { const path = paths[Math.max(0, Math.min(paths.length - 1, to))]; if (!path) return; if (extend) state.selectRange(path); else state.selectOnly(path); focusPath(path); };
     const directory = current !== undefined && state.isDirectory(current);
     const open = current !== undefined && w.expanded().has(current);
+    const currentRow = row ?? (current ? rowElement(current) : null);
+    // Cmd+Down (Ctrl+Down) opens the row, like Enter: JetBrains' Jump to Source.
+    if (key === "ArrowDown" && mod && !event.shiftKey && current) { stop(); currentRow?.click(); return; }
     if (key === "ArrowDown") { stop(); move(index + 1, event.shiftKey); return; }
     if (key === "ArrowUp") { stop(); move(index - 1, event.shiftKey); return; }
     if (key === "Home") { stop(); move(0, event.shiftKey); return; }
     if (key === "End") { stop(); move(paths.length - 1, event.shiftKey); return; }
     if (key === "PageDown" || key === "PageUp") { stop(); const page = Math.max(1, Math.floor(treeElement.clientHeight / 26) - 1); move(index + (key === "PageDown" ? page : -page), event.shiftKey); return; }
-    if (key === "ArrowRight" && current) { stop(); if (directory && !open) row?.click(); else if (directory) move(index + 1, false); return; }
+    if (key === "ArrowRight" && current) { stop(); if (directory && !open) currentRow?.click(); else if (directory) move(index + 1, false); return; }
     if (key === "ArrowLeft" && current) {
       stop();
-      if (directory && open) { row?.click(); return; }
+      if (directory && open) { currentRow?.click(); return; }
       for (let parent = parentPath(current); parent; parent = parentPath(parent)) if (paths.includes(parent)) { state.selectOnly(parent); focusPath(parent); return; }
       return;
     }
-    if (key === "F2" || (key === "Enter" && mac)) { stop(); void state.startRename(current); return; }
+    // F2 renames on every platform and Enter opens, as in JetBrains IDEs.
+    if (key === "F2") { stop(); void state.startRename(current); return; }
     if (key === "Enter" && mod && current && !directory) { stop(); props.onOpenToSide(current); return; }
-    if (key === "Enter" && current) { stop(); row?.click(); return; }
+    if (key === "Enter" && current) { stop(); currentRow?.click(); return; }
     if (key === "Delete" || (key === "Backspace" && mod)) { stop(); void state.trash(); return; }
     if (key === "Escape") { if (state.clipboard()) { stop(); state.clearClipboard(); } else if (state.selection().length) { stop(); state.clearSelection(); } return; }
     if (mod && !event.altKey && !event.shiftKey) {
@@ -100,6 +132,7 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
       if (lower === "x") { stop(); state.setClip(true); return; }
       if (lower === "v") { stop(); void state.paste(); return; }
       if (lower === "a") { stop(); state.selectAll(); return; }
+      if (lower === "d" && current) { stop(); void state.duplicate(current); return; }
       if (lower === "z") { stop(); void state.undo(); return; }
       if (key === "-") { stop(); state.collapseAll(); return; }
     }
@@ -127,7 +160,15 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
   // Compact folder chains: one row per chain, identified by its deepest directory.
   const [pending, setPending] = createSignal<ReadonlySet<string>>(new Set());
   const attempted = new Set<string>();
-  const markPending = (path: string, on: boolean) => setPending(current => { const next = new Set(current); if (on) next.add(path); else next.delete(path); return next; });
+  const pendingRequests = new Map<string, number>();
+  let nextPendingRequest = 0;
+  const attemptKey = (path: string, generation = w.workspaceGeneration(), revision = w.discoveryRevision()) => `${generation}\0${revision}\0${path}`;
+  const markPending = (path: string, request: number, on: boolean) => {
+    if (on) pendingRequests.set(path, request);
+    else if (pendingRequests.get(path) !== request) return;
+    else pendingRequests.delete(path);
+    setPending(current => { const next = new Set(current); if (on) next.add(path); else next.delete(path); return next; });
+  };
   async function toggleChain(paths: string[]) {
     const deepest = paths[paths.length - 1];
     if (w.expanded().has(deepest)) { await w.toggleDirectory(deepest); return; }
@@ -135,41 +176,46 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
   }
   /** Load the only child directory of an expanded chain so the chain can continue. Reuses the cached lazy listing. */
   async function extendChain(parent: string, child: string) {
-    const generation = w.workspaceGeneration(); attempted.add(`${generation}\0${child}`);
-    markPending(child, true);
+    const generation = w.workspaceGeneration(); const revision = w.discoveryRevision();
+    const request = ++nextPendingRequest;
+    attempted.add(attemptKey(child, generation, revision));
+    markPending(child, request, true);
     try {
       await w.loadDirectory(child);
-      if (generation !== w.workspaceGeneration() || !w.directories[child] || !w.expanded().has(parent)) return;
+      if (generation !== w.workspaceGeneration() || revision !== w.discoveryRevision() || !w.directories[child] || !w.expanded().has(parent)) return;
       if (!w.expanded().has(child)) await w.toggleDirectory(child);
-    } finally { markPending(child, false); }
+    } finally { markPending(child, request, false); }
   }
   const TreeRows = (rowProps: { path: string; depth: number }) => <><Show when={state.edit()?.mode === "create" && state.edit()!.parent === rowProps.path}><EditRow depth={rowProps.depth} /></Show><For each={w.directories[rowProps.path] || []}>{entry => <TreeRow entry={entry} depth={rowProps.depth} />}</For></>;
   const TreeRow = (rowProps: { entry: FileEntry; depth: number }) => {
     const entry = rowProps.entry;
-    const chain = createMemo(() => entry.isDir && compactFolders() ? compactChain(entry.path, w.directories) : undefined);
+    const chain = createMemo(() => entry.isDir && preferences().compactFolders ? compactChain(entry.path, w.directories) : undefined);
     const target = () => chain()?.deepest ?? entry.path;
     /** A tail directory discovered below an expanded parent whose listing has not arrived yet. It is shown open so the row does not flip. */
-    const awaitingTail = () => { const current = chain(); if (!current || current.segments.length < 2 || w.directories[current.deepest]) return false; return w.expanded().has(current.segments[current.segments.length - 2].path) && !attempted.has(`${w.workspaceGeneration()}\0${current.deepest}`) || pending().has(current.deepest); };
+    const awaitingTail = () => { w.discoveryRevision(); const current = chain(); if (!current || current.segments.length < 2 || w.directories[current.deepest]) return false; return w.expanded().has(current.segments[current.segments.length - 2].path) && !attempted.has(attemptKey(current.deepest)) || pending().has(current.deepest); };
     const expanded = () => entry.isDir && (w.expanded().has(target()) || pending().has(target()) || awaitingTail());
     const merged = () => (chain()?.segments.length ?? 1) > 1;
     createEffect(() => {
+      w.discoveryRevision();
       const current = chain();
       if (!current || current.segments.length > MAX_CHAIN_DEPTH) return;
       const tail = current.segments[current.segments.length - 1].path;
       const previous = current.segments[current.segments.length - 2]?.path;
       // Case 1: the tail was just discovered below an expanded directory, so load and open it.
-      if (previous !== undefined && !w.directories[tail] && w.expanded().has(previous) && !attempted.has(`${w.workspaceGeneration()}\0${tail}`)) { void extendChain(previous, tail); return; }
+      if (previous !== undefined && !w.directories[tail] && w.expanded().has(previous) && !attempted.has(attemptKey(tail))) { void extendChain(previous, tail); return; }
       // Case 2: the open tail lists exactly one directory, so continue the chain.
       if (!expanded() || current.segments.length >= MAX_CHAIN_DEPTH) return;
       const listing = w.directories[current.deepest];
       if (!listing || listing.length !== 1 || !listing[0].isDir) return;
       const child = listing[0].path;
-      if (isSourceRoot(child) || w.directories[child] || attempted.has(`${w.workspaceGeneration()}\0${child}`)) return;
+      if (isSourceRoot(child) || w.directories[child] || attempted.has(attemptKey(child))) return;
       void extendChain(current.deepest, child);
     });
     const toggle = () => void toggleChain(chain()?.segments.map(segment => segment.path) ?? [entry.path]);
     return <>
       <Show when={state.edit()?.mode === "rename" && state.edit()!.path === target()} fallback={<button class={`tree-row internal-drag-source ${w.activePath() === entry.path ? "selected" : ""} ${state.selection().includes(target()) ? "sel" : ""} ${state.clipboard()?.cut && state.clipboard()!.paths.includes(target()) ? "cut" : ""} ${dropFolder() === target() && entry.isDir ? "droptgt" : ""}`} role="treeitem" data-path={target()} tabIndex={state.focus() && state.focus() !== target() ? -1 : 0} aria-busy={entry.isDir && w.loadingDirectories().has(target())} aria-level={rowProps.depth + 1} aria-expanded={entry.isDir ? expanded() : undefined} aria-label={entry.isDir && merged() ? target() : undefined} aria-selected={state.selection().includes(target()) || (!entry.isDir && w.activePath() === entry.path)} draggable={false} onPointerDown={event => { if (event.button === 0 && !event.shiftKey && !event.metaKey && !event.ctrlKey) startDrag(event, target()); }} onFocus={() => state.setFocus(target())} style={{ "padding-left": `${12 + rowProps.depth * 16}px` }} onClick={event => {
+        // WebKit does not focus a clicked button, so focus the row for the tree's keyboard shortcuts.
+        event.currentTarget.focus({ preventScroll: true });
         if (event.metaKey || event.ctrlKey) { state.toggleSelect(target()); return; }
         if (event.shiftKey) { state.selectRange(target()); return; }
         state.selectOnly(target());
@@ -177,7 +223,7 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
       }} title={target()}>
         <Show when={entry.isDir} fallback={<span class="tree-indent" />}><Icon name={expanded() ? "arrow-down4" : "arrow-right4"} size={13} /></Show>
         <FileIcon path={target()} directory={entry.isDir} open={expanded()} plain={chain()?.inSourceRoot} />
-        <span class="tree-name"><Show when={merged()} fallback={entry.name}><For each={chain()!.segments}>{(segment, index) => <>{index() > 0 && <span class="tree-separator" aria-hidden="true">{chain()!.separator}</span>}<span class="tree-segment" data-segment-path={segment.path}>{segment.name}</span></>}</For></Show></span>
+        <span class={`tree-name ${entry.ignored || entry.backgroundExcluded ? "tree-name-muted" : ""}`} title={entry.ignored || entry.backgroundExcluded ? [entry.ignored ? "Ignored by workspace rules" : "", entry.backgroundExcluded ? "Excluded from background indexing" : ""].filter(Boolean).join(". ") : undefined} aria-label={entry.ignored || entry.backgroundExcluded ? `${entry.name}, ${[entry.ignored ? "ignored by workspace rules" : "", entry.backgroundExcluded ? "excluded from background indexing" : ""].filter(Boolean).join(", ")}` : undefined}><Show when={merged()} fallback={entry.name}><For each={chain()!.segments}>{(segment, index) => <>{index() > 0 && <span class="tree-separator" aria-hidden="true">{chain()!.separator}</span>}<span class="tree-segment" data-segment-path={segment.path}>{segment.name}</span></>}</For></Show></span>
         <Show when={w.dirty(entry.path)}><span class="dirty-dot" aria-label="Unsaved changes" /></Show>
       </button>}><EditRow depth={rowProps.depth} /></Show>
       <Show when={entry.isDir && expanded()}><Show when={w.loadingDirectories().has(target())}><div class="tree-loading" role="status" style={{ "padding-left": `${28 + rowProps.depth * 16}px` }}>Loading folder…</div></Show><TreeRows path={target()} depth={rowProps.depth + 1} /></Show>
@@ -189,17 +235,17 @@ export function Explorer(props: { git?: JSX.Element; history?: JSX.Element; work
         <div class="tree-root"><button onClick={() => void w.toggleDirectory("")} aria-expanded={w.expanded().has("")}><Icon name={w.expanded().has("") ? "arrow-down4" : "arrow-right4"} size={13} /><strong class="tree-root-name" title={w.workspace()?.name}>{w.workspace()?.name}</strong></button><button class="icon-button subtle" aria-label="Refresh explorer" title="Refresh" onClick={() => void w.refreshFiles()}><Icon name="Refresh2" size={15} /></button><button class="icon-button subtle" aria-label="Collapse all folders" title="Collapse all" onClick={() => state.collapseAll()}><Icon name="Minus" size={15} /></button><button class="icon-button subtle" aria-label="Open folder" title="Open folder" onClick={w.requestWorkspace}><Icon name="Folder2" size={15} /></button></div>
         <div class="file-index-status" role="status" title={w.indexError() || w.indexStatus()?.lastError || w.indexStatus()?.watcherError || undefined}>{fileIndexMessage(w.indexStatus(), w.indexError())}</div>
         <Show when={w.loadingDirectories().has("")}><div class="tree-loading" role="status">Loading folder…</div></Show>
-        <div class={`file-tree ${dropFolder() === "" ? "dropall" : ""}`} ref={treeElement} aria-busy={w.loadingDirectories().has("")} role="tree" aria-multiselectable="true" aria-label="Workspace files" onKeyDown={treeKey} onPointerDown={event => { if (event.target === event.currentTarget) state.clearSelection(); }}><Show when={w.expanded().has("")}><TreeRows path="" depth={0} /></Show></div>
+        <div class={`file-tree ${dropFolder() === "" ? "dropall" : ""}`} ref={treeElement} aria-busy={w.loadingDirectories().has("")} role="tree" tabIndex={-1} aria-multiselectable="true" aria-label="Workspace files" onKeyDown={treeKey} onPointerDown={event => { if (event.target === event.currentTarget) { state.clearSelection(); event.currentTarget.focus({ preventScroll: true }); } }}><Show when={w.expanded().has("")}><TreeRows path="" depth={0} /></Show></div>
       </Show>
     </Show>
     <Show when={state.notice()}><div class="tree-notice" role="status">{state.notice()}</div></Show>
-    <Show when={drag()}>{current => <div class="explorer-drag-pill" role="status" aria-live="off" style={{ left: `${(current().x + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px`, top: `${(current().y + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px` }}>{current().item.paths.length > 1 ? `${current().item.paths.length} items` : fileName(current().item.paths[0])}{current().target === undefined ? " (no drop target)" : current().copy ? " (copy)" : ""}</div>}</Show>
+    <Show when={state.importing()}>{job => <div class="tree-import" role="status"><span>{`Copying to ${job().folder ? `${job().folder}/` : "the project root"}`}</span><Show when={job().progress?.totalBytes}><progress aria-label="Copy progress" max={job().progress!.totalBytes} value={job().progress!.bytes} /></Show><button class="button" onClick={() => void state.cancelImport()}>Cancel</button></div>}</Show>
+    <Show when={drag()}>{current => <div class="explorer-drag-pill" role="status" aria-live="off" style={{ left: `${(current().x + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px`, top: `${(current().y + 14) / (parseFloat(getComputedStyle(document.documentElement).zoom) || 1)}px` }}>{current().item.paths.length > 1 ? `${current().item.paths.length} items` : fileName(current().item.paths[0])}{current().target === undefined ? " (no drop target)" : current().target!.kind === "agent" ? " (attach to AI)" : current().copy ? " (copy)" : ""}</div>}</Show>
     <Show when={props.view === "Search"}>
       <div class="search-box"><Icon name="SearchNormal1" /><input id="workspace-search" aria-label="Search workspace" placeholder="Search in files" value={query()} onInput={e => search(e.currentTarget.value)} /><Show when={query()}><button class="close-button" aria-label="Clear search" onClick={() => search("")}>×</button></Show></div>
       <div class="search-summary" aria-live="polite">{w.searching() ? "Searching…" : query() ? `${w.searchResults().length} results` : "Find text across your workspace"}</div>
       <div class="search-results"><For each={w.searchResults()}>{match => <button class="search-result" onClick={() => props.onNavigate(match.path, match.line)} title={`${match.path}:${match.line}`}><span class="search-result-file"><FileIcon path={match.path} /><span>{match.path.split("/").pop()}</span><span class="dim">:{match.line}</span></span><span class="search-result-text">{match.text}</span><span class="search-result-path">{match.path}</span></button>}</For></div>
     </Show>
     <Show when={props.view === "Git"}>{props.git}</Show>
-    <Show when={props.view === "History"}>{props.history}</Show>
   </>;
 }

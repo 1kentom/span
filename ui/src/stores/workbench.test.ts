@@ -4,8 +4,8 @@ import { ChangeSet } from "@codemirror/state";
 import type { BufferSnapshot, FileIndexStatus, TextEdit, SessionState_Serialize as SessionState, Settings_Serialize as Settings } from "../bindings";
 
 const client = vi.hoisted(() => ({
-  openWorkspace: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
-  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(),
+  migrateExplorerPreferences: vi.fn(), openWorkspace: vi.fn(), checkExternalFiles: vi.fn(), resolveExternalFile: vi.fn(), abandonExternalFile: vi.fn(), listDirectory: vi.fn(), listFiles: vi.fn(), fileIndexStatus: vi.fn(), queryFile: vi.fn(), getSettings: vi.fn(),
+  openBuffer: vi.fn(), editBuffer: vi.fn(), saveBuffer: vi.fn(), discardBuffer: vi.fn(), getSettingsForScope: vi.fn(), getSettingsJsoncForScope: vi.fn(), getSettingsKeysForScope: vi.fn(), updateSettingsJsoncForScope: vi.fn(), updateSetting: vi.fn(), openSettingsBuffer: vi.fn(), editSettingsBuffer: vi.fn(), saveSettingsBuffer: vi.fn(), discardSettingsBuffer: vi.fn(), newFile: vi.fn(), newDirectory: vi.fn(), renamePath: vi.fn(), duplicatePath: vi.fn(), trashPath: vi.fn(), takeStartupRequests: vi.fn(), getSettingsJsonc: vi.fn(), getSession: vi.fn(), saveSession: vi.fn(), updateSettings: vi.fn(), updateSettingsJsonc: vi.fn(), formatBuffer: vi.fn(), cancelFormatBuffer: vi.fn(), releaseBuffer: vi.fn(), probeFile: vi.fn(),
 }));
 vi.mock("../lib/client", () => ({ api: client, isDesktop: true }));
 import { createWorkbench, settleIntent, SETTINGS_TAB, isGitTab, tabName } from "./workbench";
@@ -13,10 +13,10 @@ import { viewerTabPath } from "../lib/viewer-tabs";
 
 const initial = (): BufferSnapshot => ({ path: "src/file.ts", text: "const value = 1;\n", revision: 0, savedRevision: 0, language: "typescript" });
 let server: Map<string, BufferSnapshot>;
-const preferences: Settings = { theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] } };
+const preferences: Settings = { theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false, uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono", collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null, keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [], watchIncludeDirectories: [], silencedWatchWarnings: [] } };
 const roots: (() => void)[] = [];
 function testWorkbench() { return createRoot(dispose => { roots.push(dispose); return createWorkbench(); }); }
-afterEach(() => { for (const dispose of roots.splice(0)) dispose(); });
+afterEach(() => { for (const dispose of roots.splice(0)) dispose(); vi.unstubAllGlobals(); });
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
@@ -42,6 +42,7 @@ beforeEach(() => {
   client.listDirectory.mockResolvedValue([]);
   client.listFiles.mockResolvedValue([]);
   client.fileIndexStatus.mockResolvedValue(null);
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 0, states: [], directoriesChanged: false });
   client.queryFile.mockResolvedValue({ workspaceRoot: "/workspace", generation: 1, requestId: 1, results: [] });
   client.getSettings.mockResolvedValue(preferences);
   client.getSettingsForScope.mockResolvedValue(preferences);
@@ -588,6 +589,18 @@ describe("native startup and asset boundaries", () => {
     expect(client.getSession).not.toHaveBeenCalled();
   });
 
+  it("restores the saved project for a dropped or forwarded file and never opens the file's folder", async () => {
+    client.takeStartupRequests.mockResolvedValue([{ workspaceRoot: "/elsewhere", files: [{ path: "/elsewhere/notes.md", line: null, column: null }], impliedRoot: true }]);
+    client.getSession.mockResolvedValue({ workspaceRoot: "/workspace", groups: [{ paths: [], activePath: null }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: true }, markdownViews: {}, splitVertical: false } satisfies SessionState);
+    const workbench = testWorkbench();
+    const seen: unknown[] = [];
+    await workbench.initialize(async request => { seen.push(request); });
+    expect(workbench.workspace()?.root).toBe("/workspace");
+    expect(client.openWorkspace).not.toHaveBeenCalledWith("/elsewhere", expect.anything());
+    expect(client.openWorkspace).not.toHaveBeenCalledWith("/elsewhere");
+    expect(seen).toHaveLength(1);
+  });
+
   it("opens binary images without requesting a UTF-8 editor buffer", async () => {
     const workbench = await setup(); const calls = client.openBuffer.mock.calls.length;
     await workbench.openFile("assets/image.png");
@@ -964,5 +977,204 @@ describe("read-only Git workspace tabs", () => {
     expect(saved.groups[0].paths).toEqual(["src/file.ts"]); expect(saved.groups[0].activePath).toBe("src/file.ts");
     await workbench.openFile(tab); expect(client.openBuffer.mock.calls.map(([path]) => path)).toEqual(["src/file.ts"]);
     await workbench.openWorkspace("/other"); expect(workbench.groups().flatMap(group => group.tabs)).not.toContain(tab);
+  });
+});
+
+
+describe("Explorer discovery preference refresh", () => {
+  function legacyStorage() {
+    const values = new Map([["span.explorer.compactFolders", "false"], ["span.explorer.autoReveal", "false"]]);
+    vi.stubGlobal("window", { innerWidth: 1440, innerHeight: 900, localStorage: { getItem: (key: string) => values.get(key) ?? null, removeItem: (key: string) => values.delete(key) } });
+    return values;
+  }
+  it("clears only migrated legacy leaves after the backend validates both scopes", async () => {
+    const values = legacyStorage();
+    client.migrateExplorerPreferences.mockResolvedValue({ settings: preferences, resolvedLegacyKeys: ["compactFolders"] });
+    await setup();
+    expect(client.migrateExplorerPreferences).toHaveBeenCalledWith("/workspace", { compactFolders: false, autoReveal: false, confirmDelete: null });
+    expect(values.has("span.explorer.compactFolders")).toBe(false);
+    expect(values.get("span.explorer.autoReveal")).toBe("false");
+  });
+  it("retains legacy preferences and keeps the workspace available if migration fails", async () => {
+    const values = legacyStorage();
+    client.migrateExplorerPreferences.mockRejectedValue(new Error("Invalid settings"));
+    const workbench = await setup();
+    expect(workbench.workspace()?.root).toBe("/workspace");
+    expect(values.size).toBe(2);
+  });
+
+  it("invalidates pending tree and file-finder replies when visibility changes", async () => {
+    const workbench = await setup();
+    const oldDirectory = deferred<{ path: string; name: string; isDir: boolean }[]>();
+    const oldQuery = deferred<{ workspaceRoot: string; generation: number; requestId: number; results: { path: string; score: number }[] }>();
+    client.listDirectory.mockImplementationOnce(() => oldDirectory.promise).mockResolvedValue([{ path: "src/visible.ts", name: "visible.ts", isDir: false }]);
+    client.queryFile.mockReturnValueOnce(oldQuery.promise);
+    const expanding = workbench.toggleDirectory("src");
+    const finding = workbench.queryFiles("hidden");
+    client.getSettings.mockResolvedValue({ ...preferences, explorer: { showHiddenFiles: false, showIgnoredFiles: false, compactFolders: true, autoReveal: true, confirmDelete: true } });
+    await workbench.updateSettingKey("explorer.showHiddenFiles", false);
+    oldDirectory.resolve([{ path: "src/.hidden.ts", name: ".hidden.ts", isDir: false }]);
+    oldQuery.resolve({ workspaceRoot: "/workspace", generation: 1, requestId: 1, results: [{ path: "src/.hidden.ts", score: 1 }] });
+    await expanding;
+    expect(await finding).toEqual([]);
+    expect(workbench.directories.src.map(entry => entry.path)).toEqual(["src/visible.ts"]);
+    expect(workbench.files().some(entry => entry.path === "src/.hidden.ts")).toBe(false);
+  });
+
+  it("does not feed lazily opened dependency rows into the file finder fallback", async () => {
+    const workbench = await setup();
+    client.listDirectory.mockResolvedValue([{ path: "node_modules/pkg/index.js", name: "index.js", isDir: false, ignored: true, backgroundExcluded: true }]);
+    await workbench.loadDirectory("node_modules/pkg");
+    expect(workbench.files().some(entry => entry.path.startsWith("node_modules/"))).toBe(false);
+  });
+});
+
+describe("external file synchronization", () => {
+  it("reloads a clean buffer after a watcher change without saving over the new disk content", async () => {
+    vi.useFakeTimers();
+    try {
+      const workbench = await setup();
+      const snapshot = { ...initial(), text: "const external = true;\n", revision: 1, savedRevision: 1 };
+      client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: true, states: [{ path: "src/file.ts", revision: 0, kind: "reloaded", snapshot, disk: null, error: null }] });
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(workbench.documents()["src/file.ts"].document.toString()).toBe(snapshot.text);
+      expect(client.saveBuffer).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+
+it("retains dirty external conflicts, freezes the reviewed disk token, and never auto-overwrites", async () => {
+  const workbench = await setup(); append(workbench, "// draft\n"); await vi.waitFor(() => expect(workbench.synchronized("src/file.ts")).toBe(true));
+  const conflict = (token: string) => ({ path: "src/file.ts", revision: workbench.buffers["src/file.ts"].revision, kind: "conflict", snapshot: null, disk: { token, exists: true, text: "outside", truncated: false }, error: null });
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [conflict("reviewed")] });
+  await workbench.checkExternalChanges(true); workbench.reviewExternalFile("src/file.ts");
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 2, directoriesChanged: false, states: [conflict("newer")] });
+  await workbench.checkExternalChanges(true);
+  expect(workbench.externalReview()?.disk?.token).toBe("reviewed");
+  expect(workbench.documents()["src/file.ts"].document.toString()).toContain("// draft");
+  expect(await workbench.save("src/file.ts", true)).toBe(false); expect(client.saveBuffer).not.toHaveBeenCalled();
+  // Review the frozen version again before an explicit resolution. The backend
+  // rejects its old disk token, preserving the editor draft and newer disk.
+  client.resolveExternalFile.mockRejectedValue(new Error("File changed on disk"));
+  await expect(workbench.resolveExternalChange("src/file.ts", "overwrite")).rejects.toThrow("changed on disk");
+  expect(client.resolveExternalFile).toHaveBeenCalledWith("src/file.ts", expect.any(Number), "reviewed", "overwrite", "/workspace");
+  expect(workbench.documents()["src/file.ts"].document.toString()).toContain("// draft");
+});
+
+it("preserves renderer edits racing a clean reload and requires comparison before saving them", async () => {
+  const workbench = await setup(); const pending = deferred<any>();
+  client.checkExternalFiles.mockReturnValueOnce(pending.promise);
+  const checking = workbench.checkExternalChanges(true);
+  const snapshot = { ...initial(), text: "external\n", revision: 1, savedRevision: 1 };
+  server.set("src/file.ts", snapshot); append(workbench, "// arriving draft\n");
+  pending.resolve({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 0, kind: "reloaded", snapshot, disk: { token: "external-token", exists: true, text: snapshot.text, truncated: false }, error: null }] });
+  await checking;
+  expect(workbench.documents()["src/file.ts"].document.toString()).toContain("// arriving draft");
+  expect(workbench.externalChanges()["src/file.ts"].disk?.token).toBe("external-token");
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 2, kind: "unchanged", snapshot: null, disk: null, error: null }] });
+  await workbench.checkExternalChanges(true);
+  expect(workbench.externalChanges()["src/file.ts"]).toBeDefined();
+  expect(await workbench.save("src/file.ts")).toBe(false); expect(client.saveBuffer).not.toHaveBeenCalled();
+});
+
+it("ignores late external reloads from a workspace that has been replaced", async () => {
+  const workbench = await setup(); const pending = deferred<any>();
+  client.checkExternalFiles.mockReturnValueOnce(pending.promise);
+  const checking = workbench.checkExternalChanges(true);
+  await workbench.openWorkspace("/other");
+  pending.resolve({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: true, states: [{ path: "src/file.ts", revision: 0, kind: "reloaded", snapshot: { ...initial(), text: "stale" }, disk: null, error: null }] });
+  await checking;
+  expect(workbench.workspace()?.root).toBe("/other"); expect(workbench.documents()["src/file.ts"]).toBeUndefined(); expect(workbench.externalChanges()).toEqual({});
+});
+
+
+it("never writes an older backend buffer when the reviewed editor draft failed to synchronize", async () => {
+  const workbench = await setup(); client.editBuffer.mockRejectedValue(new Error("edit sync failed"));
+  append(workbench, "// unsynchronized\n"); await vi.waitFor(() => expect(workbench.failed().has("src/file.ts")).toBe(true));
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 0, kind: "conflict", snapshot: null, disk: { token: "reviewed", exists: true, text: "outside", truncated: false }, error: null }] });
+  await workbench.checkExternalChanges(true); workbench.reviewExternalFile("src/file.ts");
+  await expect(workbench.resolveExternalChange("src/file.ts", "overwrite")).rejects.toThrow("not synchronized");
+  expect(client.resolveExternalFile).not.toHaveBeenCalled(); expect(workbench.documents()["src/file.ts"].document.toString()).toContain("// unsynchronized");
+});
+
+it("explicitly discards and closes an unavailable retained buffer without rereading the disk", async () => {
+  const workbench = await setup();
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 0, kind: "unavailable", snapshot: null, disk: null, error: "permission denied" }] });
+  await workbench.checkExternalChanges(true);
+  await workbench.closeTab("src/file.ts", workbench.activeGroup()); expect(workbench.pendingClose()?.path).toBe("src/file.ts");
+  await workbench.confirmClose("discard");
+  expect(client.abandonExternalFile).toHaveBeenCalledWith("src/file.ts", 0, "/workspace"); expect(client.discardBuffer).not.toHaveBeenCalled();
+  expect(workbench.groups().flatMap(group => group.tabs)).not.toContain("src/file.ts"); expect(workbench.hasDirty()).toBe(false);
+});
+
+
+it("finishes an explicitly approved unavailable discard before allowing cancel", async () => {
+  const workbench = await setup(); const pending = deferred<void>();
+  client.checkExternalFiles.mockResolvedValue({ workspaceRoot: "/workspace", revision: 1, directoriesChanged: false, states: [{ path: "src/file.ts", revision: 0, kind: "unavailable", snapshot: null, disk: null, error: "permission denied" }] });
+  await workbench.checkExternalChanges(true); await workbench.closeTab("src/file.ts", workbench.activeGroup());
+  client.abandonExternalFile.mockReturnValue(pending.promise);
+  const closing = workbench.confirmClose("discard"); await vi.waitFor(() => expect(client.abandonExternalFile).toHaveBeenCalled());
+  await workbench.confirmClose("cancel"); expect(workbench.pendingClose()?.path).toBe("src/file.ts"); expect(workbench.externalAbandoning()).toBe(true);
+  pending.resolve(); await closing;
+  expect(workbench.groups().flatMap(group => group.tabs)).not.toContain("src/file.ts"); expect(workbench.documents()["src/file.ts"]).toBeUndefined();
+});
+
+describe("files that are not text", () => {
+  const notText = "This file isn't text, so it can't be opened in the editor.";
+  const probe = (path: string, size = 2048) => ({ path, name: path.split("/").pop()!, size, kind: "binary" as const });
+
+  it("opens a known binary extension in the viewer without reading it as text", async () => {
+    client.probeFile.mockImplementation(async (path: string) => probe(path));
+    const workbench = testWorkbench(); await workbench.openWorkspace("/workspace");
+    await workbench.openFile("docs/report.docx");
+    expect(client.openBuffer).not.toHaveBeenCalledWith("docs/report.docx");
+    expect(workbench.binaryFile("docs/report.docx")).toEqual(probe("docs/report.docx"));
+    expect(workbench.groups()[0].tabs).toEqual(["docs/report.docx"]);
+    expect(workbench.buffers["docs/report.docx"]).toBeUndefined();
+    expect(workbench.error()).toBe("");
+  });
+
+  it("turns a refused text read into a viewer tab instead of a raw error", async () => {
+    client.openBuffer.mockImplementation(async (path: string) => {
+      if (path === "data/blob.dat") throw "Read file /workspace/data/blob.dat: stream did not contain valid UTF-8";
+      return { ...server.get(path)! };
+    });
+    client.probeFile.mockRejectedValue(new Error("probe unavailable"));
+    const workbench = testWorkbench(); await workbench.openWorkspace("/workspace");
+    await workbench.openFile("data/blob.dat");
+    expect(workbench.error()).toBe("");
+    expect(workbench.binaryFile("data/blob.dat")).toEqual({ path: "data/blob.dat", name: "blob.dat", size: 0, kind: "binary" });
+    expect(workbench.groups()[0].active).toBe("data/blob.dat");
+    // Other read failures are still reported.
+    client.openBuffer.mockRejectedValueOnce(new Error("Permission denied"));
+    await workbench.openFile("src/other.ts");
+    expect(workbench.error()).toBe("Permission denied");
+  });
+
+  it("restores a saved session with a binary tab without an error", async () => {
+    client.openBuffer.mockImplementation(async (path: string) => {
+      if (path === "notes/legacy.txt") throw notText;
+      return { ...server.get(path)! };
+    });
+    client.probeFile.mockImplementation(async (path: string) => probe(path, 10));
+    client.getSession.mockResolvedValue({ workspaceRoot: "/workspace", groups: [{ paths: ["src/file.ts", "docs/report.docx", "notes/legacy.txt"], activePath: "docs/report.docx" }], activeGroup: 0, panels: { projectWidth: 280, assistantWidth: 330, terminalHeight: 190, projectCollapsed: false, assistantCollapsed: false, terminalCollapsed: true }, markdownViews: {}, splitVertical: false } satisfies SessionState);
+    const workbench = testWorkbench(); await workbench.initialize();
+    expect(workbench.groups()[0].tabs).toEqual(["src/file.ts", "docs/report.docx", "notes/legacy.txt"]);
+    expect(workbench.activeTab()).toBe("docs/report.docx");
+    expect(workbench.binaryFile("docs/report.docx")?.kind).toBe("binary");
+    expect(workbench.binaryFile("notes/legacy.txt")?.kind).toBe("binary");
+    expect(workbench.error()).toBe("");
+    await workbench.persistSession();
+    const saved = client.saveSession.mock.lastCall?.[0] as SessionState;
+    expect(saved.groups[0].paths).toContain("docs/report.docx");
+  });
+
+  it("forgets the binary entry when its last tab closes", async () => {
+    client.probeFile.mockImplementation(async (path: string) => probe(path));
+    const workbench = testWorkbench(); await workbench.openWorkspace("/workspace");
+    await workbench.openFile("docs/report.docx");
+    workbench.closeTab("docs/report.docx", workbench.groups()[0].id);
+    expect(workbench.binaryFile("docs/report.docx")).toBeUndefined();
   });
 });

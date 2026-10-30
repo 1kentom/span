@@ -147,6 +147,46 @@ pub struct SessionStates {
     pub sessions: Vec<SessionRuntimeState>,
 }
 
+/// One live session as the agent mode rail lists it: identity, place in the
+/// session tree, runtime state and the metadata the agent last reported.
+/// Built only from the manager, so it never mixes up two sessions with the
+/// same id on different connections.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSession {
+    pub key: SessionKey,
+    pub agent_name: String,
+    /// The installed agent id the connection was started for, when the
+    /// desktop knows it (registry installs). `None` from the manager.
+    pub agent_id: Option<String>,
+    /// The lead session of a delegated child. `None` for a root session.
+    pub parent: Option<SessionKey>,
+    pub depth: u32,
+    pub origin: SessionOrigin,
+    pub state: SessionActivity,
+    pub queued: u32,
+    pub started_at_ms: Option<u64>,
+    pub current_tool: Option<String>,
+    /// The latest `session_info_update` title.
+    pub title: Option<String>,
+    /// The current value of the agent's `model` config option.
+    pub model: Option<String>,
+    /// The latest `current_mode_update` mode id.
+    pub mode: Option<String>,
+    /// The agent's latest health check result, filled in by the desktop when
+    /// checks run. `None` from the manager.
+    pub health: Option<crate::HealthState>,
+}
+
+/// Metadata an agent reported for one session. Recorded even before the
+/// session is registered, because agents send it right after `session/new`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SessionMeta {
+    title: Option<String>,
+    model: Option<String>,
+    mode: Option<String>,
+}
+
 /// Receives [`SessionStates`] whenever a connection's session states change.
 pub type SessionStateSink = Arc<dyn Fn(SessionStates) + Send + Sync>;
 
@@ -291,6 +331,8 @@ struct State {
     published: HashMap<String, SessionStates>,
     /// When each connection's session states last changed.
     activity: HashMap<String, std::time::Instant>,
+    /// Title, model and mode per session, as the agent last reported them.
+    meta: HashMap<SessionKey, SessionMeta>,
 }
 
 impl State {
@@ -397,6 +439,38 @@ impl State {
         }
     }
 
+    fn live(&self, key: &SessionKey, session: &Session) -> LiveSession {
+        let runtime = self.runtime(key, session);
+        let meta = self.meta.get(key).cloned().unwrap_or_default();
+        LiveSession {
+            key: key.clone(),
+            agent_name: self
+                .connections
+                .get(&key.connection_id)
+                .map(Connection::name)
+                .unwrap_or_default(),
+            agent_id: None,
+            parent: session.parent.clone(),
+            depth: session.depth,
+            origin: session.origin,
+            state: runtime.state,
+            queued: runtime.queued,
+            started_at_ms: runtime.started_at_ms,
+            current_tool: runtime.current_tool,
+            title: meta.title,
+            model: meta.model,
+            mode: meta.mode,
+            health: None,
+        }
+    }
+
+    /// Forget everything kept for a connection's sessions that are not
+    /// registered (metadata of sessions the manager never tracked).
+    fn forget_connection_meta(&mut self, connection_id: &str) {
+        self.meta
+            .retain(|key, _| key.connection_id != connection_id);
+    }
+
     /// Remove sessions from the manager. Returns their queued turns and the
     /// services to stop them on, deepest first.
     fn detach(&mut self, keys: &[SessionKey]) -> (Vec<Turn>, Vec<(SessionKey, AgentService)>) {
@@ -407,6 +481,7 @@ impl State {
                 turns.extend(session.queue);
             }
             self.rejected.remove(key);
+            self.meta.remove(key);
             if let Some(hooks) = self.end_hooks.remove(key) {
                 self.ended.extend(hooks);
             }
@@ -742,6 +817,45 @@ impl SessionManager {
         if let Some((key, kinds)) = kinds {
             state.permission_kinds.insert(key, kinds);
         }
+        // Session metadata for the live session list. Keyed by connection and
+        // session, so an event of one session never touches another.
+        match event {
+            AgentEvent::SessionInfo {
+                session_id, title, ..
+            } if title.is_some() => {
+                state
+                    .meta
+                    .entry(SessionKey::new(connection_id, session_id.clone()))
+                    .or_default()
+                    .title = title.clone();
+            }
+            AgentEvent::CurrentMode {
+                session_id,
+                mode_id,
+            } => {
+                state
+                    .meta
+                    .entry(SessionKey::new(connection_id, session_id.clone()))
+                    .or_default()
+                    .mode = Some(mode_id.clone());
+            }
+            AgentEvent::Config {
+                session_id,
+                options,
+            } => {
+                if let Some(model) = options
+                    .iter()
+                    .find(|o| o.category.as_deref() == Some("model") || o.id == "model")
+                {
+                    state
+                        .meta
+                        .entry(SessionKey::new(connection_id, session_id.clone()))
+                        .or_default()
+                        .model = Some(model.current_value.clone());
+                }
+            }
+            _ => {}
+        }
         // Per-turn runtime state: the tool calls still open and whether the
         // turn in flight already ended.
         match event {
@@ -801,6 +915,7 @@ impl SessionManager {
                 return;
             };
             connection.open = false;
+            state.forget_connection_meta(connection_id);
             state.pending.retain(|(id, _), _| id != connection_id);
             state
                 .permission_kinds
@@ -839,6 +954,7 @@ impl SessionManager {
                 .collect();
             let tree = state.tree(&roots);
             let (turns, stops) = state.detach(&tree);
+            state.forget_connection_meta(connection_id);
             state.pending.retain(|(id, _), _| id != connection_id);
             state
                 .permission_kinds
@@ -919,7 +1035,13 @@ impl SessionManager {
             };
             (service, depth)
         };
-        let session_id = service.new_session_with(mcp_servers).await?;
+        let session_id = if parent.is_some() {
+            // Delegated children never get servers, and stay out of the
+            // agent's own history where it allows that.
+            service.new_child_session().await?
+        } else {
+            service.new_session_with(mcp_servers).await?
+        };
         let key = SessionKey::new(connection_id, session_id);
         let is_child = parent.is_some();
         let registered = {
@@ -937,6 +1059,15 @@ impl SessionManager {
         };
         if registered {
             self.publish(connection_id);
+        }
+        if is_child {
+            // Recorded before anything else sees the id, so the child is never
+            // a History row of its own and can be ended later (ADR 0003).
+            let agent = self
+                .connection(connection_id)
+                .map(|c| c.agent_name)
+                .unwrap_or_default();
+            crate::delegated::record_delegated_session(&agent, &key.session_id);
         }
         if registered && is_child {
             service.mark_delegated(&key.session_id);
@@ -983,6 +1114,29 @@ impl SessionManager {
             .iter()
             .map(|(key, session)| state.info(key, session))
             .collect()
+    }
+
+    /// Every session the manager tracks (user leads, delegated children and
+    /// sessions adopted after a load), sorted by connection then session id.
+    /// Health check sessions are never registered, so they never appear.
+    pub fn live_sessions(&self) -> Vec<LiveSession> {
+        let state = self.state();
+        let mut found: Vec<LiveSession> = state
+            .sessions
+            .iter()
+            .map(|(key, session)| state.live(key, session))
+            .collect();
+        found.sort_by(|a, b| {
+            (&a.key.connection_id, &a.key.session_id)
+                .cmp(&(&b.key.connection_id, &b.key.session_id))
+        });
+        found
+    }
+
+    /// One live session, `None` when the manager does not track it.
+    pub fn live_session(&self, key: &SessionKey) -> Option<LiveSession> {
+        let state = self.state();
+        state.sessions.get(key).map(|s| state.live(key, s))
     }
 
     /// Requests from any connection that wait for the user.
@@ -1362,6 +1516,38 @@ impl SessionManager {
             .respond_elicitation(request_id, action, content_json)
     }
 
+    /// The user's answer to an elicitation, addressed by session. The
+    /// request must be pending on that connection and, when the agent tied it
+    /// to a session, on that session, so an answer meant for one thread can
+    /// never reach another.
+    pub fn respond_elicitation_for(
+        &self,
+        key: &SessionKey,
+        request_id: String,
+        action: String,
+        content_json: Option<String>,
+    ) -> Result<(), String> {
+        let service = {
+            let state = self.state();
+            let pending = state
+                .pending
+                .get(&(key.connection_id.clone(), request_id.clone()))
+                .filter(|p| p.kind == PendingKind::Elicitation)
+                .ok_or("Elicitation request is no longer pending")?;
+            if pending
+                .session_id
+                .as_deref()
+                .is_some_and(|session| session != key.session_id)
+            {
+                return Err("Elicitation belongs to a different session".into());
+            }
+            state
+                .service(&key.connection_id)
+                .ok_or("Unknown or disconnected connection")?
+        };
+        service.respond_elicitation(request_id, action, content_json)
+    }
+
     /// The handle an agent session gets for delegation. It can only reach
     /// sessions below `caller`.
     pub fn agent_control(&self, caller: SessionKey) -> Result<AgentControl, String> {
@@ -1389,6 +1575,12 @@ pub struct AgentControl {
 impl AgentControl {
     pub fn caller(&self) -> &SessionKey {
         &self.caller
+    }
+
+    /// The manager, for the tool server ending its own recorded children
+    /// after the lead is gone. Not public: agents never get it.
+    pub(crate) fn manager(&self) -> &SessionManager {
+        &self.manager
     }
 
     fn below(&self, target: &SessionKey) -> Result<(), String> {

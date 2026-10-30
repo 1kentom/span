@@ -1,4 +1,4 @@
-import type { GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
+import type { ExplorerLegacyPreferences_Deserialize, ExplorerPreferenceMigration_Serialize, GitContext, GitStatus, GitDiff, GitDiffSide, GitHistoryPage, GitHistoryQuery, GitCommitResult } from '../bindings';
 import type { RunConfiguration_Serialize as RunConfiguration, RunCatalog_Serialize as RunCatalog, RunInfo_Serialize as RunInfo, RunContext_Serialize as RunContext, RunOutput, RunEvent_Deserialize as RunEvent, RunApprovalRequest, CurrentFileRun_Serialize as CurrentFileRun } from '../bindings';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Channel } from '@tauri-apps/api/core';
@@ -16,7 +16,7 @@ import type { HubPort } from './hub-port';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
 import type { AgentHealth_Serialize as AgentHealth, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
-import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
+import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileProbe, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const previewNotice = 'Browser preview, sample files are held in memory. Open the desktop app for native folders, saving and agents.';
@@ -142,11 +142,18 @@ function previewBuffer(path: string): BufferSnapshot {
   return { ...buffer };
 }
 
+/** The browser fixture has no repository ignore rules; hidden-file settings still
+ * exercise the same listing, finder and search preference in the preview. */
+function previewFilePaths(): string[] {
+  const showHidden = previewSettings.get().explorer?.showHiddenFiles ?? true;
+  return Object.keys(fixture).filter(path => showHidden || !path.split('/').some(part => part.startsWith('.'))).sort();
+}
+
 function previewEntries(path: string): FileEntry[] {
   const prefix = path.replace(/^\/preview\/intellij\/?/, '').replace(/\/$/, '');
   const directory = prefix ? `${prefix}/` : '';
   const entries = new Map<string, FileEntry>();
-  for (const file of Object.keys(fixture)) {
+  for (const file of previewFilePaths()) {
     if (!file.startsWith(directory)) continue;
     const relative = file.slice(directory.length);
     const name = relative.split('/')[0];
@@ -272,15 +279,27 @@ export const api = {
     return isDesktop ? commands.listDirectory(path) : previewEntries(path);
   },
   async listFiles(): Promise<FileEntry[]> {
-    return isDesktop ? commands.listFiles() : Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
+    return isDesktop ? commands.listFiles() : previewFilePaths().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
   },
   async fileIndexStatus(): Promise<FileIndexStatus | null> {
     if (isDesktop) return commands.fileIndexStatus();
-    return { workspaceRoot: previewWorkspace.root, generation: 1, status: 'ready', scannedEntries: Object.keys(fixture).length, indexedFiles: Object.keys(fixture).length, errorCount: 0, lastError: null, watcherReady: false, watcherError: null };
+    return { workspaceRoot: previewWorkspace.root, generation: 1, status: 'ready', scannedEntries: previewFilePaths().length, indexedFiles: previewFilePaths().length, errorCount: 0, lastError: null, watcherReady: false, watcherError: null };
+  },
+  async checkExternalFiles(checks: import('../bindings').ExternalFileCheck[], expectedWorkspaceRoot: string, sinceRevision: number | null): Promise<import('../bindings').ExternalFilesUpdate> {
+    if (!isDesktop) nativeRequired('Checking external file changes');
+    return commands.checkExternalFiles(checks, expectedWorkspaceRoot, sinceRevision);
+  },
+  async resolveExternalFile(path: string, expectedRevision: number, reviewedDiskToken: string, resolution: import('../bindings').ExternalFileResolution, expectedWorkspaceRoot: string): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Resolving external file changes');
+    return commands.resolveExternalFile(path, expectedRevision, reviewedDiskToken, resolution, expectedWorkspaceRoot);
+  },
+  async abandonExternalFile(path: string, expectedRevision: number, expectedWorkspaceRoot: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Discarding an unavailable editor buffer');
+    await commands.abandonExternalFile(path, expectedRevision, expectedWorkspaceRoot);
   },
   async queryFile(query: string, limit = 100): Promise<FileIndexQueryResponse> {
     if (isDesktop) return commands.queryFile(query, Math.max(1, Math.min(100, limit)));
-    const files = Object.keys(fixture).sort().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
+    const files = previewFilePaths().map(path => ({ path, name: path.split('/').pop() ?? path, isDir: false }));
     return { workspaceRoot: previewWorkspace.root, generation: 1, requestId: 0, results: fileResults(files, query).slice(0, limit).map(file => ({ path: file.path, score: 0 })) };
   },
   async openBuffer(path: string): Promise<BufferSnapshot> {
@@ -289,6 +308,27 @@ export const api = {
   /** Reads a file for a preview. Opens no buffer and never starts a language server. */
   async peekBuffer(path: string): Promise<BufferSnapshot> {
     return isDesktop ? commands.peekBuffer(path) : previewBuffer(path);
+  },
+  /** Name, size and text or binary kind of a workspace file. Browser preview files are all text. */
+  async probeFile(path: string): Promise<FileProbe> {
+    if (isDesktop) return commands.probeFile(path);
+    return { path, name: path.split('/').pop() || path, size: 0, kind: 'text' };
+  },
+  /** Raw bytes of a workspace file for the file viewer. Refused above `maxBytes`, never truncated. */
+  async readFileBytes(path: string, maxBytes: number): Promise<Uint8Array> {
+    if (!isDesktop) nativeRequired('Reading binary files');
+    const encoded = await commands.readFileBytes(path, Math.max(0, Math.min(maxBytes, 0xffffffff)));
+    return Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+  },
+  /** Opens a workspace file with the system default app. Rust refuses programs and scripts. */
+  async openFileWithSystem(path: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Opening files with the default app');
+    await commands.openFileWithSystem(path);
+  },
+  /** Shows a workspace file in Finder, Explorer or the file manager. */
+  async revealFile(path: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Revealing files');
+    await commands.revealFile(path);
   },
   /** The last editor showing `path` closed: language servers may drop the document. */
   async releaseBuffer(path: string): Promise<void> {
@@ -326,7 +366,7 @@ export const api = {
     if (isDesktop) return commands.search({ text: query, isRegex: false, caseSensitive: false, maxResults: 1000 });
     if (!query) return [];
     const results: SearchMatch[] = [];
-    for (const path of Object.keys(fixture)) {
+    for (const path of previewFilePaths()) {
       previewBuffer(path).text.split('\n').forEach((text, index) => {
         const column = text.toLowerCase().indexOf(query.toLowerCase());
         if (column >= 0) results.push({ path, line: index + 1, column: column + 1, text });
@@ -353,6 +393,10 @@ export const api = {
       }),
       cancel: async () => { cancelled = true; },
     };
+  },
+  async migrateExplorerPreferences(expectedWorkspaceRoot: string, legacy: ExplorerLegacyPreferences_Deserialize): Promise<ExplorerPreferenceMigration_Serialize> {
+    if (!isDesktop) nativeRequired('Migrating Explorer preferences');
+    return commands.migrateExplorerPreferences(expectedWorkspaceRoot, legacy);
   },
   async getSettingsForScope(scope: SettingsScope): Promise<Settings> {
     return isDesktop ? commands.getSettingsForScope(scope) : previewSettings.get(scope);
@@ -452,9 +496,9 @@ export const api = {
     if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) throw new Error('Only http, https and mailto links can open externally.');
     window.open(parsed.href, '_blank', 'noopener,noreferrer');
   },
-  async readImage(path: string): Promise<ImageSource> {
+  async readImage(path: string, expectedWorkspaceRoot?: string): Promise<ImageSource> {
     if (!isDesktop) { const image = previewAssetImage(path); if (image) return image; nativeRequired('Loading workspace images'); }
-    return commands.readImage(path);
+    return commands.readImage(path, expectedWorkspaceRoot ?? null);
   },
   /** Writes an attachment into the workspace without overwriting. Returns the workspace-relative path. */
   async saveAttachment(dir: string, fileName: string, dataBase64: string): Promise<SavedAttachment> {
@@ -718,6 +762,7 @@ export const lspPort: LspPort = {
   onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : hubPreview!.onState(listener),
   onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : hubPreview!.onInstallProgress(listener),
   onError: listener => isDesktop ? events.languageServerError.listen(event => listener(event.payload)) : noListener(),
+  onWatchRecovery: listener => isDesktop ? events.languageServerWatchRecovery.listen(event => listener(event.payload)) : noListener(),
 };
 
 /** Sign in with a method whose `input` is `apiKey` or `gateway`. The secret goes to the agent only; Span does not log or store it. Returns the session id. */
@@ -754,6 +799,80 @@ export async function agentTaskTranscript(taskId: string): Promise<import('../bi
   if (!isDesktop) nativeRequired('Opening a delegated session');
   return commands.agentTaskTranscript(taskId);
 }
+
+type SessionKey = import('../bindings').SessionKey;
+type LiveSession = import('../bindings').LiveSession_Serialize;
+type AgentKeyedEvent = import('../bindings').AgentKeyedEvent_Serialize;
+
+/** Rethrows a typed prompt refusal as an Error whose `prompt` field is the `PromptError`, like `api.agentPrompt`. */
+function promptFailure(cause: unknown): never {
+  if (cause && typeof cause === 'object' && 'kind' in cause && 'message' in cause) throw Object.assign(new Error(String((cause as PromptError).message)), { prompt: cause as PromptError });
+  throw cause;
+}
+
+/**
+ * Keyed agent sessions (ADR 0011 phase 1). Every call names its session by `SessionKey` (connection id plus session id),
+ * so several live threads can run at once. The sidebar keeps using the unkeyed `api.agent*` calls, which the backend
+ * resolves to the focused session; `focused()` returns that key.
+ */
+export const agentSessions = {
+  /** Open a new session on `connectionId`, on a process for `command`, or on the focused connection. Never closes another session. */
+  async open(options: { connectionId?: string; command?: AgentCommand; focus?: boolean } = {}): Promise<SessionKey> {
+    if (!isDesktop) nativeRequired('Opening agent sessions');
+    return commands.agentOpenSession(options.connectionId ?? null, options.command ?? null, options.focus ?? false);
+  },
+  /** Every live session with state, agent, title, model, mode, health and parent key. */
+  async live(): Promise<LiveSession[]> {
+    return isDesktop ? commands.agentLiveSessions() : [];
+  },
+  /** The session the unkeyed sidebar commands act on, null without one. */
+  async focused(): Promise<SessionKey | null> {
+    return isDesktop ? commands.agentFocusedSession() : null;
+  },
+  async prompt(key: SessionKey, text: string, attachments: PromptAttachment[] = []): Promise<void> {
+    if (!isDesktop) nativeRequired('Sending agent prompts');
+    try {
+      await commands.agentPromptKeyed(key, text, attachments.length ? attachments : null);
+    } catch (cause) {
+      promptFailure(cause);
+    }
+  },
+  async cancel(key: SessionKey): Promise<void> {
+    if (!isDesktop) nativeRequired('Cancelling agents');
+    await commands.agentCancelKeyed(key);
+  },
+  /** The user's own answer only. */
+  async permission(key: SessionKey, requestId: string, optionId: string | null): Promise<void> {
+    if (!isDesktop) nativeRequired('Responding to agent permissions');
+    await commands.agentPermissionKeyed(key, requestId, optionId);
+  },
+  /** The user's own answer only. */
+  async elicitation(key: SessionKey, requestId: string, action: 'accept' | 'decline' | 'cancel', contentJson: string | null = null): Promise<void> {
+    if (!isDesktop) nativeRequired('Answering agent requests');
+    await commands.agentElicitationKeyed(key, requestId, action, contentJson);
+  },
+  async setConfig(key: SessionKey, configId: string, value: string): Promise<void> {
+    if (!isDesktop) nativeRequired('Changing agent options');
+    await commands.agentSetConfigKeyed(key, configId, value);
+  },
+  async review(key: SessionKey, proposalId: string, accept: boolean, expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Reviewing agent edits');
+    return commands.agentReviewKeyed(key, proposalId, accept, expectedRevision);
+  },
+  async reviewHunks(key: SessionKey, proposalId: string, acceptedHunkIds: string[], expectedRevision: number): Promise<BufferSnapshot> {
+    if (!isDesktop) nativeRequired('Reviewing agent edit hunks');
+    return commands.agentReviewHunksKeyed(key, proposalId, acceptedHunkIds, expectedRevision);
+  },
+  /** Close a session; its delegated children close with it. */
+  async close(key: SessionKey): Promise<void> {
+    if (!isDesktop) nativeRequired('Closing a chat');
+    await commands.agentCloseKeyed(key);
+  },
+  /** Every agent event of every connection, tagged with its session key (null for connection level events). */
+  async onEvent(listener: (event: AgentKeyedEvent) => void): Promise<() => void> {
+    return isDesktop ? events.agentKeyedEvent.listen(event => listener(event.payload)) : () => undefined;
+  },
+};
 
 /** Preview only: the browser answers navigation requests from a labelled text-scanning fixture, see navigation-preview.ts. */
 const previewNavigation = createPreviewNavigationPort(() => Object.fromEntries(Object.keys(fixture).map(path => { const buffer = buffers.get(path); return [path, { text: buffer?.text ?? fixture[path], revision: buffer?.revision ?? 0 }]; })));
@@ -795,6 +914,26 @@ export async function appUpdateCheck(): Promise<import('../bindings').AppUpdate_
 /** Session history metadata of the active workspace (ADR 0005), most recently active first. Browser preview has no history and returns an empty list. */
 export async function sessionMetaList(): Promise<import('../bindings').SessionMeta_Serialize[]> {
   return isDesktop ? commands.sessionMetaList() : [];
+}
+
+/** Usage totals by day, agent and model over every folder's sessions (ADR 0012). Browser preview records no usage and returns `undefined`. */
+export async function usageSummary(range: import('../bindings').UsageRange_Deserialize): Promise<import('../bindings').UsageSummary_Serialize | undefined> {
+  return isDesktop ? commands.usageSummary(range) : undefined;
+}
+
+/** Sessions with usage in the range, most recently active first (ADR 0012). Empty in the browser preview. */
+export async function usageSessions(range: import('../bindings').UsageRange_Deserialize): Promise<import('../bindings').SessionUsageRow_Serialize[]> {
+  return isDesktop ? commands.usageSessions(range) : [];
+}
+
+/** Starts a background scan of Claude Code's and Codex's local logs when `agents.usage.importLocalLogs` is on (ADR 0012). Returns at once. */
+export async function usageImportScan(): Promise<import('../bindings').UsageImportStatus_Serialize | undefined> {
+  return isDesktop ? commands.usageImportScan() : undefined;
+}
+
+/** The local log importer's state and the running scan's progress. */
+export async function usageImportStatus(): Promise<import('../bindings').UsageImportStatus_Serialize | undefined> {
+  return isDesktop ? commands.usageImportStatus() : undefined;
 }
 
 /** Merge a patch into one session's metadata: model and agent uses add up, counters and stop reason replace. Debouncing is the caller's job. */

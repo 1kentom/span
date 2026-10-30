@@ -6,6 +6,7 @@ import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { loadFenceLanguage } from "../editor/languages";
 import { describeMarkdownFence, type MarkdownRunRequest } from "../lib/markdown-fences";
 export type { MarkdownRunRequest } from "../lib/markdown-fences";
+import { enhanceTables, installTableRules } from "../lib/markdown-tables";
 import "../styles/markdown.css";
 
 export interface MarkdownPreviewProps {
@@ -106,6 +107,7 @@ markdown.renderer.rules.fence = (tokens, index, _options, env) => {
   const languageTitle = fence.language === "text" && fence.declared && !["text", "txt", "plaintext", "plain", "none"].includes(fence.declared) ? `Unsupported language: ${fence.declared}. Displayed as plain text.` : fence.label;
   return `<div class="markdown-code-block"><div class="markdown-code-header"><span class="markdown-code-language" title="${escape(languageTitle)}">${escape(fence.label)}</span><span class="markdown-code-status" role="status" aria-live="polite"></span><button type="button" class="markdown-code-action" data-markdown-copy aria-label="Copy code" title="Copy code"><span class="icon markdown-copy-icon" aria-hidden="true"></span></button><button type="button" class="markdown-code-action" data-markdown-run aria-label="${action}" title="${escape(tooltip)}"${canRun ? "" : " disabled"}><span class="icon ${fence.action === "send" ? "markdown-terminal-icon" : "markdown-run-icon"}" aria-hidden="true"></span></button></div><pre class="markdown-code"><code data-language="${fence.language}" data-fence-info="${escape(info)}" data-source-line="${(token.map?.[0] ?? 0) + 2}">${escape(token.content)}</code></pre></div>\n`;
 };
+installTableRules(markdown);
 markdown.renderer.rules.task_checkbox = (tokens, index) => `<input type="checkbox" disabled${tokens[index].meta?.checked ? " checked" : ""} aria-label="${tokens[index].meta?.checked ? "Completed task" : "Incomplete task"}"> `;
 
 /** Parse once, then render independent top-level blocks only as they approach the viewport. */
@@ -225,6 +227,7 @@ function PreviewBlock(props: { block: MarkdownBlock; context: RenderContext; ind
   createEffect(() => {
     html();
     queueMicrotask(() => {
+      enhanceTables(host);
       for (const code of host.querySelectorAll<HTMLElement>("code[data-language]")) void highlightFence(code).catch(() => { /* Plain code remains readable if a language chunk cannot load. */ });
       if (props.loadImage) for (const image of host.querySelectorAll<HTMLElement>("[data-markdown-local-image]")) void loadLocalImage(image, props.loadImage);
     });

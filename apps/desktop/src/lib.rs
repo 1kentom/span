@@ -8,8 +8,12 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
+mod checkpoints;
 mod cli;
+mod clipboard_files;
 mod events;
+mod external_files;
+mod file_import;
 mod file_index;
 mod git;
 #[doc(hidden)]
@@ -24,7 +28,10 @@ pub mod session_meta;
 mod startup;
 mod terminals;
 mod uploads;
+mod usage;
+mod watched_paths;
 mod window;
+mod workspace_files;
 
 /// The authoritative workspace is only accessed by blocking workers.
 type FormatterJobs =
@@ -36,7 +43,8 @@ pub struct DesktopState {
     pub(crate) terminals: terminals::TerminalState,
     pub(crate) runs: runs::RunService,
     pub(crate) run_approvals: run_approval::RunApprovalState,
-    pub agent: Arc<Mutex<Option<agents::ActiveAgent>>>,
+    /// The focused agent session and the leads opened by key (ADR 0011).
+    pub agent: Arc<Mutex<agents::LiveAgents>>,
     pub user_settings: Arc<Mutex<Option<CoreWorkspace>>>,
     /// Every agent connection. The single agent commands use its primary one.
     pub sessions: span_acp::SessionManager,
@@ -50,12 +58,18 @@ pub struct DesktopState {
     pub connection_gate: Arc<tokio::sync::Mutex<()>>,
     pub session_gate: Arc<tokio::sync::Mutex<()>>,
     pub startup_requests: Arc<Mutex<std::collections::VecDeque<cli::StartupRequest>>>,
+    /// Canonical paths of the latest native drop, the only ones `read_dropped_file` may read.
+    pub dropped_paths: Arc<Mutex<Vec<PathBuf>>>,
+    /// Canonical file paths of the latest OS clipboard read, the only other sources `import_paths` accepts.
+    pub clipboard_paths: Arc<Mutex<Vec<PathBuf>>>,
+    pub(crate) import_job: file_import::ImportJob,
     pub syntax: Arc<Mutex<SyntaxEngine>>,
     pub searches: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     pub formatter_jobs: FormatterJobs,
     pub file_index: file_index::FileIndexRuntime,
     pub file_index_root: Arc<Mutex<Option<PathBuf>>>,
     pub(crate) git: git::GitAdapterState,
+    pub(crate) checkpoints: checkpoints::CheckpointState,
 }
 
 async fn with_workspace<T, F>(state: DesktopState, operation: F) -> Result<T, String>
@@ -73,7 +87,13 @@ where
         let mut workspace = workspace
             .lock()
             .map_err(|_| "Workspace state is unavailable".to_owned())?;
-        operation(&mut workspace).map_err(|error| error.to_string())
+        operation(&mut workspace).map_err(|error| {
+            // Users see one plain sentence; the technical cause goes to the log only.
+            if let span_core::CoreError::NotText { path, detail } = &error {
+                eprintln!("Not a text file: {path}: {detail}");
+            }
+            error.to_string()
+        })
     })
     .await
     .map_err(|error| format!("Workspace task failed: {error}"))?
@@ -160,9 +180,21 @@ async fn open_workspace(
     })
     .await
     .map_err(|error| format!("Open folder task failed: {error}"))??;
+    let watcher_lsp = Arc::clone(&lsp);
     state
         .file_index
-        .activate(PathBuf::from(&result.root))
+        .set_file_change_sink(Arc::new(move |batch| {
+            watcher_lsp.watched_files_changed(batch);
+        }));
+    state
+        .file_index
+        .activate_with_visibility(
+            PathBuf::from(&result.root),
+            span_file_index::ScanVisibility {
+                show_hidden_files: settings.explorer.show_hidden_files,
+                show_ignored_files: settings.explorer.show_ignored_files,
+            },
+        )
         .await?;
     state.run_approvals.cancel_all();
     state.runs.shutdown().await?;
@@ -789,6 +821,24 @@ async fn get_settings_for_scope(
 
 #[tauri::command]
 #[specta::specta]
+async fn migrate_explorer_preferences(
+    state: State<'_, DesktopState>,
+    expected_workspace_root: String,
+    legacy: span_core::ExplorerLegacyPreferences,
+) -> Result<span_core::ExplorerPreferenceMigration, String> {
+    with_workspace(state.inner().clone(), move |workspace| {
+        if workspace.workspace().root != expected_workspace_root {
+            return Err(span_core::CoreError::Settings(
+                "The workspace changed before Explorer preferences could be migrated".into(),
+            ));
+        }
+        workspace.migrate_explorer_preferences(legacy)
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn get_settings_jsonc_for_scope(
     state: State<'_, DesktopState>,
     scope: SettingsScope,
@@ -923,14 +973,25 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::LanguageServerWorkProgress,
             language_servers::DiagnosticsPublished,
             language_servers::LanguageServerError,
+            language_servers::LanguageServerWatchRecovery,
             language_servers::WorkspaceTrustChanged,
             startup::StartupRequestError,
             agents::AgentSessionStatesChanged,
-            agents::AgentHealthChanged
+            agents::AgentHealthChanged,
+            agents::AgentKeyedEvent,
+            checkpoints::CheckpointsChanged
         ])
         .commands(collect_commands![
             open_workspace,
             git::git_context,
+            checkpoints::checkpoint_status,
+            checkpoints::checkpoint_enable,
+            checkpoints::checkpoint_list,
+            checkpoints::checkpoint_turn_changes,
+            checkpoints::checkpoint_revert_hunks,
+            checkpoints::checkpoint_revert_files,
+            checkpoints::checkpoint_restore,
+            checkpoints::checkpoint_undo_restore,
             git::git_enable,
             git::git_status,
             git::git_diff,
@@ -969,6 +1030,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             list_directory,
             list_files,
             file_index::file_index_status,
+            external_files::check_external_files,
+            external_files::resolve_external_file,
+            external_files::abandon_external_file,
             file_index::query_file,
             file_index::reconcile_file_index,
             new_file,
@@ -978,6 +1042,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             trash_path,
             open_buffer,
             peek_buffer,
+            workspace_files::probe_file,
+            workspace_files::read_file_bytes,
+            workspace_files::open_file_with_system,
+            workspace_files::reveal_file,
             buffer_released,
             edit_buffer_delta,
             save_buffer,
@@ -988,6 +1056,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             cancel_search,
             get_settings,
             get_settings_for_scope,
+            migrate_explorer_preferences,
             open_settings_buffer,
             edit_settings_buffer,
             save_settings_buffer,
@@ -1012,6 +1081,14 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             services::write_clipboard,
             startup::take_startup_requests,
             startup::enqueue_dropped_paths,
+            startup::dropped_path_info,
+            startup::read_dropped_file,
+            file_import::import_paths,
+            file_import::import_progress,
+            file_import::cancel_import,
+            clipboard_files::clipboard_files,
+            clipboard_files::set_clipboard_files,
+            clipboard_files::paste_clipboard_file,
             services::open_external,
             services::read_image,
             menu::sync_native_menu,
@@ -1022,6 +1099,11 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             session_meta::session_meta_set_archived,
             session_meta::session_meta_delete,
             session_meta::session_export_markdown,
+            usage::usage_summary,
+            usage::usage_sessions,
+            usage::usage_prices,
+            usage::usage_import_scan,
+            usage::usage_import_status,
             agents::agent_registry,
             agents::agent_installed,
             agents::agent_install,
@@ -1078,6 +1160,17 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             language_servers::lsp_status,
             agents::agent_delegation_status,
             agents::agent_child_permission,
+            agents::agent_open_session,
+            agents::agent_live_sessions,
+            agents::agent_focused_session,
+            agents::agent_prompt_keyed,
+            agents::agent_cancel_keyed,
+            agents::agent_permission_keyed,
+            agents::agent_elicitation_keyed,
+            agents::agent_set_config_keyed,
+            agents::agent_review_keyed,
+            agents::agent_review_hunks_keyed,
+            agents::agent_close_keyed,
             agents::agent_cancel_task,
             agents::agent_task_transcript,
             agents::agent_warm_start,
@@ -1147,6 +1240,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .setup(move |app| {
             builder.mount_events(app);
             events::mark_mounted(app);
+            app.state::<DesktopState>()
+                .checkpoints
+                .set_app(app.handle().clone());
             let cache = app.path().app_cache_dir()?.join("language-servers");
             let lsp = language_servers::production(
                 cache,
@@ -1156,7 +1252,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 lsp.use_trust_store(Arc::new(store));
             }
             app.manage(lsp);
+            agents::load_delegated_ledger(app.handle());
             agents::watch_session_states(app.handle());
+            agents::watch_keyed_events(app.handle());
             menu::install(app.handle())?;
             // The window starts hidden; the frontend shows it once the session has rendered (its
             // own cap is 2s after the first render). This only catches a frontend that never
@@ -1165,12 +1263,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             window::log_window_created();
             if let Some(window) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
+                // Native drops only record their paths. The frontend routes them by where they landed: the
+                // agent panel attaches them, the editor opens files inside the project, a lone folder asks to
+                // open as a project. A dropped file never switches the project to its parent folder.
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
                         paths, ..
                     }) = event
                     {
-                        startup::receive_drop(handle.clone(), paths.clone());
+                        startup::record_drop(&handle.state::<DesktopState>(), paths);
                     }
                 });
             }
@@ -1191,6 +1292,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let state = app.state::<DesktopState>();
             // Before the processes end: close hidden check sessions where the agent can.
             agents::stop_health(&state);
+            // And delegated children the leads still hold (ADR 0003).
+            agents::end_delegated(&state);
             state.run_approvals.cancel_all();
             if let Err(error) = tauri::async_runtime::block_on(state.runs.shutdown()) {
                 eprintln!("Could not stop run processes: {error}");

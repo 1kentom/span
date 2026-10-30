@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentHealth } from "./agent-health";
-import { bareAgentId, friendlyAgentName, liveStateText, liveSummary, liveTone, orderByUrgency, resolveInstalled, stackOf, type LiveAgent, type LiveState } from "./live-agents";
+import type { DelegationTaskState } from "./agent-delegation";
+import { bareAgentId, friendlyAgentName, liveAgentsOf, liveStateText, liveSummary, liveTone, orderByUrgency, resolveInstalled, stackOf, type LiveAgent, type LiveState } from "./live-agents";
 
 const agent = (name: string, state: LiveState, extra: Partial<LiveAgent> = {}): LiveAgent => ({ key: name.toLowerCase(), name, state, ...extra });
 const health = (state: AgentHealth["state"]): AgentHealth => ({ agentId: "x", state, latencyMs: null, checkedAtMs: 0, detail: null });
@@ -66,6 +67,23 @@ describe("states, urgency and summary", () => {
     expect(liveSummary([agent("A", "Starting"), agent("B", "Idle")])).toEqual({ tone: "starting", text: "1 starting" });
     expect(liveSummary([agent("A", "Idle"), agent("B", "Done")])).toEqual({ tone: "idle", text: "All idle" });
     expect(liveSummary([agent("A", "Done"), agent("B", "Done")])).toEqual({ tone: "done", text: "All done" });
+  });
+});
+
+describe("token budget overruns", () => {
+  const child = { connectionId: "c2", sessionId: "s2" };
+  const task = (extra: Partial<DelegationTaskState>): DelegationTaskState => ({ taskId: "t1", child, agentName: "Claude Agent", status: "completed", ...extra }) as DelegationTaskState;
+  it("keeps a completed task that went over its budget Done, with the note in the tooltip and out of the failed count", () => {
+    const over = task({ detail: "Used about 1500 tokens, over the 1000 token budget", resultSummary: "Hi" });
+    const agents = liveAgentsOf({ lead: { name: "Codex", state: "Idle" }, tasks: [over], health: [] });
+    expect(agents[1]).toMatchObject({ state: "Done", detail: "Used about 1500 tokens, over the 1000 token budget. Hi" });
+    expect(liveSummary(agents)).toEqual({ tone: "idle", text: "All idle" });
+  });
+  it("still counts a task that was stopped for really exceeding its budget as failed", () => {
+    const stopped = task({ status: "failed", reason: "budget_exceeded", detail: "used about 1500 tokens since it started, over the 1000 token budget" });
+    const agents = liveAgentsOf({ lead: { name: "Codex", state: "Idle" }, tasks: [stopped], health: [] });
+    expect(agents[1]).toMatchObject({ state: "Failed", detail: "used about 1500 tokens since it started, over the 1000 token budget" });
+    expect(liveSummary(agents)).toEqual({ tone: "error", text: "1 failed" });
   });
 });
 

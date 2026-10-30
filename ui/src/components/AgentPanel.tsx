@@ -1,38 +1,33 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { api, isDesktop } from "../lib/client";
-import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentPanelProps } from "../lib/agent-controller";
+import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentController, type AgentPanelProps } from "../lib/agent-controller";
 import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
-import { isNearBottom, relativeTime, pillVisible } from "../lib/agent-feed";
-import { hintText } from "../lib/agent-hint-text";
-import type { AgentHint } from "../bindings";
-import { buildAgentCatalog, curatedAgent } from "../lib/acp-catalog";
-import { capabilityChips, classifyFailure, configViews, leaf } from "../lib/agent-view";
-import { fallbackModels } from "../lib/agent-options";
-import { cleanAgentText, signInCopy } from "../lib/sign-in-copy";
+import { isNativeSubagent, setShowSubagentSessions, showSubagentSessions } from "../lib/subagent-sessions";
+import { relativeTime, pillVisible } from "../lib/agent-feed";
+import { classifyFailure, leaf } from "../lib/agent-view";
 import { AnimatedLogo } from "./AnimatedLogo";
 import { BrandIcon } from "./BrandIcon";
 import { Icon } from "./Icon";
 import { AttachmentViewer, DropOverlay, attachmentBlockReason, type AttachmentTabView } from "./attachments";
 import type { Attachment } from "../lib/attachments";
-import { AgentCatalog, catalogPreset } from "./agent/AgentCatalog";
+import { listenNativeDrops, pointInside } from "../lib/native-drop";
 import { AgentComposer } from "./agent/AgentComposer";
+import { AgentSetup, type SetupView } from "./agent/AgentSetup";
 import { AgentFeed } from "./agent/AgentFeed";
 import { ErrorCard, OfflineBar } from "./agent/Banners";
 import { LimitCard } from "./agent/LimitCard";
 import { isLimitKind } from "../lib/agent-errors";
 import { otherFreeModels, rankAlternatives } from "../lib/agent-alternatives";
 import { modelCost } from "../lib/model-cost";
-import { ConnectingSteps, ReadyCard } from "./agent/ConnectFlow";
-import { ConnectScreen } from "./agent/ConnectScreen";
 import { EditorToast, OpenRefusal } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
 import { HistoryList } from "./agent/HistoryList";
 import { ENTER_KEY } from "./agent/KeyGlyph";
-import { HintLine, SignIn } from "./agent/SignIn";
 import type { ActionView, KeyHint } from "./agent/types";
 import { modalOpen } from "./agent/util";
-import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } from "../lib/updates";
+import { createCheckpoints } from "../lib/checkpoints";
+import { CheckpointChanges, CheckpointTimeline, CheckpointUndoToast } from "./agents-page/Checkpoints";
 import "../styles/agent.css";
 
 const KEYS: KeyHint[] = [
@@ -41,8 +36,14 @@ const KEYS: KeyHint[] = [
   { keys: ["/"], label: "Commands", where: "Chat" },
 ];
 
-export function AgentPanel(props: AgentPanelProps) {
-  const a = createAgentController(props);
+/**
+ * `controller` is the app's shared agent controller, so the Agents page and this sidebar show the same threads
+ * (ADR 0011 b). Without it the panel creates its own, as tests and standalone uses do.
+ */
+export function AgentPanel(props: AgentPanelProps & { controller?: AgentController }) {
+  const a = props.controller ?? createAgentController(props);
+  /** Turn checkpoints of the open chat (ADR 0013). Nothing renders for folders without them. */
+  const checkpoints = isDesktop ? createCheckpoints(() => a.state().sessionId ?? undefined) : undefined;
   const [query, setQuery] = createSignal("");
   /** A curated agent's local command, placed in the custom ACP row for the user to confirm. */
   const [customDraft, setCustomDraft] = createSignal<{ command: string }>();
@@ -54,13 +55,6 @@ export function AgentPanel(props: AgentPanelProps) {
   const label = () => agent()?.title || agent()?.name || a.agentName();
   const brand = () => ({ id: a.agentId() ?? agent()?.name, name: label() });
   const hasAgent = () => Boolean(a.agentId() || agent());
-  /** Other models for a refused prompt: only while this session's own turn was refused, so it can be sent again. */
-  const signInModels = createMemo(() => (a.canRetryModel() ? fallbackModels(configViews(a.state().config)) : []));
-  const signInText = () => {
-    const auth = a.state().auth;
-    const promptFailed = a.canRetryModel();
-    return signInCopy({ agent: label(), message: auth?.message ?? "", agentMessage: auth?.agentMessage, promptFailed, models: signInModels().length });
-  };
   /**
    * A workbench tab view of one attachment. Every field is a getter over live panel state, so the tab
    * follows a save (the item becomes a workspace file) and drops session actions once the message is gone.
@@ -85,7 +79,7 @@ export function AgentPanel(props: AgentPanelProps) {
         const target = message();
         if (inComposer() || !target) return undefined;
         return () => {
-          a.setPinned(false);
+          a.follow.detach();
           requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
         };
       },
@@ -200,6 +194,8 @@ export function AgentPanel(props: AgentPanelProps) {
           // A live chat Span holds can always be reopened: it is shown from memory, not loaded.
           locked: !a.state().canLoad && !a.rowStatus(session.sessionId),
           status: a.rowStatus(session.sessionId),
+          subagent: isNativeSubagent(session) || undefined,
+          subagents: a.subagentsFor(session.sessionId).map((child) => ({ id: child.sessionId, title: listedTitle(child.title) || "Untitled subagent" })),
         };
       });
   });
@@ -212,30 +208,27 @@ export function AgentPanel(props: AgentPanelProps) {
           .map((session) => ({ id: session.sessionId, title: session.title || "Untitled chat", time: relativeTime(session.updatedAt) }))
       : [],
   );
-  /** Methods that cannot run from Span and need nothing typed. Methods that take a key or gateway get a form instead. */
-  const unsupportedAuth = () => a.state().auth?.methods.filter((method) => !method.supported && !method.input) ?? [];
-  /** One method's hint line. Environment setup names the method, since several methods can need it. */
-  const methodHint = (method: { name: string; hint?: AgentHint | null }) => {
-    const line = hintText(method.hint);
-    return line && method.hint === "needsEnvironmentSetup" ? `${method.name} ${line}` : line;
-  };
-  /** Per-method hints that the header hint does not already say. The model-aware OpenCode hint already covers its login method. */
-  const methodHints = () => {
-    const header = a.state().auth?.hint;
-    const shown = hintText(header);
-    const covered = (method: { hint?: AgentHint | null }) => header === "runOpencodeAuthLoginOrSwitchModel" && method.hint === "runOpencodeAuthLogin";
-    return [...new Set(unsupportedAuth().flatMap((method) => (!covered(method) && methodHint(method) ? [methodHint(method)!] : [])))].filter((line) => line !== shown);
-  };
-  const unhinted = () => unsupportedAuth().filter((method) => !method.hint);
-  /** Local programs the curated list already connects through their known command, from the whole list rather than the searched one, so Known commands never repeats them. */
-  const catalogListedIds = () => buildAgentCatalog(a.registry(), a.installed()).filter((row) => catalogPreset(row, presetRows())).map((row) => row.definition.id);
-  const presetRows = () => a.presets().map((preset) => ({ id: preset.id, name: preset.name, description: preset.description, command: [preset.launch.command, ...preset.launch.args].join(" ") }));
   const openHistory = () => {
     a.setView(a.view() === "history" ? "session" : "history");
     if (a.view() === "history") void a.loadSessions();
   };
 
   let panel: HTMLElement | undefined;
+  /** True while files from Finder or Explorer hover the panel. Native drops never fire HTML drag events here. */
+  const [nativeOver, setNativeOver] = createSignal(false);
+  onMount(() => {
+    if (!isDesktop) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenNativeDrops((drop) => {
+      if (drop.kind === "leave") { setNativeOver(false); return; }
+      const inside = pointInside(panel, drop.point);
+      if (drop.kind === "hover") { setNativeOver(inside); return; }
+      setNativeOver(false);
+      if (inside) void a.attachDroppedPaths(drop.paths);
+    }).then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch(() => undefined);
+    onCleanup(() => { disposed = true; unlisten?.(); });
+  });
   onMount(() => {
     const keyboard = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === ".") {
@@ -278,12 +271,7 @@ export function AgentPanel(props: AgentPanelProps) {
   createEffect(() => {
     // Markdown and highlighting settle after the feed signal changes, so watch the real height.
     const element = feedElement();
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (a.pinned()) a.scrollToLatest();
-    });
-    observer.observe(element);
-    onCleanup(() => observer.disconnect());
+    if (element) onCleanup(a.follow.observe(element));
   });
 
   return (
@@ -390,10 +378,12 @@ export function AgentPanel(props: AgentPanelProps) {
       <div class="agent-feed-region">
       <div
         class="agent-content"
-        ref={(element) => (a.scrollers.content = element)}
+        ref={(element) => {
+          a.scrollers.content = element;
+          onCleanup(a.follow.attach(element));
+        }}
         onScroll={(event) => {
           if (a.view() === "history") return;
-          a.setPinned(isNearBottom(event.currentTarget));
           setAway(pillVisible(away(), event.currentTarget));
         }}
       >
@@ -421,7 +411,11 @@ export function AgentPanel(props: AgentPanelProps) {
                   onQuery={setQuery}
                   scope={a.sessionScope()}
                   onScope={a.setSessionScope}
-                  onOpen={(id) => void a.resumeChat(id)}
+                  onOpen={(id) => void (a.isSubagent(id) ? a.openSubagent(id) : a.resumeChat(id))}
+                  onOpenSubagent={a.state().canLoad ? (id) => void a.openSubagent(id) : undefined}
+                  showSubagents={showSubagentSessions()}
+                  onShowSubagents={setShowSubagentSessions}
+                  subagentCount={a.subagentCount()}
                   onRename={a.canRename() ? (id, title) => void a.renameChat(id, title) : undefined}
                   onFork={a.canFork() && a.state().canLoad ? (id) => void a.forkChat(id) : undefined}
                   onExport={a.canExport() ? (id) => void a.exportChat(id) : undefined}
@@ -448,124 +442,18 @@ export function AgentPanel(props: AgentPanelProps) {
               </section>
             </div>
           </Match>
-          <Match when={body() === "connect"}>
-            <div class="agent-body">
-              <ConnectScreen
-                catalog={
-                  <AgentCatalog
-                    rows={a.catalogRows()}
-                    search={a.catalogSearch()}
-                    onSearch={a.setCatalogSearch}
-                    installingIds={a.installingIds()}
-                    installErrors={a.installErrors()}
-                    registryBusy={a.registryBusy()}
-                    working={a.working()}
-                    desktop={isDesktop}
-                    onRefresh={() => void a.loadAgents()}
-                    onPick={(row) => {
-                      const command = a.pickCatalog(row);
-                      if (command) setCustomDraft({ command });
-                    }}
-                    removal={a.removal()}
-                    removalBlock={a.removalBlock()}
-                    removalConnected={Boolean(a.state().sessionId) && a.agentId() === a.removal()?.entry.id}
-                    onCancelRemoval={a.cancelRemoval}
-                    onConfirmRemoval={() => void a.confirmRemoval()}
-                    presets={presetRows()}
-                    onPreset={a.connectPreset}
-                    updates={agentUpdates()}
-                    onOpenExternal={props.onOpenExternal}
-                    onCopyCommand={(command) => api.writeClipboard(command)}
-                  />
-                }
-                customDraft={customDraft()}
-                listedIds={catalogListedIds()}
-                onCopyCommand={(command) => api.writeClipboard(command)}
-                onRemove={
-                  props.removeAgent
-                    ? (id, uninstall) => {
-                        const entry = a.installed().find((agent) => agent.id === id);
-                        if (entry) a.requestRemoval(entry, uninstall);
-                      }
-                    : undefined
-                }
-                found={a.installed().map((entry) => ({ id: entry.id, name: a.registryName(entry.id) || entry.id, subtitle: `${entry.version} · ${leaf(entry.launch.command)}` }))}
-                health={a.healthOn() ? a.health() : undefined}
-                healthNow={a.healthNow()}
-                presets={presetRows()}
-                updates={agentUpdates()}
-                checkingUpdates={agentUpdatesBusy()}
-                updateError={agentUpdateError()}
-                onCheckUpdates={() => void checkAgentUpdates(true)}
-                onPreset={a.connectPreset}
-                registry={a
-                  .registry()
-                  .filter((entry) => !a.installed().some((agent) => agent.id === entry.id) && !curatedAgent(entry.id))
-                  .map((entry) => ({ id: entry.id, name: entry.name, subtitle: entry.description, status: a.installingIds().includes(entry.id) ? "installing" : entry.installable ? "available" : "unsupported" }))}
-                busy={a.working()}
-                onConnect={a.connectInstalled}
-                onInstall={(id) => void a.install(id)}
-                onCustom={a.connectCustom}
-                onOpenExternal={props.onOpenExternal}
-                delegationEnabled={props.delegationEnabled}
-                onDelegationChange={props.onDelegationChange}
-              />
-              <Show when={a.registryBusy()}>
-                <p class="sb-fine" role="status">
-                  Loading installed agents and the ACP registry…
-                </p>
-              </Show>
-              <Show when={!props.workspacePath}>
-                <p class="sb-fine">Open a folder first. Agents start in the workspace folder.</p>
-              </Show>
-            </div>
-          </Match>
-          <Match when={body() === "connecting"}>
-            <div class="agent-body agent-connecting">
-              <ConnectingSteps phases={a.phases()} />
-              <Show when={agent()}>{(info) => <ReadyCard id={brand().id} name={label()} title={info().title || info().name || label()} version={info().version} capabilities={capabilityChips(info().features)} />}</Show>
-            </div>
-          </Match>
-          <Match when={body() === "signin"}>
-            <div class="agent-body">
-              <Show when={a.state().auth!.agentMessage}>
-                {(message) => <ErrorCard level="error" title={`${label()} reported a problem`} text={cleanAgentText(message())} actions={[]} />}
-              </Show>
-              <SignIn
-                id={brand().id}
-                name={label()}
-                title={signInText().title}
-                text={signInText().text}
-                secondary={signInText().secondary}
-                hint={hintText(a.state().auth!.hint)}
-                methods={a
-                  .state()
-                  .auth!.methods.filter((method) => method.supported || method.input)
-                  .map((method) => ({ id: method.id, name: method.name, description: method.description ?? undefined, input: method.input ?? undefined, protocol: method.gatewayProtocol ?? undefined }))}
-                busy={a.pendingAction() === "auth"}
-                onPick={(id) => void a.authenticate(id)}
-                onRetry={a.reconnect}
-                models={signInModels()}
-                onUseModel={(value) => void a.retryWithModel(value)}
-                onSubmit={(id, secret) => void a.authenticateWith(id, secret)}
-              />
-              <Show when={unsupportedAuth().length}>
-                <For each={methodHints()}>{(line) => <p class="sb-fine"><HintLine text={line} /></p>}</For>
-                <Show when={unhinted().length}>
-                  <p class="sb-fine">
-                    {unhinted()
-                      .map((method) => method.name)
-                      .join(", ")}{" "}
-                    {unhinted().length === 1 ? "needs" : "need"} a terminal sign-in, which Span does not run. Sign in from a terminal, then reconnect.
-                  </p>
-                </Show>
-                <div class="sb-actions">
-                  <button class="sb-btn" disabled={a.working()} onClick={a.reconnect}>
-                    Reconnect
-                  </button>
-                </div>
-              </Show>
-            </div>
+          <Match when={body() === "connect" || body() === "connecting" || body() === "signin"}>
+            <AgentSetup
+              agent={a}
+              view={body() as SetupView}
+              workspacePath={props.workspacePath}
+              removeAgent={props.removeAgent}
+              onOpenExternal={props.onOpenExternal}
+              delegationEnabled={props.delegationEnabled}
+              onDelegationChange={props.onDelegationChange}
+              customDraft={customDraft}
+              onCustomDraft={setCustomDraft}
+            />
           </Match>
           <Match when={body() === "empty"}>
             <div class="agent-body">
@@ -582,6 +470,14 @@ export function AgentPanel(props: AgentPanelProps) {
           </Match>
           <Match when={body() === "feed"}>
             <AgentFeed agent={a} ref={setFeedElement} />
+            <Show when={checkpoints}>
+              {(store) => (
+                <div class="agent-pad cp-sidebar">
+                  <CheckpointTimeline store={store()} running={a.running()} onViewChanges={(turn) => store().viewTurn(turn)} />
+                  <CheckpointChanges store={store()} running={a.running()} onOpenFile={(path) => void a.openInEditor(path)} />
+                </div>
+              )}
+            </Show>
             <Show when={!a.connected() && !failure()}>
               <div class="sb-actions agent-pad">
                 <Show when={a.launch()}>
@@ -637,7 +533,16 @@ export function AgentPanel(props: AgentPanelProps) {
         {a.running() ? "New activity" : "Latest"}
       </button>
       </div>
-      <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
+      <Show
+        when={!a.viewingSubagent()}
+        fallback={
+          <p class="agent-subagent-note" role="note">
+            <span class="sb-tag">Subagent</span> Read-only. The agent created this session with its own subagent tool; it belongs to the agent's run.
+          </p>
+        }
+      >
+        <AgentComposer agent={a} brand={brand()} label={hasAgent() ? label() : "agent"} />
+      </Show>
       <Show when={a.viewingItem()}>
         {(item) => {
           const closeViewer = () => {
@@ -657,7 +562,7 @@ export function AgentPanel(props: AgentPanelProps) {
             const target = message();
             if (!target) return;
             a.setViewing(undefined);
-            a.setPinned(false);
+            a.follow.detach();
             requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
           };
           return (
@@ -685,7 +590,8 @@ export function AgentPanel(props: AgentPanelProps) {
           );
         }}
       </Show>
-      <DropOverlay visible={a.intake.dragging()} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
+      <DropOverlay visible={a.intake.dragging() || nativeOver() || Boolean(props.dropHover)} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
+      <Show when={checkpoints}>{(store) => <CheckpointUndoToast store={store()} />}</Show>
       <EditorToast name={a.toast()} onDismiss={a.clearToast} />
       <OpenRefusal refusal={a.openRefusal()} onCopy={(path) => api.writeClipboard(path)} onDismiss={a.clearOpenRefusal} />
     </section>

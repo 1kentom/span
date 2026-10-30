@@ -7,6 +7,32 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	openWorkspace: (path: string) => __TAURI_INVOKE<Workspace>("open_workspace", { path }),
 	gitContext: () => __TAURI_INVOKE<GitContext_Serialize>("git_context"),
+	/**  Whether checkpoints work in the open folder, and why not. */
+	checkpointStatus: () => __TAURI_INVOKE<CheckpointStatus_Serialize>("checkpoint_status"),
+	/**
+	 *  "Enable checkpoints": create a Git repository in the open folder. Only
+	 *  ever run from this explicit user action.
+	 */
+	checkpointEnable: () => __TAURI_INVOKE<CheckpointStatus_Serialize>("checkpoint_enable"),
+	/**  The session's checkpointed turns, oldest first. */
+	checkpointList: (sessionId: string) => __TAURI_INVOKE<CheckpointTurn[]>("checkpoint_list", { sessionId }),
+	/**  Files and hunks one turn changed, or every turn of the session when `turn` is null. */
+	checkpointTurnChanges: (sessionId: string, turn: number | null) => __TAURI_INVOKE<CheckpointChanges_Serialize>("checkpoint_turn_changes", { sessionId, turn }),
+	/**
+	 *  Undo hunks of a change set on disk. Each hunk is refused, and reported,
+	 *  when the file no longer holds the post-turn text around it.
+	 */
+	checkpointRevertHunks: (sessionId: string, revision: string, hunks: CheckpointHunkRef[]) => __TAURI_INVOKE<CheckpointRevertReport_Serialize>("checkpoint_revert_hunks", { sessionId, revision, hunks }),
+	/**  Undo whole files of a change set; a file changed since is refused. */
+	checkpointRevertFiles: (sessionId: string, revision: string, paths: string[]) => __TAURI_INVOKE<CheckpointRevertReport_Serialize>("checkpoint_revert_files", { sessionId, revision, paths }),
+	/**
+	 *  Put the folder's files back to how they were before `turn`. The agent
+	 *  conversation is not rolled back. A snapshot is taken first; pass the
+	 *  returned `undoId` to `checkpoint_undo_restore`.
+	 */
+	checkpointRestore: (sessionId: string, turn: number) => __TAURI_INVOKE<CheckpointRestoreReport_Serialize>("checkpoint_restore", { sessionId, turn }),
+	/**  Undo a restore or revert, leaving files changed since then as they are. */
+	checkpointUndoRestore: (sessionId: string, undoId: string) => __TAURI_INVOKE<CheckpointRestoreReport_Serialize>("checkpoint_undo_restore", { sessionId, undoId }),
 	gitEnable: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStatus_Serialize>("git_enable", { context }),
 	gitStatus: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStatus_Serialize>("git_status", { context }),
 	gitDiff: (context: GitContext_Deserialize, path: string, side: GitDiffSide, expectedIndexRevision: string) => __TAURI_INVOKE<GitDiff_Serialize>("git_diff", { context, path, side, expectedIndexRevision }),
@@ -42,15 +68,18 @@ export const commands = {
 	terminalList: () => __TAURI_INVOKE<TerminalInfo_Serialize[]>("terminal_list"),
 	terminalScrollback: (id: string) => __TAURI_INVOKE<number[]>("terminal_scrollback", { id }),
 	terminalAcknowledge: (id: string, sequence: number) => __TAURI_INVOKE<null>("terminal_acknowledge", { id, sequence }),
-	listDirectory: (path: string) => __TAURI_INVOKE<FileEntry[]>("list_directory", { path }),
-	listFiles: () => __TAURI_INVOKE<FileEntry[]>("list_files"),
+	listDirectory: (path: string) => __TAURI_INVOKE<FileEntry_Serialize[]>("list_directory", { path }),
+	listFiles: () => __TAURI_INVOKE<FileEntry_Serialize[]>("list_files"),
 	fileIndexStatus: () => __TAURI_INVOKE<FileIndexStatus_Serialize | null>("file_index_status"),
+	checkExternalFiles: (checks: ExternalFileCheck[], expectedWorkspaceRoot: string, sinceRevision: number | null) => __TAURI_INVOKE<ExternalFilesUpdate_Serialize>("check_external_files", { checks, expectedWorkspaceRoot, sinceRevision }),
+	resolveExternalFile: (path: string, expectedRevision: number, reviewedDiskToken: string, resolution: ExternalFileResolution, expectedWorkspaceRoot: string) => __TAURI_INVOKE<BufferSnapshot>("resolve_external_file", { path, expectedRevision, reviewedDiskToken, resolution, expectedWorkspaceRoot }),
+	abandonExternalFile: (path: string, expectedRevision: number, expectedWorkspaceRoot: string) => __TAURI_INVOKE<null>("abandon_external_file", { path, expectedRevision, expectedWorkspaceRoot }),
 	queryFile: (query: string, limit: number) => __TAURI_INVOKE<FileIndexQueryResponse>("query_file", { query, limit }),
 	reconcileFileIndex: () => __TAURI_INVOKE<FileIndexStatus_Serialize>("reconcile_file_index"),
 	newFile: (path: string) => __TAURI_INVOKE<BufferSnapshot>("new_file", { path }),
-	newDirectory: (path: string) => __TAURI_INVOKE<FileEntry>("new_directory", { path }),
-	renamePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry>("rename_path", { from, to }),
-	duplicatePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry>("duplicate_path", { from, to }),
+	newDirectory: (path: string) => __TAURI_INVOKE<FileEntry_Serialize>("new_directory", { path }),
+	renamePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry_Serialize>("rename_path", { from, to }),
+	duplicatePath: (from: string, to: string) => __TAURI_INVOKE<FileEntry_Serialize>("duplicate_path", { from, to }),
 	trashPath: (path: string) => __TAURI_INVOKE<string[]>("trash_path", { path }),
 	openBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("open_buffer", { path }),
 	/**
@@ -58,6 +87,20 @@ export const commands = {
 	 *  and never reaches the language servers, so highlighting a file starts nothing.
 	 */
 	peekBuffer: (path: string) => __TAURI_INVOKE<BufferSnapshot>("peek_buffer", { path }),
+	/**  Name, size and text or binary kind of a workspace file, without opening a buffer. */
+	probeFile: (path: string) => __TAURI_INVOKE<FileProbe>("probe_file", { path }),
+	/**
+	 *  Raw bytes of a workspace file for the file viewer, as base64. A file larger than `max_bytes`
+	 *  (capped by the core viewer limit) is refused rather than truncated.
+	 */
+	readFileBytes: (path: string, maxBytes: number) => __TAURI_INVOKE<string>("read_file_bytes", { path, maxBytes }),
+	/**
+	 *  Opens a workspace file with the system default app. Programs and scripts are refused, with
+	 *  the same rules as uploads.
+	 */
+	openFileWithSystem: (path: string) => __TAURI_INVOKE<null>("open_file_with_system", { path }),
+	/**  Shows a workspace file or folder in Finder, Explorer or the Linux file manager. */
+	revealFile: (path: string) => __TAURI_INVOKE<null>("reveal_file", { path }),
 	/**
 	 *  The last editor showing `path` closed or was evicted: close the document in the language
 	 *  servers so they stop tracking (and holding memory for) a file nobody is looking at. The
@@ -73,6 +116,7 @@ export const commands = {
 	cancelSearch: (id: string) => __TAURI_INVOKE<null>("cancel_search", { id }),
 	getSettings: () => __TAURI_INVOKE<Settings_Serialize>("get_settings"),
 	getSettingsForScope: (scope: SettingsScope) => __TAURI_INVOKE<Settings_Serialize>("get_settings_for_scope", { scope }),
+	migrateExplorerPreferences: (expectedWorkspaceRoot: string, legacy: ExplorerLegacyPreferences_Deserialize) => __TAURI_INVOKE<ExplorerPreferenceMigration_Serialize>("migrate_explorer_preferences", { expectedWorkspaceRoot, legacy }),
 	openSettingsBuffer: (scope: SettingsScope) => __TAURI_INVOKE<BufferSnapshot>("open_settings_buffer", { scope }),
 	editSettingsBuffer: (scope: SettingsScope, expectedRevision: number, changes: TextEdit[]) => __TAURI_INVOKE<BufferRevision>("edit_settings_buffer", { scope, expectedRevision, changes }),
 	saveSettingsBuffer: (scope: SettingsScope, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("save_settings_buffer", { scope, expectedRevision }),
@@ -97,8 +141,26 @@ export const commands = {
 	writeClipboard: (text: string) => __TAURI_INVOKE<null>("write_clipboard", { text }),
 	takeStartupRequests: () => __TAURI_INVOKE<StartupRequest_Serialize[]>("take_startup_requests"),
 	enqueueDroppedPaths: (paths: string[], cwd: string | null) => __TAURI_INVOKE<null>("enqueue_dropped_paths", { paths, cwd }),
+	droppedPathInfo: (path: string) => __TAURI_INVOKE<DroppedPath>("dropped_path_info", { path }),
+	/**  Reads one file of the latest native drop as base64, refusing anything larger than `max_bytes`. */
+	readDroppedFile: (path: string, maxBytes: number) => __TAURI_INVOKE<string>("read_dropped_file", { path, maxBytes }),
+	/**
+	 *  Copies `items` into the workspace folder `target` ("" is the root). Each source must come from the latest
+	 *  native drop or the latest `clipboard_files` read; any other path is refused before anything is copied.
+	 */
+	importPaths: (target: string, items: ImportItem[]) => __TAURI_INVOKE<ImportReport_Serialize>("import_paths", { target, items }),
+	/**  Progress of the running import, or nothing when no import runs. */
+	importProgress: () => __TAURI_INVOKE<ImportProgress | null>("import_progress"),
+	/**  Asks the running import to stop. Items already copied stay and are listed in its report. */
+	cancelImport: () => __TAURI_INVOKE<void>("cancel_import"),
+	/**  Reads the OS clipboard. Its file paths become the only clipboard paths `import_paths` accepts. */
+	clipboardFiles: () => __TAURI_INVOKE<ClipboardContents>("clipboard_files"),
+	/**  Puts workspace files and folders on the OS clipboard as a file list. */
+	setClipboardFiles: (paths: string[]) => __TAURI_INVOKE<null>("set_clipboard_files", { paths }),
+	/**  Writes the clipboard image (as PNG) or text into a new workspace file. Never replaces an existing file. */
+	pasteClipboardFile: (path: string, kind: PastedKind) => __TAURI_INVOKE<FileEntry_Serialize>("paste_clipboard_file", { path, kind }),
 	openExternal: (url: string) => __TAURI_INVOKE<null>("open_external", { url }),
-	readImage: (path: string) => __TAURI_INVOKE<ImageSource>("read_image", { path }),
+	readImage: (path: string, expectedWorkspaceRoot: string | null) => __TAURI_INVOKE<ImageSource>("read_image", { path, expectedWorkspaceRoot }),
 	syncNativeMenu: (bindings: { [key in string]: string[] }) => __TAURI_INVOKE<string[]>("sync_native_menu", { bindings }),
 	syntax: (path: string) => __TAURI_INVOKE<SyntaxSnapshot>("syntax", { path }),
 	/**
@@ -118,6 +180,26 @@ export const commands = {
 	 *  the home directory as `~`. Works without an open folder.
 	 */
 	sessionExportMarkdown: (transcript: Transcript_Deserialize) => __TAURI_INVOKE<string>("session_export_markdown", { transcript }),
+	/**
+	 *  Totals by day, agent and model over every folder's sessions in `range`.
+	 *  Works without an open folder.
+	 */
+	usageSummary: (range: UsageRange_Deserialize) => __TAURI_INVOKE<UsageSummary_Serialize>("usage_summary", { range }),
+	/**  Sessions with usage in `range`, most recently active first. */
+	usageSessions: (range: UsageRange_Deserialize) => __TAURI_INVOKE<SessionUsageRow_Serialize[]>("usage_sessions", { range }),
+	/**  The price table in use, with the user's overrides first. */
+	usagePrices: () => __TAURI_INVOKE<PriceTable_Serialize>("usage_prices"),
+	/**
+	 *  Starts a background scan of the local logs when the user turned the
+	 *  importer on and no scan is running. Returns at once; poll
+	 *  `usage_import_status` for progress.
+	 */
+	usageImportScan: () => __TAURI_INVOKE<UsageImportStatus_Serialize>("usage_import_scan"),
+	/**
+	 *  The importer's state: whether it is on, a running scan's progress, and the
+	 *  last scan's outcome.
+	 */
+	usageImportStatus: () => __TAURI_INVOKE<UsageImportStatus_Serialize>("usage_import_status"),
 	agentRegistry: () => __TAURI_INVOKE<RegistryAgent_Serialize[]>("agent_registry"),
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
@@ -263,6 +345,59 @@ export const commands = {
 	 */
 	agentChildPermission: (connectionId: string, sessionId: string, requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_child_permission", { connectionId, sessionId, requestId, optionId }),
 	/**
+	 *  Open a new user session and return its key (ADR 0011 phase 1). Unlike
+	 *  `agent_connect` it never closes another session. Runs on `connection_id`
+	 *  when given, on a new or running process for `command` when given, else
+	 *  on the focused connection. With `focus` the new session becomes the
+	 *  sidebar's chat; only a session on the sidebar's own connection can be
+	 *  focused, and that is checked before anything is opened. A failure leaves
+	 *  every existing session and the focus as they were.
+	 */
+	agentOpenSession: (connectionId: string | null, command: AgentCommand_Deserialize | null, focus: boolean) => __TAURI_INVOKE<SessionKey>("agent_open_session", { connectionId, command, focus }),
+	/**
+	 *  Every live session Span holds: user leads, their delegated children
+	 *  (with the parent key) and resumed sessions, with runtime state (idle,
+	 *  running, waiting for approval or an answer, queued follow-ups), agent,
+	 *  title, model, mode and health. Hidden health check sessions never appear.
+	 *  Changes arrive as `AgentSessionStatesChanged` and `AgentKeyedEvent`.
+	 */
+	agentLiveSessions: () => __TAURI_INVOKE<LiveSession_Serialize[]>("agent_live_sessions"),
+	/**  The focused session (the sidebar's chat), `None` without one. */
+	agentFocusedSession: () => __TAURI_INVOKE<SessionKey | null>("agent_focused_session"),
+	/**
+	 *  Run a prompt in the session `key`. Like `agent_prompt`, a busy session
+	 *  refuses it with `PromptError::Busy`.
+	 */
+	agentPromptKeyed: (key: SessionKey, text: string, attachments: PromptAttachment_Deserialize[] | null) => __TAURI_INVOKE<null>("agent_prompt_keyed", { key, text, attachments }),
+	/**  Stop the turn in `key` and every session below it. */
+	agentCancelKeyed: (key: SessionKey) => __TAURI_INVOKE<null>("agent_cancel_keyed", { key }),
+	/**
+	 *  The user's answer to a permission request of `key`. The request must
+	 *  belong to that session on that connection. User only: agents hold an
+	 *  `AgentControl`, which has no answering path (ADR 0003).
+	 */
+	agentPermissionKeyed: (key: SessionKey, requestId: string, optionId: string | null) => __TAURI_INVOKE<null>("agent_permission_keyed", { key, requestId, optionId }),
+	/**
+	 *  The user's answer to an input request of `key`. `action` is accept,
+	 *  decline or cancel. User only, like `agent_permission_keyed`.
+	 */
+	agentElicitationKeyed: (key: SessionKey, requestId: string, action: string, contentJson: string | null) => __TAURI_INVOKE<null>("agent_elicitation_keyed", { key, requestId, action, contentJson }),
+	/**  Change a config option of the session `key`. */
+	agentSetConfigKeyed: (key: SessionKey, configId: string, value: string) => __TAURI_INVOKE<null>("agent_set_config_keyed", { key, configId, value }),
+	/**
+	 *  Accept or reject a proposal of the session `key`, on its connection
+	 *  only. User only.
+	 */
+	agentReviewKeyed: (key: SessionKey, proposalId: string, accept: boolean, expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("agent_review_keyed", { key, proposalId, accept, expectedRevision }),
+	/**  Accept some hunks of a proposal of the session `key`. User only. */
+	agentReviewHunksKeyed: (key: SessionKey, proposalId: string, acceptedHunkIds: string[], expectedRevision: number) => __TAURI_INVOKE<BufferSnapshot>("agent_review_hunks_keyed", { key, proposalId, acceptedHunkIds, expectedRevision }),
+	/**
+	 *  Close the session `key`. Its delegated children are cancelled and
+	 *  closed with it, and its span-agents server stops (ADR 0001 section 5,
+	 *  ADR 0003). Closing the focused session leaves the sidebar without a chat.
+	 */
+	agentCloseKeyed: (key: SessionKey) => __TAURI_INVOKE<null>("agent_close_keyed", { key }),
+	/**
 	 *  The user stops one delegated task: its child session and everything
 	 *  below it are cancelled and the task ends as cancelled. User only: the
 	 *  span-agents `cancel` tool is the lead's separate way to do the same, and
@@ -347,12 +482,15 @@ export const commands = {
 /** Events */
 export const events = {
 	agentHealthChanged: makeEvent<AgentHealthChanged_Serialize, AgentHealthChanged_Deserialize>("agent-health-changed"),
+	agentKeyedEvent: makeEvent<AgentKeyedEvent_Serialize, AgentKeyedEvent_Deserialize>("agent-keyed-event"),
 	agentSessionStatesChanged: makeEvent<AgentSessionStatesChanged_Serialize, AgentSessionStatesChanged_Deserialize>("agent-session-states-changed"),
+	checkpointsChanged: makeEvent<CheckpointsChanged, CheckpointsChanged>("checkpoints-changed"),
 	diagnosticsPublished: makeEvent<DiagnosticsPublished_Serialize, DiagnosticsPublished_Deserialize>("diagnostics-published"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
 	languageServerError: makeEvent<LanguageServerError_Serialize, LanguageServerError_Deserialize>("language-server-error"),
 	languageServerInstallProgress: makeEvent<LanguageServerInstallProgress_Serialize, LanguageServerInstallProgress_Deserialize>("language-server-install-progress"),
 	languageServerStateChanged: makeEvent<LanguageServerStateChanged_Serialize, LanguageServerStateChanged_Deserialize>("language-server-state-changed"),
+	languageServerWatchRecovery: makeEvent<LanguageServerWatchRecovery, LanguageServerWatchRecovery>("language-server-watch-recovery"),
 	languageServerWorkProgress: makeEvent<LanguageServerWorkProgress_Serialize, LanguageServerWorkProgress_Deserialize>("language-server-work-progress"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
 	runApprovalsChanged: makeEvent<RunApprovalsChanged, RunApprovalsChanged>("run-approvals-changed"),
@@ -674,6 +812,46 @@ export type AgentHint =
  */
 "interruptedByUser";
 
+/**
+ *  One agent event with the session it belongs to (ADR 0001 section 3,
+ *  ADR 0011 phase 1). Sent for every event of every connection the session
+ *  manager holds, beside the sidebar's own channel, which keeps receiving the
+ *  plain `AgentEvent`s of the focused connection unchanged. `key` is `None`
+ *  for connection level events (`Ready`, `Status`, `Log`, `Capabilities`,
+ *  `AuthRequired`, `ElicitationComplete`, and `Delegation` `unavailable`).
+ */
+export type AgentKeyedEvent = AgentKeyedEvent_Serialize | AgentKeyedEvent_Deserialize;
+
+/**
+ *  One agent event with the session it belongs to (ADR 0001 section 3,
+ *  ADR 0011 phase 1). Sent for every event of every connection the session
+ *  manager holds, beside the sidebar's own channel, which keeps receiving the
+ *  plain `AgentEvent`s of the focused connection unchanged. `key` is `None`
+ *  for connection level events (`Ready`, `Status`, `Log`, `Capabilities`,
+ *  `AuthRequired`, `ElicitationComplete`, and `Delegation` `unavailable`).
+ */
+export type AgentKeyedEvent_Deserialize = {
+	connectionId: string,
+	agentName: string,
+	key?: SessionKey | null,
+	event: AgentEvent_Deserialize,
+};
+
+/**
+ *  One agent event with the session it belongs to (ADR 0001 section 3,
+ *  ADR 0011 phase 1). Sent for every event of every connection the session
+ *  manager holds, beside the sidebar's own channel, which keeps receiving the
+ *  plain `AgentEvent`s of the focused connection unchanged. `key` is `None`
+ *  for connection level events (`Ready`, `Status`, `Log`, `Capabilities`,
+ *  `AuthRequired`, `ElicitationComplete`, and `Delegation` `unavailable`).
+ */
+export type AgentKeyedEvent_Serialize = {
+	connectionId: string,
+	agentName: string,
+	key: SessionKey | null,
+	event: AgentEvent_Serialize,
+};
+
 /**  A launch command for an agent that is not installed from the registry. */
 export type AgentPreset = AgentPreset_Serialize | AgentPreset_Deserialize;
 
@@ -748,6 +926,11 @@ export type AgentSettings_Deserialize = {
 	 *  user's own settings file. Optional in TypeScript like `agents`.
 	 */
 	startMode?: { [key in string]: StartMode },
+	/**
+	 *  `agents.usage.*`: the Usage page (ADR 0012). Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	usage?: AgentUsageSettings_Deserialize,
 };
 
 /**  `agents.*` settings. */
@@ -775,6 +958,11 @@ export type AgentSettings_Serialize = {
 	 *  user's own settings file. Optional in TypeScript like `agents`.
 	 */
 	startMode?: { [key in string]: StartMode },
+	/**
+	 *  `agents.usage.*`: the Usage page (ADR 0012). Honoured only from the
+	 *  user's own settings file. Optional in TypeScript like `agents`.
+	 */
+	usage?: AgentUsageSettings_Serialize,
 };
 
 export type AgentUpdate = AgentUpdate_Serialize | AgentUpdate_Deserialize;
@@ -815,6 +1003,59 @@ export type AgentUpdate_Serialize = {
 	repository: string | null,
 	/**  Why the status is what it is, when that is not obvious. */
 	note: string | null,
+};
+
+export type AgentUsage = AgentUsage_Serialize | AgentUsage_Deserialize;
+
+/**  `agents.usage.*` settings (ADR 0012). */
+export type AgentUsageSettings = AgentUsageSettings_Serialize | AgentUsageSettings_Deserialize;
+
+/**  `agents.usage.*` settings (ADR 0012). */
+export type AgentUsageSettings_Deserialize = {
+	/**
+	 *  `agents.usage.prices.<model>`: the user's own USD per million token
+	 *  prices, keyed by model id or id prefix. They take precedence over the
+	 *  bundled price table.
+	 */
+	prices?: { [key in string]: PriceOverride_Deserialize },
+	/**
+	 *  `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
+	 *  local usage logs (read only, counters only) so the Usage page also
+	 *  shows sessions run outside Span. Off by default.
+	 */
+	importLocalLogs?: boolean,
+};
+
+/**  `agents.usage.*` settings (ADR 0012). */
+export type AgentUsageSettings_Serialize = {
+	/**
+	 *  `agents.usage.prices.<model>`: the user's own USD per million token
+	 *  prices, keyed by model id or id prefix. They take precedence over the
+	 *  bundled price table.
+	 */
+	prices?: { [key in string]: PriceOverride_Serialize },
+	/**
+	 *  `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
+	 *  local usage logs (read only, counters only) so the Usage page also
+	 *  shows sessions run outside Span. Off by default.
+	 */
+	importLocalLogs?: boolean,
+};
+
+export type AgentUsage_Deserialize = {
+	agentId: string,
+	name: string,
+	totals: UsageTotals_Deserialize,
+	/**  Read from the agent's local logs rather than tracked by Span. */
+	imported: boolean,
+};
+
+export type AgentUsage_Serialize = {
+	agentId: string,
+	name: string,
+	totals: UsageTotals_Serialize,
+	/**  Read from the agent's local logs rather than tracked by Span. */
+	imported: boolean,
 };
 
 /**  One agent that took part in a session, for example a delegated child. */
@@ -1057,11 +1298,140 @@ export type CapabilitiesDto = {
 	signatureHelp: boolean,
 };
 
+export type CheckpointChanges = CheckpointChanges_Serialize | CheckpointChanges_Deserialize;
+
+export type CheckpointChanges_Deserialize = {
+	sessionId: string,
+	/**  `None` for all turns of the session. */
+	turn?: number | null,
+	/**  Identifies the two snapshots compared; pass it back to revert. */
+	revision?: string | null,
+	files: CheckpointFileChange[],
+};
+
+export type CheckpointChanges_Serialize = {
+	sessionId: string,
+	/**  `None` for all turns of the session. */
+	turn: number | null,
+	/**  Identifies the two snapshots compared; pass it back to revert. */
+	revision: string | null,
+	files: CheckpointFileChange[],
+};
+
+export type CheckpointConflict = CheckpointConflict_Serialize | CheckpointConflict_Deserialize;
+
+export type CheckpointConflict_Deserialize = {
+	path: string,
+	hunkId?: string | null,
+	reason: string,
+};
+
+export type CheckpointConflict_Serialize = {
+	path: string,
+	hunkId: string | null,
+	reason: string,
+};
+
+export type CheckpointFileChange = {
+	/**  Relative to the workspace folder. */
+	path: string,
+	kind: CheckpointFileKind,
+	additions: number,
+	deletions: number,
+	/**  Binary or too large for line hunks; only whole-file revert applies. */
+	binary: boolean,
+	/**  Line hunks in the pre-turn file's UTF-16 coordinates, as in edit proposals. */
+	hunks: ProposalHunk[],
+};
+
+export type CheckpointFileKind = "added" | "modified" | "deleted";
+
+export type CheckpointHunkRef = {
+	path: string,
+	hunkId: string,
+};
+
+export type CheckpointRestoreReport = CheckpointRestoreReport_Serialize | CheckpointRestoreReport_Deserialize;
+
+export type CheckpointRestoreReport_Deserialize = {
+	restored: string[],
+	/**  Left alone: symlinks, files over the size cap, or (on undo) files changed since. */
+	skipped: CheckpointConflict_Deserialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId?: string | null,
+};
+
+export type CheckpointRestoreReport_Serialize = {
+	restored: string[],
+	/**  Left alone: symlinks, files over the size cap, or (on undo) files changed since. */
+	skipped: CheckpointConflict_Serialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId: string | null,
+};
+
+export type CheckpointRevertReport = CheckpointRevertReport_Serialize | CheckpointRevertReport_Deserialize;
+
+export type CheckpointRevertReport_Deserialize = {
+	reverted: CheckpointHunkRef[],
+	revertedFiles: string[],
+	conflicts: CheckpointConflict_Deserialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId?: string | null,
+};
+
+export type CheckpointRevertReport_Serialize = {
+	reverted: CheckpointHunkRef[],
+	revertedFiles: string[],
+	conflicts: CheckpointConflict_Serialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId: string | null,
+};
+
+export type CheckpointStatus = CheckpointStatus_Serialize | CheckpointStatus_Deserialize;
+
+export type CheckpointStatus_Deserialize = {
+	available: boolean,
+	/**  Why checkpoints are off (for example, not a Git repository). */
+	reason?: string | null,
+	/**  The folder is not in a Git repository, so "Enable checkpoints" (git init) may be offered. */
+	canInit: boolean,
+};
+
+export type CheckpointStatus_Serialize = {
+	available: boolean,
+	/**  Why checkpoints are off (for example, not a Git repository). */
+	reason: string | null,
+	/**  The folder is not in a Git repository, so "Enable checkpoints" (git init) may be offered. */
+	canInit: boolean,
+};
+
+export type CheckpointTurn = {
+	turn: number,
+	/**  Unix seconds of the newest snapshot of this turn. */
+	capturedAt: number,
+	hasStart: boolean,
+	hasEnd: boolean,
+	/**  Files that differ between the turn's start and end; 0 while running. */
+	changedFiles: number,
+};
+
+/**  Checkpoints of a session changed (a turn was captured, a restore ran). */
+export type CheckpointsChanged = {
+	sessionId: string,
+};
+
 /**  What `UploadStore::clear` removed. */
 export type ClearedUploads = {
 	/**  Indexed uploads plus orphaned blobs. */
 	files: number,
 	bytes: number,
+};
+
+/**  What the OS clipboard holds that the Explorer can paste. Files win over an image, an image over text. */
+export type ClipboardContents = {
+	files: DroppedPath[],
+	hasImage: boolean,
+	hasText: boolean,
 };
 
 export type CompletionItemDto = CompletionItemDto_Serialize | CompletionItemDto_Deserialize;
@@ -1155,6 +1525,21 @@ export type ConfigOption_Serialize = {
 	groups: ConfigGroup_Serialize[],
 };
 
+/**  What happens when an imported item's name is already taken in the destination folder. */
+export type ConflictPolicy =
+/**  Add " copy", " copy 2", ... to the new item's name. Nothing is replaced. */
+"keepBoth" |
+/**  Move the existing item to the system Trash, then put the copy in its place. */
+"replace" |
+/**  Leave the existing item and do not copy this one. */
+"skip";
+
+/**  A `usage_update` reading: tokens in the context window and its size. */
+export type ContextReading = {
+	used: number,
+	size: number,
+};
+
 /**  The runner chosen for one file, or the reason no runner applies. */
 export type CurrentFileRun = CurrentFileRun_Serialize | CurrentFileRun_Deserialize;
 
@@ -1172,6 +1557,18 @@ export type CurrentFileRun_Serialize = {
 	path: string,
 	configuration: RunConfiguration_Serialize | null,
 	reason: string | null,
+};
+
+/**  One agent's share of a day. */
+export type DaySlice = {
+	agentId: string,
+	tokens: number,
+	cost: UsageCost,
+};
+
+export type DayUsage = {
+	day: string,
+	agents: DaySlice[],
 };
 
 /**  A decision the lead recorded with `record_decision` (#54). */
@@ -1459,6 +1856,13 @@ export type DiagnosticDto_Deserialize = {
 	range: RangeDto,
 	source?: string | null,
 	code?: string | null,
+	/**
+	 *  The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+	 *  dims it, and the problems list counts it as a warning, as IntelliJ does.
+	 */
+	unnecessary?: boolean,
+	/**  The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`). */
+	deprecated?: boolean,
 };
 
 export type DiagnosticDto_Serialize = {
@@ -1467,6 +1871,13 @@ export type DiagnosticDto_Serialize = {
 	range: RangeDto,
 	source: string | null,
 	code: string | null,
+	/**
+	 *  The server tagged this range as unused or unreachable (`DiagnosticTag::Unnecessary`). The editor
+	 *  dims it, and the problems list counts it as a warning, as IntelliJ does.
+	 */
+	unnecessary: boolean,
+	/**  The server tagged this range as using something deprecated (`DiagnosticTag::Deprecated`). */
+	deprecated: boolean,
 };
 
 export type DiagnosticSeverityDto = "error" | "warning" | "information" | "hint";
@@ -1506,6 +1917,13 @@ export type DocumentHighlightDto = {
 
 export type DocumentHighlightKindDto = "text" | "read" | "write";
 
+export type DroppedPath = {
+	path: string,
+	name: string,
+	isDir: boolean,
+	size: number,
+};
+
 export type EditProposal = {
 	id: string,
 	path: string,
@@ -1513,8 +1931,130 @@ export type EditProposal = {
 	hunks: ProposalHunk[],
 };
 
+/**  Settings stored by the earlier local-storage based Explorer preferences. */
+export type ExplorerLegacyPreferences = ExplorerLegacyPreferences_Serialize | ExplorerLegacyPreferences_Deserialize;
+
+/**  Settings stored by the earlier local-storage based Explorer preferences. */
+export type ExplorerLegacyPreferences_Deserialize = {
+	compactFolders?: boolean | null,
+	autoReveal?: boolean | null,
+	confirmDelete?: boolean | null,
+};
+
+/**  Settings stored by the earlier local-storage based Explorer preferences. */
+export type ExplorerLegacyPreferences_Serialize = {
+	compactFolders: boolean | null,
+	autoReveal: boolean | null,
+	confirmDelete: boolean | null,
+};
+
+/**  Result of reconciling legacy Explorer values with the current settings scopes. */
+export type ExplorerPreferenceMigration = ExplorerPreferenceMigration_Serialize | ExplorerPreferenceMigration_Deserialize;
+
+/**  Result of reconciling legacy Explorer values with the current settings scopes. */
+export type ExplorerPreferenceMigration_Deserialize = {
+	settings: Settings_Deserialize,
+	/**  Legacy leaf names whose values were imported or already configured by the user. */
+	resolvedLegacyKeys: string[],
+};
+
+/**  Result of reconciling legacy Explorer values with the current settings scopes. */
+export type ExplorerPreferenceMigration_Serialize = {
+	settings: Settings_Serialize,
+	/**  Legacy leaf names whose values were imported or already configured by the user. */
+	resolvedLegacyKeys: string[],
+};
+
+/**  `explorer.*`: file tree visibility and navigation preferences. */
+export type ExplorerSettings = ExplorerSettings_Serialize | ExplorerSettings_Deserialize;
+
+/**  `explorer.*`: file tree visibility and navigation preferences. */
+export type ExplorerSettings_Deserialize = {
+	/**  Keep dotfiles and other hidden files visible, matching the current Explorer behavior. */
+	showHiddenFiles?: boolean,
+	/**  Include files excluded by ignore rules in the Explorer. */
+	showIgnoredFiles?: boolean,
+	/**  Render a chain of single-child folders as one compact row. */
+	compactFolders?: boolean,
+	/**  Reveal the active file in the Explorer when it is outside the visible selection. */
+	autoReveal?: boolean,
+	/**  Ask before deleting a file or folder. */
+	confirmDelete?: boolean,
+};
+
+/**  `explorer.*`: file tree visibility and navigation preferences. */
+export type ExplorerSettings_Serialize = {
+	/**  Keep dotfiles and other hidden files visible, matching the current Explorer behavior. */
+	showHiddenFiles: boolean,
+	/**  Include files excluded by ignore rules in the Explorer. */
+	showIgnoredFiles: boolean,
+	/**  Render a chain of single-child folders as one compact row. */
+	compactFolders: boolean,
+	/**  Reveal the active file in the Explorer when it is outside the visible selection. */
+	autoReveal: boolean,
+	/**  Ask before deleting a file or folder. */
+	confirmDelete: boolean,
+};
+
+export type ExternalDiskSnapshot = {
+	token: string,
+	exists: boolean,
+	text: string,
+	truncated: boolean,
+};
+
+export type ExternalFileCheck = {
+	path: string,
+	expectedRevision: number,
+	/**  False while the renderer has an edit not yet acknowledged by core. */
+	allowReload: boolean,
+};
+
+export type ExternalFileKind = "unchanged" | "reloaded" | "conflict" | "deleted" | "stale" | "unavailable";
+
+export type ExternalFileResolution = "reload" | "overwrite";
+
+export type ExternalFileState = ExternalFileState_Serialize | ExternalFileState_Deserialize;
+
+export type ExternalFileState_Deserialize = {
+	path: string,
+	revision: number,
+	kind: ExternalFileKind,
+	snapshot?: BufferSnapshot | null,
+	disk?: ExternalDiskSnapshot | null,
+	error?: string | null,
+};
+
+export type ExternalFileState_Serialize = {
+	path: string,
+	revision: number,
+	kind: ExternalFileKind,
+	snapshot: BufferSnapshot | null,
+	disk: ExternalDiskSnapshot | null,
+	error: string | null,
+};
+
+export type ExternalFilesUpdate = ExternalFilesUpdate_Serialize | ExternalFilesUpdate_Deserialize;
+
+export type ExternalFilesUpdate_Deserialize = {
+	workspaceRoot: string,
+	revision: number,
+	directoriesChanged: boolean,
+	states: ExternalFileState_Deserialize[],
+};
+
+export type ExternalFilesUpdate_Serialize = {
+	workspaceRoot: string,
+	revision: number,
+	directoriesChanged: boolean,
+	states: ExternalFileState_Serialize[],
+};
+
 /**  Why a delegation failed. Closed set: the lead can branch on it. */
 export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout";
+
+/**  What a file holds, as far as the editor is concerned. */
+export type FileContentKind = "text" | "binary" | "missing" | "directory";
 
 /**  Edits of one file, in UTF-16 positions of the file as the server saw it. */
 export type FileEditsDto = {
@@ -1525,10 +2065,22 @@ export type FileEditsDto = {
 	edits: TextEditDto[],
 };
 
-export type FileEntry = {
+export type FileEntry = FileEntry_Serialize | FileEntry_Deserialize;
+
+export type FileEntry_Deserialize = {
 	path: string,
 	name: string,
 	isDir: boolean,
+	ignored?: boolean,
+	backgroundExcluded?: boolean,
+};
+
+export type FileEntry_Serialize = {
+	path: string,
+	name: string,
+	isDir: boolean,
+	ignored?: boolean,
+	backgroundExcluded?: boolean,
 };
 
 export type FileIndexMatch = {
@@ -1569,6 +2121,15 @@ export type FileIndexStatus_Serialize = {
 	lastError: string | null,
 	watcherReady: boolean,
 	watcherError: string | null,
+};
+
+/**  Name, size and kind of a workspace file, read without opening a buffer. */
+export type FileProbe = {
+	/**  Workspace relative path. */
+	path: string,
+	name: string,
+	size: number,
+	kind: FileContentKind,
 };
 
 export type FoldRange = {
@@ -1821,6 +2382,57 @@ export type ImageSource = {
 	dataUrl: string,
 };
 
+/**  One item to copy into the workspace: an absolute source path and its clash policy. */
+export type ImportItem = {
+	source: string,
+	policy: ConflictPolicy,
+};
+
+/**  Copied and total entries and bytes of a running import. */
+export type ImportProgress = {
+	entries: number,
+	totalEntries: number,
+	bytes: number,
+	totalBytes: number,
+};
+
+/**  Result of an import. Items copied before a cancellation or a failure stay and are listed in `created`. */
+export type ImportReport = ImportReport_Serialize | ImportReport_Deserialize;
+
+/**  Result of an import. Items copied before a cancellation or a failure stay and are listed in `created`. */
+export type ImportReport_Deserialize = {
+	/**  Workspace relative paths of the new top level items, replacements included. */
+	created: string[],
+	/**  Workspace relative paths whose previous item was moved to the system Trash. */
+	replaced: string[],
+	/**  Names left out by the Skip policy. */
+	skipped: string[],
+	/**  Symbolic links and special files that were not copied. */
+	skippedLinks: number,
+	entries: number,
+	bytes: number,
+	cancelled: boolean,
+	/**  Why the import stopped early, when an item failed. */
+	error?: string | null,
+};
+
+/**  Result of an import. Items copied before a cancellation or a failure stay and are listed in `created`. */
+export type ImportReport_Serialize = {
+	/**  Workspace relative paths of the new top level items, replacements included. */
+	created: string[],
+	/**  Workspace relative paths whose previous item was moved to the system Trash. */
+	replaced: string[],
+	/**  Names left out by the Skip policy. */
+	skipped: string[],
+	/**  Symbolic links and special files that were not copied. */
+	skippedLinks: number,
+	entries: number,
+	bytes: number,
+	cancelled: boolean,
+	/**  Why the import stopped early, when an item failed. */
+	error: string | null,
+};
+
 export type IncomingCallDto = IncomingCallDto_Serialize | IncomingCallDto_Deserialize;
 
 export type IncomingCallDto_Deserialize = {
@@ -1898,7 +2510,7 @@ export type LanguageServerError_Serialize = {
 	message: string,
 };
 
-export type LanguageServerId = "vtsls" | "html" | "css" | "json" | "rust-analyzer" | "basedpyright" | "jdtls";
+export type LanguageServerId = "vtsls" | "html" | "css" | "json" | "rust-analyzer" | "basedpyright" | "jdtls" | "svelte" | "vue" | "astro";
 
 export type LanguageServerInstallProgress = LanguageServerInstallProgress_Serialize | LanguageServerInstallProgress_Deserialize;
 
@@ -1958,7 +2570,7 @@ export type LanguageServerSettings_Deserialize = {
 	autoInstall?: boolean,
 	/**
 	 *  Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
-	 *  `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+	 *  `rust-analyzer`, `basedpyright`, `jdtls`, `svelte`, `vue`, `astro`). A server that is not listed is enabled.
 	 */
 	enabled?: { [key in string]: boolean },
 	/**  JDK home used to run JDT LS, instead of searching the host. */
@@ -1978,6 +2590,14 @@ export type LanguageServerSettings_Deserialize = {
 	 *  global override meaning "trust every folder".
 	 */
 	trustedWorkspaces?: string[],
+	/**
+	 *  Directory names from the built in watched-file exclusions (`node_modules`, `target`,
+	 *  `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) that
+	 *  language servers should be told about anyway. Version control folders stay excluded.
+	 */
+	watchIncludeDirectories?: string[],
+	/**  Server ids whose "fell behind on file changes" warning the user turned off. */
+	silencedWatchWarnings?: string[],
 };
 
 /**
@@ -1995,7 +2615,7 @@ export type LanguageServerSettings_Serialize = {
 	autoInstall: boolean,
 	/**
 	 *  Per-server switches keyed by server id (`vtsls`, `html`, `css`, `json`,
-	 *  `rust-analyzer`, `basedpyright`, `jdtls`). A server that is not listed is enabled.
+	 *  `rust-analyzer`, `basedpyright`, `jdtls`, `svelte`, `vue`, `astro`). A server that is not listed is enabled.
 	 */
 	enabled: { [key in string]: boolean },
 	/**  JDK home used to run JDT LS, instead of searching the host. */
@@ -2015,6 +2635,14 @@ export type LanguageServerSettings_Serialize = {
 	 *  global override meaning "trust every folder".
 	 */
 	trustedWorkspaces: string[],
+	/**
+	 *  Directory names from the built in watched-file exclusions (`node_modules`, `target`,
+	 *  `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) that
+	 *  language servers should be told about anyway. Version control folders stay excluded.
+	 */
+	watchIncludeDirectories: string[],
+	/**  Server ids whose "fell behind on file changes" warning the user turned off. */
+	silencedWatchWarnings: string[],
 };
 
 export type LanguageServerStateChanged = LanguageServerStateChanged_Serialize | LanguageServerStateChanged_Deserialize;
@@ -2059,6 +2687,13 @@ export type LanguageServerStateDto_Serialize = { kind: "notStarted" } | { kind: 
  */
 { kind: "runtimeMissing"; runtime: string; requiredVersion: number; found: string[] };
 
+/**  A server fell behind on filesystem notifications and is being brought back in step. */
+export type LanguageServerWatchRecovery = {
+	server: LanguageServerId,
+	phase: WatchRecoveryPhase,
+	message: string,
+};
+
 /**
  *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
  *  at most about four `report` events per second per token; `begin` and `end` always
@@ -2094,6 +2729,84 @@ export type LanguageServerWorkProgress_Serialize = {
 	message: string | null,
 	percentage: number | null,
 	kind: WorkProgressKindDto,
+};
+
+/**
+ *  One live session as the agent mode rail lists it: identity, place in the
+ *  session tree, runtime state and the metadata the agent last reported.
+ *  Built only from the manager, so it never mixes up two sessions with the
+ *  same id on different connections.
+ */
+export type LiveSession = LiveSession_Serialize | LiveSession_Deserialize;
+
+/**
+ *  One live session as the agent mode rail lists it: identity, place in the
+ *  session tree, runtime state and the metadata the agent last reported.
+ *  Built only from the manager, so it never mixes up two sessions with the
+ *  same id on different connections.
+ */
+export type LiveSession_Deserialize = {
+	key: SessionKey,
+	agentName: string,
+	/**
+	 *  The installed agent id the connection was started for, when the
+	 *  desktop knows it (registry installs). `None` from the manager.
+	 */
+	agentId?: string | null,
+	/**  The lead session of a delegated child. `None` for a root session. */
+	parent?: SessionKey | null,
+	depth: number,
+	origin: SessionOrigin,
+	state: SessionActivity,
+	queued: number,
+	startedAtMs?: number | null,
+	currentTool?: string | null,
+	/**  The latest `session_info_update` title. */
+	title?: string | null,
+	/**  The current value of the agent's `model` config option. */
+	model?: string | null,
+	/**  The latest `current_mode_update` mode id. */
+	mode?: string | null,
+	/**
+	 *  The agent's latest health check result, filled in by the desktop when
+	 *  checks run. `None` from the manager.
+	 */
+	health?: HealthState | null,
+};
+
+/**
+ *  One live session as the agent mode rail lists it: identity, place in the
+ *  session tree, runtime state and the metadata the agent last reported.
+ *  Built only from the manager, so it never mixes up two sessions with the
+ *  same id on different connections.
+ */
+export type LiveSession_Serialize = {
+	key: SessionKey,
+	agentName: string,
+	/**
+	 *  The installed agent id the connection was started for, when the
+	 *  desktop knows it (registry installs). `None` from the manager.
+	 */
+	agentId: string | null,
+	/**  The lead session of a delegated child. `None` for a root session. */
+	parent: SessionKey | null,
+	depth: number,
+	origin: SessionOrigin,
+	state: SessionActivity,
+	queued: number,
+	startedAtMs: number | null,
+	currentTool: string | null,
+	/**  The latest `session_info_update` title. */
+	title: string | null,
+	/**  The current value of the agent's `model` config option. */
+	model: string | null,
+	/**  The latest `current_mode_update` mode id. */
+	mode: string | null,
+	/**
+	 *  The agent's latest health check result, filled in by the desktop when
+	 *  checks run. `None` from the manager.
+	 */
+	health: HealthState | null,
 };
 
 /**
@@ -2138,6 +2851,67 @@ export type LspResponse<T> = {
 };
 
 export type MarkdownView = "source" | "preview" | "both";
+
+/**  USD per million tokens for one model. */
+export type ModelPrice = ModelPrice_Serialize | ModelPrice_Deserialize;
+
+/**  USD per million tokens for one model. */
+export type ModelPrice_Deserialize = {
+	id: string,
+	label: string,
+	/**  `anthropic`, `openai`, `google`, or `custom` for a settings override. */
+	provider: string,
+	/**  Short names an agent may use for the model, such as `opus`. */
+	aliases?: string[],
+	input: number | null,
+	output: number | null,
+	/**  Cache hits. Absent: the input rate. */
+	cacheRead?: number | null,
+	/**
+	 *  Cache writes (the 5 minute rate where a provider has several).
+	 *  Absent: the input rate, as for providers that do not bill writes.
+	 */
+	cacheWrite?: number | null,
+	note?: string | null,
+};
+
+/**  USD per million tokens for one model. */
+export type ModelPrice_Serialize = {
+	id: string,
+	label: string,
+	/**  `anthropic`, `openai`, `google`, or `custom` for a settings override. */
+	provider: string,
+	/**  Short names an agent may use for the model, such as `opus`. */
+	aliases: string[],
+	input: number | null,
+	output: number | null,
+	/**  Cache hits. Absent: the input rate. */
+	cacheRead: number | null,
+	/**
+	 *  Cache writes (the 5 minute rate where a provider has several).
+	 *  Absent: the input rate, as for providers that do not bill writes.
+	 */
+	cacheWrite: number | null,
+	note: string | null,
+};
+
+export type ModelUsage = ModelUsage_Serialize | ModelUsage_Deserialize;
+
+export type ModelUsage_Deserialize = {
+	/**  The model as the agent named it. Empty when the agent named none. */
+	model: string,
+	agentIds: string[],
+	price?: PriceMatch_Deserialize | null,
+	totals: UsageTotals_Deserialize,
+};
+
+export type ModelUsage_Serialize = {
+	/**  The model as the agent named it. Empty when the agent named none. */
+	model: string,
+	agentIds: string[],
+	price: PriceMatch_Serialize | null,
+	totals: UsageTotals_Serialize,
+};
 
 /**  One model a session used. */
 export type ModelUse = ModelUse_Serialize | ModelUse_Deserialize;
@@ -2211,7 +2985,7 @@ export type ModelUse_Serialize = {
 	subagent?: boolean,
 };
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "showUsage" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,
@@ -2252,6 +3026,9 @@ export type ParameterInformationDto_Serialize = {
 	labelEnd: number | null,
 	documentation: string | null,
 };
+
+/**  What a new pasted file is made from. */
+export type PastedKind = "image" | "text";
 
 export type PermissionOption = {
 	optionId: string,
@@ -2295,6 +3072,96 @@ export type PrepareRenameDto_Serialize = {
 	range: RangeDto | null,
 	placeholder: string | null,
 	defaultBehavior: boolean,
+};
+
+export type PriceMatch = PriceMatch_Serialize | PriceMatch_Deserialize;
+
+/**  How a model id found its price. */
+export type PriceMatchKind =
+/**  The id names the priced model. */
+"exact" |
+/**  A short name the table maps to the current model of that line. */
+"alias" |
+/**  A longer id of a priced model, such as a variant or a dated snapshot. */
+"family" |
+/**  The user's own price from settings. */
+"override";
+
+export type PriceMatch_Deserialize = {
+	id: string,
+	label: string,
+	kind: PriceMatchKind,
+	note?: string | null,
+};
+
+export type PriceMatch_Serialize = {
+	id: string,
+	label: string,
+	kind: PriceMatchKind,
+	note: string | null,
+};
+
+/**
+ *  One `agents.usage.prices.<model>` entry: USD per million tokens. The key
+ *  is a model id or id prefix as the agent names the model.
+ */
+export type PriceOverride = PriceOverride_Serialize | PriceOverride_Deserialize;
+
+/**
+ *  One `agents.usage.prices.<model>` entry: USD per million tokens. The key
+ *  is a model id or id prefix as the agent names the model.
+ */
+export type PriceOverride_Deserialize = {
+	input: number | null,
+	output: number | null,
+	cacheRead?: number | null,
+	cacheWrite?: number | null,
+};
+
+/**
+ *  One `agents.usage.prices.<model>` entry: USD per million tokens. The key
+ *  is a model id or id prefix as the agent names the model.
+ */
+export type PriceOverride_Serialize = {
+	input: number | null,
+	output: number | null,
+	cacheRead?: number | null,
+	cacheWrite?: number | null,
+};
+
+/**  Where a price table came from. */
+export type PriceSource = {
+	provider: string,
+	url: string,
+};
+
+/**  A dated price table. */
+export type PriceTable = PriceTable_Serialize | PriceTable_Deserialize;
+
+export type PriceTableInfo = {
+	asOf: string,
+	currency: string,
+	unit: string,
+	sources: PriceSource[],
+	models: number,
+};
+
+/**  A dated price table. */
+export type PriceTable_Deserialize = {
+	asOf: string,
+	currency: string,
+	unit: string,
+	sources: PriceSource[],
+	models: ModelPrice_Deserialize[],
+};
+
+/**  A dated price table. */
+export type PriceTable_Serialize = {
+	asOf: string,
+	currency: string,
+	unit: string,
+	sources: PriceSource[],
+	models: ModelPrice_Serialize[],
 };
 
 /**  Extra prompt content. Plain text always travels in the prompt text itself. */
@@ -2396,6 +3263,13 @@ export type RegistryAgent_Serialize = {
 	/**  Phase 0.1 installs pinned npm distributions. Other transports remain visible. */
 	installable: boolean,
 	package: string | null,
+};
+
+/**  A cost as the agent reported it, in millionths of `currency`. */
+export type ReportedCost = {
+	micros: number,
+	/**  ISO 4217 code, for example `USD`. */
+	currency: string,
 };
 
 export type RunApprovalRequest = {
@@ -2546,6 +3420,25 @@ export type SavedAttachment = {
 	size: number,
 	/**  True when the requested name was taken and a numbered name was used. */
 	renamed: boolean,
+};
+
+/**  Progress and outcome of a scan. */
+export type ScanReport = {
+	/**  Log files found (within the caps). */
+	filesTotal: number,
+	/**  Files handled so far. */
+	filesDone: number,
+	/**  Files that had new bytes to read. */
+	filesRead: number,
+	bytesRead: number,
+	/**  Usage entries counted in this scan. */
+	entries: number,
+	/**  Entries left out as duplicates. */
+	duplicates: number,
+	/**  Files skipped for a cap or a read error. */
+	skipped: number,
+	/**  True when a cap stopped the file listing early. */
+	truncated: boolean,
 };
 
 export type SearchMatch = {
@@ -2734,6 +3627,8 @@ export type SessionMetaPatch_Deserialize = {
 	 */
 	continues?: SessionLink_Deserialize | null,
 	changesTracked?: boolean | null,
+	/**  A finished turn's usage (ADR 0012). */
+	usage?: UsagePatch_Deserialize | null,
 };
 
 /**
@@ -2759,6 +3654,8 @@ export type SessionMetaPatch_Serialize = {
 	 */
 	continues?: SessionLink_Serialize | null,
 	changesTracked?: boolean | null,
+	/**  A finished turn's usage (ADR 0012). */
+	usage?: UsagePatch_Serialize | null,
 };
 
 /**
@@ -2797,6 +3694,11 @@ export type SessionMeta_Deserialize = {
 	 *  so zero counters mean "no changes" rather than "unknown".
 	 */
 	changesTracked?: boolean,
+	/**
+	 *  Token and cost counters Span observed over ACP (ADR 0012). Counters
+	 *  only: no prompt text, replies or file contents.
+	 */
+	usage?: SessionUsage_Deserialize | null,
 };
 
 /**
@@ -2835,6 +3737,11 @@ export type SessionMeta_Serialize = {
 	 *  so zero counters mean "no changes" rather than "unknown".
 	 */
 	changesTracked?: boolean,
+	/**
+	 *  Token and cost counters Span observed over ACP (ADR 0012). Counters
+	 *  only: no prompt text, replies or file contents.
+	 */
+	usage?: SessionUsage_Serialize,
 };
 
 /**  Who started a session. */
@@ -2975,6 +3882,18 @@ export type SessionSummary_Deserialize = {
 	 *  History scope chips tell this workspace from other folders.
 	 */
 	cwd?: string | null,
+	/**
+	 *  The session that spawned this one with the agent's own subagent tool,
+	 *  when the agent named it. Set only together with `native_subagent`.
+	 */
+	parentSessionId?: string | null,
+	/**
+	 *  True for a session the agent created with its own subagent tool (not
+	 *  a Span delegation). History hides these by default and nests them
+	 *  under `parent_session_id`. Derived at list time; nothing is stored
+	 *  but the session ids (ADR 0005, amendment of 2026-10-29).
+	 */
+	nativeSubagent?: boolean,
 };
 
 /**  A past conversation the agent can restore. */
@@ -2987,6 +3906,95 @@ export type SessionSummary_Serialize = {
 	 *  History scope chips tell this workspace from other folders.
 	 */
 	cwd: string | null,
+	/**
+	 *  The session that spawned this one with the agent's own subagent tool,
+	 *  when the agent named it. Set only together with `native_subagent`.
+	 */
+	parentSessionId: string | null,
+	/**
+	 *  True for a session the agent created with its own subagent tool (not
+	 *  a Span delegation). History hides these by default and nests them
+	 *  under `parent_session_id`. Derived at list time; nothing is stored
+	 *  but the session ids (ADR 0005, amendment of 2026-10-29).
+	 */
+	nativeSubagent: boolean,
+};
+
+/**
+ *  Usage counters of one session (ADR 0012), bucketed by local day and model
+ *  so totals over any range of days are plain sums.
+ */
+export type SessionUsage = SessionUsage_Serialize | SessionUsage_Deserialize;
+
+/**  One session's usage in the range. */
+export type SessionUsageRow = SessionUsageRow_Serialize | SessionUsageRow_Deserialize;
+
+/**  One session's usage in the range. */
+export type SessionUsageRow_Deserialize = {
+	/**  Read from the agent's local logs rather than tracked by Span. */
+	imported: boolean,
+	agentId: string,
+	agentName: string,
+	sessionId: string,
+	title?: string | null,
+	firstSeenMs: number,
+	lastActiveMs: number,
+	models: string[],
+	totals: UsageTotals_Deserialize,
+	/**  Peak context window occupancy the agent reported, and the window size. */
+	contextPeak: number,
+	contextSize: number,
+};
+
+/**  One session's usage in the range. */
+export type SessionUsageRow_Serialize = {
+	/**  Read from the agent's local logs rather than tracked by Span. */
+	imported: boolean,
+	agentId: string,
+	agentName: string,
+	sessionId: string,
+	title: string | null,
+	firstSeenMs: number,
+	lastActiveMs: number,
+	models: string[],
+	totals: UsageTotals_Serialize,
+	/**  Peak context window occupancy the agent reported, and the window size. */
+	contextPeak: number,
+	contextSize: number,
+};
+
+/**
+ *  Usage counters of one session (ADR 0012), bucketed by local day and model
+ *  so totals over any range of days are plain sums.
+ */
+export type SessionUsage_Deserialize = {
+	buckets?: UsageBucket_Deserialize[],
+	/**
+	 *  The last cumulative session cost the agent reported, kept so the next
+	 *  report adds only its growth.
+	 */
+	costSeen?: ReportedCost | null,
+	/**  Peak context window occupancy (`usage_update.used`). Not consumption. */
+	contextPeak?: number,
+	/**  The last reported context window size. */
+	contextSize?: number,
+};
+
+/**
+ *  Usage counters of one session (ADR 0012), bucketed by local day and model
+ *  so totals over any range of days are plain sums.
+ */
+export type SessionUsage_Serialize = {
+	buckets: UsageBucket_Serialize[],
+	/**
+	 *  The last cumulative session cost the agent reported, kept so the next
+	 *  report adds only its growth.
+	 */
+	costSeen?: ReportedCost,
+	/**  Peak context window occupancy (`usage_update.used`). Not consumption. */
+	contextPeak?: number,
+	/**  The last reported context window size. */
+	contextSize?: number,
 };
 
 export type Settings = Settings_Serialize | Settings_Deserialize;
@@ -3027,6 +4035,8 @@ export type Settings_Deserialize = {
 	agents?: AgentSettings_Deserialize,
 	/**  Update checks. Optional in TypeScript like `agents`. */
 	updates?: UpdateSettings_Deserialize,
+	/**  Explorer preferences. Optional in TypeScript like `agents`. */
+	explorer?: ExplorerSettings_Deserialize,
 };
 
 export type Settings_Serialize = {
@@ -3063,6 +4073,8 @@ export type Settings_Serialize = {
 	agents?: AgentSettings_Serialize,
 	/**  Update checks. Optional in TypeScript like `agents`. */
 	updates?: UpdateSettings_Serialize,
+	/**  Explorer preferences. Optional in TypeScript like `agents`. */
+	explorer?: ExplorerSettings_Serialize,
 };
 
 export type SignatureHelpDto = SignatureHelpDto_Serialize | SignatureHelpDto_Deserialize;
@@ -3297,6 +4309,41 @@ export type TextEditDto = {
 };
 
 export type Theme = "Dark" | "Light" | "Purple";
+
+/**  Token counts of one turn, or a sum of turns. Zero means not reported. */
+export type TokenCounts = TokenCounts_Serialize | TokenCounts_Deserialize;
+
+/**  Token counts of one turn, or a sum of turns. Zero means not reported. */
+export type TokenCounts_Deserialize = {
+	/**  Input tokens as the agent reported them (see `input_includes_cache`). */
+	input?: number,
+	output?: number,
+	cacheRead?: number,
+	cacheWrite?: number,
+	/**
+	 *  Reasoning tokens. Reported as part of `output` by the providers this
+	 *  table prices, so never added to the cost a second time.
+	 */
+	thought?: number,
+	/**  The agent's own total when it sent one, else the sum of the parts. */
+	total?: number,
+};
+
+/**  Token counts of one turn, or a sum of turns. Zero means not reported. */
+export type TokenCounts_Serialize = {
+	/**  Input tokens as the agent reported them (see `input_includes_cache`). */
+	input: number,
+	output: number,
+	cacheRead: number,
+	cacheWrite: number,
+	/**
+	 *  Reasoning tokens. Reported as part of `output` by the providers this
+	 *  table prices, so never added to the cost a second time.
+	 */
+	thought: number,
+	/**  The agent's own total when it sent one, else the sum of the parts. */
+	total: number,
+};
 
 /**  A diff from tool call content. */
 export type ToolDiff = ToolDiff_Serialize | ToolDiff_Deserialize;
@@ -3611,6 +4658,178 @@ export type Upload_Serialize = {
 	missing: boolean,
 };
 
+/**  What one model did on one day of a session. Zero means not reported. */
+export type UsageBucket = UsageBucket_Serialize | UsageBucket_Deserialize;
+
+/**  What one model did on one day of a session. Zero means not reported. */
+export type UsageBucket_Deserialize = {
+	/**  Local calendar day, `YYYY-MM-DD`. */
+	day?: string,
+	/**  The model as the agent names it. Empty when unknown. */
+	model?: string,
+	turns?: number,
+	/**  Turns that came with token counts. */
+	turnsWithTokens?: number,
+	input?: number,
+	output?: number,
+	cacheRead?: number,
+	cacheWrite?: number,
+	thought?: number,
+	total?: number,
+	/**  Growth of the agent's reported session cost, in millionths. */
+	costMicros?: number,
+	currency?: string | null,
+};
+
+/**  What one model did on one day of a session. Zero means not reported. */
+export type UsageBucket_Serialize = {
+	/**  Local calendar day, `YYYY-MM-DD`. */
+	day: string,
+	/**  The model as the agent names it. Empty when unknown. */
+	model?: string,
+	turns?: number,
+	/**  Turns that came with token counts. */
+	turnsWithTokens?: number,
+	input?: number,
+	output?: number,
+	cacheRead?: number,
+	cacheWrite?: number,
+	thought?: number,
+	total?: number,
+	/**  Growth of the agent's reported session cost, in millionths. */
+	costMicros?: number,
+	currency?: string,
+};
+
+/**
+ *  A cost figure. `known` is false when none of the usage has a price or a
+ *  reported cost: the UI then shows no amount, never zero. `complete` is
+ *  false when some tokens had neither.
+ */
+export type UsageCost = {
+	/**  `reported_usd + estimated_usd`. */
+	usd: number | null,
+	/**  Cost the agent itself reported over ACP, in USD. */
+	reportedUsd: number | null,
+	/**  Span's estimate from tokens and the price table. */
+	estimatedUsd: number | null,
+	/**  Tokens that have neither a price nor a reported cost. */
+	unpricedTokens: number,
+	known: boolean,
+	complete: boolean,
+};
+
+/**  The local log importer's state for the Usage page. */
+export type UsageImportStatus = UsageImportStatus_Serialize | UsageImportStatus_Deserialize;
+
+/**  The local log importer's state for the Usage page. */
+export type UsageImportStatus_Deserialize = {
+	/**  `agents.usage.importLocalLogs` in the user settings. */
+	enabled: boolean,
+	running: boolean,
+	/**  The running or last scan. */
+	report?: ScanReport | null,
+	/**  Unix milliseconds of the last finished scan. */
+	scannedMs?: number | null,
+	error?: string | null,
+};
+
+/**  The local log importer's state for the Usage page. */
+export type UsageImportStatus_Serialize = {
+	/**  `agents.usage.importLocalLogs` in the user settings. */
+	enabled: boolean,
+	running: boolean,
+	/**  The running or last scan. */
+	report: ScanReport | null,
+	/**  Unix milliseconds of the last finished scan. */
+	scannedMs: number | null,
+	error: string | null,
+};
+
+/**
+ *  What a finished turn reported, merged into the session's usage (ADR
+ *  0012). Token counts are one turn's and are added; `costTotal` is the
+ *  agent's cumulative session cost and only its growth is added; `context`
+ *  updates the peak.
+ */
+export type UsagePatch = UsagePatch_Serialize | UsagePatch_Deserialize;
+
+/**
+ *  What a finished turn reported, merged into the session's usage (ADR
+ *  0012). Token counts are one turn's and are added; `costTotal` is the
+ *  agent's cumulative session cost and only its growth is added; `context`
+ *  updates the peak.
+ */
+export type UsagePatch_Deserialize = {
+	/**
+	 *  Local calendar day of the turn, `YYYY-MM-DD`. Absent or invalid: the
+	 *  UTC day of the update.
+	 */
+	day?: string | null,
+	model?: string | null,
+	tokens?: TokenCounts_Deserialize | null,
+	costTotal?: ReportedCost | null,
+	context?: ContextReading | null,
+	/**  Turns this patch stands for. Absent means one. */
+	turns?: number | null,
+};
+
+/**
+ *  What a finished turn reported, merged into the session's usage (ADR
+ *  0012). Token counts are one turn's and are added; `costTotal` is the
+ *  agent's cumulative session cost and only its growth is added; `context`
+ *  updates the peak.
+ */
+export type UsagePatch_Serialize = {
+	/**
+	 *  Local calendar day of the turn, `YYYY-MM-DD`. Absent or invalid: the
+	 *  UTC day of the update.
+	 */
+	day?: string | null,
+	model?: string | null,
+	tokens?: TokenCounts_Serialize | null,
+	costTotal?: ReportedCost | null,
+	context?: ContextReading | null,
+	/**  Turns this patch stands for. Absent means one. */
+	turns?: number | null,
+};
+
+/**
+ *  An inclusive range of local calendar days, `YYYY-MM-DD`. Absent bounds are
+ *  open.
+ */
+export type UsageRange = UsageRange_Serialize | UsageRange_Deserialize;
+
+/**
+ *  An inclusive range of local calendar days, `YYYY-MM-DD`. Absent bounds are
+ *  open.
+ */
+export type UsageRange_Deserialize = {
+	from?: string | null,
+	to?: string | null,
+	/**
+	 *  Minutes east of UTC of the viewer's time zone, used to place imported
+	 *  usage (kept per UTC hour) on local days. Absent: UTC.
+	 */
+	utcOffsetMinutes?: number | null,
+	source?: UsageSource | null,
+};
+
+/**
+ *  An inclusive range of local calendar days, `YYYY-MM-DD`. Absent bounds are
+ *  open.
+ */
+export type UsageRange_Serialize = {
+	from?: string | null,
+	to?: string | null,
+	/**
+	 *  Minutes east of UTC of the viewer's time zone, used to place imported
+	 *  usage (kept per UTC hour) on local days. Absent: UTC.
+	 */
+	utcOffsetMinutes?: number | null,
+	source?: UsageSource | null,
+};
+
 /**  Usage reported for a delegation. Every field is only set when reported. */
 export type UsageReport = UsageReport_Serialize | UsageReport_Deserialize;
 
@@ -3632,6 +4851,75 @@ export type UsageReport_Serialize = {
 	cost: number | null,
 	currency: string | null,
 	elapsedSeconds: number,
+};
+
+/**
+ *  Which usage a range covers (ADR 0012): what Span tracked over ACP, what
+ *  the opt-in importers read from agents' local logs, or both.
+ */
+export type UsageSource = "all" | "tracked" | "imported";
+
+export type UsageSummary = UsageSummary_Serialize | UsageSummary_Deserialize;
+
+export type UsageSummary_Deserialize = {
+	range: UsageRange_Deserialize,
+	totals: UsageTotals_Deserialize,
+	/**
+	 *  Every day of the range, oldest first, with zero days filled in. For
+	 *  an open range it starts at the first recorded day.
+	 */
+	days: DayUsage[],
+	/**  Most tokens first. */
+	agents: AgentUsage_Deserialize[],
+	/**  Most tokens first. */
+	models: ModelUsage_Deserialize[],
+	/**  The model with the most tokens (turns when no tokens were reported). */
+	topModel?: string | null,
+	prices: PriceTableInfo,
+	/**  Sessions with any usage counters at all, in or out of the range. */
+	trackedSessions: number,
+};
+
+export type UsageSummary_Serialize = {
+	range: UsageRange_Serialize,
+	totals: UsageTotals_Serialize,
+	/**
+	 *  Every day of the range, oldest first, with zero days filled in. For
+	 *  an open range it starts at the first recorded day.
+	 */
+	days: DayUsage[],
+	/**  Most tokens first. */
+	agents: AgentUsage_Serialize[],
+	/**  Most tokens first. */
+	models: ModelUsage_Serialize[],
+	/**  The model with the most tokens (turns when no tokens were reported). */
+	topModel: string | null,
+	prices: PriceTableInfo,
+	/**  Sessions with any usage counters at all, in or out of the range. */
+	trackedSessions: number,
+};
+
+/**  Sums for a group of buckets. */
+export type UsageTotals = UsageTotals_Serialize | UsageTotals_Deserialize;
+
+/**  Sums for a group of buckets. */
+export type UsageTotals_Deserialize = {
+	tokens: TokenCounts_Deserialize,
+	turns: number,
+	/**  Turns whose agent reported token counts. */
+	turnsWithTokens: number,
+	sessions: number,
+	cost: UsageCost,
+};
+
+/**  Sums for a group of buckets. */
+export type UsageTotals_Serialize = {
+	tokens: TokenCounts_Serialize,
+	turns: number,
+	/**  Turns whose agent reported token counts. */
+	turnsWithTokens: number,
+	sessions: number,
+	cost: UsageCost,
 };
 
 /**  A non-text block in a replayed user turn, kept as a marker. */
@@ -3656,6 +4944,14 @@ export type UserAttachment_Serialize = {
 };
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
+
+export type WatchRecoveryPhase =
+/**  An automatic restart is about to happen. Shown quietly in the status popover. */
+"refreshing" |
+/**  The automatic restart finished. */
+"refreshed" |
+/**  Automatic restarts are used up for now. The user may restart it. */
+"exhausted";
 
 export type WorkProgressKindDto = "begin" | "report" | "end";
 

@@ -2,6 +2,8 @@
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
 mod attachment;
 mod buffer;
+mod checkpoint;
+mod external_changes;
 mod folder_outline;
 mod format;
 mod format_native;
@@ -19,18 +21,35 @@ mod search;
 mod session;
 mod session_meta;
 mod settings;
+mod text_file;
 mod tools;
 mod transcript_export;
 mod uploads;
+pub mod usage;
+pub mod usage_import;
 pub mod version;
 mod workspace;
 
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
+pub use checkpoint::{
+    CaptureOutcome, CheckpointChanges, CheckpointConflict, CheckpointFileChange,
+    CheckpointFileKind, CheckpointHunkRef, CheckpointPhase, CheckpointRestoreReport,
+    CheckpointRevertReport, CheckpointStatus, CheckpointTurn, Checkpoints, CHECKPOINT_KEEP_TURNS,
+    CHECKPOINT_MAX_FILES, CHECKPOINT_MAX_FILE_BYTES,
+};
+pub use external_changes::{
+    ExternalDiskSnapshot, ExternalFileCheck, ExternalFileKind, ExternalFileResolution,
+    ExternalFileState,
+};
 pub use folder_outline::{FolderOutline, FOLDER_OUTLINE_LIMIT, MAX_FOLDER_OUTLINE_LIMIT};
 pub use format::{
     native_program_path, resolve_program, run_formatter, run_formatter_cancellable, FormatRequest,
     FormatResult,
+};
+pub use fs_ops::{
+    copy_name, ConflictPolicy, ImportItem, ImportLimits, ImportProgress, ImportReport,
+    MAX_IMPORT_BYTES, MAX_IMPORT_ENTRIES,
 };
 pub use git::{
     GitChange, GitCommit, GitCommitResult, GitContext, GitDiff, GitDiffSide, GitHistoryPage,
@@ -45,14 +64,21 @@ pub use search::{CancellationToken, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use session::{MarkdownView, SessionGroup, SessionPanels, SessionState, SessionStore};
 pub use session_meta::{
     patch_for_file_stats, patch_for_model_selected, patch_for_turn_complete, patch_for_turn_start,
-    patches_for_delegation, workspace_hash, workspace_key, AgentUse, FileChangeStats, ModelUse,
-    ModelUsePatch, SessionLink, SessionMeta, SessionMetaPatch, SessionMetaStore, SessionParent,
-    SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS, SESSION_META_SCHEMA_VERSION,
+    patches_for_delegation, workspace_hash, workspace_key, AgentUse, ContextReading,
+    FileChangeStats, ModelUse, ModelUsePatch, ReportedCost, SessionLink, SessionMeta,
+    SessionMetaPatch, SessionMetaStore, SessionParent, SessionUsage, UsageBucket, UsagePatch,
+    MAX_USAGE_BUCKETS, SESSION_META_MAX_BYTES, SESSION_META_MAX_SESSIONS,
+    SESSION_META_SCHEMA_VERSION,
 };
 pub use settings::{
-    AgentSettings, AutoSaveMode, DelegationSettings, LanguageServerSettings, RunToolsSettings,
+    AgentSettings, AgentUsageSettings, AutoSaveMode, DelegationSettings, ExplorerLegacyPreferences,
+    ExplorerPreferenceMigration, ExplorerSettings, LanguageServerSettings, RunToolsSettings,
     Settings, SettingsScope, StartMode, Theme, UpdateSettings, COMMAND_IDS, LANGUAGE_SERVER_IDS,
     SYNTAX_THEMES, SYNTAX_TOKEN_IDS,
+};
+pub use text_file::{
+    has_binary_extension, looks_binary, FileContentKind, FileProbe, BINARY_SNIFF_BYTES,
+    MAX_VIEWER_READ_BYTES, NOT_TEXT_MESSAGE,
 };
 pub use tools::{list_tools, ToolInfo};
 pub use transcript_export::{redact_paths, transcript_to_markdown, Transcript, TranscriptItem};
@@ -74,6 +100,10 @@ pub enum CoreError {
         path: String,
         source: std::io::Error,
     },
+    /// The file is binary or not UTF-8. The message is the one shown to users; `detail` is
+    /// for logs only.
+    #[error("This file isn't text, so it can't be opened in the editor.")]
+    NotText { path: String, detail: String },
     #[error("Path is outside the workspace: {0}")]
     OutsideWorkspace(String),
     #[error("This is library source, not a file in your project: {0}")]
@@ -107,7 +137,15 @@ pub enum CoreError {
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
+/// The one place an I/O failure becomes a [`CoreError`]. `InvalidData` is what
+/// `read_to_string` reports for bytes that are not UTF-8, so it becomes [`CoreError::NotText`].
 fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> CoreError {
+    if source.kind() == std::io::ErrorKind::InvalidData {
+        return CoreError::NotText {
+            path: path.display().to_string(),
+            detail: format!("{operation}: {source}"),
+        };
+    }
     CoreError::Io {
         operation,
         path: path.display().to_string(),

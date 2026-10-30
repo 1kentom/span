@@ -4,7 +4,7 @@ import { render } from 'solid-js/web';
 import { For, Show, createSignal } from 'solid-js';
 import { AttachmentNotices, MessageAttachments, createAttachmentIntake, type Intake } from './index';
 import { MAX_IMAGE_BYTES } from '../../lib/asset-preview';
-import { createFileAttachment, type Attachment } from '../../lib/attachments';
+import { createFileAttachment, planAttachment, type Attachment } from '../../lib/attachments';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); vi.restoreAllMocks(); });
@@ -74,12 +74,18 @@ describe('drop and file input intake', () => {
     zone.dispatchEvent(event('dragleave', { dataTransfer: transfer() }));
     expect(root.querySelector('.att-drop-overlay')).toBeNull();
   });
-  it('ignores drags that carry no files', () => {
+  it('never shows the file overlay for text drags and leaves the prompt box its own text drop', () => {
     const root = mount(() => <Harness />);
     const zone = root.querySelector('.att-dropzone')!;
     const e = event('dragenter', { dataTransfer: transfer([], ['text/plain']) });
     zone.dispatchEvent(e);
-    expect(e.defaultPrevented).toBe(false); expect(zone.classList.contains('att-dragging')).toBe(false);
+    expect(e.defaultPrevented).toBe(true); expect(zone.classList.contains('att-dragging')).toBe(false);
+    const onPrompt = event('dragover', { dataTransfer: transfer([], ['text/plain']) });
+    root.querySelector('textarea')!.dispatchEvent(onPrompt);
+    expect(onPrompt.defaultPrevented).toBe(false);
+    const none = event('dragenter', { dataTransfer: transfer([], ['text/html']) });
+    zone.dispatchEvent(none);
+    expect(none.defaultPrevented).toBe(false);
   });
   it('adds dropped files and reports oversized ones without reading them', async () => {
     const root = mount(() => <Harness />);
@@ -93,6 +99,28 @@ describe('drop and file input intake', () => {
     expect(read).not.toHaveBeenCalled();
     expect(root.querySelector('[role="alert"]')?.textContent).toMatch(/huge\.png: Larger than the 8\.0 MiB limit/);
     expect(zone.classList.contains('att-dragging')).toBe(false);
+  });
+  it('attaches a dropped or picked binary file as bytes, never as text, even under a text name', async () => {
+    let items: () => Attachment[] = () => [];
+    const root = mount(() => <Harness capture={(_, list) => { items = list; }} />);
+    const zone = root.querySelector('.att-dropzone')!;
+    // Valid UTF-8 with NUL bytes and invalid UTF-8, both named like text, plus a plain binary.
+    const nul = new File([new Uint8Array([0x68, 0x69, 0x00, 0x01, 0x02])], 'notes.txt', { type: 'text/plain' });
+    const invalid = new File([new Uint8Array([0x61, 0xff, 0xfe])], 'build.log', { type: '' });
+    zone.dispatchEvent(event('drop', { dataTransfer: transfer([nul, invalid]) }));
+    await settle();
+    const input = root.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, 'files', { value: [new File([new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00])], 'tool.bin')], configurable: true });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    expect(items().map(item => item.name)).toEqual(['notes.txt', 'build.log', 'tool.bin']);
+    for (const item of items()) {
+      expect(item.text).toBeUndefined();
+      expect(item.bytes).toBeInstanceOf(Uint8Array);
+      expect(planAttachment(item, { image: true, audio: true, embeddedContext: true })).toEqual({ mode: 'resource' });
+      expect(planAttachment(item, { image: true, audio: true, embeddedContext: false }).mode).not.toBe('text');
+    }
+    expect([...items()[0].bytes!]).toEqual([0x68, 0x69, 0x00, 0x01, 0x02]);
   });
   it('dismisses notices', async () => {
     const root = mount(() => <Harness />);

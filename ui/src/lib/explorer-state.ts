@@ -3,13 +3,20 @@ import type { FileEntry } from "../bindings";
 import type { Workbench } from "../stores/workbench";
 import { copyName, creationFolder, join, rangeBetween, renameSelectionEnd, topLevelPaths, validateName } from "./explorer-ops";
 import { compactChain } from "./compact-tree";
-import { compactFolders, confirmDelete } from "./explorer-prefs";
+import { explorerPreferences } from "./explorer-prefs";
 import { fileName, parentPath } from "./navigation";
+import { desktopTransfer, importSummary, pastedName, sameEntries, type ConflictPolicy, type ExplorerTransfer, type ImportItems, type ImportProgress, type PastedKind } from "./explorer-transfer";
+import type { DroppedPath } from "./native-drop";
+import { notify } from "../stores/notifications";
 
 export type ExplorerEdit = { mode: "create" | "rename"; kind: "file" | "folder"; parent: string; path?: string; value: string; template?: string; error?: string; warning?: string; select?: [number, number]; busy?: boolean };
 export type ConflictChoice = "cancel" | "keep" | "replace";
+/** Answer to one name clash of an import from outside Span. Undefined cancels the whole import. */
+export type ImportChoice = { policy: ConflictPolicy; all: boolean };
 export type ExplorerDialog =
   | { kind: "conflict"; folder: string; names: string[]; resolve: (choice: ConflictChoice) => void }
+  | { kind: "import-conflict"; folder: string; name: string; remaining: number; resolve: (choice: ImportChoice | undefined) => void }
+  | { kind: "paste-name"; folder: string; pasted: PastedKind; value: string; resolve: (name: string | undefined) => void }
   | { kind: "delete"; paths: string[]; resolve: (ok: boolean) => void };
 
 export const templates = [
@@ -26,7 +33,8 @@ export const templates = [
 ];
 
 /** All Explorer state and file operations. The Explorer component renders it, App wires the actions and dialogs. */
-export function createExplorerState(w: Workbench) {
+export function createExplorerState(w: Workbench, transfer: ExplorerTransfer = desktopTransfer) {
+  const preferences = () => explorerPreferences(w.settings());
   const [selection, setSelection] = createSignal<readonly string[]>([]);
   const [focus, setFocus] = createSignal<string>();
   const [anchor, setAnchor] = createSignal<string>();
@@ -36,6 +44,8 @@ export function createExplorerState(w: Workbench) {
   const [templateRequest, setTemplateRequest] = createSignal<{ folder: string; x: number; y: number }>();
   const [notice, setNotice] = createSignal("");
   const undoStack: Array<{ label: string; run: () => Promise<void> }> = [];
+  /** The import from outside Span that is running, with its latest progress. */
+  const [importing, setImporting] = createSignal<{ folder: string; progress?: ImportProgress }>();
 
   const listing = (folder: string): readonly FileEntry[] | undefined => w.directories[folder];
   const entryOf = (path: string) => listing(parentPath(path))?.find(entry => entry.path === path);
@@ -72,7 +82,7 @@ export function createExplorerState(w: Workbench) {
     const known = templates.find(item => item.id === template);
     await ensureExpanded(folder);
     // A compact chain shows only its deepest folder, so a new row for an inner segment belongs under that one.
-    if (compactFolders() && folder) { const deepest = compactChain(folder, w.directories).deepest; if (deepest !== folder) { await ensureExpanded(deepest); folder = deepest; } }
+    if (preferences().compactFolders && folder) { const deepest = compactChain(folder, w.directories).deepest; if (deepest !== folder) { await ensureExpanded(deepest); folder = deepest; } }
     setEdit({ mode: "create", kind, parent: folder, value: known?.ext ?? "", template, select: [0, 0] });
     scrollIntoView("");
   }
@@ -133,11 +143,17 @@ export function createExplorerState(w: Workbench) {
     }
   }
 
-  function setClip(cut: boolean) { const paths = topLevelPaths(targets()); if (paths.length) setClipboard({ paths, cut, generation: w.workspaceGeneration() }); }
+  /** Copy or cut: the in-app clipboard drives moves, and the OS clipboard gets the files so Finder or Explorer can paste them. */
+  function setClip(cut: boolean) {
+    const paths = topLevelPaths(targets()); if (!paths.length) return;
+    setClipboard({ paths, cut, generation: w.workspaceGeneration() });
+    // Browser preview has no OS clipboard command: the in-app clipboard still works.
+    void Promise.resolve().then(() => transfer.writeClipboard(paths)).catch(() => undefined);
+  }
   async function loaded(folder: string) { if (!w.directories[folder]) await w.loadDirectory(folder); return listing(folder) ?? []; }
 
   /** Move or copy items into a folder, asking Replace / Keep Both / Cancel on name conflicts. Returns whether anything changed. */
-  async function transfer(sources: readonly string[], folder: string, copy: boolean): Promise<boolean> {
+  async function move(sources: readonly string[], folder: string, copy: boolean): Promise<boolean> {
     const items = topLevelPaths(sources).filter(path => entryOf(path));
     if (!items.length) return false;
     for (const path of items) if (folder === path || folder.startsWith(`${path}/`)) { w.setError("A folder cannot be moved inside itself."); return false; }
@@ -171,25 +187,103 @@ export function createExplorerState(w: Workbench) {
     return done.length > 0;
   }
 
+  /**
+   * Paste into a folder. Span's own Copy or Cut moves or copies inside the project while the OS clipboard still
+   * holds those items; files copied in Finder or Explorer are imported; otherwise a clipboard image or text
+   * becomes a new file.
+   */
   async function paste(folder = creationParent()) {
-    const clip = clipboard(); if (!clip || clip.generation !== w.workspaceGeneration()) return;
-    const ok = await transfer(clip.paths, folder, !clip.cut);
-    if (ok && clip.cut) setClipboard(undefined);
+    const clip = clipboard(); const current = clip && clip.generation === w.workspaceGeneration() ? clip : undefined;
+    let contents: Awaited<ReturnType<ExplorerTransfer["readClipboard"]>> | undefined;
+    try { contents = await transfer.readClipboard(); } catch { contents = undefined; }
+    if (current && (!contents?.files.length || sameEntries(contents.files, w.workspace()?.root, current.paths))) {
+      const ok = await move(current.paths, folder, !current.cut);
+      if (ok && current.cut) setClipboard(undefined);
+      return;
+    }
+    if (contents?.files.length) { await importItems(contents.files, folder); return; }
+    if (contents?.hasImage) { await pasteAsFile(folder, "image"); return; }
+    if (contents?.hasText) { await pasteAsFile(folder, "text"); return; }
+    setNotice("The clipboard has no files, image or text to paste.");
   }
+  async function pasteAsFile(folder: string, pasted: PastedKind) {
+    const siblings = await loaded(folder);
+    const taken = (name: string) => siblings.some(entry => entry.name.toLowerCase() === name.toLowerCase());
+    const name = await new Promise<string | undefined>(resolve => setDialog({ kind: "paste-name", folder, pasted, value: pastedName(pasted, taken), resolve }));
+    setDialog(undefined);
+    if (!name?.trim()) return;
+    const check = validateName(name.trim(), folder, listing);
+    if (check.level === "error") { w.setError(check.msg); return; }
+    try {
+      const entry = await transfer.pasteFile(join(folder, name.trim()), pasted);
+      await w.refreshFiles();
+      undoPush(`Paste ${fileName(entry.path)}`, () => w.trashPath(entry.path));
+      await reveal(entry.path);
+    } catch (error) { fail(error); }
+  }
+
+  /** Native drop: Rust describes each path of the latest drop, then the items are imported. */
+  async function importDropped(paths: readonly string[], folder: string) {
+    const items: DroppedPath[] = [];
+    for (const path of paths) { try { items.push(await transfer.pathInfo(path)); } catch (error) { fail(error); } }
+    return importItems(items, folder);
+  }
+  /** Copies items from outside Span into a folder, asking Keep both, Replace or Skip for each name clash. */
+  async function importItems(items: readonly DroppedPath[], folder: string): Promise<boolean> {
+    if (!items.length) return false;
+    if (importing()) { setNotice("Wait for the running copy to finish."); return false; }
+    const siblings = await loaded(folder);
+    const taken = (name: string) => siblings.some(entry => entry.name.toLowerCase() === name.toLowerCase());
+    const clashes = items.filter(item => taken(item.name));
+    const plan: ImportItems = []; let forAll: ConflictPolicy | undefined; let asked = 0;
+    for (const item of items) {
+      let policy: ConflictPolicy = "keepBoth";
+      if (taken(item.name)) {
+        asked++;
+        if (forAll) policy = forAll;
+        else {
+          const choice = await new Promise<ImportChoice | undefined>(resolve => setDialog({ kind: "import-conflict", folder, name: item.name, remaining: clashes.length - asked, resolve }));
+          setDialog(undefined);
+          if (!choice) return false;
+          policy = choice.policy; if (choice.all) forAll = choice.policy;
+        }
+      }
+      plan.push({ source: item.path, policy });
+    }
+    setImporting({ folder });
+    const poll = setInterval(() => { void transfer.progress().then(progress => { if (progress && importing()) setImporting({ folder, progress }); }).catch(() => undefined); }, 250);
+    let report: Awaited<ReturnType<ExplorerTransfer["importPaths"]>>;
+    try { report = await transfer.importPaths(folder, plan); }
+    catch (error) { fail(error); return false; }
+    finally { clearInterval(poll); setImporting(undefined); }
+    await w.refreshFiles();
+    if (report.error) w.setError(report.error);
+    const added = report.created.filter(path => !report.replaced.includes(path));
+    const undoCopy = async () => { for (const path of [...added].reverse()) await w.trashPath(path); };
+    if (added.length) undoPush(`Copy ${added.length === 1 ? fileName(added[0]) : `${added.length} items`}`, undoCopy);
+    if (report.created.length) {
+      await ensureExpanded(folder);
+      batch(() => { setSelection(report.created); setFocus(report.created[report.created.length - 1]); setAnchor(report.created[0]); });
+      scrollIntoView(report.created[0]);
+    }
+    notify({ level: report.created.length ? "success" : "info", message: importSummary(report, folder), actions: added.length ? [{ label: "Undo", run: () => void undo() }] : [] });
+    return report.created.length > 0;
+  }
+  async function cancelImport() { try { await transfer.cancel(); } catch (error) { fail(error); } }
   async function duplicate(path = focus() ?? selection()[0]) {
     if (!path) return;
     const folder = parentPath(path);
-    await transfer([path], folder, true);
+    await move([path], folder, true);
   }
   async function trash(paths = targets()) {
     const items = topLevelPaths(paths); if (!items.length) return;
-    if (confirmDelete()) { const ok = await new Promise<boolean>(resolve => setDialog({ kind: "delete", paths: items, resolve })); setDialog(undefined); if (!ok) return; }
+    if (preferences().confirmDelete) { const ok = await new Promise<boolean>(resolve => setDialog({ kind: "delete", paths: items, resolve })); setDialog(undefined); if (!ok) return; }
     const visible = visiblePaths(); const next = visible.find(path => !items.some(item => path === item || path.startsWith(`${item}/`)) && visible.indexOf(path) > visible.indexOf(items[items.length - 1]));
     try { for (const path of items) await w.trashPath(path); } catch (error) { fail(error); }
     batch(() => { setSelection(next ? [next] : []); setFocus(next); });
   }
   function collapseAll() { for (const path of [...w.expanded()]) if (path !== "") void w.toggleDirectory(path); }
 
-  return { clearClipboard, selectAll, scrollTo, selection, focus, setFocus, anchor, edit, clipboard, dialog, setDialog, templateRequest, setTemplateRequest, notice, setNotice, selectOnly, toggleSelect, selectRange, clearSelection, targets, startCreate, startTemplate, startRename, setEditValue, cancelEdit, commitEdit, setClip, paste, duplicate, trash, transfer, undo, reveal, ensureExpanded, collapseAll, creationParent, isDirectory, entryOf, visiblePaths };
+  return { clearClipboard, selectAll, scrollTo, selection, focus, setFocus, anchor, edit, clipboard, dialog, setDialog, templateRequest, setTemplateRequest, notice, setNotice, selectOnly, toggleSelect, selectRange, clearSelection, targets, startCreate, startTemplate, startRename, setEditValue, cancelEdit, commitEdit, setClip, paste, duplicate, trash, transfer: move, importDropped, importItems, importing, cancelImport, undo, reveal, ensureExpanded, collapseAll, creationParent, isDirectory, entryOf, visiblePaths };
 }
 export type ExplorerState = ReturnType<typeof createExplorerState>;

@@ -58,6 +58,19 @@ The wrapper is not exported to TypeScript yet because no command or event
 carries it. When the UI shows several agents, register it as a tauri-specta
 event or channel type and the bindings follow.
 
+Update (2026-10-29): the UI now shows background agents (warm starts of
+0009, health dots and the live agents strip of 0010, delegated children of
+0003), so "only shows one agent" no longer holds, though those surfaces
+still arrive through dedicated events rather than this wrapper. Agent mode
+(0011) will show many sessions at once; its phase 1 registers the wrapper
+with tauri-specta and keys commands by `SessionKey`.
+
+Update (2026-10-29, ADR 0011 phase 1): the wrapper now reaches the UI as the
+tauri-specta event `AgentKeyedEvent { connectionId, agentName, key, event }`,
+where `key` is the `SessionKey` (or null for connection level events). It is
+a parallel stream: the sidebar channel still receives the plain
+`AgentEvent`s of its own connection, so `AgentEvent` is unchanged.
+
 ### 4. One prompt in flight per session, FIFO follow-ups
 
 `SessionManager::prompt` starts the turn if the session is idle, otherwise

@@ -7,23 +7,30 @@
 //! - An agent with a turn in flight, or with a chat turn in the last
 //!   interval, is skipped; a chat turn postpones its next check by one
 //!   interval.
-//! - The hidden session ([`AgentService::new_hidden_session`]) never reaches
-//!   the user's chat, the session manager or the History list. It is closed
-//!   (or deleted) after each check when the agent advertises it, otherwise
-//!   reused for the life of the connection.
+//! - One hidden session per connection ([`AgentService::new_hidden_session`])
+//!   is created on the first check and prompted again by every later check;
+//!   a check never opens a session of its own. Only when the agent rejects
+//!   the kept session is it replaced, once. Agents keep every session in
+//!   their own history, so opening one per check flooded History.
+//! - Hidden sessions never reach the user's chat, the session manager or the
+//!   History list. Their ids are remembered across runs (the ledger, see
+//!   [`HealthMonitor::set_ledger`]), and once per agent per run a background
+//!   cleanup deletes leftover health sessions where the agent advertises
+//!   `session/delete`, at most [`HealthPolicy::cleanup_max`] per run.
 //! - Any reply counts as Live; only the reply arriving matters. The turn is
 //!   cancelled as soon as the first text arrives, every permission request
 //!   is rejected and every input request cancelled.
 use crate::{AgentEvent, AgentService, BackgroundAgents, EventSink, SessionManager};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-pub use crate::service::HEALTH_PROMPT;
+pub use crate::service::{HEALTH_PROMPT, HEALTH_TITLE_PREFIX};
 
 /// Time between two checks of one agent, and how long a chat turn on an
 /// agent postpones its next check.
@@ -75,8 +82,12 @@ pub struct HealthPolicy {
     pub retry_after: Duration,
     /// How often the monitor looks for due agents.
     pub tick: Duration,
-    /// How long to wait for a cancelled check turn to end before closing.
+    /// How long to wait for a cancelled check turn to end.
     pub settle: Duration,
+    /// Leftover health sessions the cleanup deletes per agent per run.
+    pub cleanup_max: usize,
+    /// Pause between two deletes of the cleanup.
+    pub cleanup_gap: Duration,
 }
 
 impl Default for HealthPolicy {
@@ -89,6 +100,8 @@ impl Default for HealthPolicy {
             retry_after: Duration::from_secs(20),
             tick: Duration::from_secs(5),
             settle: Duration::from_secs(5),
+            cleanup_max: 20,
+            cleanup_gap: Duration::from_secs(2),
         }
     }
 }
@@ -123,6 +136,50 @@ fn is_auth(message: &str) -> bool {
     message.to_ascii_lowercase().starts_with(AUTH_PREFIX)
 }
 
+/// Health sessions remembered for one agent across runs of Span.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LedgerAgent {
+    /// Sessions Span created on this agent, oldest first.
+    #[serde(default)]
+    pub(crate) sessions: Vec<String>,
+    /// Sessions the cleanup already deleted (or the agent refused), so a
+    /// later run never asks again.
+    #[serde(default)]
+    pub(crate) cleaned: Vec<String>,
+}
+
+/// Ids kept per list in the ledger.
+const LEDGER_KEEP: usize = 500;
+
+pub(crate) fn push_capped(list: &mut Vec<String>, id: &str) -> bool {
+    if list.iter().any(|known| known == id) {
+        return false;
+    }
+    list.push(id.to_owned());
+    if list.len() > LEDGER_KEEP {
+        let extra = list.len() - LEDGER_KEEP;
+        list.drain(..extra);
+    }
+    true
+}
+
+/// Write a ledger file (small JSON) through a temporary file, so a crash
+/// never leaves half of it. Failures only cost the memory across runs. The
+/// delegated child ledger (`crate::delegated`) uses the same format.
+pub(crate) fn write_ledger(path: &std::path::Path, ledger: &BTreeMap<String, LedgerAgent>) {
+    let Ok(bytes) = serde_json::to_vec_pretty(ledger) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let temporary = path.with_extension("json.tmp");
+    if std::fs::write(&temporary, bytes).is_ok() {
+        let _ = std::fs::rename(&temporary, path);
+    }
+}
+
 struct Tracked {
     connection: String,
     due: Instant,
@@ -144,8 +201,13 @@ struct Inner {
     agents: Mutex<HashMap<String, Tracked>>,
     /// Chat activity reported with [`HealthMonitor::note_activity`].
     activity: Mutex<HashMap<String, Instant>>,
-    /// The hidden session kept per connection, when the agent cannot close it.
+    /// The one hidden session kept per connection, reused by every check.
     hidden: Mutex<HashMap<String, String>>,
+    /// Health sessions remembered per agent, and the file they persist to.
+    ledger: Mutex<BTreeMap<String, LedgerAgent>>,
+    ledger_path: Mutex<Option<PathBuf>>,
+    /// Agents whose cleanup already ran (or started) in this process.
+    cleaned_agents: Mutex<HashSet<String>>,
     /// Connections whose hidden sink is installed.
     sinks: Mutex<HashSet<String>>,
     waiters: Arc<Mutex<HashMap<(String, String), Waiter>>>,
@@ -160,6 +222,9 @@ pub struct HealthMonitor {
 
 enum Failure {
     SignedOut(String),
+    /// The agent answered the prompt with an error: it may no longer know
+    /// the kept session.
+    Rejected(String),
     Other(String),
 }
 
@@ -180,6 +245,9 @@ impl HealthMonitor {
                 agents: Mutex::default(),
                 activity: Mutex::default(),
                 hidden: Mutex::default(),
+                ledger: Mutex::default(),
+                ledger_path: Mutex::default(),
+                cleaned_agents: Mutex::default(),
                 sinks: Mutex::default(),
                 waiters: Arc::default(),
                 running: Mutex::new(false),
@@ -209,6 +277,66 @@ impl HealthMonitor {
 
     pub fn set_sink(&self, sink: Option<HealthSink>) {
         *lock(&self.inner.sink) = sink;
+    }
+
+    /// Remember health session ids across runs in the JSON file at `path`.
+    /// The ids already in it join the process wide hidden set at once, so
+    /// listings drop them even when the agent titles them differently. A
+    /// missing or unreadable file starts empty.
+    pub fn set_ledger(&self, path: PathBuf) {
+        let loaded: BTreeMap<String, LedgerAgent> = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        crate::remember_hidden_sessions(
+            loaded
+                .values()
+                .flat_map(|agent| agent.sessions.iter().chain(&agent.cleaned).cloned()),
+        );
+        *lock(&self.inner.ledger) = loaded;
+        *lock(&self.inner.ledger_path) = Some(path);
+    }
+
+    /// Health sessions remembered for `agent_id`, oldest first.
+    pub fn remembered_sessions(&self, agent_id: &str) -> Vec<String> {
+        lock(&self.inner.ledger)
+            .get(agent_id)
+            .map(|agent| agent.sessions.clone())
+            .unwrap_or_default()
+    }
+
+    fn remember(&self, agent_id: &str, session: &str) {
+        let changed = push_capped(
+            &mut lock(&self.inner.ledger)
+                .entry(agent_id.to_owned())
+                .or_default()
+                .sessions,
+            session,
+        );
+        if changed {
+            self.save_ledger();
+        }
+    }
+
+    fn mark_cleaned(&self, agent_id: &str, session: &str) {
+        let changed = push_capped(
+            &mut lock(&self.inner.ledger)
+                .entry(agent_id.to_owned())
+                .or_default()
+                .cleaned,
+            session,
+        );
+        if changed {
+            self.save_ledger();
+        }
+    }
+
+    /// Write the ledger through [`write_ledger`].
+    fn save_ledger(&self) {
+        let Some(path) = lock(&self.inner.ledger_path).clone() else {
+            return;
+        };
+        write_ledger(&path, &lock(&self.inner.ledger));
     }
 
     /// Record chat activity on a connection: its next check moves to one
@@ -347,6 +475,20 @@ impl HealthMonitor {
         if removed {
             self.publish();
         }
+        // Leftover health sessions of earlier checks are cleaned once per
+        // agent per run, in the background (scheduled rounds only).
+        if !force {
+            for target in &targets {
+                if lock(&self.inner.cleaned_agents).insert(target.agent_id.clone()) {
+                    let monitor = self.clone();
+                    let target = target.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(monitor.inner.policy.first_check).await;
+                        monitor.cleanup(&target).await;
+                    });
+                }
+            }
+        }
         // Connections that ended keep nothing.
         lock(&self.inner.hidden).retain(|c, _| targets.iter().any(|t| &t.connection_id == c));
         lock(&self.inner.sinks).retain(|c| targets.iter().any(|t| &t.connection_id == c));
@@ -393,14 +535,20 @@ impl HealthMonitor {
     }
 
     /// A turn is in flight, queued or waiting for the user on `connection`.
-    fn busy(&self, connection: &str) -> bool {
-        let running = self
-            .inner
+    fn turn_running(&self, connection: &str) -> bool {
+        self.inner
             .manager
             .session_states(connection)
             .sessions
             .iter()
-            .any(|s| s.state != crate::SessionActivity::Idle || s.queued > 0);
+            .any(|s| s.state != crate::SessionActivity::Idle || s.queued > 0)
+    }
+
+    /// A user turn is running on `connection`, or one ended within the last
+    /// interval: a successful chat turn already proves the agent answers,
+    /// so the check waits.
+    fn busy(&self, connection: &str) -> bool {
+        let running = self.turn_running(connection);
         let quiet = self
             .last_activity(connection)
             .is_some_and(|at| at.elapsed() < self.inner.policy.interval);
@@ -418,7 +566,7 @@ impl HealthMonitor {
             checked_at_ms: now_ms(),
             detail,
         };
-        let failure = match self.attempt(&target.connection_id).await {
+        let failure = match self.attempt(target).await {
             Ok(latency) => {
                 let state = if latency > policy.slow {
                     HealthState::Slow
@@ -430,13 +578,13 @@ impl HealthMonitor {
             Err(Failure::SignedOut(message)) => {
                 return Some(finish(HealthState::SignedOut, None, Some(message)))
             }
-            Err(Failure::Other(message)) => message,
+            Err(Failure::Other(message) | Failure::Rejected(message)) => message,
         };
         tokio::time::sleep(policy.retry_after).await;
         if self.busy(&target.connection_id) {
             return None;
         }
-        match self.attempt(&target.connection_id).await {
+        match self.attempt(target).await {
             Ok(latency) => {
                 let state = if latency > policy.slow {
                     HealthState::Slow
@@ -448,7 +596,7 @@ impl HealthMonitor {
             Err(Failure::SignedOut(message)) => {
                 Some(finish(HealthState::SignedOut, None, Some(message)))
             }
-            Err(Failure::Other(message)) => Some(finish(
+            Err(Failure::Other(message) | Failure::Rejected(message)) => Some(finish(
                 HealthState::Unreachable,
                 None,
                 Some(if message.is_empty() { failure } else { message }),
@@ -528,9 +676,12 @@ impl HealthMonitor {
         service.set_hidden_sink(Some(sink));
     }
 
-    /// Send the check prompt once and wait for the first reply.
-    async fn attempt(&self, connection: &str) -> Result<Duration, Failure> {
-        let policy = self.inner.policy;
+    /// Send the check prompt once over the connection's one hidden session
+    /// and wait for the first reply. The session is created on the first
+    /// check and reused afterwards; only when the agent rejects the kept
+    /// session is a replacement created, once, and stored instead.
+    async fn attempt(&self, target: &HealthTarget) -> Result<Duration, Failure> {
+        let connection = target.connection_id.as_str();
         let service = self
             .inner
             .manager
@@ -539,27 +690,59 @@ impl HealthMonitor {
             .ok_or_else(|| Failure::Other("The agent is not running".into()))?;
         self.install_sink(connection, &service);
         let kept = lock(&self.inner.hidden).get(connection).cloned();
-        let session = match kept {
-            Some(session) => session,
-            None => {
-                match tokio::time::timeout(policy.timeout, service.new_hidden_session()).await {
-                    Ok(Ok(session)) => session,
-                    Ok(Err(message)) if is_auth(&message) => {
-                        return Err(Failure::SignedOut(message))
-                    }
-                    Ok(Err(message)) => return Err(Failure::Other(message)),
-                    Err(_) => {
-                        return Err(Failure::Other(format!(
-                            "No session within {} seconds",
-                            policy.timeout.as_secs()
-                        )))
+        let Some(session) = kept else {
+            let session = self.create(target, &service).await?;
+            return self.prompt_once(connection, &service, &session).await;
+        };
+        match self.prompt_once(connection, &service, &session).await {
+            Err(Failure::Rejected(_)) if service.is_open() => {
+                {
+                    let mut hidden = lock(&self.inner.hidden);
+                    if hidden.get(connection) == Some(&session) {
+                        hidden.remove(connection);
                     }
                 }
+                let replacement = self.create(target, &service).await?;
+                self.prompt_once(connection, &service, &replacement).await
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Create the connection's hidden session and keep it for later checks.
+    async fn create(
+        &self,
+        target: &HealthTarget,
+        service: &AgentService,
+    ) -> Result<String, Failure> {
+        let policy = self.inner.policy;
+        let session = match tokio::time::timeout(policy.timeout, service.new_hidden_session()).await
+        {
+            Ok(Ok(session)) => session,
+            Ok(Err(message)) if is_auth(&message) => return Err(Failure::SignedOut(message)),
+            Ok(Err(message)) => return Err(Failure::Other(message)),
+            Err(_) => {
+                return Err(Failure::Other(format!(
+                    "No session within {} seconds",
+                    policy.timeout.as_secs()
+                )))
             }
         };
-        lock(&self.inner.hidden).insert(connection.to_owned(), session.clone());
+        lock(&self.inner.hidden).insert(target.connection_id.clone(), session.clone());
+        self.remember(&target.agent_id, &session);
+        Ok(session)
+    }
+
+    /// One check prompt on `session`, cancelled once the reply started.
+    async fn prompt_once(
+        &self,
+        connection: &str,
+        service: &AgentService,
+        session: &str,
+    ) -> Result<Duration, Failure> {
+        let policy = self.inner.policy;
         let (text_tx, text_rx) = oneshot::channel();
-        let waiter_key = (connection.to_owned(), session.clone());
+        let waiter_key = (connection.to_owned(), session.to_owned());
         lock(&self.inner.waiters).insert(
             waiter_key.clone(),
             Waiter {
@@ -567,9 +750,12 @@ impl HealthMonitor {
             },
         );
         let started = Instant::now();
-        let outcome = match service.start_prompt(session.clone(), HEALTH_PROMPT.into(), Vec::new())
-        {
-            Err(message) => Err(Failure::Other(message)),
+        let outcome = match service.start_prompt(
+            session.to_owned(),
+            HEALTH_PROMPT.into(),
+            Vec::new(),
+        ) {
+            Err(message) => Err(Failure::Rejected(message)),
             Ok(mut done) => {
                 let waited = tokio::time::timeout(policy.timeout, async {
                     tokio::select! {
@@ -577,7 +763,7 @@ impl HealthMonitor {
                         result = &mut done => match result {
                             Ok(Ok(())) => Ok(()),
                             Ok(Err(message)) if is_auth(&message) => Err(Failure::SignedOut(message)),
-                            Ok(Err(message)) => Err(Failure::Other(message)),
+                            Ok(Err(message)) => Err(Failure::Rejected(message)),
                             Err(_) => Err(Failure::Other("The agent process exited".into())),
                         },
                     }
@@ -591,47 +777,92 @@ impl HealthMonitor {
                     ))),
                 };
                 // Stop the turn as soon as the reply started (or the wait ended).
-                if service.is_running(&session) {
-                    let _ = service.cancel(session.clone());
+                if service.is_running(session) {
+                    let _ = service.cancel(session.to_owned());
                     let _ = tokio::time::timeout(policy.settle, done).await;
                 }
                 outcome
             }
         };
         lock(&self.inner.waiters).remove(&waiter_key);
-        self.tidy(connection, &service, &session).await;
+        if !service.is_open() {
+            lock(&self.inner.hidden).remove(connection);
+        }
         outcome
     }
 
-    /// Close or delete the hidden session when the agent supports it, so it
-    /// does not pile up in the agent's own history. Otherwise keep it for
-    /// the next check.
-    async fn tidy(&self, connection: &str, service: &AgentService, session: &str) {
-        let ended = if service.can_close_sessions() {
-            service.close_session(session.to_owned()).await.is_ok()
-        } else if service.can_delete_sessions() {
-            service.delete_session(session.to_owned()).await.is_ok()
-        } else {
-            false
+    /// Delete leftover health sessions of `target`'s agent: the ones it
+    /// lists (by remembered id or by the check prompt title) and the ones
+    /// remembered from earlier runs, except the session in use. Only when
+    /// the agent advertises `session/delete`; `session/close` cannot remove
+    /// a session from the agent's history, so without delete the listing
+    /// filter alone keeps them out of History. At most `cleanup_max` per
+    /// run, one every `cleanup_gap`, and never while a user turn runs.
+    /// Every id the agent answered for is recorded, so a later run never
+    /// asks again. Returns how many were deleted.
+    pub async fn cleanup(&self, target: &HealthTarget) -> usize {
+        let policy = self.inner.policy;
+        let connection = target.connection_id.as_str();
+        let Some(service) = self
+            .inner
+            .manager
+            .service(connection)
+            .filter(|s| s.is_open() && s.can_delete_sessions())
+        else {
+            return 0;
         };
-        // A connection that exited keeps nothing either.
-        if ended || !service.is_open() {
-            lock(&self.inner.hidden).remove(connection);
+        let listed =
+            match tokio::time::timeout(policy.timeout, service.list_health_sessions()).await {
+                Ok(Ok(found)) => found.into_iter().map(|s| s.session_id).collect(),
+                _ => Vec::new(),
+            };
+        let (remembered, cleaned) = lock(&self.inner.ledger)
+            .get(&target.agent_id)
+            .map(|agent| (agent.sessions.clone(), agent.cleaned.clone()))
+            .unwrap_or_default();
+        let current = lock(&self.inner.hidden).get(connection).cloned();
+        let mut seen = HashSet::new();
+        let candidates: Vec<String> = listed
+            .into_iter()
+            .chain(remembered)
+            .filter(|id| Some(id) != current.as_ref() && !cleaned.contains(id))
+            .filter(|id| seen.insert(id.clone()))
+            .take(policy.cleanup_max)
+            .collect();
+        let mut deleted = 0;
+        for (index, id) in candidates.into_iter().enumerate() {
+            if index > 0 {
+                tokio::time::sleep(policy.cleanup_gap).await;
+            }
+            if !service.is_open() || self.turn_running(connection) {
+                break;
+            }
+            match tokio::time::timeout(policy.timeout, service.delete_session(id.clone())).await {
+                Ok(Ok(())) => {
+                    deleted += 1;
+                    self.mark_cleaned(&target.agent_id, &id);
+                }
+                // Refused (for example an unknown id): asking again would not help.
+                Ok(Err(_)) if service.is_open() => self.mark_cleaned(&target.agent_id, &id),
+                _ => break,
+            }
         }
+        deleted
     }
 
-    /// Stop checking (app exit). Hidden sessions still held are closed or
-    /// deleted where the agent supports it.
+    /// Stop checking (app exit). The hidden sessions still held are deleted
+    /// where the agent supports it (so they leave its history), else closed
+    /// where it supports that.
     pub async fn shutdown(&self) {
         *lock(&self.inner.running) = false;
         let held: Vec<(String, String)> = lock(&self.inner.hidden).drain().collect();
         for (connection, session) in held {
             if let Some(service) = self.inner.manager.service(&connection) {
                 let wait = Duration::from_secs(2);
-                if service.can_close_sessions() {
-                    let _ = tokio::time::timeout(wait, service.close_session(session)).await;
-                } else if service.can_delete_sessions() {
+                if service.can_delete_sessions() {
                     let _ = tokio::time::timeout(wait, service.delete_session(session)).await;
+                } else if service.can_close_sessions() {
+                    let _ = tokio::time::timeout(wait, service.close_session(session)).await;
                 }
             }
         }

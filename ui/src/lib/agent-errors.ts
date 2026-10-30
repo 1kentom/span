@@ -186,9 +186,9 @@ export function limitTitle(info: AgentErrorInfo, now: number): string {
 /** One short sentence under the title. */
 export function limitSentence(info: AgentErrorInfo, now: number): string {
   const resets = info.resetAt !== undefined && info.resetAt > now ? ` Resets in ${waitText(info.resetAt - now)}.` : "";
-  if (info.kind === "quota") return info.freeTier ? `The free usage for this model is used up. Pick another model or agent to keep going.${resets}` : `There is no usage left on this plan for now.${resets}`;
-  if (info.kind === "rate_limit") return "Too many requests in a short time. Retry when the wait is over, or use another model.";
-  if (info.kind === "overloaded") return "The provider is busy right now. Retry in a moment, or use another model.";
+  if (info.kind === "quota") return info.freeTier ? `This model's free usage is used up.${resets}` : `No usage left on this plan for now.${resets}`;
+  if (info.kind === "rate_limit") return "Too many requests in a short time.";
+  if (info.kind === "overloaded") return "The provider is busy right now.";
   return "";
 }
 

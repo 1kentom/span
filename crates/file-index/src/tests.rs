@@ -221,3 +221,84 @@ async fn bad_scan_root_does_not_poison_a_later_workspace() {
     );
     assert_eq!(index.snapshot(&workspace).unwrap().indexed_files, 1);
 }
+
+#[tokio::test]
+async fn visibility_reconfiguration_preserves_handle_but_cancels_old_scan_and_query_snapshots() {
+    let temp = tempfile::tempdir().unwrap();
+    write(temp.path(), ".env.example", "example");
+    let ignored = write(temp.path(), "ignored/source.rs", "ignored");
+    write(
+        temp.path(),
+        ".gitignore",
+        "ignored/\nnode_modules/\ntarget/\n",
+    );
+    write(temp.path(), "Cargo.toml", "[package]\n");
+    let dependency = write(temp.path(), "node_modules/pkg/index.js", "dependency");
+    let output = write(temp.path(), "target/debug/output.rs", "generated");
+    let (index, handle) = indexed(temp.path()).await;
+    let generation = handle.generation();
+    let request = index.inner.active_query_id.load(AtomicOrdering::Acquire);
+    let (old_token, old_scan) = index.begin_scan(&handle).unwrap();
+    let visible = ScanVisibility {
+        show_hidden_files: false,
+        show_ignored_files: true,
+    };
+    assert!(index.set_visibility(&handle, visible).unwrap());
+    assert!(old_token.is_cancelled());
+    assert_ne!(
+        index.inner.active_query_id.load(AtomicOrdering::Acquire),
+        request
+    );
+    index.scan_blocking(&handle, old_token, old_scan);
+    assert_eq!(index.snapshot(&handle).unwrap().status, ScanStatus::Idle);
+    assert_eq!(index.snapshot(&handle).unwrap().indexed_files, 0);
+    index.start_scan(&handle).unwrap().await.unwrap();
+    assert_eq!(index.snapshot(&handle).unwrap().generation, generation);
+    assert!(!index.set_visibility(&handle, visible).unwrap());
+    for path in [
+        ignored,
+        dependency,
+        output,
+        temp.path().join(".env.example"),
+    ] {
+        index.apply_event(&handle, FileEvent::Upsert(path)).unwrap();
+    }
+    let results = index.query(&handle, "", 100).await.unwrap();
+    let paths: Vec<_> = results
+        .results
+        .iter()
+        .map(|entry| entry.relative_path.as_path())
+        .collect();
+    assert!(paths.contains(&Path::new("ignored/source.rs")));
+    assert!(!paths.iter().any(|path| path.starts_with("node_modules")
+        || path.starts_with("target")
+        || path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'))));
+}
+
+#[tokio::test]
+async fn visibility_regular_file_named_node_modules_remains_a_source_file_in_scan_and_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = write(temp.path(), "node_modules", "ordinary file");
+    let (index, handle) = indexed(temp.path()).await;
+    assert_eq!(
+        index
+            .query(&handle, "node_modules", 100)
+            .await
+            .unwrap()
+            .results
+            .len(),
+        1
+    );
+    index.apply_event(&handle, FileEvent::Upsert(path)).unwrap();
+    assert_eq!(
+        index
+            .query(&handle, "node_modules", 100)
+            .await
+            .unwrap()
+            .results
+            .len(),
+        1
+    );
+}

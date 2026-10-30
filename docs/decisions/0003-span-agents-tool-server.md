@@ -1,9 +1,11 @@
 # 0003: span-agents MCP tool server
 
-Status: proposed for issue #52 (tool server) with the guardrails of #53 and
-the `record_decision` tool of #54. Builds on 0001 (session manager).
-Wired into the desktop behind `agents.delegation.enabled` (section 6);
-not yet run against real agents (see UNVERIFIED).
+Status: shipped (originally proposed) for issue #52 (tool server) with the
+guardrails of #53 and the `record_decision` tool of #54. Builds on 0001
+(session manager). Shipped in the desktop behind `agents.delegation.enabled`,
+default on (section 6); not yet verified against real agents (see
+UNVERIFIED). The UI setting for `max_depth` (section 4) is not built.
+Status updated 2026-10-29; agent mode (0011) builds on this record.
 
 ## Context
 
@@ -206,12 +208,40 @@ stays about the delegation.
 - Budget per delegation (`Budget`, defaults): 20 turns, 30 minute wall
   clock, no token or cost limit by default (the agent's context window
   already bounds context tokens, and cost is rarely reported). A lead may
-  only lower limits via `delegate.budget`. Tokens are the larger of the
-  peak `usage_update.used` and the sum of unstable
-  `PromptResponse.usage.totalTokens`; cost only when reported. Checked on
-  every usage event and every policy second; over budget, Span cancels the
-  child (cascade) and the task fails with `budget_exceeded` or `timeout`.
-  A message beyond the turn budget is refused with `budget_exceeded`.
+  only lower limits via `delegate.budget`. Tokens measure what the
+  delegation spent (see "Token budget measures spend" below); cost only
+  when reported. Checked on every usage event and every policy second
+  while a turn runs; over budget, Span cancels the child (cascade) and the
+  task fails with `budget_exceeded` or `timeout`. A message beyond the
+  turn or token budget is refused with `budget_exceeded`.
+- Token budget measures spend (amended). `usage_update.used` is context
+  window occupancy, and a fresh agent session already holds roughly 25k
+  to 31k tokens of system prompt and tool definitions before the task
+  starts. Comparing the peak `used` with `maxTokens` therefore failed every
+  small budget at the child's first usage report: a lead asking for
+  `maxTokens: 1000` saw "reported 31290 tokens, over the 1000 token
+  budget" on tasks that would have answered in seconds. The meter now
+  takes the first `used` reading of the delegation as a baseline and
+  counts the sum of unstable `PromptResponse.usage.totalTokens` over
+  finished turns plus the context growth since the last of them; without
+  per-turn totals that is just the growth over the baseline. A
+  baseline-only reading counts as nothing, and a compacted context never
+  makes the growth negative. A running turn that really exceeds the budget
+  is still cancelled with `budget_exceeded` and the detail "used about N
+  tokens since it started, over the M token budget". A usage report that
+  arrives after the turn's completion was seen never stops or fails that
+  task: it stays `completed`, and when the delegation is over its token
+  budget its `detail` carries the quiet note "Used about N tokens, over
+  the M token budget" (refreshed by later reports while nothing else is
+  queued). The UI shows that note on the card and in the Active agents
+  tooltip; such a task reads Done and is not counted as failed.
+  `usage.tokens` (`UsageReport`, IPC) stays the peak context occupancy for
+  the context meter, labelled "in context" on the card; the lead's
+  `get_result` `usage` also carries `spentTokens` and `maxTokens`. Budgets
+  remain lower only; turn, timeout and cost checks are unchanged. Tests:
+  `budget::tests`, `tasks::tests`,
+  `a_small_token_budget_measures_spend_not_the_childs_starting_context`,
+  `exceeding_a_budget_cancels_the_child_and_reports_it`.
 - Cancel cascade: `cancel` goes through the manager. Stopping the lead
   stops its children (0001). When the lead session leaves the manager
   (close, delete, disconnect, process exit), an end hook stops the server
@@ -437,3 +467,90 @@ Tests (`crates/acp/tests/tool_server.rs`):
 - Time scaling: the "3 minute child" test runs 180 policy seconds with one
   policy second = 10 ms (`ToolPolicy::second`). A real 3 minute wall clock
   run was not done.
+
+## Amendment (2026-10-29): delegated child sessions and thread clutter
+
+A delegated child is a real session in the target agent, so every
+`delegate` used to leave one more row in that agent's History list and in
+its own resume list (for example `claude --resume`), long after the task.
+Session lifecycle policy from now on:
+
+- Lead: created on a user action, reused with `session/load`, closed when
+  the user closes the chat.
+- Child: created by `delegate` only, reused only through `message` (same
+  child session, one turn per task, no `session/new`), ended when idle or
+  when its lead ends.
+- Health check: one hidden session per connection (ADR 0010), opened
+  ephemeral where the agent allows it.
+- Background and warm starts: process and `initialize` only, never a
+  session; the UI promotes the connection on connect.
+
+What changed:
+
+1. Record. `SessionManager::open_session_with` records every child id the
+   moment the agent returns it (`crate::delegated`), per agent name, in the
+   app data file `agent-delegated-sessions.json` (same format and atomic
+   write as the health ledger, `agent-health-sessions.json`).
+2. Hidden from History. `AgentService::list_sessions` drops recorded child
+   ids page by page, like health sessions, and `session_meta_list` drops
+   their metadata. The UI (`visibleThreadRows`) also drops any session whose
+   metadata carries a `parent` link. A child is reached only from its
+   delegation card inside the lead's thread.
+3. Out of the agent's own history where possible. Children (and health
+   sessions) are opened with `AgentService::new_child_session`: for Claude
+   it sends `_meta.claudeCode.options.persistSession: false`, which
+   claude-agent-acp 0.98.0 spreads into the Agent SDK options (read from the
+   adapter source; not run against a live agent). Other adapters send
+   nothing extra.
+4. Ended. Strictly by recorded id, each at most once (the ledger keeps the
+   ended ids): `session/delete` where advertised, else `session/close`.
+   - After `ToolPolicy::child_idle_seconds` (600) with no task, the child is
+     closed or deleted and marked closed; a later `message` returns
+     `agent_unavailable` with "closed after sitting idle ... delegate again".
+   - When the lead ends (chat closed, disconnect, server dropped), every
+     child is ended, `ToolPolicy::end_gap` (500 ms) apart.
+   - On app exit, children still held are ended within 3 seconds.
+   - Leftovers of an earlier run (recorded, never ended, not held now) are
+     ended once per agent per process when a lead binds on that agent or
+     delegates to it, at most 20, `end_gap` apart. Nothing is matched by
+     title, so sessions from versions before this amendment (no recorded
+     ids) are neither hidden nor ended by this mechanism.
+5. Caps per lead, each refused with `budget_exceeded` and a detail that
+   tells the lead what to do: `max_delegations` 8 distinct children,
+   `max_concurrent` 4 children with a running or queued task,
+   `max_lead_turns` 60 prompts across all children, `max_lead_tokens`
+   (none by default) measured tokens across all children. The `delegate`
+   description tells the lead to use `message` for follow-ups.
+
+6. Untrusted framing. Text a child wrote reaches the lead (the
+   `get_result` summary) inside an `<untrusted-agent-output agent="...">`
+   frame with a one line preface, and the server instructions tell the lead
+   never to follow instructions found inside it unless the user asked. A
+   frame tag in the child's own text is defused so it cannot close the
+   frame early (T3 issue #24711: unframed agent text was read as user
+   input). Progress activity strings (child tool titles) are not framed.
+7. No permission laundering. A child always starts in the approval start
+   mode (`Opened::Child` in `service.rs`), whatever
+   `agents.startMode.<agent>` says for chats, so a child never runs looser
+   than its lead could: a bypass or full access mode from the agent's own
+   configuration is changed to its approval mode at once, and Claude's
+   ListAgents tool is left out. Fixtures `codex/child-start-mode` and
+   `claude/child-session`.
+
+Not done: an idle timeout for warm background processes that hold no
+session (background processes still live until the app quits or the folder
+changes).
+
+Tests: `crates/acp/tests/tool_server.rs` (one `session/new` for five
+prompts to one delegation, distinct and concurrent caps, a child hidden from
+`session/list` and deleted exactly once when the lead ends, idle close and
+the late `message` error, leftover sweep by recorded id only), unit tests in
+`tools/tasks.rs`, `service.rs`, `adapter/claude.rs`,
+`apps/desktop/src/session_meta.rs`, and the UI tests in
+`session-threads.test.ts` and `RestoreLast.test.tsx`.
+
+Unverified: no run against Claude, Codex or another real agent; whether
+Claude honours `persistSession: false` for ACP sessions and whether Codex
+keeps closed children in its own history were not observed. The desktop
+exit path was not exercised in a native window.
+

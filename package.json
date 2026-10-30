@@ -13,6 +13,7 @@
     "test": "pnpm --filter @span/ui test",
     "test:e2e": "pnpm exec playwright test",
     "desktop:dev": "cd apps/desktop && tauri dev",
+    "desktop:preview": "cd apps/desktop && tauri dev --no-watch --config tauri.preview.conf.json",
     "desktop:build": "cd apps/desktop && tauri build",
     "bench:web": "node bench/run-web.mjs"
   },

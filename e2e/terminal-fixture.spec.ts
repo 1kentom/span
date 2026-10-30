@@ -34,6 +34,7 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
         if (command === "get_settings_jsonc" || command === "get_settings_jsonc_for_scope") return "{}";
         if (["take_startup_requests", "recent_projects", "get_settings_keys_for_scope", "agent_installed", "sync_native_menu", "pending_run_approvals", "list_runs"].includes(command)) return [];
         if (command === "lsp_status") return [];
+        if (command === "check_external_files") return { workspaceRoot: root, revision: 0, directoriesChanged: false, states: [] };
         if (command === "file_index_status") return { workspaceRoot: root, generation: 1, status: "ready", scannedEntries: 1, indexedFiles: 1, errorCount: 0, lastError: null, watcherReady: true, watcherError: null };
         if (command === "query_file") return { workspaceRoot: root, generation: 1, requestId: 1, results: [{ path: "README.md", name: "README.md", isDir: false }] };
         if (command === "git_context") return { workspaceRoot: root, enabled: false, repository: { id: "terminal-git-fixture", root, workspacePrefix: "", branch: "fixture", head: null, detached: false, unborn: true }, unavailableReason: null };
@@ -103,7 +104,7 @@ test("native IPC fixture exercises xterm input, resize, tabs and Markdown Run ve
   await expect(page.getByRole("dialog", { name: "Goto", exact: true })).toHaveCount(0);
   await input.press("Control+Shift+G");
   await expect(page.getByRole("region", { name: "Git source control", exact: true })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest(".git-panel"))).toBe(true);
+  await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest(".git-source-control"))).toBe(true);
   await expect(page.getByRole("button", { name: "Enable Git", exact: true })).toBeVisible();
   expect((await trace()).writes.map(value => value.text).join("")).not.toContain("\x07");
   await input.focus(); await input.press("Control+g"); await input.press("Control+p");

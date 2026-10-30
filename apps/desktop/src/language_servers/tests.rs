@@ -698,7 +698,7 @@ async fn status_reports_capabilities_only_for_ready_servers() {
         .unwrap();
     assert_eq!(json.state, LanguageServerStateDto::NotStarted);
     assert!(json.capabilities.is_none());
-    assert_eq!(before.len(), 7);
+    assert_eq!(before.len(), 10);
 
     f.open_ready().await;
     eventually("ready state event", || {
@@ -1906,6 +1906,9 @@ async fn status_rows_describe_the_server_and_its_runtime() {
         (LanguageServerId::Json, "JSON"),
         (LanguageServerId::RustAnalyzer, "Rust (rust-analyzer)"),
         (LanguageServerId::Basedpyright, "Python (basedpyright)"),
+        (LanguageServerId::Svelte, "Svelte"),
+        (LanguageServerId::Vue, "Vue"),
+        (LanguageServerId::Astro, "Astro"),
     ] {
         assert!(names.contains(&(id, name)), "{id:?}");
     }
@@ -1921,4 +1924,312 @@ async fn open_in_unready(f: &mut Fixture, path: &str) {
     let snapshot = f.ws.open_buffer(path).unwrap();
     f.svc.on_snapshot(&snapshot);
     f.svc.flush().await;
+}
+
+fn watched_test_batch(root: &Path, incomplete: bool) -> crate::watched_paths::WatchedBatch {
+    crate::watched_paths::WatchedBatch {
+        root: root.to_path_buf(),
+        changes: vec![lsp::FileEvent {
+            uri: tauri::Url::from_file_path(root.join("config.json"))
+                .unwrap()
+                .as_str()
+                .parse()
+                .unwrap(),
+            typ: lsp::FileChangeType::CHANGED,
+        }],
+        incomplete,
+    }
+}
+
+fn change_event(path: &Path) -> lsp::FileEvent {
+    lsp::FileEvent::new(
+        span_lsp::path_to_uri(path).unwrap(),
+        lsp::FileChangeType::CHANGED,
+    )
+}
+
+#[tokio::test]
+async fn watched_files_do_not_start_servers_and_pending_work_is_bounded_and_generation_scoped() {
+    let f = fixture(true, "normal", Duration::from_secs(5));
+    f.svc
+        .watched_files_changed(watched_test_batch(&f.root, false));
+    {
+        let st = lock(&f.svc.state);
+        assert!(st.watch.coalescer.is_empty() && !st.watch.scheduled);
+    }
+    assert_eq!(f.resolver.resolves.load(Ordering::SeqCst), 0);
+    {
+        // Tauri owns an independent worker thread. Hold the production state
+        // lock across enqueueing and inspection so it cannot drain this batch.
+        let mut st = lock(&f.svc.state);
+        st.states
+            .insert((ID, f.root.clone()), LanguageServerStateDto::Starting);
+        for _ in 0..100 {
+            f.svc
+                .queue_watched_files(&mut st, watched_test_batch(&f.root, false));
+        }
+        assert_eq!(st.watch.coalescer.len(), 1, "repeats fold into one change");
+        assert!(st.watch.scheduled);
+        assert!(st.watch.needs_resync.is_empty());
+        let mut large = watched_test_batch(&f.root, false);
+        large.changes = (0..watch_sync::MAX_PENDING_PATHS + 10)
+            .map(|i| change_event(&f.root.join(format!("f{i}.json"))))
+            .collect();
+        f.svc.queue_watched_files(&mut st, large);
+        assert_eq!(st.watch.coalescer.len(), watch_sync::MAX_PENDING_PATHS);
+        assert!(
+            st.watch.needs_resync.contains_key(&ID),
+            "refused paths mark the server for resync instead of vanishing"
+        );
+    }
+    f.svc
+        .workspace_changed(f.root.clone(), &Settings::default());
+    {
+        let st = lock(&f.svc.state);
+        assert!(st.watch.coalescer.is_empty() && st.watch.needs_resync.is_empty());
+    }
+    f.svc.flush().await;
+    assert_eq!(f.resolver.resolves.load(Ordering::SeqCst), 0);
+    {
+        let mut st = lock(&f.svc.state);
+        st.states
+            .insert((ID, f.root.clone()), LanguageServerStateDto::Ready);
+        f.svc
+            .queue_watched_files(&mut st, watched_test_batch(&f.root, true));
+        LanguageServers::bump_epoch(&mut st, ID);
+    }
+    // A retired target is skipped rather than starting a replacement instance.
+    tokio::time::sleep(watch_sync::DEBOUNCE * 3).await;
+    f.svc.flush().await;
+    assert_eq!(f.resolver.resolves.load(Ordering::SeqCst), 0);
+    assert!(!methods(&f.log)
+        .iter()
+        .any(|method| method == "workspace/didChangeWatchedFiles"));
+    assert!(!f
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e, LspEvent::Error(_) | LspEvent::WatchRecovery(_))));
+}
+
+fn watched_uris(log: &Path) -> Vec<String> {
+    log_entries(log)
+        .iter()
+        .filter(|entry| entry["method"] == "workspace/didChangeWatchedFiles")
+        .flat_map(|entry| {
+            entry["params"]["changes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|event| event["uri"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn recovery_phases(events: &Mutex<Vec<LspEvent>>) -> Vec<(WatchRecoveryPhase, String)> {
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            LspEvent::WatchRecovery(r) => Some((r.phase, r.message.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn ready_with_watch_registration(f: &mut Fixture) {
+    f.open_ready().await;
+    eventually("watch registration acknowledgement", || {
+        methods(&f.log)
+            .iter()
+            .any(|m| m == "watchRegistrationReady")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn lost_notifications_resync_project_config_without_a_restart_warning() {
+    let mut f = fixture(true, "watched-files", Duration::from_secs(5));
+    ready_with_watch_registration(&mut f).await;
+    std::fs::write(f.root.join("package.json"), "{}").unwrap();
+    std::fs::create_dir_all(f.root.join("node_modules/dep")).unwrap();
+    std::fs::write(f.root.join("node_modules/dep/package.json"), "{}").unwrap();
+    f.svc
+        .watched_files_changed(watched_test_batch(&f.root, true));
+    eventually("resync of project configuration", || {
+        watched_uris(&f.log)
+            .iter()
+            .any(|uri| uri.ends_with("/project/package.json"))
+    })
+    .await;
+    assert!(
+        !watched_uris(&f.log)
+            .iter()
+            .any(|uri| uri.contains("node_modules")),
+        "excluded folders are never resynced"
+    );
+    {
+        let events = f.events.lock().unwrap();
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, LspEvent::Error(err) if err.message.contains("Restart"))));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, LspEvent::WatchRecovery(_))));
+    }
+    f.svc.manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn repeated_overflow_restarts_the_server_automatically_and_quietly() {
+    let mut f = fixture(true, "watched-files", Duration::from_secs(5));
+    ready_with_watch_registration(&mut f).await;
+    let epoch = lock(&f.svc.state).epochs.get(&ID).copied().unwrap_or(0);
+    for _ in 0..2 {
+        f.svc
+            .watched_files_changed(watched_test_batch(&f.root, true));
+        tokio::time::sleep(watch_sync::DEBOUNCE * 3).await;
+        f.svc.flush().await;
+    }
+    eventually("automatic refresh", || {
+        recovery_phases(&f.events)
+            .iter()
+            .any(|(phase, _)| *phase == WatchRecoveryPhase::Refreshed)
+    })
+    .await;
+    let phases = recovery_phases(&f.events);
+    assert_eq!(phases[0].0, WatchRecoveryPhase::Refreshing);
+    assert_eq!(phases[0].1, "Refreshing JSON server");
+    assert_eq!(
+        phases[1].1,
+        "JSON language server fell behind on file changes and was refreshed."
+    );
+    assert!(lock(&f.svc.state).epochs.get(&ID).copied().unwrap_or(0) > epoch);
+    eventually("second initialize after the automatic restart", || {
+        methods(&f.log)
+            .iter()
+            .filter(|m| *m == "initialize")
+            .count()
+            == 2
+    })
+    .await;
+    assert!(!f
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e, LspEvent::Error(err) if err.message.contains("Restart"))));
+    f.svc.manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn exhausted_restarts_warn_once_unless_the_user_silenced_the_server() {
+    for silenced in [false, true] {
+        let mut f = fixture(true, "watched-files", Duration::from_secs(5));
+        ready_with_watch_registration(&mut f).await;
+        {
+            let mut st = lock(&f.svc.state);
+            if silenced {
+                st.settings.silenced_watch_warnings.insert(ID);
+            }
+            // Three automatic restarts inside the last ten minutes, then one more overflow.
+            let mut policy = RecoveryPolicy::default();
+            let now = Instant::now();
+            for back in [50u64, 40, 30, 20, 10, 5, 2] {
+                let _ = policy.on_overflow(now.checked_sub(Duration::from_secs(back)).unwrap());
+            }
+            assert_eq!(
+                policy.restarts_in_window(now),
+                watch_sync::MAX_AUTO_RESTARTS
+            );
+            st.watch.recovery.insert(ID, policy);
+        }
+        std::fs::write(f.root.join("fresh.json"), "{}").unwrap();
+        f.svc
+            .watched_files_changed(watched_test_batch(&f.root, true));
+        if silenced {
+            eventually("resync while silenced", || {
+                watched_uris(&f.log)
+                    .iter()
+                    .any(|uri| uri.ends_with("/project/fresh.json"))
+            })
+            .await;
+            assert!(recovery_phases(&f.events).is_empty());
+        } else {
+            eventually("exhausted warning", || {
+                !recovery_phases(&f.events).is_empty()
+            })
+            .await;
+            let phases = recovery_phases(&f.events);
+            assert_eq!(phases.len(), 1);
+            assert_eq!(phases[0].0, WatchRecoveryPhase::Exhausted);
+            assert!(!phases[0].1.contains('\u{2014}'));
+        }
+        f.svc.manager.shutdown_all().await;
+    }
+}
+
+#[tokio::test]
+async fn the_existing_native_watcher_reaches_a_registered_ready_server() {
+    let mut f = fixture(true, "watched-files", Duration::from_secs(5));
+    f.open_ready().await;
+    eventually("watch registration acknowledgement", || {
+        methods(&f.log)
+            .iter()
+            .any(|m| m == "watchRegistrationReady")
+    })
+    .await;
+    // Simulate the service event forwarder still showing Starting while the
+    // already-existing instance finishes initialization. The event must survive.
+    lock(&f.svc.state)
+        .states
+        .insert((ID, f.root.clone()), LanguageServerStateDto::Starting);
+    let mut starting = watched_test_batch(&f.root, false);
+    starting.changes[0].uri = span_lsp::path_to_uri(&f.root.join("during-startup.json")).unwrap();
+    f.svc.watched_files_changed(starting);
+    lock(&f.svc.state)
+        .states
+        .insert((ID, f.root.clone()), LanguageServerStateDto::Ready);
+    f.svc.flush().await;
+    eventually("retained startup notification", || {
+        log_entries(&f.log).iter().any(|entry| {
+            entry["method"] == "workspace/didChangeWatchedFiles"
+                && entry["params"]["changes"].as_array().is_some_and(|events| {
+                    events.iter().any(|event| {
+                        event["uri"]
+                            .as_str()
+                            .is_some_and(|uri| uri.ends_with("/during-startup.json"))
+                    })
+                })
+        })
+    })
+    .await;
+    let runtime = crate::file_index::FileIndexRuntime::default();
+    let service = f.svc.clone();
+    runtime.set_file_change_sink(Arc::new(move |batch| service.watched_files_changed(batch)));
+    runtime.activate(f.root.clone()).await.unwrap();
+    std::fs::write(f.root.join("config.json"), "{}").unwrap();
+    eventually("native watched-file notification", || {
+        log_entries(&f.log).iter().any(|entry| {
+            entry["method"] == "workspace/didChangeWatchedFiles"
+                && entry["params"]["changes"].as_array().is_some_and(|events| {
+                    events.iter().any(|event| {
+                        event["uri"]
+                            .as_str()
+                            .is_some_and(|uri| uri.ends_with("/config.json"))
+                    })
+                })
+        })
+    })
+    .await;
+    let entries = log_entries(&f.log);
+    let initial_count = entries
+        .iter()
+        .filter(|entry| entry["method"] == "initialize")
+        .count();
+    assert_eq!(initial_count, 1);
+    runtime.shutdown();
+    f.svc.manager.shutdown_all().await;
 }

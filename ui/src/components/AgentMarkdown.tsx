@@ -7,6 +7,7 @@ import {
 } from "./MarkdownPreview";
 import { createStreamReveal } from "../lib/create-stream-reveal";
 import { createIncrementalParser, offsetLines } from "../lib/incremental-markdown";
+import { enhanceTables, restoreTableScroll, tableScrollState } from "../lib/markdown-tables";
 import "../styles/markdown.css";
 import "../styles/stream-reveal.css";
 
@@ -74,7 +75,10 @@ function Block(props: { block: MarkdownBlock; context: { documentPath: string; w
   const html = createMemo(() => renderMarkdownBlock(props.block, props.context));
   createEffect(() => {
     // Set the markup by hand so fading spans are added before the browser paints the new text.
+    const offsets = tableScrollState(host);
     host.innerHTML = html();
+    restoreTableScroll(host, offsets);
+    enhanceTables(host);
     if (untrack(props.animate)) ({ length: previous, fresh } = fadeFresh(host, fresh, previous, performance.now()));
     else {
       previous = textLength(textNodes(host));

@@ -21,6 +21,8 @@ type DelegationCardProps = {
   artifacts?: readonly Artifact[];
   /** Budget used so far, already formatted from reported figures. */
   budget?: string;
+  /** A completed task that went over its token budget after the fact. Informational, never a failure. */
+  budgetNote?: string;
   /** Stops the task. Called from the Cancel button only. */
   onCancel?: (taskId: string) => Promise<void>;
   /** Opens a workspace-relative path through the validated open path. False when nothing opened. */
@@ -106,6 +108,7 @@ export function DelegationCard(props: DelegationCardProps) {
       </Show>
       <Show when={openError()}><div class="sb-sub sb-bad" role="alert">{openError()}</div></Show>
       <Show when={props.budget}><div class="sb-sub sb-delegation-budget">Used {props.budget}</div></Show>
+      <Show when={props.budgetNote}><div class="sb-sub sb-delegation-budget-note">{props.budgetNote}</div></Show>
       <Show when={props.waiting}>
         <div class="sb-delegation-wait"><span class="sb-dot warn" aria-hidden="true" />Needs your approval below</div>
       </Show>

@@ -1,6 +1,18 @@
 import { expect, type Page, type TestInfo } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 export const modifier = process.platform === "darwin" ? "Meta" : "Control";
+/** Hover scale of the panel resize grip (`""`) or of its dots (`" i"`), read from panel-handle.css so the specs follow the grip geometry instead of repeating it. */
+export function gripHoverScale(part: "" | " i"): number {
+  const css = readFileSync(resolve(__dirname, "../ui/src/styles/panel-handle.css"), "utf8");
+  const start = css.indexOf(`.panel-handle:hover .panel-rail-grip${part},`);
+  const scale = css.slice(start, css.indexOf("}", start)).match(/transform:\s*scale\(([\d.]+)\)/)?.[1];
+  if (start < 0 || !scale) throw new Error(`no hover scale for .panel-rail-grip${part} in panel-handle.css`);
+  return Number(scale);
+}
+/** The computed `transform` of a uniform scale. */
+export const scaleMatrix = (scale: number) => `matrix(${scale}, 0, 0, ${scale}, 0, 0)`;
 export async function ready(page: Page) {
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Edit rpc-node.ts", exact: true })).toBeVisible();

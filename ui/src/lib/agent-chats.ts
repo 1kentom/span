@@ -6,18 +6,19 @@ import type {
   SessionRuntimeState_Serialize as SessionRuntimeState,
   SessionStates_Serialize as SessionStates,
 } from "../bindings";
-import type { Queued } from "./agent-controller";
+import type { Queued } from "./agent-threads/thread-state";
 import { RUN_TEXT } from "./agent-hint-text";
 import { clockText } from "./agent-running";
 import { reduceAgentEvent, type AgentState } from "./agent-session";
 import type { Attachment } from "./attachments";
 
 /**
- * Per-chat state for the agent sidebar. Every chat (one agent session on one connection) keeps its own feed, running
- * flag, queue, draft, pending requests, scroll position, usage and mode or config view. The open chat lives in the
- * controller's signals; every other chat Span holds is a `ChatSnapshot` here, and events for it keep updating it in
- * the background, so leaving a chat never resets it. Whether a chat is running comes from the backend's session
- * states (`agent_session_states` and `AgentSessionStatesChanged`), never from a guess.
+ * Per-chat state for the agent sidebar. Every chat (one agent session on one connection) is a thread
+ * (agent-threads/thread.ts) in the controller's registry, keyed by `SessionKey`, with its own feed, running flag,
+ * queue, draft, pending requests, scroll position, usage and mode or config view. The open chat is the focused
+ * thread; every other chat Span holds stays a live thread in the background, and events for it keep updating it, so
+ * leaving a chat never resets it. Whether a chat is running comes from the backend's session states
+ * (`agent_session_states` and `AgentSessionStatesChanged`), never from a guess.
  */
 
 /** Chats are keyed by connection and session: session ids repeat across agent processes. */
@@ -31,6 +32,10 @@ export const BACKGROUND_FEED_LIMIT = 200;
 /** Chats kept besides the open one. Chats still working (running, waiting or queued) are never evicted. */
 export const CHAT_LIMIT = 12;
 
+/**
+ * A chat as a plain value: the shape `thread.snapshot()` and `seedFromSnapshot` (agent-threads/thread.ts) convert to
+ * and from. The sidebar keeps live threads, not snapshots.
+ */
 export type ChatSnapshot = {
   /** The chat's conversation. Connection level fields (status, agent, logs) are ignored on restore. */
   conversation: AgentState;
@@ -73,42 +78,38 @@ export function withConversation(live: AgentState, conversation: AgentState): Ag
 
 const trimmed = (state: AgentState): AgentState => (state.feed.length > BACKGROUND_FEED_LIMIT ? { ...state, feed: state.feed.slice(-BACKGROUND_FEED_LIMIT) } : state);
 
-/** Applies an event of a background chat to its snapshot. Connection level events never reach here. */
-export function reduceBackground(chat: ChatSnapshot, event: AgentEvent): ChatSnapshot {
+/** A background chat: a thread state or a snapshot. */
+type Background = { conversation: AgentState; draft: string; attachments: readonly unknown[]; queue: readonly unknown[]; queueHeld: boolean; touchedAt?: number };
+
+/** Applies an event of a background chat to it. Connection level events never reach here. */
+export function reduceBackground<T extends Background>(chat: T, event: AgentEvent): T {
   const conversation = trimmed(reduceAgentEvent(chat.conversation, event));
   return conversation === chat.conversation ? chat : { ...chat, conversation, touchedAt: Date.now() };
 }
 
 /** Prepares a chat for the background: its feed is capped and a queue never drains on its own while it is away. */
-export function toBackground(chat: ChatSnapshot): ChatSnapshot {
+export function toBackground<T extends Background>(chat: T): T {
   return { ...chat, conversation: trimmed(chat.conversation), queueHeld: chat.queueHeld || chat.queue.length > 0 };
 }
 
-/** A plain map of background chats with bounded size. Not reactive: the controller bumps its own signal. */
-export function createChatStore(limit = CHAT_LIMIT) {
-  const chats = new Map<string, ChatSnapshot>();
-  return {
-    get: (key: string) => chats.get(key),
-    has: (key: string) => chats.has(key),
-    set: (key: string, chat: ChatSnapshot) => void chats.set(key, chat),
-    delete: (key: string) => chats.delete(key),
-    clear: () => chats.clear(),
-    keys: () => [...chats.keys()],
-    size: () => chats.size,
-    /** Evicts the oldest chats that are not live until at most `limit` remain, chats without a draft or queue first. */
-    prune(isLive: (key: string) => boolean) {
-      while (chats.size > limit) {
-        const candidates = [...chats.entries()].filter(([key]) => !isLive(key));
-        if (!candidates.length) return;
-        const keeps = ([, chat]: [string, ChatSnapshot]) => Boolean(chat.draft.trim() || chat.queue.length || chat.attachments.length);
-        const pool = candidates.some((entry) => !keeps(entry)) ? candidates.filter((entry) => !keeps(entry)) : candidates;
-        pool.sort((a, b) => a[1].touchedAt - b[1].touchedAt);
-        chats.delete(pool[0][0]);
-      }
-    },
-  };
+/**
+ * The background chats to evict so at most `limit` remain: the oldest that are not live, chats without a draft, queue
+ * or attachments first. A live chat (running, waiting or queued) is never evicted, so more may remain.
+ */
+export function evictions<T extends Background>(chats: readonly (readonly [string, T])[], limit: number, isLive: (id: string) => boolean): string[] {
+  const left = new Map(chats);
+  const out: string[] = [];
+  while (left.size > limit) {
+    const candidates = [...left.entries()].filter(([id]) => !isLive(id));
+    if (!candidates.length) break;
+    const keeps = ([, chat]: [string, T]) => Boolean(chat.draft.trim() || chat.queue.length || chat.attachments.length);
+    const pool = candidates.some((entry) => !keeps(entry)) ? candidates.filter((entry) => !keeps(entry)) : candidates;
+    pool.sort((a, b) => (a[1].touchedAt ?? 0) - (b[1].touchedAt ?? 0));
+    left.delete(pool[0][0]);
+    out.push(pool[0][0]);
+  }
+  return out;
 }
-export type ChatStore = ReturnType<typeof createChatStore>;
 
 type BusyError = { kind: "busy"; message: string; state?: SessionRuntimeState | null };
 const isBusy = (value: unknown): value is BusyError => Boolean(value && typeof value === "object" && (value as { kind?: unknown }).kind === "busy");

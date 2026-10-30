@@ -15,8 +15,11 @@
 //! - `debugExclude`: text that must not appear in the `Debug` output of any event.
 //! - `userSettings`: the user's settings file content. Without it the user
 //!   has no settings file, so every agent starts in the approval mode.
+//! - A `newChildSession` step opens a delegated child session.
 //! - A `listSessions` step's `expectSessions` lists the session ids the
-//!   client returns, in order.
+//!   client returns, in order. Its `expectNative` lists, in order, the
+//!   returned sessions marked as native subagents, each as
+//!   `[sessionId, parentSessionId or null]`.
 use serde_json::{json, Value};
 use span_acp::{AgentCommand, AgentEvent, AgentService, AuthCredential};
 use span_core::CoreWorkspace;
@@ -231,6 +234,7 @@ async fn replay(agent: &str, name: &str) {
                 .new_session_with(mcp_servers.clone())
                 .await
                 .map(|id| session = id),
+            "newChildSession" => service.new_child_session().await.map(|id| session = id),
             "prompt" => {
                 *policy.lock().unwrap() = step["permission"].as_str().unwrap_or("allow").into();
                 service.prompt(session.clone(), text("text"), vec![]).await
@@ -296,6 +300,14 @@ async fn replay(agent: &str, name: &str) {
                 let ids: Vec<Value> = found.iter().map(|s| json!(s.session_id)).collect();
                 if let Some(want) = step.get("expectSessions") {
                     assert_eq!(&Value::Array(ids), want, "{step}: listed sessions");
+                }
+                if let Some(want) = step.get("expectNative") {
+                    let native: Vec<Value> = found
+                        .iter()
+                        .filter(|s| s.native_subagent)
+                        .map(|s| json!([s.session_id, s.parent_session_id]))
+                        .collect();
+                    assert_eq!(&Value::Array(native), want, "{step}: native subagents");
                 }
             }),
             "deleteSession" => service.delete_session(text("session")).await,
@@ -425,6 +437,11 @@ fixture!(
     "replay-attachments"
 );
 fixture!(opencode_child_session_parent, "opencode", "child-session");
+fixture!(
+    opencode_native_subagents_are_marked_in_the_list,
+    "opencode",
+    "native-subagents"
+);
 fixture!(opencode_message_id_starts_bubble, "opencode", "message-id");
 fixture!(opencode_mcp_filter, "opencode", "mcp-filter");
 fixture!(
@@ -525,6 +542,18 @@ fixture!(
     opencode_start_mode_changes_nothing,
     "opencode",
     "start-mode"
+);
+// A delegated child always starts in the approval mode, whatever the user's
+// start mode for chats, and asks Claude not to persist it (ADR 0003).
+fixture!(
+    codex_child_ignores_agent_default_start_mode,
+    "codex",
+    "child-start-mode"
+);
+fixture!(
+    claude_child_session_meta_and_start_mode,
+    "claude",
+    "child-session"
 );
 fixture!(
     generic_start_mode_approval_leaves_bypass,

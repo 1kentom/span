@@ -1,6 +1,5 @@
 .toast-stack{position:fixed;right:14px;bottom:34px;z-index:110;display:flex;flex-direction:column;gap:6px;width:min(300px,calc(100vw - 28px));pointer-events:none}
-.toast{pointer-events:auto;display:flex;align-items:flex-start;gap:8px;background:var(--popup);border:1px solid var(--border);border-left-width:3px;border-radius:7px;box-shadow:var(--shadow);padding:8px 6px 8px 10px;font-size:12px;line-height:17px;transform-origin:100% 100%}
-.toast.level-error{border-left-color:var(--danger,#e5736f)}.toast.level-warning{border-left-color:#e5bf8c}.toast.level-info{border-left-color:#87c3ff}.toast.level-success{border-left-color:#7fcf94}
+.toast{pointer-events:auto;display:flex;align-items:flex-start;gap:8px;background:var(--popup);border:1px solid var(--border);border-radius:7px;box-shadow:var(--shadow);padding:8px 6px 8px 10px;font-size:12px;line-height:17px;transform-origin:100% 100%}
 .notice-icon{flex:none;margin-top:1px}.level-error .notice-icon{color:var(--danger,#e5736f)}.level-warning .notice-icon{color:#e5bf8c}.level-info .notice-icon{color:#87c3ff}.level-success .notice-icon{color:#7fcf94}
 .notice-text{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px;align-items:flex-start}
 .notice-message{overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}

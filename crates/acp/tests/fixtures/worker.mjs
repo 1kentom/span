@@ -1,7 +1,9 @@
 // Deterministic ACP peer for span-agents delegation tests. Product code never
 // starts this fixture. The first line of a prompt selects the behaviour:
 //   work:<ticks>:<ms>   tick <ticks> times every <ms> ms with thoughts and usage, then end_turn
-//   usage:<n>           report <n> context tokens, then wait for Stop
+//   usage:<n>           report a 30000 token baseline, then <n> more context tokens, then wait for Stop
+//   spend:<n>           report the baseline, then <n> more, then answer and end_turn
+//   late:<n>            report the baseline, answer and end_turn, then report <n> more
 //   write:<path>:<text> write <text> to <path> through fs/write_text_file (editor review)
 //   permission          ask for permission; rejected ends the turn cancelled
 //   reply:<text>        answer <text>
@@ -12,12 +14,18 @@
 //   mcp <url> <token> <json>  act as a lead: POST <json> to the MCP server, answer with the body
 //   ended               answer with the JSON list of session ids closed or deleted so far
 //   prompts             answer with the number of prompts received so far
+//   created             answer with the number of sessions created with session/new so far
+//   health-prompts      answer with the JSON list of session ids that received a health check prompt
+//   forget              forget every other session: prompting one fails with "Session not found"
 // Flags: --name=<n>, --mcp-http, --mcp-sse, --image, --reject-session (session/new fails),
 //   --auth-required (session/new answers -32000 Authentication required),
 //   --close, --delete, --list (advertise and answer session/close, session/delete, session/list;
 //   listed sessions are titled with their first prompt), --silent-health (never answer the
 //   Span health check prompt), --slow-health=<ms> (answer it after <ms>),
-//   --permission-health (ask for permission before answering it).
+//   --permission-health (ask for permission before answering it), --keep-closed (closed and
+//   deleted sessions stay listed, as real agents keep them), --seed-health=<n> (list <n>
+//   health sessions of an earlier run, titled "Health check. Reply with exactly one word..."),
+//   --seed-chats (list user chats whose titles nearly match the health check prompt).
 import readline from 'node:readline';
 const input = readline.createInterface({ input: process.stdin });
 const flag = name => process.argv.includes(name);
@@ -32,6 +40,15 @@ const callbacks = new Map();
 const titles = new Map();
 const ended = [];
 let prompts = 0;
+const forgotten = new Set();
+const healthPrompts = [];
+const seedHealth = Number(process.argv.find(arg => arg.startsWith('--seed-health='))?.slice(14) ?? 0);
+for (let i = 1; i <= seedHealth; i++) titles.set(`old-health-${i}`, 'Health check. Reply with exactly one word...');
+if (flag('--seed-chats')) {
+  titles.set('chat-ci', 'Health check of the CI pipeline');
+  titles.set('chat-two', 'Health check. Reply with exactly two words: ALL GOOD');
+  titles.set('chat-build', 'Fix the build');
+}
 const slowHealth = Number(process.argv.find(arg => arg.startsWith('--slow-health='))?.slice(14) ?? 0);
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const update = (sessionId, update) => send({ method: 'session/update', params: { sessionId, update } });
@@ -46,6 +63,8 @@ const call = (method, params) => new Promise((resolve, reject) => {
   callbacks.set(id, { resolve, reject });
   send({ id, method, params });
 });
+// Context a fresh agent session holds before any task: system prompt and tools.
+const BASELINE = 30000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function lead(sessionId, id, text) {
@@ -64,10 +83,12 @@ async function prompt(message) {
   const id = message.id;
   const text = prompt.find(block => block.type === 'text')?.text ?? '';
   const first = text.split('\n')[0];
+  if (forgotten.has(sessionId)) return send({ id, error: { code: -32602, message: 'Session not found' } });
   active.set(sessionId, id);
   prompts++;
   if (!titles.get(sessionId)) titles.set(sessionId, first);
   if (first.startsWith('Health check')) {
+    healthPrompts.push(sessionId);
     if (flag('--silent-health')) return;
     if (flag('--permission-health')) {
       const answer = await call('session/request_permission', {
@@ -81,6 +102,12 @@ async function prompt(message) {
     return finish(sessionId, id, 'end_turn');
   }
   if (first === 'ended') { say(sessionId, JSON.stringify(ended)); return finish(sessionId, id, 'end_turn'); }
+  if (first === 'created') { say(sessionId, String(sessions)); return finish(sessionId, id, 'end_turn'); }
+  if (first === 'health-prompts') { say(sessionId, JSON.stringify(healthPrompts)); return finish(sessionId, id, 'end_turn'); }
+  if (first === 'forget') {
+    for (const known of titles.keys()) if (known !== sessionId) forgotten.add(known);
+    say(sessionId, 'forgot'); return finish(sessionId, id, 'end_turn');
+  }
   if (first === 'prompts') { say(sessionId, String(prompts)); return finish(sessionId, id, 'end_turn'); }
   if (first.startsWith('mcp ')) return lead(sessionId, id, first);
   if (first === 'wait') return;
@@ -90,7 +117,21 @@ async function prompt(message) {
   if (first === 'limit') return finish(sessionId, id, 'max_tokens');
   if (first.startsWith('reply:')) { say(sessionId, first.slice(6)); return finish(sessionId, id, 'end_turn'); }
   if (first.startsWith('usage:')) {
-    update(sessionId, { sessionUpdate: 'usage_update', used: Number(first.slice(6)), size: 200000 });
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE, size: 200000 });
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE + Number(first.slice(6)), size: 200000 });
+    return;
+  }
+  if (first.startsWith('spend:')) {
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE, size: 200000 });
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE + Number(first.slice(6)), size: 200000 });
+    say(sessionId, 'spent');
+    return finish(sessionId, id, 'end_turn');
+  }
+  if (first.startsWith('late:')) {
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE, size: 200000 });
+    say(sessionId, 'answered');
+    finish(sessionId, id, 'end_turn');
+    update(sessionId, { sessionUpdate: 'usage_update', used: BASELINE + Number(first.slice(5)), size: 200000 });
     return;
   }
   if (first.startsWith('work:')) {
@@ -156,7 +197,8 @@ input.on('line', line => {
     send({ id: message.id, result: { sessionId } });
   } else if (message.method === 'session/close' || (message.method === 'session/delete' && flag('--delete'))) {
     ended.push(message.params.sessionId);
-    titles.delete(message.params.sessionId);
+    forgotten.add(message.params.sessionId);
+    if (!flag('--keep-closed')) titles.delete(message.params.sessionId);
     send({ id: message.id, result: {} });
   } else if (message.method === 'session/list' && flag('--list')) {
     const listed = [...titles.keys()].map(sessionId => ({ sessionId, cwd, title: titles.get(sessionId) || null }));

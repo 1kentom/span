@@ -29,6 +29,22 @@ const KIND_LABEL: Record<string, string> = {
   switch_mode: "Switch mode",
 };
 
+/** Short human titles for a request waiting on approval, by ACP tool kind: the command or path is shown elsewhere, once. */
+const APPROVAL_TITLE: Record<string, string> = {
+  execute: "Run command",
+  edit: "Edit file",
+  read: "Read file",
+  delete: "Delete file",
+  move: "Move file",
+  search: "Search files",
+  fetch: "Fetch page",
+};
+
+/** "Run command" for execute, "Edit file" for edit; undefined for a kind without a short approval title. */
+export function approvalTitle(kind: string | null | undefined): string | undefined {
+  return kind ? APPROVAL_TITLE[kind] : undefined;
+}
+
 const squash = (value: string) => value.replace(/\s+/g, " ").trim();
 const clip = (value: string) => (value.length > MAX_TEXT ? `${value.slice(0, MAX_TEXT - 1)}…` : value);
 
@@ -186,7 +202,8 @@ export function toolBarView(input: ToolBarInput): ToolBarView {
   };
   const describe = (head: string) => [head, summary].filter(Boolean).join(": ");
   if (input.stopping) return { ...base, tone: "stopping", label: `${RUN_TEXT.stopping}…`, summary, stoppable: false, announce: RUN_TEXT.stopping };
-  if (input.approval) return { ...base, tone: "attention", label: RUN_TEXT.approval, summary: shown ? describe(label) : undefined, stoppable: false, announce: RUN_TEXT.approval };
+  // The approval dock right below names the request and shows its command once, so the bar repeats neither.
+  if (input.approval) return { ...base, tone: "attention", label: RUN_TEXT.approval, summary: undefined, stoppable: false, announce: RUN_TEXT.approval };
   if (input.browser) return { ...base, tone: "attention", label: URL_COPY.activityUrl, summary: undefined, stoppable: false, announce: URL_COPY.activityUrl };
   if (input.answer) return { ...base, tone: "attention", label: RUN_TEXT.answer, summary: undefined, stoppable: false, announce: RUN_TEXT.answer };
   if (settling?.status === "failed") {

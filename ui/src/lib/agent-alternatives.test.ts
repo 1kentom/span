@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { otherFreeModels, rankAlternatives } from "./agent-alternatives";
+import { otherFreeModels, rankAlternatives, shortAgentName, shortModelName } from "./agent-alternatives";
 import type { AgentHealth } from "./agent-health";
 import { modelCost } from "./model-cost";
 
@@ -43,5 +43,16 @@ describe("otherFreeModels", () => {
     ];
     const free = (choice: { value: string; name: string }) => modelCost(choice) === "free";
     expect(otherFreeModels(choices, "opencode/big-pickle", free, new Set(["opencode/kimi-free"])).map((choice) => choice.value)).toEqual(["opencode/grok-code-free"]);
+  });
+});
+
+describe("short names", () => {
+  it("names agents the way a sentence does", () => {
+    expect(["Claude Agent", "Codex CLI", "Gemini CLI", "OpenCode", "@agentclientprotocol/claude-agent-acp", "codex-acp", "Qwen Code", "GitHub Copilot"].map(shortAgentName)).toEqual(["Claude", "Codex", "Gemini", "OpenCode", "Claude", "Codex", "Qwen", "GitHub Copilot"]);
+    expect(shortAgentName("Agent")).toBe("Agent");
+  });
+
+  it("drops the provider prefix from model names only", () => {
+    expect(["opencode/Beam Free", "Big Pickle", "openrouter/DeepSeek V4.1 Flash Free", "gpt-5.1"].map(shortModelName)).toEqual(["Beam Free", "Big Pickle", "DeepSeek V4.1 Flash Free", "gpt-5.1"]);
   });
 });

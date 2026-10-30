@@ -23,24 +23,40 @@ export const hubText = {
   why: "Why?",
   closeTrust: "Dismiss",
   hoverTrustHint: "Library types are not loaded until this folder is trusted.",
+  languages: "Languages",
+  filterAll: "All",
+  filterActive: "Active",
+  filterLabel: "Show languages",
+  search: "Filter languages",
+  noMatches: "No languages match.",
+  more: "More actions",
+  restart: "Restart",
+  stop: "Stop",
+  trust: "Trust",
+  capabilities: "Capabilities",
+  unsupported: "not supported",
+  noServerName: "No language support",
+  trustShort: "Build tools stay off, so library types are not loaded. Trust only folders you know.",
+  /** A file whose language has no server in the catalog. There is nothing to install, so say what still works. */
+  noServerFor: (language: string) => `No completions or error checking for ${language}. Editing works as usual.`,
 } as const;
 
 /** Human language names, as shown in the panel header. */
 export const languageNames: Readonly<Record<LanguageServerId, string>> = {
   jdtls: "Java", vtsls: "TypeScript and JavaScript", html: "HTML", css: "CSS, SCSS and Less", json: "JSON",
-  "rust-analyzer": "Rust", basedpyright: "Python",
+  "rust-analyzer": "Rust", basedpyright: "Python", svelte: "Svelte", vue: "Vue", astro: "Astro",
 };
 /** One or two words, for the status bar, the list rows and tooltips. */
 export const shortLanguageNames: Readonly<Record<LanguageServerId, string>> = {
-  jdtls: "Java", vtsls: "TypeScript", html: "HTML", css: "CSS", json: "JSON", "rust-analyzer": "Rust", basedpyright: "Python",
+  jdtls: "Java", vtsls: "TypeScript", html: "HTML", css: "CSS", json: "JSON", "rust-analyzer": "Rust", basedpyright: "Python", svelte: "Svelte", vue: "Vue", astro: "Astro",
 };
 /** The technical name, shown small and muted under the language name. */
 export const technicalNames: Readonly<Record<LanguageServerId, string>> = {
   jdtls: "Eclipse JDT LS", vtsls: "vtsls", html: "VS Code HTML", css: "VS Code CSS",
-  json: "VS Code JSON", "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright",
+  json: "VS Code JSON", "rust-analyzer": "rust-analyzer", basedpyright: "basedpyright", svelte: "Svelte language server", vue: "Vue language server", astro: "Astro language server",
 };
 /** The server ids in the order the "All languages" list shows them. */
-export const serverOrder: readonly LanguageServerId[] = ["jdtls", "vtsls", "html", "css", "json", "rust-analyzer", "basedpyright"];
+export const serverOrder: readonly LanguageServerId[] = ["jdtls", "vtsls", "html", "css", "json", "rust-analyzer", "basedpyright", "svelte", "vue", "astro"];
 /** Servers that run the project's own build tool, so they depend on folder trust. */
 export const projectCodeServers: ReadonlySet<LanguageServerId> = new Set<LanguageServerId>(["jdtls", "rust-analyzer"]);
 
@@ -99,6 +115,7 @@ export const startingLine = "The first start can take a minute";
 export const startingTip = "Features turn on by themselves when it is ready.";
 export const workLine = "Reading your project";
 export const workTip = "Results can be incomplete until it finishes.";
+export const watchRecoveryTip = "It missed some file changes, so span is bringing its view of the project up to date. Nothing to do.";
 export const crashedLine = "Stopped unexpectedly";
 export const disabledLine = "Turn on for completions and errors";
 export const idleLine = "Not started yet";

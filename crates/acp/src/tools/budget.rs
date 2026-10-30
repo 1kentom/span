@@ -11,9 +11,12 @@ use std::time::{Duration, Instant};
 pub struct Budget {
     /// Prompts sent to the child: the delegation plus each `message`.
     pub max_turns: u32,
-    /// Tokens: the larger of the peak ACP `usage_update.used` (context) and
-    /// the sum of `PromptResponse.usage.totalTokens` (unstable) over turns.
-    /// Only enforced when the agent reports either.
+    /// Tokens the delegation spent: the sum of `PromptResponse.usage.totalTokens`
+    /// (unstable) over finished turns plus the context growth since the last
+    /// of them, or, without per-turn totals, the growth of ACP
+    /// `usage_update.used` over the first reading (the system prompt and tool
+    /// definitions a fresh session already holds). Only enforced when the
+    /// agent reports either.
     pub max_tokens: Option<u64>,
     /// Wall clock seconds from the delegation, in policy seconds.
     pub timeout_seconds: u64,
@@ -72,8 +75,12 @@ impl Budget {
 #[derive(Debug, Clone)]
 pub struct Meter {
     pub turns: u32,
-    /// Peak context tokens from `usage_update`.
+    /// Peak context tokens from `usage_update`. This is window occupancy, not
+    /// spend: a fresh session already holds its system prompt and tools.
     pub tokens: Option<u64>,
+    /// Context tokens at the first `usage_update` of the delegation, moved up
+    /// to the current reading each time a turn reports its own total.
+    mark: Option<u64>,
     /// Sum of per-turn `totalTokens` from prompt responses.
     pub spent_tokens: u64,
     pub context_size: Option<u64>,
@@ -87,6 +94,7 @@ impl Meter {
         Self {
             turns: 0,
             tokens: None,
+            mark: None,
             spent_tokens: 0,
             context_size: None,
             cost: None,
@@ -95,11 +103,33 @@ impl Meter {
         }
     }
 
-    /// Tokens to compare with the budget, `None` when nothing was reported.
+    /// Fold one `usage_update` reading. The first one is the baseline.
+    pub fn record_context(&mut self, used: u64, size: u64) {
+        self.mark.get_or_insert(used);
+        self.tokens = Some(self.tokens.unwrap_or(0).max(used));
+        self.context_size = Some(size);
+    }
+
+    /// Fold a finished turn's own `totalTokens`. Context growth up to now is
+    /// part of that total, so the baseline moves to the current reading.
+    pub fn record_turn_total(&mut self, total: u64) {
+        self.spent_tokens += total;
+        if self.tokens.is_some() {
+            self.mark = self.tokens;
+        }
+    }
+
+    /// Tokens this delegation spent, to compare with the budget. `None` when
+    /// nothing beyond the baseline was reported, so a fresh session's system
+    /// prompt alone never counts.
     pub fn used_tokens(&self) -> Option<u64> {
-        match (self.tokens, self.spent_tokens) {
-            (None, 0) => None,
-            (context, spent) => Some(context.unwrap_or(0).max(spent)),
+        let growth = match (self.tokens, self.mark) {
+            (Some(now), Some(mark)) => now.saturating_sub(mark),
+            _ => 0,
+        };
+        match self.spent_tokens + growth {
+            0 => None,
+            used => Some(used),
         }
     }
 
@@ -115,7 +145,9 @@ impl Meter {
             if used > limit {
                 return Some((
                     FailureReason::BudgetExceeded,
-                    format!("reported {used} tokens, over the {limit} token budget"),
+                    format!(
+                        "used about {used} tokens since it started, over the {limit} token budget"
+                    ),
                 ));
             }
         }
@@ -141,6 +173,13 @@ impl Meter {
             ));
         }
         None
+    }
+
+    /// A quiet note for a turn that ended normally while the delegation had
+    /// spent more than its token budget. Such a task stays completed.
+    pub fn overrun_note(&self, budget: &Budget) -> Option<String> {
+        let (limit, used) = (budget.max_tokens?, self.used_tokens()?);
+        (used > limit).then(|| format!("Used about {used} tokens, over the {limit} token budget"))
     }
 
     /// Whether one more turn fits.
@@ -197,10 +236,64 @@ mod tests {
         let meter = Meter::new();
         assert!(meter.over(&budget, Duration::from_secs(1)).is_none());
         let mut meter = meter;
-        meter.tokens = Some(2);
+        meter.record_context(2, 100);
+        assert!(meter.over(&budget, Duration::from_secs(1)).is_none());
+        meter.record_context(4, 100);
         assert_eq!(
             meter.over(&budget, Duration::from_secs(1)).unwrap().0,
             FailureReason::BudgetExceeded
         );
+    }
+
+    fn tokens(max: u64) -> Budget {
+        Budget {
+            max_tokens: Some(max),
+            ..Budget::default()
+        }
+    }
+
+    #[test]
+    fn a_fresh_sessions_baseline_alone_is_never_over_budget() {
+        let mut meter = Meter::new();
+        meter.record_context(31_290, 200_000);
+        assert_eq!(meter.used_tokens(), None);
+        assert!(meter.over(&tokens(1000), Duration::from_secs(1)).is_none());
+        assert_eq!(meter.tokens, Some(31_290));
+    }
+
+    #[test]
+    fn the_budget_counts_context_growth_over_the_baseline() {
+        let mut meter = Meter::new();
+        meter.record_context(25_036, 200_000);
+        meter.record_context(25_836, 200_000);
+        assert_eq!(meter.used_tokens(), Some(800));
+        assert!(meter.over(&tokens(1000), Duration::from_secs(1)).is_none());
+        meter.record_context(26_100, 200_000);
+        let (reason, detail) = meter.over(&tokens(1000), Duration::from_secs(1)).unwrap();
+        assert_eq!(reason, FailureReason::BudgetExceeded);
+        assert_eq!(
+            detail,
+            "used about 1064 tokens since it started, over the 1000 token budget"
+        );
+        // A compacted, smaller context never makes the growth negative.
+        meter.record_context(10_000, 200_000);
+        assert_eq!(meter.used_tokens(), Some(1064));
+    }
+
+    #[test]
+    fn a_reported_turn_total_is_preferred_over_context_growth() {
+        let mut meter = Meter::new();
+        meter.record_context(30_000, 200_000);
+        meter.record_context(34_000, 200_000);
+        // The turn says it spent 600; the growth it covers is not added again.
+        meter.record_turn_total(600);
+        assert_eq!(meter.used_tokens(), Some(600));
+        // Growth after that turn counts on top until the next total arrives.
+        meter.record_context(34_300, 200_000);
+        assert_eq!(meter.used_tokens(), Some(900));
+        // An agent that reports totals but never context still counts.
+        let mut only_totals = Meter::new();
+        only_totals.record_turn_total(1500);
+        assert_eq!(only_totals.used_tokens(), Some(1500));
     }
 }

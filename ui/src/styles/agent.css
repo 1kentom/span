@@ -145,6 +145,10 @@
   scrollbar-width: thin;
   scrollbar-color: var(--scroll) transparent;
 }
+/* A following feed is pinned explicitly (feed-follow.ts); scroll anchoring would fight those writes. */
+.agent-content[data-follow="following"] {
+  overflow-anchor: none;
+}
 .agent-body {
   display: flex;
   flex-direction: column;
@@ -341,12 +345,20 @@
   padding: 9px 11px;
   font-size: 12px;
 }
-.agent-panel .agent-markdown table {
+.agent-panel .agent-markdown .markdown-table {
+  --markdown-table-surface: var(--sb-surface);
   margin: 0 0 10px;
-  font-size: 11px;
 }
-.agent-panel .agent-markdown :is(th, td) {
-  padding: 4px 8px;
+.agent-panel .agent-markdown .markdown-table table,
+.agent-panel .agent-markdown .markdown-table th {
+  font-size: 12px;
+}
+.agent-panel .agent-markdown .markdown-table :is(th, td) {
+  padding: 6px 10px;
+}
+.agent-panel .agent-markdown .markdown-table .markdown-cell {
+  min-width: 12ch;
+  max-width: 32ch;
 }
 .agent-panel .agent-markdown blockquote {
   margin: 0 0 10px;
@@ -416,8 +428,9 @@
   border-radius: 12px 12px 0 0;
 }
 .agent-footer > :is(.sb-dock, .sb-activity) {
-  border: 1px solid var(--sb-accent-border);
+  border: 1px solid var(--sb-border);
   border-bottom: 0;
+  background: var(--sb-raised);
 }
 /* A long question never grows past the panel: it scrolls inside the dock and the prompt box stays in view. */
 .agent-footer > .sb-dock {

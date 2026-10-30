@@ -578,6 +578,53 @@ impl Manager {
             .map_err(|e| map_err(&client, e))
     }
 
+    /// Forward disk changes to the current ready instance only. A watcher never
+    /// starts a server; the client filters events against its dynamic registrations.
+    pub async fn notify_watched_files(
+        &self,
+        id: ServerId,
+        root: &Path,
+        changes: Vec<lsp_types::FileEvent>,
+    ) -> Result<(), ManagerError> {
+        let Some((_inst, inner)) = self.lock_current(id, root).await else {
+            return Ok(());
+        };
+        if !inner.ready {
+            return Ok(());
+        }
+        let Some(client) = inner.client.as_ref() else {
+            return Ok(());
+        };
+        client
+            .did_change_watched_files(changes)
+            .await
+            .map_err(|e| map_err(client, e))
+    }
+
+    /// Bounded resync of watched files for the current ready instance, see
+    /// [`crate::LspClient::resync_watched_files`]. Never starts a server.
+    pub async fn resync_watched_files(
+        &self,
+        id: ServerId,
+        root: &Path,
+        since: Option<std::time::SystemTime>,
+        exclusions: crate::watch_sync::Exclusions,
+    ) -> Result<(usize, bool), ManagerError> {
+        let Some((_inst, inner)) = self.lock_current(id, root).await else {
+            return Ok((0, false));
+        };
+        if !inner.ready {
+            return Ok((0, false));
+        }
+        let Some(client) = inner.client.as_ref() else {
+            return Ok((0, false));
+        };
+        client
+            .resync_watched_files(since, exclusions, crate::watch_sync::ScanLimits::default())
+            .await
+            .map_err(|e| map_err(client, e))
+    }
+
     /// Current buffered text of a document, if the manager tracks it.
     pub async fn document_text(&self, id: ServerId, root: &Path, path: &Path) -> Option<String> {
         let inst = self.get(id, root).await?;
@@ -1013,6 +1060,38 @@ fn map_err(client: &LspClient, e: LspError) -> ManagerError {
     }
 }
 
+/// The version directory a node launch runs from: everything before its first `node_modules` component.
+fn install_dir_of(launch: &LaunchSpec) -> Option<std::path::PathBuf> {
+    let script = std::path::Path::new(launch.args.first()?);
+    let mut dir = std::path::PathBuf::new();
+    for part in script.components() {
+        if part.as_os_str() == "node_modules" {
+            return Some(dir);
+        }
+        dir.push(part);
+    }
+    None
+}
+
+/// Replaces the `{tsdk}` placeholder in initialization options with the installed `typescript/lib`.
+fn fill_install_paths(options: &mut serde_json::Value, launch: &LaunchSpec) {
+    let Some(dir) = install_dir_of(launch) else {
+        return;
+    };
+    let tsdk = dir.join("node_modules").join("typescript").join("lib");
+    fn walk(value: &mut serde_json::Value, tsdk: &str) {
+        match value {
+            serde_json::Value::String(text) if text == super::catalog::TSDK_PLACEHOLDER => {
+                *text = tsdk.to_string();
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(|item| walk(item, tsdk)),
+            serde_json::Value::Object(map) => map.values_mut().for_each(|item| walk(item, tsdk)),
+            _ => {}
+        }
+    }
+    walk(options, &tsdk.to_string_lossy());
+}
+
 async fn run_instance(
     inst: Arc<Instance>,
     spec: ServerSpec,
@@ -1045,6 +1124,8 @@ async fn run_instance(
     // Answer server requests from the start, including those sent during initialize.
     tokio::spawn(pump_events(inst.clone(), client.clone()));
 
+    let mut initialization_options = initialization_options;
+    fill_install_paths(&mut initialization_options, &launch);
     let options = match &initialization_options {
         serde_json::Value::Null => None,
         v => Some(v.clone()),
@@ -1186,5 +1267,40 @@ async fn pump_events(inst: Arc<Instance>, client: Arc<LspClient>) {
         inner.ready = false;
         inner.client = None;
         inst.set_state(ServerState::Crashed);
+    }
+}
+
+#[cfg(test)]
+mod install_path_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn launch(script: &str) -> LaunchSpec {
+        LaunchSpec {
+            program: "node".into(),
+            args: vec![script.into(), "--stdio".into()],
+            env: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn tsdk_placeholder_becomes_the_installed_typescript_lib() {
+        let mut options = json!({ "typescript": { "tsdk": "{tsdk}" }, "vue": { "hybridMode": false }, "list": ["{tsdk}", 1] });
+        fill_install_paths(
+            &mut options,
+            &launch("/cache/vue/2.2.12/node_modules/@vue/language-server/bin/x.js"),
+        );
+        let expected = std::path::Path::new("/cache/vue/2.2.12/node_modules/typescript/lib");
+        let tsdk = |value: &serde_json::Value| std::path::PathBuf::from(value.as_str().unwrap());
+        assert_eq!(tsdk(&options["typescript"]["tsdk"]), expected);
+        assert_eq!(tsdk(&options["list"][0]), expected);
+        assert_eq!(options["vue"]["hybridMode"], false);
+    }
+
+    #[test]
+    fn options_are_untouched_when_the_launch_is_not_a_node_install() {
+        let mut options = json!({ "typescript": { "tsdk": "{tsdk}" } });
+        fill_install_paths(&mut options, &launch("/usr/bin/rust-analyzer"));
+        assert_eq!(options["typescript"]["tsdk"], "{tsdk}");
     }
 }

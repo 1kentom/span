@@ -53,6 +53,7 @@ pub enum NativeAction {
     GoBack,
     GoForward,
     FocusBreadcrumbs,
+    ShowUsage,
     ZoomIn,
     ZoomOut,
     ResetZoom,
@@ -210,6 +211,7 @@ const ACTIONS: &[(&str, &str, NativeAction)] = &[
         "Focus Breadcrumbs",
         NativeAction::FocusBreadcrumbs,
     ),
+    ("showUsage", "Show Usage", NativeAction::ShowUsage),
     ("zoomIn", "Zoom In", NativeAction::ZoomIn),
     ("zoomOut", "Zoom Out", NativeAction::ZoomOut),
     ("resetZoom", "Reset Zoom", NativeAction::ResetZoom),
@@ -296,6 +298,7 @@ fn build_menu(app: &AppHandle, bindings: &HashMap<String, Vec<String>>) -> tauri
             &items["toggleTerminal"],
             &items["markdownPreview"],
             &items["toggleWordWrap"],
+            &items["showUsage"],
             &items["zoomIn"],
             &items["zoomOut"],
             &items["resetZoom"],
@@ -363,14 +366,11 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
 #[specta::specta]
 pub fn sync_native_menu(
     app: AppHandle,
-    bindings: HashMap<String, Vec<String>>,
+    mut bindings: HashMap<String, Vec<String>>,
 ) -> Result<Vec<String>, String> {
-    if bindings
-        .keys()
-        .any(|id| !ACTIONS.iter().any(|(action, _, _)| action == id))
-    {
-        return Err("Unknown native menu action".into());
-    }
+    // An id this build has no menu item for keeps its keyboard shortcut in the webview. Refusing the
+    // whole sync would leave every native shortcut unbound, so the stray id is dropped instead.
+    bindings.retain(|id, _| ACTIONS.iter().any(|(action, _, _)| action == id));
     // Validate using the same settings validator used for persisted keybindings.
     let settings = span_core::Settings {
         keybindings: bindings.clone(),

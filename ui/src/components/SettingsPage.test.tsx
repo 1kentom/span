@@ -9,7 +9,7 @@ const defaults: SettingsValue = {
   theme: "Dark", fontSize: 13, tabSize: 2, wordWrap: false,
   uiFontSize: 13, uiFontFamily: "Inter", editorFontFamily: "JetBrains Mono",
   collapsePanelsOnDrag: true, markdownPreviewDefault: true, formatOnSave: false, autoSave: "off", autoSaveDelay: 1000, tabLimitEnabled: true, tabLimit: 10, tabLimitPerGroup: false, zoomLevel: null,
-  keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] },
+  keybindings: {}, formatters: {}, languageServers: { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [], watchIncludeDirectories: [], silencedWatchWarnings: [] },
 };
 const disposers: (() => void)[] = [];
 afterEach(() => { disposers.splice(0).forEach(dispose => dispose()); document.body.replaceChildren(); });
@@ -143,6 +143,36 @@ describe("workspace SettingsPage", () => {
     expect(input(root, "Auto Save delay").disabled).toBe(false);
     const delay = input(root, "Auto Save delay"); delay.value = "250"; delay.dispatchEvent(new Event("change", { bubbles: true })); await settle();
     expect(onChange).toHaveBeenLastCalledWith({ autoSaveDelay: 250 });
+  });
+
+  it("shows the Explorer visibility preferences and sends nested leaf updates", async () => {
+    const onSettingChange = vi.fn(async () => {});
+    const { root } = mount({ onSettingChange });
+    button(root, "Explorer").click(); await settle();
+    expect(root.textContent).toContain(".env.example");
+    expect(root.textContent).toContain("lazy Explorer rows");
+    const hidden = button(root, "Show hidden files");
+    expect(hidden.getAttribute("aria-checked")).toBe("true");
+    hidden.click(); await settle();
+    expect(onSettingChange).toHaveBeenCalledWith("explorer.showHiddenFiles", false);
+    button(root, "Show ignored files").click(); await settle();
+    expect(onSettingChange).toHaveBeenLastCalledWith("explorer.showIgnoredFiles", true);
+  });
+
+  it("resets only a configured Explorer leaf and blocks changes while JSONC is dirty", async () => {
+    const onSettingChange = vi.fn(async () => {});
+    const { root } = mount({ configuredKeys: ["explorer.compactFolders"], onSettingChange });
+    button(root, "Explorer").click(); await settle();
+    expect(button(root, "Reset compact folders override").disabled).toBe(false);
+    button(root, "Reset compact folders override").click(); await settle();
+    expect(onSettingChange).toHaveBeenCalledWith("explorer.compactFolders", null);
+    button(root, "JSONC").click(); await settle();
+    type(root.querySelector<HTMLTextAreaElement>("textarea")!, "{ dirty draft"); await settle();
+    button(root, "Explorer").click(); await settle();
+    const reveal = button(root, "Auto reveal active file");
+    expect(reveal.disabled).toBe(true);
+    reveal.click();
+    expect(onSettingChange).toHaveBeenCalledTimes(1);
   });
 
   it("requests real scope changes and disables scope switching while a JSONC draft is dirty", async () => {

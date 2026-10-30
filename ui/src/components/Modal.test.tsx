@@ -87,3 +87,13 @@ describe("modal default actions", () => {
     pending.reject(new Error("Late old request")); await settle(); expect(root.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe("second"); expect(root.querySelector<HTMLInputElement>("input")!.value).toBe("second dirty draft"); expect(root.querySelector('[role="alert"]')).toBeNull(); expect(onError).not.toHaveBeenCalled();
   });
 });
+
+
+it("supports a noncancelable final discard while busy without changing ordinary dialog cancellation", async () => {
+  const root = container(); const close = vi.fn(); let setBusy!: (value: boolean) => boolean;
+  disposers.push(render(() => { const [busy, update] = createSignal(true); setBusy = update; return <Modal label="Final discard" busy={busy()} preventCloseWhileBusy onClose={close}><button data-modal-cancel>Cancel</button></Modal>; }, root));
+  await settle(); const dialog = root.querySelector<HTMLElement>('[role="dialog"]')!;
+  key(dialog, "Escape"); root.querySelector<HTMLButtonElement>("button")!.click();
+  root.querySelector<HTMLElement>(".modal-backdrop")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); expect(close).not.toHaveBeenCalled();
+  setBusy(false); key(dialog, "Escape"); expect(close).toHaveBeenCalledOnce();
+});

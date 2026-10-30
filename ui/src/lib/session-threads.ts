@@ -108,15 +108,30 @@ export function threadRowMeta(thread: Thread): ThreadRowMeta {
 
 /**
  * The listed sessions History shows, in order: an earlier segment is left out when a later segment of its thread is
- * listed as well, so a chat that switched agent appears once.
+ * listed as well, so a chat that switched agent appears once. A delegated child (its metadata has a `parent` link to
+ * the lead) is never a row of its own: it belongs to the lead's thread, where its delegation card shows it (ADR 0003).
  */
 export function visibleThreadRows(listed: readonly string[], metas: readonly SessionMeta[], agentId: string | undefined): string[] {
   const present = new Set(listed);
+  const children = new Set(metas.filter((entry) => entry.parent).map((entry) => entry.sessionId));
   return listed.filter((id) => {
+    if (children.has(id)) return false;
     const { segments } = threadOf(metas, agentId, id);
     const own = segments.findIndex((segment) => segment.sessionId === id);
     return own < 0 || !segments.slice(own + 1).some((later) => present.has(later.sessionId));
   });
+}
+
+/**
+ * What an agent titles a Span health check session (ADR 0010; the prompt is "Health check. Reply with exactly one
+ * word: OK", and agents may cut it short). Matches HEALTH_TITLE_PREFIX in crates/acp. A chat that merely starts with
+ * "Health check" is the user's and is never matched.
+ */
+const HEALTH_TITLE_PREFIX = "Health check. Reply with exactly one word";
+
+/** True for a session Span opened for its health check: never shown in History, never resumed, never counted. */
+export function isHealthCheckSession(session: { title?: string | null }): boolean {
+  return Boolean(session.title?.trimStart().startsWith(HEALTH_TITLE_PREFIX));
 }
 
 /** The header Span puts ahead of carried context (agent-handoff.ts). An agent that titles a session by its first prompt shows it. */

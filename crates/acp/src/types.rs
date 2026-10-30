@@ -68,6 +68,16 @@ pub struct SessionSummary {
     /// History scope chips tell this workspace from other folders.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The session that spawned this one with the agent's own subagent tool,
+    /// when the agent named it. Set only together with `native_subagent`.
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    /// True for a session the agent created with its own subagent tool (not
+    /// a Span delegation). History hides these by default and nests them
+    /// under `parent_session_id`. Derived at list time; nothing is stored
+    /// but the session ids (ADR 0005, amendment of 2026-10-29).
+    #[serde(default)]
+    pub native_subagent: bool,
 }
 
 /// A slash command the agent advertises. Run it by sending `/name args` as prompt text.

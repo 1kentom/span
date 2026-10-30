@@ -3,7 +3,7 @@ import type { Settings_Serialize as SettingsValue, SettingsScope } from "../bind
 import Icon from "./Icon";
 import "../styles/settings.css";
 
-type Section = "Appearance" | "Editor" | "Files" | "Keyboard Shortcuts" | "Agents" | "Tools" | "Language servers" | "Syntax colors" | "Updates" | "Storage" | "Workspace" | "JSONC";
+type Section = "Appearance" | "Editor" | "Files" | "Explorer" | "Keyboard Shortcuts" | "Agents" | "Tools" | "Language servers" | "Syntax colors" | "Updates" | "Storage" | "Workspace" | "JSONC";
 export interface SettingsPageProps {
   settings: SettingsValue;
   workspaceName?: string;
@@ -13,6 +13,7 @@ export interface SettingsPageProps {
   unsupportedKeys?: readonly string[];
   onScopeChange?: (scope: SettingsScope) => Promise<void>;
   onReset?: (key: keyof SettingsValue) => Promise<void>;
+  onSettingChange?: (key: string, value: unknown) => Promise<void>;
   onOpenJsonc?: () => void;
   settingsJsonc?: string;
   onChange: (patch: Partial<SettingsValue>) => Promise<void>;
@@ -51,6 +52,7 @@ const sections: { name: Section; icon: string; description: string }[] = [
   { name: "Appearance", icon: "MagicStar", description: "Themes and interface typography." },
   { name: "Editor", icon: "Code1", description: "Typography, indentation and file behavior." },
   { name: "Files", icon: "DocumentText", description: "Auto Save and file saving behavior." },
+  { name: "Explorer", icon: "Folder2", description: "Choose which files appear in the workspace Explorer." },
   { name: "Keyboard Shortcuts", icon: "Command", description: "Find commands and make their shortcuts your own." },
   { name: "Agents", icon: "collaborators", description: "Manage agent connections for this workspace." },
   { name: "Tools", icon: "Code1", description: "Inspect available command line tools on this device." },
@@ -142,11 +144,28 @@ export function SettingsPage(props: SettingsPageProps) {
   const showThemes = () => (!modifiedOnly() || configured("theme", "Dark")) && (searching() ? matches("color theme appearance dark light purple") : section() === "Appearance");
   const page = () => sections.find(item => item.name === section())!;
   const matchingSections = createMemo(() => searching() && !modifiedOnly() ? sections.filter(item => ["Keyboard Shortcuts", "Agents", "Tools", "Language servers", "Syntax colors", "Updates", "Storage", "JSONC"].includes(item.name) && matches(`${item.name} ${item.description}`)) : []);
+  const explorerSettings = () => props.settings.explorer;
+  const explorerRows = [
+    { key: "showHiddenFiles", label: "Show hidden files", description: "Show dotfiles such as .env.example by default. Files matched by ignore rules stay hidden unless Show ignored files is enabled." },
+    { key: "showIgnoredFiles", label: "Show ignored files", description: "Allow ignored files and folders to appear as lazy Explorer rows. Ordinary ignored sources may also appear in the file finder and search; node_modules and recognized ignored build outputs stay excluded from background indexing." },
+    { key: "compactFolders", label: "Compact folders", description: "Show single-child folder chains together in the Explorer." },
+    { key: "autoReveal", label: "Auto reveal active file", description: "Reveal the active file in the Explorer when it changes." },
+    { key: "confirmDelete", label: "Confirm file deletion", description: "Ask before deleting files or folders from the Explorer." },
+  ] as const;
+  const visibleExplorerRows = createMemo(() => explorerRows.filter(item => (!modifiedOnly() || props.configuredKeys?.includes(`explorer.${item.key}`)) && (searching() ? matches(`${item.label} ${item.description} explorer.${item.key} Explorer`) : section() === "Explorer")));
+  const explorerCount = () => visibleExplorerRows().length;
   const disabled = () => busy() || dirty();
   async function change(patch: Partial<SettingsValue>) {
     if (disabled()) return;
     setBusy(true); setError(""); setNotice("");
     try { await props.onChange(patch); setNotice("Settings saved"); }
+    catch (cause) { setError(errorMessage(cause)); }
+    finally { setBusy(false); }
+  }
+  async function changeExplorerSetting(key: string, value: unknown) {
+    if (disabled() || !props.onSettingChange) return;
+    setBusy(true); setError(""); setNotice("");
+    try { await props.onSettingChange(`explorer.${key}`, value); setNotice(value === null ? `${scopeName()} override removed` : "Settings saved"); }
     catch (cause) { setError(errorMessage(cause)); }
     finally { setBusy(false); }
   }
@@ -185,7 +204,7 @@ export function SettingsPage(props: SettingsPageProps) {
   }}>
     <header class="sp-toolbar"><div class="sp-search"><Icon name="SearchNormal1" size={15} /><input ref={search} type="search" aria-label="Search settings" placeholder="Search settings" value={query()} onInput={event => setQuery(event.currentTarget.value)} onKeyDown={event => { if (event.key === "Escape" && query()) { event.preventDefault(); event.stopPropagation(); setQuery(""); } }} /><Show when={query()}><button class="close-button" aria-label="Clear settings search" onClick={() => { setQuery(""); search.focus(); }}><span class="cross" /></button></Show></div><Show when={props.onOpenJsonc}><button class="sp-open-jsonc" aria-label="Open settings JSONC" title="Open settings JSONC in editor" onClick={() => props.onOpenJsonc?.()}><Icon name="DocumentText" size={17} /></button></Show><div class="sp-scope-tabs" role="group" aria-label="Settings scope"><button aria-pressed={scope() === "user"} disabled={disabled() || !props.onScopeChange} onClick={() => void changeScope("user")}>User</button><button aria-pressed={scope() === "workspace"} disabled={disabled()} onClick={() => void changeScope("workspace")}>Workspace</button></div></header>
     <div class="sp-body"><nav class="sp-nav" aria-label="Settings sections"><For each={sections}>{item => <button aria-current={!searching() && section() === item.name ? "page" : undefined} classList={{ selected: !searching() && section() === item.name }} onClick={() => go(item.name)}><Icon name={item.icon} size={15} /><span>{item.name}</span><Show when={item.name === "JSONC" && dirty()}><span class="dirty-dot" aria-label="Unsaved JSONC" /></Show></button>}</For><div class="sp-nav-foot"><span>{props.workspaceName || "Current workspace"}</span><span>{scopeName()} settings</span></div></nav>
-      <main class="sp-main"><header class="sp-page-heading"><h1>{searching() ? "Search results" : section()}</h1><p>{searching() ? `${visiblePreferences().length + (showThemes() ? 1 : 0)} matching settings` : page().description}</p></header>
+      <main class="sp-main"><header class="sp-page-heading"><h1>{searching() ? "Search results" : section()}</h1><p>{searching() ? `${visiblePreferences().length + explorerCount() + (showThemes() ? 1 : 0)} matching settings` : page().description}</p></header>
         <Show when={dirty() && section() !== "JSONC"}><div class="sp-banner"><Icon name="Warning2" size={16} /><span>Save or discard your JSONC draft before changing preferences or scope.</span><button onClick={() => go("JSONC")}>Review draft</button></div></Show>
         <Show when={showThemes()}><section class="sp-group" aria-labelledby="sp-theme-heading"><div class="sp-group-heading"><h2 id="sp-theme-heading">Color theme</h2><Show when={configured("theme", "Dark")}><button class="sp-reset" disabled={disabled()} onClick={() => void reset("theme", "Dark")} aria-label={props.onReset ? "Reset color theme override" : "Reset color theme to default"}>Reset</button></Show></div><p class="sp-help">Choose the color theme for this settings scope.</p><div class="sp-themes" role="radiogroup" aria-label="Color theme" onKeyDown={event => {
           const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : ["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 0;
@@ -201,8 +220,14 @@ export function SettingsPage(props: SettingsPageProps) {
           const resetPreference = () => void reset(item.key, item.defaultValue);
           return <div class="sp-preference"><div class="sp-preference-label"><label for={id}>{item.label}</label><p id={`${id}-help`}>{item.description}</p><span class="sp-setting-path">{aliases[item.key] || item.key}<Show when={props.configuredKeys}><span class="sp-origin">{configured(item.key, item.defaultValue) ? `Changed in ${scopeName()}` : "Inherited"}</span></Show></span></div><div class="sp-preference-control"><Show when={item.kind === "number"}><input id={id} class="sp-number" aria-label={item.label} aria-describedby={`${id}-help`} type="number" min={item.min} max={item.max} step={item.step || 1} value={Number(value())} disabled={disabled() || item.key === "autoSaveDelay" && props.settings.autoSave !== "afterDelay"} onChange={event => { const next = Number(event.currentTarget.value); if (!Number.isFinite(next) || !item.step && !Number.isInteger(next) || next < item.min! || next > item.max!) { setError(`${item.label} must be between ${item.min} and ${item.max}`); event.currentTarget.value = String(value()); return; } const target = event.currentTarget; void change({ [item.key]: next } as Partial<SettingsValue>).then(() => { target.value = String(value()); }); }} /></Show><Show when={item.kind === "toggle"}><button id={id} class="sp-switch" role="switch" aria-label={item.label} aria-describedby={`${id}-help`} aria-checked={Boolean(value())} disabled={disabled()} onClick={() => void change({ [item.key]: !value() } as Partial<SettingsValue>)}><span /></button></Show><Show when={item.kind === "select"}><Dropdown id={id} label={item.label} value={String(value())} options={item.options || []} disabled={disabled()} onChange={next => void change({ [item.key]: next } as Partial<SettingsValue>)} /></Show><button class="sp-reset" aria-label={props.onReset ? `Reset ${item.label.toLowerCase()} override` : `Reset ${item.label.toLowerCase()} to default`} title={props.onReset ? `Remove ${scopeName().toLowerCase()} override` : "Reset to default"} disabled={disabled() || !configured(item.key, item.defaultValue)} onClick={resetPreference}>Reset</button></div></div>;
         }}</For></div></Show>
+        <Show when={explorerCount() > 0}><div class="sp-preferences" aria-label="Explorer preferences"><For each={visibleExplorerRows()}>{item => {
+          const value = () => explorerSettings()?.[item.key] ?? ({ showHiddenFiles: true, showIgnoredFiles: false, compactFolders: true, autoReveal: true, confirmDelete: true } as const)[item.key];
+          const configuredHere = () => props.configuredKeys?.includes(`explorer.${item.key}`) ?? false;
+          const label = item.label;
+          return <div class="sp-preference"><div class="sp-preference-label"><label>{label}</label><p>{item.description}</p><span class="sp-setting-path">explorer.{item.key}<Show when={props.configuredKeys}><span class="sp-origin">{configuredHere() ? `Changed in ${scopeName()}` : "Inherited"}</span></Show></span></div><div class="sp-preference-control"><button class="sp-switch" role="switch" aria-label={label} aria-checked={Boolean(value())} disabled={disabled() || !props.onSettingChange} onClick={() => void changeExplorerSetting(item.key, !value())}><span /></button><button class="sp-reset" aria-label={`Reset ${label.toLowerCase()} override`} title={`Remove ${scopeName().toLowerCase()} override`} disabled={disabled() || !props.onSettingChange || !configuredHere()} onClick={() => void changeExplorerSetting(item.key, null)}>Reset</button></div></div>;
+        }}</For></div></Show>
         <Show when={matchingSections().length > 0}><div class="sp-section-results"><For each={matchingSections()}>{item => <button onClick={() => go(item.name)}><Icon name={item.icon} size={16} /><span><strong>{item.name}</strong><span>{item.description}</span></span><Icon name="arrow-right4" size={14} /></button>}</For></div></Show>
-        <Show when={searching() && !showThemes() && visiblePreferences().length === 0 && matchingSections().length === 0}><div class="sp-empty"><Icon name="SearchNormal1" size={24} /><strong>No settings found</strong><p>Try a setting name, such as font, theme or wrap.</p><button class="button" onClick={() => setQuery("")}>Clear search</button></div></Show>
+        <Show when={searching() && !showThemes() && visiblePreferences().length === 0 && explorerCount() === 0 && matchingSections().length === 0}><div class="sp-empty"><Icon name="SearchNormal1" size={24} /><strong>No settings found</strong><p>Try a setting name, such as font, theme or wrap.</p><button class="button" onClick={() => setQuery("")}>Clear search</button></div></Show>
         <Show when={!searching() && section() === "Files"}><div class="sp-formatter-note"><p>{Object.keys(props.settings.formatters).length ? `Configured formatters: ${Object.keys(props.settings.formatters).join(", ")}.` : "No formatters configured. Add a formatter command for each language to use format on save."}</p><button class="sp-text-button" onClick={() => go("JSONC")}>Configure formatters in JSONC<Icon name="arrow-right4" size={13} /></button></div></Show>
         <Show when={!searching() && section() === "Keyboard Shortcuts"}><Show when={!dirty()} fallback={<p class="sp-help">Keyboard preferences are available after you finish reviewing the JSONC draft.</p>}>{props.shortcuts}</Show></Show>
         <Show when={!searching() && section() === "Agents"}><div class="sp-information"><Icon name="collaborators" size={25} /><h2>Agent connections</h2><p>Install and connect an Agent Client Protocol agent from the assistant panel. Agent permissions and suggested edits stay reviewable in the workspace.</p><dl><dt>Connection</dt><dd>{props.agentStatus || "Managed in the assistant panel"}</dd></dl><Show when={props.onOpenAgents}><button class="button" onClick={props.onOpenAgents}>Manage agents<Icon name="arrow-right4" size={14} /></button></Show></div>{props.agentTools}</Show>

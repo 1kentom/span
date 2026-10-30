@@ -4,15 +4,15 @@ use notify::{
 };
 use serde::{Deserialize, Serialize};
 use span_file_index::{
-    FileEvent, FileIndex, IndexError, IndexSnapshot, QueryResults, ScanStatus, SearchResult,
-    WorkspaceHandle,
+    FileEvent, FileIndex, IndexError, IndexSnapshot, QueryResults, ScanStatus, ScanVisibility,
+    SearchResult, WorkspaceHandle,
 };
 use specta::Type;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, TrySendError},
         Arc, Mutex,
     },
@@ -74,6 +74,8 @@ struct RuntimeInner {
     index: FileIndex,
     current: Mutex<Option<WatchSession>>,
     watcher_error: Arc<Mutex<Option<String>>>,
+    change_revision: Arc<AtomicU64>,
+    file_change_sink: Arc<Mutex<Option<FileChangeSink>>>,
 }
 
 struct WatchSession {
@@ -82,15 +84,40 @@ struct WatchSession {
     watcher: Option<RecommendedWatcher>,
     worker: Option<JoinHandle<()>>,
 }
+type FileChangeSink = Arc<dyn Fn(crate::watched_paths::WatchedBatch) + Send + Sync>;
+
+struct WatchUpdates {
+    error: Arc<Mutex<Option<String>>>,
+    revision: Arc<AtomicU64>,
+    file_change_sink: Arc<Mutex<Option<FileChangeSink>>>,
+    /// Set when the native queue dropped an event a language server might watch.
+    lsp_overflow: Arc<AtomicBool>,
+}
 
 impl FileIndexRuntime {
+    pub(crate) fn set_file_change_sink(&self, sink: FileChangeSink) {
+        if let Ok(mut current) = self.inner.file_change_sink.lock() {
+            *current = Some(sink);
+        }
+    }
+
     /// Prepare the scoped watcher first, then activate an isolated index
     /// generation and launch its background scan without waiting for traversal.
+    #[cfg(test)]
     pub async fn activate(&self, root: PathBuf) -> Result<(), String> {
+        self.activate_with_visibility(root, ScanVisibility::default())
+            .await
+    }
+
+    pub async fn activate_with_visibility(
+        &self,
+        root: PathBuf,
+        visibility: ScanVisibility,
+    ) -> Result<(), String> {
         let prepared = tokio::task::spawn_blocking(move || prepare_watcher(root))
             .await
             .map_err(|error| format!("Watcher setup task failed: {error}"))??;
-        let (root, watcher, receiver, overflow) = prepared;
+        let (root, watcher, receiver, overflow, lsp_overflow) = prepared;
         // Allocate the worker before changing index generations. If thread
         // creation fails, the currently open workspace and its scan remain
         // active. The worker waits for the new handle while open_workspace
@@ -100,6 +127,8 @@ impl FileIndexRuntime {
         let worker_stop = Arc::clone(&stop);
         let worker_overflow = Arc::clone(&overflow);
         let watcher_error = Arc::clone(&self.inner.watcher_error);
+        let change_revision = Arc::clone(&self.inner.change_revision);
+        let file_change_sink = Arc::clone(&self.inner.file_change_sink);
         let index = self.inner.index.clone();
         let worker_root = root.clone();
         let worker = thread::Builder::new()
@@ -115,7 +144,12 @@ impl FileIndexRuntime {
                     receiver,
                     worker_stop,
                     worker_overflow,
-                    watcher_error,
+                    WatchUpdates {
+                        error: watcher_error,
+                        revision: change_revision,
+                        file_change_sink,
+                        lsp_overflow,
+                    },
                 )
             })
             .map_err(|error| format!("Could not start workspace watcher worker: {error}"))?;
@@ -133,6 +167,12 @@ impl FileIndexRuntime {
                 return Err(error);
             }
         };
+        if let Err(error) = self.inner.index.set_visibility(&handle, visibility) {
+            drop(handle_sender);
+            let _ = self.inner.index.close_workspace(&handle);
+            let _ = worker.join();
+            return Err(index_error(error));
+        }
         if handle_sender.send(handle.clone()).is_err() {
             let _ = self.inner.index.close_workspace(&handle);
             let _ = worker.join();
@@ -170,6 +210,9 @@ impl FileIndexRuntime {
             .map_err(|_| "File index state is unavailable".to_owned())?
             .as_ref()
             .map(|session| session.handle.clone()))
+    }
+    pub fn change_revision(&self) -> u64 {
+        self.inner.change_revision.load(Ordering::Acquire)
     }
 
     pub fn status(&self, expected_root: &Path) -> Result<Option<FileIndexStatus>, String> {
@@ -220,6 +263,28 @@ impl FileIndexRuntime {
             return Err("File query was superseded by a workspace change".to_owned());
         }
         Ok(query_dto(handle.root(), result))
+    }
+
+    pub fn configure_visibility(
+        &self,
+        expected_root: &Path,
+        visibility: ScanVisibility,
+    ) -> Result<(), String> {
+        let handle = self
+            .current_handle()?
+            .ok_or_else(|| "Open a folder before finding files".to_owned())?;
+        if !same_path(handle.root(), expected_root) {
+            return Err("File index workspace is changing. Retry shortly.".to_owned());
+        }
+        if self
+            .inner
+            .index
+            .set_visibility(&handle, visibility)
+            .map_err(index_error)?
+        {
+            self.inner.index.start_scan(&handle).map_err(index_error)?;
+        }
+        Ok(())
     }
 
     pub fn reconcile(&self, expected_root: &Path) -> Result<FileIndexStatus, String> {
@@ -292,6 +357,7 @@ type PreparedWatcher = (
     RecommendedWatcher,
     Receiver<notify::Result<Event>>,
     Arc<AtomicBool>,
+    Arc<AtomicBool>,
 );
 
 fn prepare_watcher(root: PathBuf) -> Result<PreparedWatcher, String> {
@@ -304,9 +370,26 @@ fn prepare_watcher(root: PathBuf) -> Result<PreparedWatcher, String> {
     let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
     let overflow = Arc::new(AtomicBool::new(false));
     let callback_overflow = Arc::clone(&overflow);
-    let watcher = notify::recommended_watcher(move |event| {
-        if let Err(TrySendError::Full(_)) = sender.try_send(event) {
+    let lsp_overflow = Arc::new(AtomicBool::new(false));
+    let callback_lsp_overflow = Arc::clone(&lsp_overflow);
+    let callback_root = root.clone();
+    let watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+        if let Err(TrySendError::Full(event)) = sender.try_send(event) {
             callback_overflow.store(true, Ordering::Release);
+            // A dropped event only costs language servers anything when it touched a
+            // folder they may watch. Dependency installs and builds do not count.
+            let relevant = event.as_ref().map_or(true, |event| {
+                crate::watched_paths::lsp_relevant(
+                    &callback_root,
+                    &callback_root,
+                    event,
+                    &crate::watched_paths::exclusions(),
+                    &mut HashMap::new(),
+                )
+            });
+            if relevant {
+                callback_lsp_overflow.store(true, Ordering::Release);
+            }
         }
     })
     .map_err(|error| format!("Could not create workspace watcher: {error}"))?;
@@ -314,7 +397,7 @@ fn prepare_watcher(root: PathBuf) -> Result<PreparedWatcher, String> {
     watcher
         .watch(&root, RecursiveMode::Recursive)
         .map_err(|error| format!("Could not watch workspace root: {error}"))?;
-    Ok((root, watcher, receiver, overflow))
+    Ok((root, watcher, receiver, overflow, lsp_overflow))
 }
 
 fn watch_loop(
@@ -324,8 +407,14 @@ fn watch_loop(
     receiver: Receiver<notify::Result<Event>>,
     stop: Arc<AtomicBool>,
     overflow: Arc<AtomicBool>,
-    watcher_error: Arc<Mutex<Option<String>>>,
+    updates: WatchUpdates,
 ) {
+    let WatchUpdates {
+        error: watcher_error,
+        revision: change_revision,
+        file_change_sink,
+        lsp_overflow,
+    } = updates;
     while !stop.load(Ordering::Acquire) {
         let first = match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(first) => first,
@@ -352,6 +441,28 @@ fn watch_loop(
             return;
         }
         let force_rescan = overflow.swap(false, Ordering::AcqRel);
+        if force_rescan
+            || batch.iter().any(|event| {
+                event
+                    .as_ref()
+                    .map_or(true, |event| !matches!(event.kind, EventKind::Access(_)))
+            })
+        {
+            change_revision.fetch_add(1, Ordering::AcqRel);
+        }
+        // A retired watcher must not deliver events to a reopened workspace,
+        // including a new generation at the same path.
+        if index.snapshot(&handle).is_err() {
+            return;
+        }
+        let sink = file_change_sink.lock().ok().and_then(|sink| sink.clone());
+        if let Some(sink) = sink {
+            let lost = lsp_overflow.swap(false, Ordering::AcqRel);
+            let mapped = crate::watched_paths::watched_batch(&root, &batch, lost);
+            if mapped.incomplete || !mapped.changes.is_empty() {
+                sink(mapped);
+            }
+        }
         let rescan = force_rescan || process_batch(&index, &handle, &root, batch);
         if rescan {
             let message = if force_rescan {
@@ -637,6 +748,27 @@ fn search_dto(result: SearchResult) -> FileIndexMatch {
     }
 }
 
+async fn refresh_visibility(
+    state: &crate::DesktopState,
+    expected_root: &Path,
+) -> Result<(), String> {
+    let root = expected_root.to_owned();
+    let runtime = state.file_index.clone();
+    // Read and apply under the same workspace lock as settings mutations.
+    // Overlapping status/query calls cannot reapply an older captured policy.
+    crate::with_workspace(state.clone(), move |workspace| {
+        if Path::new(&workspace.workspace().root) != root {
+            return Err(span_core::CoreError::InvalidEdit(
+                "File index workspace is changing. Retry shortly.".to_owned(),
+            ));
+        }
+        runtime
+            .configure_visibility(&root, workspace.scan_visibility())
+            .map_err(span_core::CoreError::Search)
+    })
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn file_index_status(
@@ -651,6 +783,7 @@ pub async fn file_index_status(
     let Some(expected_root) = expected_root else {
         return Ok(None);
     };
+    refresh_visibility(&state, &expected_root).await?;
     state.file_index.status(&expected_root)
 }
 
@@ -668,6 +801,7 @@ pub async fn query_file(
         .map_err(|_| "Workspace state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "Open a folder before finding files".to_owned())?;
+    refresh_visibility(&state, &expected_root).await?;
     state.file_index.query(&expected_root, query, limit).await
 }
 
@@ -683,6 +817,7 @@ pub async fn reconcile_file_index(
         .map_err(|_| "Workspace state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "Open a folder before reconciling its file index".to_owned())?;
+    refresh_visibility(&state, &expected_root).await?;
     state.file_index.reconcile(&expected_root)
 }
 
@@ -696,6 +831,37 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, text).unwrap();
         path
+    }
+
+    #[tokio::test]
+    async fn visibility_change_keeps_the_watcher_and_workspace_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        write(&root, ".gitignore", "ignored/\n");
+        write(&root, ".hidden.rs", "hidden");
+        write(&root, "ignored/old.rs", "old");
+        let runtime = FileIndexRuntime::default();
+        runtime.activate(root.clone()).await.unwrap();
+        wait_until_ready(&runtime, &root).await;
+        let handle = runtime.current_handle().unwrap().unwrap();
+        let policy = ScanVisibility {
+            show_hidden_files: false,
+            show_ignored_files: true,
+        };
+        runtime.configure_visibility(&root, policy).unwrap();
+        wait_until_ready(&runtime, &root).await;
+        assert_eq!(runtime.current_handle().unwrap().unwrap(), handle);
+        assert!(runtime.status(&root).unwrap().unwrap().watcher_ready);
+        assert!(runtime
+            .query(&root, "hidden", 100)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        wait_for_path(&runtime, &root, "old", "ignored/old.rs").await;
+        write(&root, "ignored/from-watcher.rs", "created");
+        wait_for_path(&runtime, &root, "from-watcher", "ignored/from-watcher.rs").await;
+        runtime.shutdown();
     }
 
     async fn wait_for_path(runtime: &FileIndexRuntime, root: &Path, query: &str, path: &str) {
@@ -746,6 +912,38 @@ mod tests {
         })
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for path removal {path}"));
+    }
+
+    #[tokio::test]
+    async fn external_changes_from_the_real_watcher_reload_a_clean_core_buffer() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        write(&root, "file.txt", "original");
+        let mut workspace = span_core::CoreWorkspace::open(&root).unwrap();
+        workspace.open_buffer("file.txt").unwrap();
+        let runtime = FileIndexRuntime::default();
+        runtime.activate(root.clone()).await.unwrap();
+        wait_until_ready(&runtime, &root).await;
+        let before = runtime.change_revision();
+        write(&root, "file.txt", "external text");
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while runtime.change_revision() == before {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the real file change must reach the existing watcher");
+        let change = workspace
+            .check_external_files(&[span_core::ExternalFileCheck {
+                path: "file.txt".into(),
+                expected_revision: 0,
+                allow_reload: true,
+            }])
+            .unwrap()
+            .remove(0);
+        assert_eq!(change.kind, span_core::ExternalFileKind::Reloaded);
+        assert_eq!(change.snapshot.unwrap().text, "external text");
+        runtime.shutdown();
     }
 
     #[tokio::test]
@@ -909,7 +1107,12 @@ mod tests {
                 receiver,
                 worker_stop,
                 worker_overflow,
-                worker_error,
+                WatchUpdates {
+                    error: worker_error,
+                    revision: Arc::new(AtomicU64::new(0)),
+                    file_change_sink: Arc::default(),
+                    lsp_overflow: Arc::default(),
+                },
             )
         });
         sender

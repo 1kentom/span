@@ -24,15 +24,40 @@ pub struct AgentService {
     runtime_polls: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// Which sessions a `session/list` call returns.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Listing {
+    /// The user's sessions of the workspace folder.
+    Folder,
+    /// The user's sessions of every folder.
+    AllFolders,
+    /// Only Span's own health check sessions, of every folder (for cleanup).
+    Health,
+}
+
+/// What a new session is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opened {
+    /// The user's chat: the user's start mode applies.
+    User,
+    /// A delegated child: always the approval start mode, whatever the
+    /// user's start mode for this agent, so a child never runs looser than
+    /// its lead could (ADR 0003, amendment of 2026-10-29). Kept out of the
+    /// agent's own history where the agent allows it.
+    Child,
+    /// A hidden Span session (see [`AgentService::new_hidden_session`]),
+    /// kept out of the agent's own history where the agent allows it.
+    Hidden,
+}
+
 enum Command {
-    /// MCP servers, and whether the session is a hidden Span session (see
-    /// [`AgentService::new_hidden_session`]).
-    NewSession(Vec<Value>, bool, Reply<String>),
+    /// MCP servers and what the session is for.
+    NewSession(Vec<Value>, Opened, Reply<String>),
     Prompt(String, Vec<ContentBlock>, Reply<()>),
     Authenticate(String, Option<Meta>, Reply<()>),
     Cancel(String),
     SetConfig(String, String, String, Reply<()>),
-    ListSessions(bool, Reply<Vec<SessionSummary>>),
+    ListSessions(Listing, Reply<Vec<SessionSummary>>),
     LoadSession(String, Vec<Value>, Reply<()>),
     CloseSession(String, Reply<()>),
     DeleteSession(String, Reply<()>),
@@ -118,19 +143,39 @@ static HIDDEN_SESSIONS: std::sync::LazyLock<Mutex<HashSet<String>>> =
     std::sync::LazyLock::new(Mutex::default);
 
 /// The prompt of the health check. Agents title a session after its first
-/// prompt, so a hidden session left over from an earlier run of Span (by an
-/// agent without `session/close` or `session/delete`) is recognised by its
-/// title and kept out of History as well.
+/// prompt, so a health session left over from an earlier run of Span is
+/// recognised by its title and kept out of History as well.
 pub const HEALTH_PROMPT: &str = "Health check. Reply with exactly one word: OK";
 
-/// True for a session Span opened for itself: one recorded in this process,
+/// What a health session's title starts with. Shorter than the prompt:
+/// agents cut long titles (for example to "Health check. Reply with exactly
+/// one word..."), so only this prefix is required. A title that merely
+/// starts with "Health check" is a user's chat and is never matched.
+pub const HEALTH_TITLE_PREFIX: &str = "Health check. Reply with exactly one word";
+
+/// True for a title an agent gave a Span health session.
+pub fn is_health_title(title: Option<&str>) -> bool {
+    title.is_some_and(|t| t.trim_start().starts_with(HEALTH_TITLE_PREFIX))
+}
+
+/// True for a session Span opened for itself: one recorded in this process
+/// (or remembered from an earlier run, see [`remember_hidden_sessions`]),
 /// or one titled with the health check prompt.
 pub fn is_hidden_session(session_id: &str, title: Option<&str>) -> bool {
-    title.is_some_and(|t| t.trim_start().starts_with(HEALTH_PROMPT))
+    is_health_title(title)
         || HIDDEN_SESSIONS
             .lock()
             .map(|ids| ids.contains(session_id))
             .unwrap_or(false)
+}
+
+/// Add health session ids remembered from earlier runs of Span to the
+/// process wide hidden set, so listings drop them even when the agent
+/// titles them differently.
+pub fn remember_hidden_sessions<I: IntoIterator<Item = String>>(ids: I) {
+    if let Ok(mut set) = HIDDEN_SESSIONS.lock() {
+        set.extend(ids);
+    }
 }
 
 /// Wrap the connection sink so events of hidden sessions go to the hidden
@@ -382,7 +427,21 @@ impl AgentService {
     pub async fn new_session_with(&self, mcp_servers: Vec<Value>) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(mcp_servers, false, tx))
+            .send(Command::NewSession(mcp_servers, Opened::User, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Create a delegated child session (no MCP servers). It always starts
+    /// in the approval start mode, so its permission requests reach the user
+    /// even when the user let this agent keep its own (looser) default for
+    /// chats. Where the agent has an option for it (Claude:
+    /// `persistSession: false`), the child is not saved to the agent's own
+    /// history, so it never shows in the agent's resume list (ADR 0003,
+    /// amendment of 2026-10-29).
+    pub async fn new_child_session(&self) -> Result<String, String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::NewSession(Vec::new(), Opened::Child, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -395,7 +454,7 @@ impl AgentService {
     pub async fn new_hidden_session(&self) -> Result<String, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::NewSession(Vec::new(), true, tx))
+            .send(Command::NewSession(Vec::new(), Opened::Hidden, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -588,9 +647,23 @@ impl AgentService {
     /// Sessions of the workspace folder, or with `all_folders` every session
     /// the agent lists (no `cwd` filter); each summary carries its `cwd`.
     pub async fn list_sessions_in(&self, all_folders: bool) -> Result<Vec<SessionSummary>, String> {
+        let listing = if all_folders {
+            Listing::AllFolders
+        } else {
+            Listing::Folder
+        };
+        self.list(listing).await
+    }
+    /// Span's own health check sessions the agent still lists, in every
+    /// folder: the ones recorded as hidden and the ones titled with the
+    /// check prompt. Used by the health check cleanup only.
+    pub async fn list_health_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+        self.list(Listing::Health).await
+    }
+    async fn list(&self, listing: Listing) -> Result<Vec<SessionSummary>, String> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::ListSessions(all_folders, tx))
+            .send(Command::ListSessions(listing, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
     }
@@ -607,6 +680,10 @@ impl AgentService {
         session_id: String,
         mcp_servers: Vec<Value>,
     ) -> Result<(), String> {
+        // A health check session is never resumed as a chat.
+        if is_hidden_session(&session_id, None) {
+            return Err("That session is a Span health check, not a chat".into());
+        }
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::LoadSession(session_id, mcp_servers, tx))
@@ -1073,13 +1150,17 @@ async fn run(
                     },
                 };
                 match command {
-                    Command::NewSession(servers, hidden, reply) => {
+                    Command::NewSession(servers, opened, reply) => {
+                        let hidden = opened == Opened::Hidden;
+                        let ephemeral = opened != Opened::User;
                         // The start mode is read from the user's settings only. If it
-                        // cannot be read the session starts in the approval mode.
-                        let approval = workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
+                        // cannot be read the session starts in the approval mode. A
+                        // delegated child always does: no permission laundering.
+                        let approval = opened == Opened::Child || workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::Approval;
                         let mut params = serde_json::to_value(NewSessionRequest::new(cwd.clone())).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
-                        if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { params["_meta"] = meta; }
+                        if let Some(meta) = adapter.approval_session_meta().filter(|_| approval) { merge_meta(&mut params, meta); }
+                        if let Some(meta) = adapter.ephemeral_session_meta().filter(|_| ephemeral) { merge_meta(&mut params, meta); }
                         let result = tokio::time::timeout(std::time::Duration::from_secs(30), raw_request(&cx, "session/new", params)).await;
                         let result = match result {
                             Ok(result) => result,
@@ -1214,15 +1295,24 @@ async fn run(
                             Ok(())
                         })?;
                     }
-                    Command::ListSessions(all_folders, reply) => {
+                    Command::ListSessions(listing, reply) => {
                         if !can_list { let _ = reply.send(Err("This agent cannot list earlier sessions".into())); continue; }
                         let list_cx = cx.clone(); let list_cwd = cwd.clone(); let list_state = state.clone(); let list_emit = emit.clone();
+                        let list_adapter = state.lock().map(|bridge| bridge.adapter.clone()).unwrap_or_default();
                         cx.spawn(async move {
-                            let result = list_all_sessions(&list_cx, (!all_folders).then_some(list_cwd)).await.map(|found| {
-                                let mut kept = hide_deleted(&list_state, &list_emit, found);
-                                kept.truncate(LIST_MAX_SESSIONS);
-                                kept
-                            });
+                            let span_own = list_state.lock().ok().and_then(|bridge| bridge.hidden.lock().ok().map(|h| h.ids.clone())).unwrap_or_default();
+                            let health = move |summary: &SessionSummary| span_own.contains(&summary.session_id) || is_hidden_session(&summary.session_id, summary.title.as_deref());
+                            let folder = (listing == Listing::Folder).then_some(list_cwd);
+                            let result = if listing == Listing::Health {
+                                list_all_sessions(&list_cx, None, health, |_, _| {}).await
+                            } else {
+                                // Health sessions and delegated children (ADR 0003) are dropped page by page, so they never use up the cap.
+                                list_all_sessions(&list_cx, folder, move |summary| !health(summary) && !crate::delegated::is_delegated_session(&summary.session_id), move |summary, meta| list_adapter.mark_listed(summary, meta)).await.map(|found| {
+                                    let mut kept = hide_deleted(&list_state, &list_emit, found);
+                                    kept.truncate(LIST_MAX_SESSIONS);
+                                    kept
+                                })
+                            };
                             let _ = reply.send(result);
                             Ok(())
                         })?;
@@ -1496,6 +1586,8 @@ const LIST_MAX_SESSIONS: usize = 100;
 async fn list_all_sessions(
     cx: &ConnectionTo<Agent>,
     cwd: Option<std::path::PathBuf>,
+    keep: impl Fn(&SessionSummary) -> bool,
+    mark: impl Fn(&mut SessionSummary, Option<&Value>),
 ) -> Result<Vec<SessionSummary>, String> {
     let deadline = tokio::time::Instant::now() + LIST_BUDGET;
     let mut found: Vec<SessionSummary> = Vec::new();
@@ -1512,12 +1604,23 @@ async fn list_all_sessions(
             .cursor(cursor.clone());
         match tokio::time::timeout(wait, cx.send_request(request).block_task()).await {
             Ok(Ok(page)) => {
-                found.extend(page.sessions.into_iter().map(|info| SessionSummary {
-                    session_id: info.session_id.to_string(),
-                    title: info.title,
-                    updated_at: info.updated_at,
-                    cwd: Some(info.cwd.to_string_lossy().into_owned()),
-                }));
+                found.extend(
+                    page.sessions
+                        .into_iter()
+                        .map(|info| {
+                            let mut summary = SessionSummary {
+                                session_id: info.session_id.to_string(),
+                                title: info.title,
+                                updated_at: info.updated_at,
+                                cwd: Some(info.cwd.to_string_lossy().into_owned()),
+                                parent_session_id: None,
+                                native_subagent: false,
+                            };
+                            mark(&mut summary, info.meta.map(Value::Object).as_ref());
+                            summary
+                        })
+                        .filter(|summary| keep(summary)),
+                );
                 cursor = page.next_cursor;
             }
             Ok(Err(error)) => return Err(error.to_string()),
@@ -1892,11 +1995,46 @@ fn enum_string<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
+/// Merge `meta` into the request's `_meta`, object by object, so two
+/// adapter options (the approval mode's and an ephemeral session's) both
+/// reach the agent.
+fn merge_meta(params: &mut Value, meta: Value) {
+    fn merge(into: &mut Value, from: Value) {
+        match (into, from) {
+            (Value::Object(into), Value::Object(from)) => {
+                for (key, value) in from {
+                    merge(into.entry(key).or_insert(Value::Null), value);
+                }
+            }
+            (into, from) => *into = from,
+        }
+    }
+    merge(&mut params["_meta"], meta);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SECRET: &str = "s3cr3t-token-value";
+
+    #[test]
+    fn a_child_session_meta_keeps_the_approval_options_and_adds_persist_session() {
+        let mut params = json!({"cwd": "/w", "mcpServers": []});
+        merge_meta(
+            &mut params,
+            json!({"claudeCode": {"options": {"disallowedTools": ["ListAgents"]}}}),
+        );
+        merge_meta(
+            &mut params,
+            json!({"claudeCode": {"options": {"persistSession": false}}}),
+        );
+        assert_eq!(
+            params["_meta"],
+            json!({"claudeCode": {"options": {"disallowedTools": ["ListAgents"], "persistSession": false}}})
+        );
+        assert_eq!(params["cwd"], "/w");
+    }
 
     #[tokio::test]
     async fn completed_prompt_leaves_the_process_client_idle() {

@@ -64,6 +64,7 @@ async function fixture(page: Page) {
           if (command === "run_configurations") return { workspaceRoot: root, configurations: [], detected: [] };
           if (command === "run_context") return { workspaceRoot: root, workspaceEpoch: 1, runs: [] };
           if (command === "list_directory") return args.path ? [{ path: "src/file.ts", name: "file.ts", isDir: false }] : [{ path: "src", name: "src", isDir: true }];
+          if (command === "check_external_files") return { workspaceRoot: root, revision: 0, directoriesChanged: false, states: [] };
           if (command === "file_index_status") return { workspaceRoot: root, generation: 1, status: "ready", scannedEntries: 1, indexedFiles: 1, errorCount: 0, lastError: null, watcherReady: true, watcherError: null };
           if (command === "query_file") return { workspaceRoot: root, generation: 1, requestId: 1, results: [{ path: "src/file.ts", score: 1 }] };
           if (command === "open_buffer" || command === "peek_buffer") return { ...buffer };
@@ -132,10 +133,14 @@ test("explicit stage/unstage and staged-only commit preserve a failed message an
 
 test("repository/file history opens safe read-only commit details and respects narrow themes", async ({ page }, info) => {
   const errors = await fixture(page);
-  await page.getByRole("button", { name: "History", exact: true }).click();
-  const history = page.getByRole("region", { name: "Git history", exact: true });
-  await history.getByRole("button", { name: "Enable Git", exact: true }).click();
-  await history.getByRole("button", { name: "Current file", exact: true }).click();
+  await expect(page.getByRole("button", { name: "History", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("tab", { name: "History", exact: true }).click();
+  await expect(panel.getByRole("tab", { name: "History", exact: true })).toHaveAttribute("aria-selected", "true");
+  const history = panel.getByRole("region", { name: "Git history", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await history.getByRole("radio", { name: "This file", exact: true }).click();
   await expect.poll(async () => (await trace(page)).history.at(-1)?.query.path).toBe("project/src/file.ts");
   await history.getByRole("button", { name: "Review commit aaaaaaaa: Review staged changes", exact: true }).click();
   const comparison = page.getByRole("region", { name: "Git comparison", exact: true });

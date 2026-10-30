@@ -34,12 +34,13 @@ use span_lsp::servers::manager::{
     LaunchResolver, Manager, ManagerConfig, ManagerError, ManagerEvent,
 };
 use span_lsp::servers::{ServerId, ServerSpec};
+use span_lsp::watch_sync::{self, Coalescer, Recovery, RecoveryPolicy};
 use specta::Type;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::State;
 use tauri_specta::Event;
 use tokio::sync::{mpsc, watch};
@@ -53,6 +54,10 @@ const SYNC_WAIT: Duration = Duration::from_secs(5);
 /// Upper bound for one queued manager call, so a stuck server cannot stall the queue.
 const OP_TIMEOUT: Duration = Duration::from_secs(20);
 const VERSION_HISTORY: usize = 64;
+const MAX_WATCH_TARGETS: usize = 32;
+/// A resync looks for files modified this long before the last good delivery, to
+/// cover coarse modification times and events still in flight at that moment.
+const RESYNC_SLACK: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------
 // Events
@@ -104,6 +109,26 @@ pub struct LanguageServerError {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum WatchRecoveryPhase {
+    /// An automatic restart is about to happen. Shown quietly in the status popover.
+    Refreshing,
+    /// The automatic restart finished.
+    Refreshed,
+    /// Automatic restarts are used up for now. The user may restart it.
+    Exhausted,
+}
+
+/// A server fell behind on filesystem notifications and is being brought back in step.
+#[derive(Debug, Clone, Serialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageServerWatchRecovery {
+    pub server: LanguageServerId,
+    pub phase: WatchRecoveryPhase,
+    pub message: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum LspEvent {
     State(LanguageServerStateChanged),
@@ -111,6 +136,7 @@ pub enum LspEvent {
     WorkProgress(LanguageServerWorkProgress),
     Diagnostics(DiagnosticsPublished),
     Error(LanguageServerError),
+    WatchRecovery(LanguageServerWatchRecovery),
 }
 
 /// Servers that execute the project's own build code unless restricted.
@@ -126,6 +152,7 @@ pub fn tauri_sink(app: tauri::AppHandle) -> EventSink {
             LspEvent::WorkProgress(e) => crate::events::emit(&app, &e),
             LspEvent::Diagnostics(e) => crate::events::emit(&app, &e),
             LspEvent::Error(e) => crate::events::emit(&app, &e),
+            LspEvent::WatchRecovery(e) => crate::events::emit(&app, &e),
         };
     })
 }
@@ -143,6 +170,10 @@ pub struct LspSettings {
     /// Let rust-analyzer and JDT LS run the project's own build code.
     pub run_project_code: bool,
     pub tab_size: u32,
+    /// Servers whose "fell behind on file changes" warning the user turned off.
+    pub silenced_watch_warnings: HashSet<ServerId>,
+    /// Default watched-file exclusions the user re-enabled.
+    pub watch_include_directories: Vec<String>,
 }
 
 impl Default for LspSettings {
@@ -154,6 +185,8 @@ impl Default for LspSettings {
             node_path: None,
             run_project_code: false,
             tab_size: 2,
+            silenced_watch_warnings: HashSet::new(),
+            watch_include_directories: Vec::new(),
         }
     }
 }
@@ -182,6 +215,16 @@ impl From<&Settings> for LspSettings {
                 .filter(|p| p.is_absolute()),
             run_project_code: ls.run_project_code,
             tab_size: settings.tab_size,
+            silenced_watch_warnings: ALL_SERVERS
+                .iter()
+                .copied()
+                .filter(|id| {
+                    ls.silenced_watch_warnings
+                        .iter()
+                        .any(|key| key == dto::settings_key(*id))
+                })
+                .collect(),
+            watch_include_directories: ls.watch_include_directories.clone(),
         }
     }
 }
@@ -233,6 +276,9 @@ enum Op {
     Save {
         d: DocRef,
     },
+    WatchedFiles {
+        generation: u64,
+    },
     Reset {
         keys: Vec<(ServerId, PathBuf)>,
     },
@@ -245,11 +291,29 @@ enum Op {
     Restart {
         server: ServerId,
     },
+    /// Restart after the server kept falling behind on file changes.
+    AutoRestart {
+        server: ServerId,
+    },
 }
 
 struct Queued {
     seq: u64,
     op: Op,
+}
+
+/// Watched-file delivery state of the open workspace.
+#[derive(Default)]
+struct WatchState {
+    /// Changes waiting for the next delivery, folded per path and bounded.
+    coalescer: Coalescer,
+    /// A delivery is scheduled or queued.
+    scheduled: bool,
+    /// Servers (with the epoch that missed them) that lost notifications.
+    needs_resync: HashMap<ServerId, u64>,
+    recovery: HashMap<ServerId, RecoveryPolicy>,
+    /// When each server last received everything that happened.
+    synced_at: HashMap<ServerId, SystemTime>,
 }
 
 #[derive(Default)]
@@ -260,6 +324,7 @@ struct Shared {
     settings: LspSettings,
     docs: HashMap<PathBuf, Doc>,
     next_seq: u64,
+    watch: WatchState,
     gates: HashMap<ServerId, Gate>,
     installed: HashSet<ServerId>,
     runtime_ok: HashSet<ServerId>,
@@ -384,6 +449,22 @@ fn absolute(root: &Path, path: &str) -> PathBuf {
     }
 }
 
+/// Short and long names used in watched-file recovery messages.
+fn watch_label(server: ServerId) -> (&'static str, &'static str) {
+    match server {
+        ServerId::Vtsls => ("TypeScript", "TypeScript (vtsls)"),
+        ServerId::Jdtls => ("Java", "Java (JDT LS)"),
+        ServerId::RustAnalyzer => ("Rust", "Rust (rust-analyzer)"),
+        ServerId::Basedpyright => ("Python", "Python (basedpyright)"),
+        ServerId::Html => ("HTML", "HTML language server"),
+        ServerId::Css => ("CSS", "CSS language server"),
+        ServerId::Json => ("JSON", "JSON language server"),
+        ServerId::Svelte => ("Svelte", "Svelte language server"),
+        ServerId::Vue => ("Vue", "Vue language server"),
+        ServerId::Astro => ("Astro", "Astro language server"),
+    }
+}
+
 /// Nearest ancestor of `file` (inside `workspace`) holding a root marker.
 fn server_root(spec: &ServerSpec, file: &Path, workspace: &Path) -> PathBuf {
     let mut dir = file.parent();
@@ -469,6 +550,94 @@ impl LanguageServers {
         seq
     }
 
+    /// Queue only for starting or ready instances that existed when the native event arrived.
+    /// Registration matching belongs to each client, not the Explorer visibility policy.
+    pub(crate) fn watched_files_changed(
+        self: &Arc<Self>,
+        batch: crate::watched_paths::WatchedBatch,
+    ) {
+        let mut st = lock(&self.state);
+        self.queue_watched_files(&mut st, batch);
+    }
+
+    fn active_watch_targets(st: &Shared) -> Vec<(ServerId, PathBuf, u64)> {
+        let mut targets: Vec<_> = st
+            .states
+            .iter()
+            .filter(|(_, state)| {
+                matches!(
+                    state,
+                    LanguageServerStateDto::Starting | LanguageServerStateDto::Ready
+                )
+            })
+            .map(|((server, root), _)| (*server, root.clone(), Self::epoch(st, *server)))
+            .collect();
+        targets.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+        targets.truncate(MAX_WATCH_TARGETS);
+        targets
+    }
+
+    /// Fold a native batch into the pending changes. Lost or refused events never
+    /// produce a warning here: the servers are marked for a bounded resync instead.
+    fn queue_watched_files(
+        self: &Arc<Self>,
+        st: &mut Shared,
+        batch: crate::watched_paths::WatchedBatch,
+    ) {
+        if !batch.incomplete && batch.changes.is_empty() {
+            return;
+        }
+        if st.root.as_ref() != Some(&paths::normalize_path(&batch.root)) {
+            return;
+        }
+        let targets = Self::active_watch_targets(st);
+        if targets.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let wall = SystemTime::now();
+        for (server, _, _) in &targets {
+            st.watch.synced_at.entry(*server).or_insert(wall);
+        }
+        for change in batch.changes {
+            st.watch.coalescer.push(change, now);
+        }
+        if batch.incomplete || st.watch.coalescer.overflowed() {
+            for (server, _, epoch) in &targets {
+                st.watch.needs_resync.insert(*server, *epoch);
+            }
+        }
+        self.schedule_watch_delivery(st);
+    }
+
+    /// One delivery per debounce window: events arriving meanwhile fold into it.
+    fn schedule_watch_delivery(self: &Arc<Self>, st: &mut Shared) {
+        if st.watch.scheduled {
+            return;
+        }
+        st.watch.scheduled = true;
+        let generation = st.generation;
+        let delay = st
+            .watch
+            .coalescer
+            .due()
+            .map(|due| due.saturating_duration_since(Instant::now()))
+            .unwrap_or(watch_sync::DEBOUNCE);
+        let service = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let mut st = lock(&service.state);
+            if st.generation == generation {
+                service.push(&mut st, Op::WatchedFiles { generation });
+            }
+        });
+    }
+
+    fn watched_instance_current(&self, generation: u64, server: ServerId, epoch: u64) -> bool {
+        let st = lock(&self.state);
+        st.generation == generation && Self::epoch(&st, server) == epoch
+    }
+
     fn epoch(st: &Shared, server: ServerId) -> u64 {
         st.epochs.get(&server).copied().unwrap_or(0)
     }
@@ -491,6 +660,9 @@ impl LanguageServers {
     /// A workspace was opened (or reopened). Closes everything of the previous one.
     pub fn workspace_changed(&self, root: PathBuf, settings: &Settings) {
         let new = LspSettings::from(settings);
+        crate::watched_paths::set_exclusions(watch_sync::Exclusions::new(
+            &new.watch_include_directories,
+        ));
         self.provisioner.configure(&new);
         self.manager.set_run_project_code(new.run_project_code);
         self.set_trust(&new);
@@ -504,6 +676,7 @@ impl LanguageServers {
         }
         st.generation += 1;
         st.docs.clear();
+        st.watch = WatchState::default();
         st.versions.clear();
         st.states.clear();
         st.last_error.clear();
@@ -524,6 +697,9 @@ impl LanguageServers {
     /// pending installs when auto install was just turned on.
     pub fn apply_settings(self: &Arc<Self>, settings: &Settings) {
         let new = LspSettings::from(settings);
+        crate::watched_paths::set_exclusions(watch_sync::Exclusions::new(
+            &new.watch_include_directories,
+        ));
         self.provisioner.configure(&new);
         self.manager.set_run_project_code(new.run_project_code);
         self.set_trust(&new);
@@ -791,14 +967,19 @@ impl LanguageServers {
         let mut synced: HashMap<PathBuf, u64> = HashMap::new();
         while let Some(queued) = rx.recv().await {
             let seq = queued.seq;
+            let watched_generation = match &queued.op {
+                Op::WatchedFiles { generation } => Some(*generation),
+                _ => None,
+            };
             let server = match &queued.op {
                 Op::Open { d, .. } | Op::Change { d, .. } | Op::Close { d } | Op::Save { d } => {
                     Some(d.server)
                 }
-                Op::Stop { server } | Op::Resume { server } | Op::Restart { server } => {
-                    Some(*server)
-                }
-                Op::Reset { .. } => None,
+                Op::Stop { server }
+                | Op::Resume { server }
+                | Op::Restart { server }
+                | Op::AutoRestart { server } => Some(*server),
+                Op::Reset { .. } | Op::WatchedFiles { .. } => None,
             };
             if tokio::time::timeout(OP_TIMEOUT, self.handle(queued, &mut synced))
                 .await
@@ -806,6 +987,17 @@ impl LanguageServers {
             {
                 if let Some(server) = server {
                     self.report(server, None, "a language server operation timed out".into());
+                }
+                if let Some(generation) = watched_generation {
+                    // A server too slow to take its notifications is resynced on the
+                    // next delivery, never reported as something the user must fix.
+                    let mut st = lock(&self.state);
+                    if st.generation == generation {
+                        for (server, _, epoch) in Self::active_watch_targets(&st) {
+                            st.watch.needs_resync.insert(server, epoch);
+                        }
+                        self.schedule_watch_delivery(&mut st);
+                    }
                 }
             }
             self.processed.send_replace(seq);
@@ -854,6 +1046,7 @@ impl LanguageServers {
                 // next edit resynchronises the document anyway.
                 let _ = self.manager.save_document(d.server, &d.root, &d.abs).await;
             }
+            Op::WatchedFiles { generation } => self.deliver_watched_files(generation).await,
             Op::Reset { keys } => {
                 for (server, root) in keys {
                     self.manager.shutdown(server, &root).await;
@@ -866,7 +1059,194 @@ impl LanguageServers {
                 self.stop(server).await;
                 self.resume(server, synced).await;
             }
+            Op::AutoRestart { server } => {
+                self.stop(server).await;
+                self.resume(server, synced).await;
+                let message = format!(
+                    "{} fell behind on file changes and was refreshed.",
+                    watch_label(server).1
+                );
+                self.emit_watch_recovery(server, WatchRecoveryPhase::Refreshed, message);
+            }
         }
+    }
+
+    fn emit_watch_recovery(&self, server: ServerId, phase: WatchRecoveryPhase, message: String) {
+        self.emit(LspEvent::WatchRecovery(LanguageServerWatchRecovery {
+            server: server.into(),
+            phase,
+            message,
+        }));
+    }
+
+    /// Send the folded changes in capped batches, then bring every server that lost
+    /// notifications back in step: a bounded resync first, an automatic restart with
+    /// backoff when it keeps falling behind, and a warning only once those are used up.
+    async fn deliver_watched_files(self: &Arc<Self>, generation: u64) {
+        let (batches, mut resync, targets) = {
+            let mut st = lock(&self.state);
+            if st.generation != generation {
+                return;
+            }
+            st.watch.scheduled = false;
+            let (batches, overflowed) = st.watch.coalescer.drain(watch_sync::MAX_NOTIFY_BATCH);
+            let targets = Self::active_watch_targets(&st);
+            if overflowed {
+                for (server, _, epoch) in &targets {
+                    st.watch.needs_resync.insert(*server, *epoch);
+                }
+            }
+            (batches, std::mem::take(&mut st.watch.needs_resync), targets)
+        };
+        let started = SystemTime::now();
+        for (server, root, epoch) in &targets {
+            let (server, epoch) = (*server, *epoch);
+            if batches.is_empty() || !self.watched_target_current(generation, server, root, epoch) {
+                continue;
+            }
+            if self
+                .manager
+                .wait_ready(server, root, SYNC_WAIT)
+                .await
+                .is_err()
+            {
+                // It never became ready: its own startup reads the project. A resync
+                // after it is up covers anything that happened meanwhile.
+                if self.watched_instance_current(generation, server, epoch) {
+                    resync.insert(server, epoch);
+                }
+                continue;
+            }
+            for batch in &batches {
+                if !self.watched_instance_current(generation, server, epoch) {
+                    break;
+                }
+                if self
+                    .manager
+                    .notify_watched_files(server, root, batch.clone())
+                    .await
+                    .is_err()
+                {
+                    resync.insert(server, epoch);
+                    break;
+                }
+            }
+        }
+        for (server, _, _) in &targets {
+            if !resync.contains_key(server) {
+                let mut st = lock(&self.state);
+                if st.generation == generation {
+                    st.watch.synced_at.insert(*server, started);
+                }
+            }
+        }
+        for (server, epoch) in resync {
+            if !self.watched_instance_current(generation, server, epoch) {
+                continue;
+            }
+            let (action, since, exclusions, silenced) = {
+                let mut st = lock(&self.state);
+                let action = st
+                    .watch
+                    .recovery
+                    .entry(server)
+                    .or_default()
+                    .on_overflow(Instant::now());
+                let since = st.watch.synced_at.get(&server).map(|at| *at - RESYNC_SLACK);
+                let exclusions =
+                    watch_sync::Exclusions::new(&st.settings.watch_include_directories);
+                let silenced = st.settings.silenced_watch_warnings.contains(&server);
+                (action, since, exclusions, silenced)
+            };
+            match action {
+                Recovery::Restart { delay, .. } => {
+                    self.emit_watch_recovery(
+                        server,
+                        WatchRecoveryPhase::Refreshing,
+                        format!("Refreshing {} server", watch_label(server).0),
+                    );
+                    self.schedule_auto_restart(generation, server, epoch, delay);
+                }
+                Recovery::Resync | Recovery::Exhausted => {
+                    let roots: Vec<_> = targets
+                        .iter()
+                        .filter(|(id, _, _)| *id == server)
+                        .map(|(_, root, _)| root.clone())
+                        .collect();
+                    for root in roots {
+                        if self
+                            .manager
+                            .resync_watched_files(server, &root, since, exclusions.clone())
+                            .await
+                            .is_err()
+                            && self.watched_instance_current(generation, server, epoch)
+                        {
+                            // It could not even take the resync: count it as falling
+                            // behind again so the next round may restart it.
+                            let mut st = lock(&self.state);
+                            st.watch.needs_resync.insert(server, epoch);
+                            self.schedule_watch_delivery(&mut st);
+                        }
+                    }
+                    let mut st = lock(&self.state);
+                    if st.generation == generation {
+                        st.watch.synced_at.insert(server, started);
+                    }
+                    drop(st);
+                    if action == Recovery::Exhausted && !silenced {
+                        self.emit_watch_recovery(
+                            server,
+                            WatchRecoveryPhase::Exhausted,
+                            format!(
+                                "{} keeps falling behind on file changes. Restart it to refresh its view of the project.",
+                                watch_label(server).1
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn watched_target_current(
+        &self,
+        generation: u64,
+        server: ServerId,
+        root: &Path,
+        epoch: u64,
+    ) -> bool {
+        let st = lock(&self.state);
+        st.generation == generation
+            && Self::epoch(&st, server) == epoch
+            && matches!(
+                st.states.get(&(server, root.to_path_buf())),
+                Some(LanguageServerStateDto::Starting | LanguageServerStateDto::Ready)
+            )
+    }
+
+    /// Restart a server that keeps falling behind after `delay`, unless the workspace
+    /// changed or someone restarted it meanwhile.
+    fn schedule_auto_restart(
+        self: &Arc<Self>,
+        generation: u64,
+        server: ServerId,
+        epoch: u64,
+        delay: Duration,
+    ) {
+        let service = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let mut st = lock(&service.state);
+            if st.generation != generation
+                || Self::epoch(&st, server) != epoch
+                || st.settings.disabled.contains(&server)
+            {
+                return;
+            }
+            Self::bump_epoch(&mut st, server);
+            st.last_error.remove(&server);
+            service.push(&mut st, Op::AutoRestart { server });
+        });
     }
 
     async fn open(&self, d: &DocRef, text: String, revision: u64) {
@@ -1679,6 +2059,7 @@ impl LanguageServers {
                 ));
             }
             Self::bump_epoch(&mut st, server);
+            st.watch.recovery.remove(&server);
             st.installed.remove(&server);
             st.runtime_ok.remove(&server);
             st.last_error.remove(&server);

@@ -27,6 +27,12 @@ const legacy = (parser: () => Promise<StreamParser<any>>) => async () => StreamL
 const extra = async () => import("./language-extra");
 
 /** Single source of truth for detection and grammars. Every id in the Rust table (crates/core/src/buffer.rs) has an entry here or is listed in `noHighlightingYet`. */
+const loadHtml = async () => {
+  const [{ html }, { emmetSupport }] = await Promise.all([import("@codemirror/lang-html"), import("./emmet")]);
+  const support = html();
+  return new LanguageSupport(support.language, [support.support, emmetSupport("html")]);
+};
+
 const languageTable = {
   typescript: { extensions: ["ts", "tsx", "mts", "cts"], load: async ({ jsx }) => withTokenTags((await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx }), "typescript") },
   javascript: { extensions: ["js", "jsx", "mjs", "cjs"], load: async ({ jsx }) => withTokenTags((await import("@codemirror/lang-javascript")).javascript({ jsx }), "typescript") },
@@ -46,14 +52,11 @@ const languageTable = {
   dotenv: { extensions: ["env"], aliases: ["dotenv"], load: async () => dotenvLanguage },
   toml: { extensions: ["toml"], filenames: ["cargo.lock", "poetry.lock", "uv.lock"], load: legacy(async () => (await import("@codemirror/legacy-modes/mode/toml")).toml) },
   yaml: { extensions: ["yaml", "yml"], load: legacy(async () => (await import("@codemirror/legacy-modes/mode/yaml")).yaml) },
-  html: {
-    extensions: ["html", "htm", "svg"],
-    load: async () => {
-      const [{ html }, { emmetSupport }] = await Promise.all([import("@codemirror/lang-html"), import("./emmet")]);
-      const support = html();
-      return new LanguageSupport(support.language, [support.support, emmetSupport("html")]);
-    },
-  },
+  html: { extensions: ["html", "htm", "svg"], load: loadHtml },
+  // Svelte, Vue and Astro markup is HTML with embedded script and style blocks, so it borrows the HTML grammar until it has its own.
+  svelte: { extensions: ["svelte"], load: loadHtml },
+  vue: { extensions: ["vue"], load: loadHtml },
+  astro: { extensions: ["astro"], load: loadHtml },
   css: {
     extensions: ["css", "scss"],
     aliases: ["scss"],
@@ -112,7 +115,7 @@ const entries = languageTable as Record<LanguageId, LanguageEntry>;
 export const languageIds = Object.keys(languageTable) as LanguageId[];
 
 /** Ids the Rust detector can produce that have no grammar yet. */
-export const noHighlightingYet: readonly string[] = ["vue", "svelte"];
+export const noHighlightingYet: readonly string[] = [];
 
 /** Whether an id has a grammar loader. */
 export const hasGrammar = (id: string): boolean => Object.hasOwn(entries, id) && typeof entries[id as LanguageId].load === "function";
@@ -175,13 +178,16 @@ const dotenvLanguage = StreamLanguage.define(dotenvParser);
 const loading = new Map<string, Promise<LoadedLanguage | null>>();
 
 async function markdownSupport(): Promise<LoadedLanguage> {
-  const { markdown } = await import("@codemirror/lang-markdown");
+  const [{ markdown, markdownLanguage }, { frontMatter }, { markdownEditing }] = await Promise.all([import("@codemirror/lang-markdown"), import("./markdown-frontmatter"), import("./markdown-editing")]);
   const names = languageIds.filter((id) => id !== "markdown" && hasGrammar(id));
-  return markdown({ codeLanguages: names.map((name) => LanguageDescription.of({ name, alias: Object.keys(aliases).filter((alias) => aliases[alias] === name), load: async () => {
+  // GFM base: tables, strikethrough, task lists and autolinks parse; front matter is its own block.
+  // Span's own list keys and URL paste replace lang-markdown's (see markdown-editing.ts).
+  const support = markdown({ base: markdownLanguage, extensions: frontMatter, addKeymap: false, pasteURLAsLink: false, codeLanguages: names.map((name) => LanguageDescription.of({ name, alias: Object.keys(aliases).filter((alias) => aliases[alias] === name), load: async () => {
     const support = await loadLanguage(name);
     if (!support) throw new Error(`No grammar for ${name}`);
     return support instanceof LanguageSupport ? support : new LanguageSupport(support);
   } })) });
+  return new LanguageSupport(support.language, [support.support, markdownEditing(support.language)]);
 }
 
 /** Grammar modules load when a file or a fenced block actually uses them. */

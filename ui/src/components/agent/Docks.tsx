@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { BrandIcon } from "../BrandIcon";
 import { Icon, MenuIcon } from "../Icon";
 import { DiffView } from "./WorkGroup";
+import { DockClamp } from "./DockClamp";
 import { ENTER_KEY, KeyGlyph } from "./KeyGlyph";
 import type { Brand, PermissionChoice, PermissionDetails, QuestionAnswer, QuestionOption } from "./types";
 import { dockKey } from "./util";
@@ -9,6 +10,8 @@ import { DOCK_TAB_HINT } from "../../lib/agent-dock-focus";
 import { URL_COPY, parseUrlRequest } from "../../lib/agent-url-request";
 import { permissionScope, sortPermissionOptions } from "../../lib/agent-feed";
 import type { RewindFile } from "../../lib/agent-rewind";
+import { approvalHeading } from "../../lib/agent-approval";
+import "../../styles/agent-dock.css";
 
 /**
  * Registers a key handler for one dock while `active` is true. It only sees keys pressed with focus inside the dock
@@ -69,9 +72,18 @@ type DockFocusProps = {
   onFocusChange?: (focused: boolean) => void;
 };
 
+const [TAB_BEFORE, TAB_AFTER] = DOCK_TAB_HINT.split("Tab");
+
+/** "Press Tab to answer, or click an option", with Tab drawn as a small key cap. */
 const TabHint = (props: { show: boolean }) => (
-  <Show when={props.show}><div class="sb-dock-tabhint">{DOCK_TAB_HINT}</div></Show>
+  <Show when={props.show}><div class="sb-dock-tabhint">{TAB_BEFORE}<kbd class="sb-hint-key">Tab</kbd>{TAB_AFTER}</div></Show>
 );
+
+/** Writes to the system clipboard when the caller gives no writer (browser preview, tests). */
+const clipboardWrite = (text: string) => {
+  if (typeof navigator === "undefined" || !navigator.clipboard) throw new Error("Clipboard access is unavailable");
+  return navigator.clipboard.writeText(text);
+};
 
 type QuestionDockProps = DockFocusProps & {
   asker?: Brand & { label?: string };
@@ -123,16 +135,16 @@ export function QuestionDock(props: QuestionDockProps) {
         <Show when={props.step}><span class="sb-mono dim">{props.step}</span></Show>
       </div>
       <div class="sb-dock-scroll">
-        <div class="sb-dock-prompt">{props.prompt}</div>
-        <Show when={props.detail}><div class="sb-dock-question">{props.detail}</div></Show>
+        <DockClamp text={props.prompt} class="sb-dock-prompt" charsPerLine={48} />
+        <Show when={props.detail}>{(detail) => <DockClamp text={detail()} class="sb-dock-question" charsPerLine={48} />}</Show>
         <TabHint show={!focus.focused()} />
         <For each={props.options}>
           {(option, index) => (
-            <button class="sb-q-option" onClick={() => props.onAnswer({ optionId: option.id })}>
+            <button class="sb-q-option" title={option.description ? `${option.label}\n${option.description}` : option.label} onClick={() => props.onAnswer({ optionId: option.id })}>
               <span class="sb-num" aria-hidden="true">{index() + 1}</span>
               <span class="sb-option-text">
-                <span class="sb-option-name">{option.label}</span>
-                <Show when={option.description}><span class="sb-sub wrap">{option.description}</span></Show>
+                <span class="sb-option-name sb-clamp-2">{option.label}</span>
+                <Show when={option.description}><span class="sb-sub wrap sb-clamp-2">{option.description}</span></Show>
               </span>
             </button>
           )}
@@ -166,6 +178,8 @@ type PermissionDockProps = DockFocusProps & {
   active?: boolean;
   busy?: boolean;
   onChoose: (optionId: string) => void;
+  /** Writes the command to the clipboard. Defaults to the browser clipboard. */
+  onCopy?: (text: string) => void | Promise<void>;
 };
 
 const DOUBLE_APPROVAL = "This agent asks for permission here, then sends the write itself, so you may be asked a second time for the same edit.";
@@ -186,6 +200,10 @@ export function PermissionDock(props: PermissionDockProps) {
   const [open, setOpen] = createSignal(!props.details?.internal);
   const command = () => props.details?.command ?? props.command;
   const hasDetails = () => Boolean(command() || props.details?.locations.length || props.details?.diffs.length || props.details?.input || props.reason);
+  /** The header gets a short title from the tool kind; the command is drawn once, in the body. */
+  const head = createMemo(() =>
+    approvalHeading({ kind: props.details?.kind, title: props.title, command: command(), locations: props.details?.locations.map((location) => location.label), internal: internal() }),
+  );
   let dock: HTMLElement | undefined;
   const focus = useDockFocus(() => dock, props);
   useDockKeys(
@@ -203,23 +221,28 @@ export function PermissionDock(props: PermissionDockProps) {
   return (
     <section ref={dock} tabIndex={-1} on:focusin={focus.focusin} on:focusout={focus.focusout} class="sb-dock" classList={{ internal: internal() }} role="group" aria-label={`${props.from ? `${props.from} asks permission` : "Permission requested"}: ${props.title}`}>
       <div class="sb-dock-head">
-        <span class="sb-dot warn" aria-hidden="true" />
-        <span class="sb-dock-title" classList={{ muted: internal() }}>{props.title}</span>
-        <Show when={props.details?.kind}><span class="sb-kind sb-mono">{props.details?.kind}</span></Show>
+        <Icon name="Warning2" size={13} class="sb-glyph warn sb-dock-glyph" />
+        <span class="sb-dock-title sb-ellipsis" classList={{ muted: internal() }} title={props.title}>{head().heading}</span>
         <span class="sb-flex" />
         <Show when={internal() && hasDetails()}>
           <button class="sb-icon-btn" aria-expanded={open()} aria-label={open() ? "Hide details" : "Show details"} onClick={() => setOpen(!open())}>
             <Icon name={open() ? "arrow-down4" : "arrow-right4"} size={10} />
           </button>
         </Show>
-        <Show when={props.brand}><BrandIcon id={props.brand?.id} name={props.brand?.name} size={13} /></Show>
+        <Show when={props.details?.kind}><span class="sb-kind sb-mono">{props.details?.kind}</span></Show>
+        <Show when={props.brand}><span class="sb-dock-mark"><BrandIcon id={props.brand?.id} name={props.brand?.name} size={12} /></span></Show>
       </div>
       <Show when={props.from}><div class="sb-dock-from">{props.from} (delegated agent) asks to run this</div></Show>
       <Show when={internal()}><div class="sb-sub">Agent housekeeping, not a change to your files</div></Show>
       <Show when={open()}>
         <div class="sb-dock-details">
+          <Show when={head().note}>{(note) => <DockClamp text={note()} class="sb-body sb-dock-note" charsPerLine={48} />}</Show>
           <Show when={command()}>
-            <div class="sb-code sb-dock-command"><span class="sb-prompt">$ </span>{command()}</div>
+            {(text) => (
+              <DockClamp text={text()} class="sb-code sb-dock-command" mono onCopy={props.onCopy ?? clipboardWrite} copyLabel="Copy command">
+                <span class="sb-prompt">$ </span>{text()}
+              </DockClamp>
+            )}
           </Show>
           <Show when={props.details?.locations.length}>
             <ul class="sb-dock-locs" aria-label="Files this touches">
@@ -235,7 +258,11 @@ export function PermissionDock(props: PermissionDockProps) {
             </ul>
           </Show>
           <For each={props.details?.diffs}>
-            {(diff) => <div class="sb-dock-diff"><DiffView path={diff.path} lines={diff.lines} onOpen={diff.onOpen} /></div>}
+            {(diff) => (
+              <DockClamp text={diff.lines.map((line) => line.text).join("\n")} class="sb-dock-diff" charsPerLine={Number.MAX_SAFE_INTEGER}>
+                <DiffView path={diff.path} lines={diff.lines} onOpen={diff.onOpen} />
+              </DockClamp>
+            )}
           </For>
           <Show when={props.details?.moreDiffs}><div class="sb-sub">+{props.details!.moreDiffs} more changed files not shown</div></Show>
           <Show when={props.details?.input}>
@@ -244,7 +271,7 @@ export function PermissionDock(props: PermissionDockProps) {
               <pre class="sb-mono">{props.details!.input}</pre>
             </details>
           </Show>
-          <Show when={props.reason}><div class="sb-body">{props.reason}</div></Show>
+          <Show when={props.reason}>{(reason) => <DockClamp text={reason()} class="sb-body" charsPerLine={48} />}</Show>
         </div>
       </Show>
       <Show when={props.details?.doubleApproval}>
@@ -329,14 +356,14 @@ export function UrlDock(props: UrlDockProps) {
     <section ref={dock} tabIndex={-1} class="sb-dock" role="group" aria-label={props.title} on:focusin={focus.focusin} on:focusout={focus.focusout}>
       <div class="sb-dock-head">
         <Icon name="Link2" size={13} class="sb-accent" />
-        <span class="sb-dock-title">{props.title}</span>
+        <span class="sb-dock-title sb-ellipsis" title={props.title}>{props.title}</span>
         <span class="sb-flex" />
-        <Show when={props.brand}><BrandIcon id={props.brand?.id} name={props.brand?.name} size={13} /></Show>
+        <Show when={props.brand}><span class="sb-dock-mark"><BrandIcon id={props.brand?.id} name={props.brand?.name} size={12} /></span></Show>
       </div>
-      <Show when={props.text}><div class="sb-body">{props.text}</div></Show>
+      <Show when={props.text}>{(text) => <DockClamp text={text()} class="sb-body" charsPerLine={48} />}</Show>
       <div class="sb-urlbox">
         <span class="sb-option-text">
-          <span class="sb-mono accent sb-ellipsis" title={view().displayUrl}>
+          <span class="sb-mono accent sb-ellipsis sb-url-clamp" title={view().displayUrl}>
             <Show when={view().parts.host} fallback={view().displayUrl}>
               <span class="sb-url-dim">{view().parts.scheme}{view().parts.userinfo}</span>
               <span class="sb-url-host">{view().parts.host}</span>
