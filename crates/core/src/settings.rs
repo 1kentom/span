@@ -549,6 +549,7 @@ pub const COMMAND_IDS: &[&str] = &[
     "goForward",
     "focusBreadcrumbs",
     "showUsage",
+    "toggleZenMode",
 ];
 
 /// Commands introduced after shortcuts could already be saved. Like Toggle Files,
@@ -579,6 +580,7 @@ const INHERITED_DEFAULT_IDS: &[&str] = &[
     "goBack",
     "goForward",
     "focusBreadcrumbs",
+    "toggleZenMode",
 ];
 
 /// Themes that can carry `editor.syntaxColors`.
@@ -753,9 +755,18 @@ fn validate_shortcut(shortcut: &str) -> Result<()> {
             "The application quit shortcut is reserved".into(),
         ));
     }
-    let primary = modifiers
+    // Text editing keys use one command modifier (Cmd+Z, Ctrl+Z). Both Control and Command together
+    // (Ctrl+Cmd+Z, the macOS Zen mode default) is not an editing shortcut.
+    let primaries = modifiers
         .iter()
-        .any(|modifier| matches!(*modifier, "Mod" | "Ctrl" | "Cmd" | "Meta"));
+        .filter_map(|modifier| match *modifier {
+            "Mod" if cfg!(target_os = "macos") => Some("Meta"),
+            "Mod" | "Ctrl" => Some("Ctrl"),
+            "Cmd" | "Meta" => Some("Meta"),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let primary = primaries.len() == 1;
     let editing_modifiers = modifiers
         .iter()
         .all(|modifier| matches!(*modifier, "Mod" | "Ctrl" | "Cmd" | "Meta" | "Shift"));
@@ -851,6 +862,15 @@ fn validate_shortcut_collisions(overrides: &HashMap<String, Vec<String>>) -> Res
         ("goForward", vec!["Mod+Alt+ArrowRight"]),
         ("focusBreadcrumbs", vec!["Mod+Shift+."]),
         ("showUsage", vec![]),
+        // VS Code's Cmd+K Z needs a chord, which Span does not have: Ctrl+Cmd+Z on macOS, Ctrl+Alt+Z elsewhere.
+        (
+            "toggleZenMode",
+            if cfg!(target_os = "macos") {
+                vec!["Meta+Ctrl+Z"]
+            } else {
+                vec!["Ctrl+Alt+Z"]
+            },
+        ),
     ];
     let claimed = overrides
         .values()
@@ -2738,6 +2758,25 @@ mod code_navigation_tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), SYNTAX_TOKEN_IDS.len());
+    }
+
+    #[test]
+    fn zen_mode_defaults_are_valid_and_editing_keys_stay_reserved() {
+        for shortcut in ["Meta+Ctrl+Z", "Ctrl+Alt+Z"] {
+            validate_shortcut(shortcut).unwrap();
+        }
+        for shortcut in ["Mod+Z", "Mod+Shift+Z", "Ctrl+Z", "Meta+Z", "Cmd+Shift+Z"] {
+            assert!(validate_shortcut(shortcut).is_err(), "{shortcut}");
+        }
+        Settings {
+            keybindings: HashMap::from([(
+                "toggleZenMode".into(),
+                vec!["Meta+Ctrl+Z".into(), "Ctrl+Alt+Z".into()],
+            )]),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
     }
 
     #[test]
