@@ -100,6 +100,7 @@ export function agentTree(input: { agents: readonly LiveAgent[]; feed: readonly 
       role: entry.taskId ? "Delegated" : "Earlier in this thread",
       state: liveStateText(entry, input.showHealth),
       tone: liveTone(entry, input.showHealth),
+      model: task?.model,
       meta: usageMeta(task),
       note: entry.detail,
       taskId: entry.taskId,

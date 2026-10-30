@@ -8,6 +8,8 @@ import { STATUS_TEXT, boundedSummary, isFinished, taskElapsedMs, type Delegation
 
 type DelegationCardProps = {
   agent: string;
+  /** Display name of the model the child runs, when the agent reported one. */
+  model?: string;
   status: DelegationStatusKind;
   /** The reason text for a failed or cancelled task, from the backend's reported reason. */
   note?: string;
@@ -75,10 +77,11 @@ export function DelegationCard(props: DelegationCardProps) {
   const canOpenSession = () => Boolean(props.onOpenSession && props.taskId && props.status !== "starting");
   const openArtifact = (path: string) => setOpenError(props.onOpenArtifact?.(path) ? undefined : `Could not open ${path}`);
   return (
-    <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}: ${STATUS_TEXT[props.status]}`}>
+    <section class="sb-delegation" data-task-id={props.taskId} tabIndex={-1} classList={{ failed: props.status === "failed", starting: props.status === "starting" }} aria-label={props.status === "starting" ? `Starting ${props.agent}` : `Delegated to ${props.agent}${props.model ? ` (${props.model})` : ""}: ${STATUS_TEXT[props.status]}`}>
       <div class="sb-delegation-head">
         <BrandIcon name={props.agent} size={14} />
         <span class="sb-delegation-name sb-ellipsis">{props.agent}</span>
+        <Show when={props.model}><span class="sb-delegation-model sb-ellipsis" title={props.model}>{props.model}</span></Show>
         <span class="sb-chip">Delegated</span>
         <span class="sb-flex" />
         <span class="sb-delegation-status" role="status">

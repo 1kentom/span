@@ -174,6 +174,7 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
           return (
             <DelegationCard
               agent={task().agentName ?? "Delegated agent"}
+              model={task().model}
               status={task().status}
               note={taskNote(task())}
               waiting={a.childPermissions().some((entry) => permissionWaitsOn(entry, task()))}
