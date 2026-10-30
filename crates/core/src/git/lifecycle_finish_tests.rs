@@ -38,7 +38,13 @@ async fn selected_first_push_sets_explicit_upstream_and_refuses_stale_review() {
     git(&remote, &["init", "--bare"]);
     git(
         &local,
-        &["remote", "add", "chosen", remote.to_str().unwrap()],
+        // A verbatim Windows path would read as an scp-style ssh host.
+        &[
+            "remote",
+            "add",
+            "chosen",
+            &git_path(&remote).to_string_lossy(),
+        ],
     );
     let service = GitService::new(local.clone()).unwrap();
     let id = service

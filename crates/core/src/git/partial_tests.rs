@@ -219,7 +219,12 @@ async fn stale_reviews_and_foreign_ids_never_mutate_the_index() {
 
 #[tokio::test]
 async fn literal_paths_and_diff_prefixes_cannot_stage_another_file() {
-    for path in ["literal file\".txt", ":(glob)*", "--option"] {
+    // Quotes, colons and asterisks are not valid in Windows file names.
+    #[cfg(unix)]
+    let paths = ["literal file\".txt", ":(glob)*", "--option"];
+    #[cfg(not(unix))]
+    let paths = ["literal file.txt", "(glob)[ab]", "--option"];
+    for path in paths {
         let f = Fixture::new(Some("a\n"), Some("b\n"), path);
         f.git(&["config", "diff.noprefix", "true"]);
         f.git(&["config", "diff.mnemonicprefix", "true"]);

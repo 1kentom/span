@@ -714,8 +714,9 @@ fn write_hook(path: &Path, script: &[u8]) -> Result<()> {
 // Configuration and paths stay in quoted environment values, never shell source.
 const REFERENCE_GUARD: &str = r#"#!/bin/sh
 umask 077
-input="$SPAN_GIT_GUARD_DIR/reference-input-$$"
-(set -C; : > "$input") || exit 1
+# Git for Windows' sh can reuse a process id across hook phases, so the input
+# file gets a unique exclusive name instead of one derived from $$.
+input=$(mktemp "$SPAN_GIT_GUARD_DIR/reference-input-XXXXXX") || exit 1
 # The reference protocol always supplies complete LF-terminated lines.
 while IFS= read -r line; do printf '%s\n' "$line"; done > "$input"
 if [ "$1" = committed ] && [ -s "$SPAN_GIT_GUARD_RECORD" ]; then
