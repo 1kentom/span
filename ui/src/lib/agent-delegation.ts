@@ -1,4 +1,4 @@
-import type { Artifact, DecisionRecord, DelegationEvent, FailureReason, SessionKey, UsageReport_Deserialize } from "../bindings";
+import type { Artifact, DecisionRecord, DelegationEvent, Deliverables_Deserialize, FailureReason, SessionKey, UsageReport_Deserialize } from "../bindings";
 import type { PermissionEvent } from "./agent-session";
 
 /** Delegation view data. Everything here comes from DelegationEvent or DelegationStatus; nothing is inferred. */
@@ -28,6 +28,8 @@ export type DelegationTaskState = {
   budgetUsed?: UsageReport_Deserialize;
   /** Set on the placeholder card shown while Span starts this installed agent. */
   startingAgentId?: string;
+  /** What the lead expects back (files and summary format), as the lead asked for it. */
+  deliverables?: Deliverables_Deserialize;
 };
 
 /** The delegation facts the session keeps outside the feed. */
@@ -49,6 +51,10 @@ export const FAILURE_TEXT: Record<FailureReason, string> = {
   depth_exceeded: "Delegation depth limit reached",
   budget_exceeded: "The task used up its budget",
   timeout: "The task timed out",
+  lost: "The child session is gone",
+  permission_required: "Stopped at a permission request (the lead asked to fail instead of waiting)",
+  mode_unavailable: "The agent has no mode this task may run in",
+  worktree_unavailable: "Worktrees are not available yet",
 };
 
 export function failureText(reason: FailureReason | string | null | undefined): string | undefined {
@@ -92,6 +98,7 @@ export type TaskPatch = {
   resultSummary?: string | null;
   artifacts?: Artifact[] | null;
   budgetUsed?: UsageReport_Deserialize | null;
+  deliverables?: Deliverables_Deserialize | null;
 };
 
 /** Merges a report about one task into what is known. A late "delegated" event never moves a finished task back to running. */
@@ -116,6 +123,7 @@ export function mergeTask(previous: DelegationTaskState | undefined, patch: Task
   if (patch.resultSummary !== undefined) next.resultSummary = patch.resultSummary || undefined;
   if (patch.artifacts) next.artifacts = patch.artifacts;
   if (patch.budgetUsed) next.budgetUsed = patch.budgetUsed;
+  if (patch.deliverables) next.deliverables = patch.deliverables;
   return next;
 }
 
@@ -123,6 +131,14 @@ export const isFinished = (status: DelegationStatusKind) => status === "complete
 
 export type DecisionView = { by: string; chosen: string; why: string; alternatives: string[] };
 export const decisionView = (decision: DecisionRecord, by: string): DecisionView => ({ by, chosen: decision.chosen, why: decision.why, alternatives: decision.alternatives.filter((item) => item.trim()) });
+
+/** "Summary, files: a.md, b.rs": what the lead asked the child to hand back. Absent when it asked for nothing. */
+export function deliverablesText(deliverables: Deliverables_Deserialize | undefined): string | undefined {
+  if (!deliverables) return undefined;
+  const format = deliverables.format ? { summary: "Summary", diff: "Diff", json: "JSON" }[deliverables.format] ?? deliverables.format : undefined;
+  const files = deliverables.files.length ? `files: ${deliverables.files.join(", ")}` : undefined;
+  return [format, files].filter(Boolean).join(", ") || undefined;
+}
 
 export const alternativesLabel = (count: number) => `${count} ${count === 1 ? "alternative" : "alternatives"} considered`;
 

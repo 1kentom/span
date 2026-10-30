@@ -25,6 +25,8 @@ type DelegationCardProps = {
   budget?: string;
   /** A completed task that went over its token budget after the fact. Informational, never a failure. */
   budgetNote?: string;
+  /** What the lead asked the child to hand back, already formatted. */
+  deliverables?: string;
   /** Stops the task. Called from the Cancel button only. */
   onCancel?: (taskId: string) => Promise<void>;
   /** Opens a workspace-relative path through the validated open path. False when nothing opened. */
@@ -93,6 +95,7 @@ export function DelegationCard(props: DelegationCardProps) {
       </div>
       <Show when={props.status === "starting"}><div class="sb-sub sb-delegation-starting">Starting {props.agent}</div></Show>
       <Show when={props.note}><div class="sb-body sb-delegation-note">{props.note}</div></Show>
+      <Show when={props.deliverables}><div class="sb-sub sb-delegation-deliverables">Expects {props.deliverables}</div></Show>
       <Show when={elapsed()}><div class="sb-sub sb-delegation-elapsed">Elapsed {elapsed()}</div></Show>
       <Show when={props.progressText && !finished()}><div class="sb-sub sb-delegation-progress">{props.progressText}</div></Show>
       <Show when={summary()}><div class="sb-body sb-delegation-result">{summary()}</div></Show>

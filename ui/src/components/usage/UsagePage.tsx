@@ -5,7 +5,7 @@ import { Icon } from "../Icon";
 import { ModelIcon } from "../agent/ModelPopover";
 import { UsageChart, UsageChartTable, UsageShare, seriesVar, type ChartMetric, type SeriesInfo } from "./UsageChart";
 import { ModelList, Panel, ProviderList, SessionTable, SourceList, brandId, type ProviderRow } from "./UsageTables";
-import { RANGES, SOURCES, assignSlots, chartColumns, compactTokens, costShort, costText, csvFileName, deltaText, fullNumber, money, percentChange, previousRangeFor, providerKey, providerName, rangeFor, relativeTime, shareText, sparkline, sumTotals, usageCsv, type RangeKey, type SourceKey } from "../../lib/usage";
+import { RANGES, SOURCES, assignSlots, chartColumns, compactTokens, costShort, costText, sumCosts, csvFileName, deltaText, fullNumber, money, percentChange, previousRangeFor, providerKey, providerName, rangeFor, relativeTime, shareText, sparkline, sumTotals, usageCsv, type RangeKey, type SourceKey } from "../../lib/usage";
 import "../../styles/usage.css";
 
 export type UsageApi = {
@@ -15,6 +15,11 @@ export type UsageApi = {
   importScan?: () => Promise<ImportStatus | undefined>;
   importStatus?: () => Promise<ImportStatus | undefined>;
 };
+
+const NOTICE_KEY = "span.usage.importNotice.v1";
+const KIND_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", openCode: "OpenCode" };
+/** Series slots for the by-model view: the five largest models in view, the rest folded into Other. */
+const MODEL_SLOTS = 5;
 
 type Loaded = { summary?: UsageSummary; previous?: UsageSummary; sessions: SessionUsageRow[]; at: number };
 
@@ -33,8 +38,10 @@ export function UsagePage(props: {
   /** Opens a session Span ran. `canOpenSession` says which rows can open (the connected agent's own). */
   onOpenSession?: (row: SessionUsageRow) => void;
   canOpenSession?: (row: SessionUsageRow) => boolean;
-  /** `agents.usage.importLocalLogs` from the user settings. */
+  /** `agents.usage.importLocalLogs` from the user settings (on by default). */
   importEnabled?: boolean;
+  /** Opens Settings, where the importer can be turned off. */
+  onOpenSettings?: () => void;
   /** Turns the importer on or off in the user settings. */
   onImportChange?: (enabled: boolean) => Promise<void>;
 }) {
@@ -44,6 +51,8 @@ export function UsagePage(props: {
   const [importState, setImportState] = createSignal<ImportStatus>();
   const [importBusy, setImportBusy] = createSignal(false);
   const [metric, setMetric] = createSignal<ChartMetric>("tokens");
+  const [groupBy, setGroupBy] = createSignal<"agent" | "model">("agent");
+  const [notice, setNotice] = createSignal(false);
   const [showTable, setShowTable] = createSignal(false);
   const [data, setData] = createSignal<Loaded>();
   const [loading, setLoading] = createSignal(false);
@@ -96,6 +105,13 @@ export function UsagePage(props: {
     try { await props.onImportChange(enabled); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setImportBusy(false); }
   }
   const refresh = () => { if (props.importEnabled && props.api.importScan) void followImport(true); else void load(); };
+  // A one-time quiet notice that the local logs are read (ADR 0012 amendment): shown on the first visit only.
+  createEffect(on(() => Boolean(props.importEnabled && props.desktop), (shown) => {
+    if (!shown) return;
+    let seen = false;
+    try { seen = localStorage.getItem(NOTICE_KEY) === "1"; localStorage.setItem(NOTICE_KEY, "1"); } catch { /* storage unavailable: show it */ }
+    if (!seen) setNotice(true);
+  }));
   onMount(() => heading?.focus());
   onCleanup(() => { request += 1; if (restore?.isConnected) restore.focus(); });
   const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented && !(event.target instanceof HTMLInputElement && event.target.value)) { event.preventDefault(); props.onClose(); } };
@@ -120,6 +136,22 @@ export function UsagePage(props: {
   const sessions = createMemo(() => (data()?.sessions ?? []).filter((row) => shown(row.agentId)));
   const series = createMemo<SeriesInfo[]>(() => providers().filter((p) => !include() || include()!.has(p.key)).map((p) => ({ key: p.key, name: p.name, slot: p.slot })));
   const chart = createMemo(() => chartColumns(summary()?.days ?? [], providerKey, include()));
+  /** The five largest models in view keep a slot each; colour follows the model while the view is unchanged. */
+  const modelSeries = createMemo<SeriesInfo[]>(() => {
+    const top = [...models()].sort((a, b) => b.totals.tokens.total - a.totals.tokens.total).slice(0, MODEL_SLOTS);
+    const list: SeriesInfo[] = top.map((model, index) => ({ key: model.model || "unnamed", name: model.price?.label ?? (model.model || "Model not named"), slot: index + 1 }));
+    return models().length > MODEL_SLOTS ? [...list, { key: "other", name: "Other models", slot: "other" }] : list;
+  });
+  const modelChart = createMemo(() => {
+    const named = new Set(modelSeries().filter((entry) => entry.slot !== "other").map((entry) => entry.key));
+    const days = (summary()?.days ?? []).map((day) => ({ day: day.day, agents: (day.models ?? []).filter((slice) => shown(slice.agentId)).map((slice) => ({ agentId: slice.model || "unnamed", tokens: slice.tokens, cost: slice.cost })) }));
+    return chartColumns(days, (key) => (named.has(key) ? key : "other"));
+  });
+  const view = createMemo(() => (groupBy() === "model" ? { chart: modelChart(), series: modelSeries() } : { chart: chart(), series: series() }));
+  const legendRows = createMemo(() => view().series.map((entry) => {
+    const values = view().chart.columns.map((column) => column.values.get(entry.key)).filter((value) => value !== undefined);
+    return { ...entry, tokens: values.reduce((sum, value) => sum + value!.tokens, 0), cost: sumCosts(values.map((value) => value!.cost)) };
+  }).filter((row) => row.tokens > 0));
   const providerRows = createMemo<ProviderRow[]>(() => series().map((entry) => {
     const agents = (summary()?.agents ?? []).filter((agent) => providerKey(agent.agentId) === entry.key);
     const daily = chart().columns.map((column) => column.values.get(entry.key)?.tokens ?? 0);
@@ -133,6 +165,7 @@ export function UsagePage(props: {
   const agentName = (id: string) => summary()?.agents.find((entry) => entry.agentId === id)?.name ?? providerName(providerKey(id), id);
   const topModel = createMemo(() => [...models()].sort((a, b) => b.totals.tokens.total - a.totals.tokens.total)[0]);
   const unpriced = createMemo(() => models().filter((model) => !model.price && model.totals.tokens.total > 0 && !model.totals.cost.known));
+  const skippedSources = () => { const report = importState()?.report; return report ? report.compressedSkipped + report.skipped + report.notes.length : 0; };
   const hasUsage = () => (summary()?.totals.turns ?? 0) > 0 || (summary()?.totals.tokens.total ?? 0) > 0;
   const rangeLabel = () => RANGES.find((entry) => entry.key === range())?.label ?? "";
   const previousLabel = () => (range() === "today" ? "yesterday" : `previous ${rangeLabel().toLowerCase()}`);
@@ -200,6 +233,13 @@ export function UsagePage(props: {
               <button type="button" class="usage-icon-button" aria-label={props.importEnabled ? "Scan local logs again and refresh" : "Refresh usage"} title="Refresh" disabled={loading() || scanning() || !props.desktop} onClick={refresh}><Icon name="Refresh2" size={15} /></button>
               <button type="button" class="usage-icon-button" aria-label="Close usage" title="Close (Escape)" onClick={() => props.onClose()}><span class="cross" /></button>
             </div>
+            <Show when={notice()}>
+              <p class="usage-notice" role="note">
+                <Icon name="InfoCircle" size={13} />
+                <span class="usage-notice-text">Reading local usage from Claude Code, Codex, Gemini CLI and OpenCode logs. Turn off in <Show when={props.onOpenSettings} fallback="Settings">{(open) => <button type="button" class="usage-link" onClick={() => open()()}>Settings</button>}</Show>.</span>
+                <button type="button" class="usage-icon-button small" aria-label="Dismiss" title="Dismiss" onClick={() => setNotice(false)}><span class="cross" /></button>
+              </p>
+            </Show>
             <Show when={scanning()}>
               <div class="usage-progress" role="progressbar" aria-label="Scanning local logs" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress()}><i style={{ width: `${Math.max(3, progress())}%` }} /></div>
             </Show>
@@ -235,7 +275,7 @@ export function UsagePage(props: {
               <div class="usage-state">
                 <Show when={scanning()} fallback={<span class="usage-state-mark"><Icon name="Usage" size={20} /></span>}><span class="usage-spinner large" aria-hidden="true" /></Show>
                 <h2>{scanning() ? "Reading your local logs" : (summary()?.trackedSessions ?? 0) > 0 ? `Nothing in ${range() === "today" ? "today's sessions" : `the last ${rangeLabel().toLowerCase()}`}` : "No usage yet"}</h2>
-                <p>{scanning() ? "Usage appears here as files are read. This runs in the background, so you can keep working." : (summary()?.trackedSessions ?? 0) > 0 ? "Pick a longer range to see earlier sessions." : props.importEnabled ? "Span found no usage in Claude Code's or Codex's local logs, and has not tracked any sessions yet. Chat with an agent and its usage appears here." : "Span counts tokens and cost as agents report them at the end of each turn. Chat with an agent and its usage appears here."}</p>
+                <p>{scanning() ? "Usage appears here as files are read. This runs in the background, so you can keep working." : (summary()?.trackedSessions ?? 0) > 0 ? "Pick a longer range to see earlier sessions." : props.importEnabled ? "Span found no usage in Claude Code's, Codex's, Gemini CLI's or OpenCode's local logs, and has not tracked any sessions yet. Chat with an agent and its usage appears here." : "Span counts tokens and cost as agents report them at the end of each turn. Chat with an agent and its usage appears here."}</p>
                 <Show when={!scanning() && (summary()?.trackedSessions ?? 0) > 0 && range() !== "all"}><button type="button" class="usage-button" onClick={() => setRange("all")}>Show all time</button></Show>
                 <Show when={!scanning() && props.onImportChange && !props.importEnabled}><button type="button" class="usage-button" disabled={importBusy()} onClick={() => void toggleImport(true)}><Icon name="Import" size={13} />Read local logs</button></Show>
               </div>
@@ -268,6 +308,10 @@ export function UsagePage(props: {
                   </div>
                 </div>
                 <Panel title={metric() === "tokens" ? "Tokens over time" : "Estimated cost over time"} class="usage-chart-panel" actions={<>
+                  <div class="usage-segmented small" role="group" aria-label="Group chart by">
+                    <button type="button" aria-pressed={groupBy() === "agent"} onClick={() => setGroupBy("agent")}>By agent</button>
+                    <button type="button" aria-pressed={groupBy() === "model"} onClick={() => setGroupBy("model")}>By model</button>
+                  </div>
                   <div class="usage-segmented small" role="group" aria-label="Chart measure">
                     <button type="button" aria-pressed={metric() === "tokens"} onClick={() => setMetric("tokens")}>Tokens</button>
                     <button type="button" aria-pressed={metric() === "cost"} onClick={() => setMetric("cost")}>Cost</button>
@@ -275,13 +319,13 @@ export function UsagePage(props: {
                   <button type="button" class="usage-text-button" aria-pressed={showTable()} onClick={() => setShowTable(!showTable())}>{showTable() ? "Chart" : "Table"}</button>
                 </>}>
                   <div class="usage-legend" aria-label="Legend">
-                    <For each={providerRows()}>{(row) => <span><i style={{ background: seriesVar(row.slot) }} />{row.name}<b>{metric() === "tokens" ? compactTokens(row.totals.tokens.total) : costShort(row.totals.cost).text}</b></span>}</For>
-                    <Show when={chart().weekly}><span class="usage-legend-note">Weekly totals</span></Show>
+                    <For each={legendRows()}>{(row) => <span><i style={{ background: seriesVar(row.slot) }} />{row.name}<b>{metric() === "tokens" ? compactTokens(row.tokens) : costShort(row.cost).text}</b></span>}</For>
+                    <Show when={view().chart.weekly}><span class="usage-legend-note">Weekly totals</span></Show>
                   </div>
                   <Switch>
-                    <Match when={showTable()}><UsageChartTable columns={chart().columns} series={series()} weekly={chart().weekly} /></Match>
-                    <Match when={chart().columns.length === 1 ? chart().columns[0] : undefined}>{(column) => <UsageShare column={column()} series={series()} metric={metric()} />}</Match>
-                    <Match when={true}><UsageChart columns={chart().columns} series={series()} metric={metric()} weekly={chart().weekly} /></Match>
+                    <Match when={showTable()}><UsageChartTable columns={view().chart.columns} series={view().series} weekly={view().chart.weekly} /></Match>
+                    <Match when={view().chart.columns.length === 1 ? view().chart.columns[0] : undefined}>{(column) => <UsageShare column={column()} series={view().series} metric={metric()} />}</Match>
+                    <Match when={true}><UsageChart columns={view().chart.columns} series={view().series} metric={metric()} weekly={view().chart.weekly} /></Match>
                   </Switch>
                 </Panel>
                 <div class="usage-split">
@@ -295,10 +339,19 @@ export function UsagePage(props: {
                   <button type="button" class="usage-button" disabled={!props.onExport || exporting() || !sessions().length} title={props.onExport ? "Export these sessions as CSV into the open folder" : props.exportUnavailable} onClick={() => void exportCsv()}><Icon name="ExportSquare" size={13} />Export CSV</button>
                 } />
                 <details class="usage-footnote">
-                  <summary><Icon name="InfoCircle" size={13} />Pricing and estimates<Show when={unpriced().length}><span class="usage-footnote-count">{unpriced().length} {unpriced().length === 1 ? "model" : "models"} without a price</span></Show><Icon name="arrow-down4" size={11} class="usage-footnote-chevron" /></summary>
+                  <summary><Icon name="InfoCircle" size={13} />Pricing and estimates<Show when={unpriced().length}><span class="usage-footnote-count">{unpriced().length} {unpriced().length === 1 ? "model" : "models"} without a price</span></Show><Show when={skippedSources() > 0}><span class="usage-footnote-count">{fullNumber(skippedSources())} {skippedSources() === 1 ? "source" : "sources"} not read</span></Show><Icon name="arrow-down4" size={11} class="usage-footnote-chevron" /></summary>
                   <div class="usage-footnote-body">
                     <p>Dollar figures are API-equivalent estimates at list prices, not your subscription bill: Claude and ChatGPT plans have usage limits, not per-token charges. Where an agent reported its own cost, that figure is used.</p>
                     <Show when={summary()?.prices}>{(prices) => <p>Prices as of {prices().asOf} from the <For each={prices().sources}>{(entry, index) => <>{index() > 0 ? (index() === prices().sources.length - 1 ? " and " : ", ") : ""}<a href={entry.url} target="_blank" rel="noreferrer noopener" onClick={(event) => openExternal(event, entry.url)}>{entry.provider}</a></>}</For> pricing pages, standard tier. Set your own in <code>agents.usage.prices</code>.</p>}</Show>
+                    <Show when={props.importEnabled && importState()?.report}>{(report) => <>
+                      <p>Local logs: read only, counters only, nothing uploaded. {report().kinds.length ? `Found ${report().kinds.map((kind) => KIND_NAMES[kind] ?? kind).join(", ")} logs` : "No agent logs found"}, {fullNumber(report().filesTotal)} files{report().compressedRead ? `, ${fullNumber(report().compressedRead)} compressed` : ""}. Messages repeated across files (resumed sessions, subagents) count once.</p>
+                      <ul class="usage-skips">
+                        <Show when={report().compressedSkipped > 0}><li><Icon name="Warning2" size={12} />{fullNumber(report().compressedSkipped)} compressed Codex {report().compressedSkipped === 1 ? "log" : "logs"} (.zst) skipped: Span has no zstd reader yet.</li></Show>
+                        <Show when={report().skipped > 0}><li><Icon name="Warning2" size={12} />{fullNumber(report().skipped)} {report().skipped === 1 ? "file" : "files"} skipped for a size cap or a read error.</li></Show>
+                        <Show when={report().truncated}><li><Icon name="Warning2" size={12} />The file cap was reached, so the oldest logs may be missing.</li></Show>
+                        <For each={report().notes}>{(note) => <li><Icon name="Warning2" size={12} />{note}</li>}</For>
+                      </ul>
+                    </>}</Show>
                     <Show when={unpriced().length}>
                       <div class="usage-chip-row"><For each={unpriced()}>{(model) => <span class="usage-noprice-chip" title={`${fullNumber(model.totals.tokens.total)} tokens are counted but not priced`}>No price for <span class="usage-mono">{model.model || "unnamed model"}</span></span>}</For></div>
                     </Show>

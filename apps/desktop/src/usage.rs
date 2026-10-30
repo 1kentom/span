@@ -1,12 +1,14 @@
 //! Usage page commands (ADR 0012). The ledger lives in `span_core::usage`
-//! and the opt-in log importers in `span_core::usage_import`. Reading never
+//! and the local log importers (on by default) in `span_core::usage_import`. Reading never
 //! writes a session store; the importer writes only its own cache in the
 //! profile folder.
 use crate::DesktopState;
 use serde::Serialize;
 use span_core::{
     usage::{session_rows, summarize, PriceTable, SessionUsageRow, UsageRange, UsageSummary},
-    usage_import::{default_roots, imported_sessions, scan, ImportCache, ImportLimits, ScanReport},
+    usage_import::{
+        default_roots, imported_sessions, more_roots, scan, ImportCache, ImportLimits, ScanReport,
+    },
     AgentUsageSettings, CoreWorkspace, SessionMeta, SessionMetaStore, SettingsScope,
 };
 use specta::Type;
@@ -150,11 +152,16 @@ fn run_scan() -> Result<(ScanReport, u64), String> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from);
-    let roots = default_roots(
+    let mut roots = default_roots(
         home.as_deref(),
         std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
         std::env::var("CODEX_HOME").ok().as_deref(),
     );
+    roots.extend(more_roots(
+        home.as_deref(),
+        std::env::var("OPENCODE_DATA_DIR").ok().as_deref(),
+        std::env::var("XDG_DATA_HOME").ok().as_deref(),
+    ));
     let path = import_cache_path()?;
     let mut cache = ImportCache::load(&path);
     let report = scan(
@@ -172,8 +179,8 @@ fn run_scan() -> Result<(ScanReport, u64), String> {
     Ok((report, cache.scanned_ms))
 }
 
-/// Starts a background scan of the local logs when the user turned the
-/// importer on and no scan is running. Returns at once; poll
+/// Starts a background scan of the local logs when the importer is on (the
+/// default) and no scan is running. Returns at once; poll
 /// `usage_import_status` for progress.
 #[tauri::command]
 #[specta::specta]

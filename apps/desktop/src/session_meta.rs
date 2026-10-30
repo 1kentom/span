@@ -325,6 +325,8 @@ mod tests {
                 task_id: "t".into(),
                 agent_name: "Codex".into(),
                 model: None,
+                deliverables: None,
+                group_id: None,
             },
         };
         let patches = patches_from_event("claude", &delegated);
