@@ -2070,14 +2070,15 @@ async fn lost_notifications_resync_project_config_without_a_restart_warning() {
             .any(|uri| uri.contains("node_modules")),
         "excluded folders are never resynced"
     );
-    let events = f.events.lock().unwrap();
-    assert!(!events
-        .iter()
-        .any(|e| matches!(e, LspEvent::Error(err) if err.message.contains("Restart"))));
-    assert!(!events
-        .iter()
-        .any(|e| matches!(e, LspEvent::WatchRecovery(_))));
-    drop(events);
+    {
+        let events = f.events.lock().unwrap();
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, LspEvent::Error(err) if err.message.contains("Restart"))));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, LspEvent::WatchRecovery(_))));
+    }
     f.svc.manager.shutdown_all().await;
 }
 
