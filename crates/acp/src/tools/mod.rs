@@ -17,7 +17,8 @@ mod tasks;
 pub use budget::{Budget, BudgetRequest, Meter};
 pub use host::{LeadDelegation, LeadServers};
 pub use result::{
-    base64, file_uri, inside_workspace, mime_type, sha256_hex, Artifact, FailureReason, UsageReport,
+    base64, file_uri, inside_workspace, mime_type, sha256_hex, Artifact, Deliverables,
+    FailureReason, UsageReport,
 };
 pub use run_tools::{
     RunConfigurationEntry, RunToolBackend, RunToolCatalog, RunToolFuture, RunToolProgress,
@@ -121,6 +122,14 @@ pub enum DelegationEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[specta(optional)]
         model: Option<String>,
+        /// What the lead expects back (ADR 0014 `deliverables`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        deliverables: Option<Deliverables>,
+        /// The `delegate_many` group the task belongs to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        group_id: Option<String>,
     },
     /// A task finished, successfully or not.
     TaskFinished {
@@ -227,7 +236,8 @@ pub struct DelegationTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub model: Option<String>,
-    /// `queued`, `running`, `completed` or `failed`.
+    /// `queued`, `running`, `completed`, `failed` or `lost` (the child
+    /// session is gone, ADR 0014).
     pub status: String,
     pub stop_reason: Option<String>,
     pub reason: Option<FailureReason>,
@@ -246,6 +256,10 @@ pub struct DelegationTask {
     /// Usage of the whole delegation (all its prompts) so far. `tokens` is
     /// only set when the agent reports it.
     pub budget_used: UsageReport,
+    /// What the lead expects back (ADR 0014 `deliverables`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub deliverables: Option<Deliverables>,
 }
 
 /// One delegated task and the text its child session wrote so far, for the
