@@ -7,7 +7,7 @@ import type { AgentController } from "../../lib/agent-controller";
 import type { FeedItem, ToolEvent } from "../../lib/agent-session";
 import type { StepView } from "./types";
 import { buildBlocks, changedFiles, noticeView, stopView, toStep, workSummary, type Block } from "../../lib/agent-view";
-import { budgetNote, budgetText, decisionView, deliverablesText, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
+import { budgetNote, budgetText, cardStatus, decisionView, deliverablesText, groupProgress, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
 import { urlRecordText } from "../../lib/agent-url-request";
 import { handoffDivider } from "../../lib/agent-handoff";
 import { branchDivider } from "../../lib/agent-rewind";
@@ -176,9 +176,10 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
             <DelegationCard
               agent={task().agentName ?? "Delegated agent"}
               model={task().model}
-              status={task().status}
+              status={cardStatus(task(), a.childPermissions().some((entry) => permissionWaitsOn(entry, task())))}
               note={taskNote(task())}
               waiting={a.childPermissions().some((entry) => permissionWaitsOn(entry, task()))}
+              group={groupProgress(a.feed().flatMap((entry) => (entry.kind === "delegation" ? [entry.task] : [])), task().groupId)}
               taskId={task().taskId}
               startedAtMs={task().startedAtMs}
               finishedAtMs={task().finishedAtMs}

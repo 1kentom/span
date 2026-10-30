@@ -12,6 +12,7 @@ mod host;
 mod result;
 mod run_tools;
 mod server;
+mod store;
 mod tasks;
 
 pub use budget::{Budget, BudgetRequest, Meter};
@@ -24,6 +25,7 @@ pub use run_tools::{
     RunConfigurationEntry, RunToolBackend, RunToolCatalog, RunToolFuture, RunToolProgress,
 };
 pub use server::{tool_definitions, ToolServer, MCP_PROTOCOL_VERSIONS, SERVER_NAME};
+pub use store::{MemoryTaskStore, TaskPage, TaskQuery, TaskRecord, TaskStore, LOST_AFTER_RESTART};
 pub use tasks::DecisionRecord;
 
 use crate::{AgentFeatures, BackgroundAgents, HealthMonitor, InstalledAgent, SessionKey};
@@ -256,6 +258,14 @@ pub struct DelegationTask {
     /// Usage of the whole delegation (all its prompts) so far. `tokens` is
     /// only set when the agent reports it.
     pub budget_used: UsageReport,
+    /// The `delegate_many` group that started the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub group_id: Option<String>,
+    /// The child waits for the user to answer a permission, a question or
+    /// an edit review.
+    #[serde(default)]
+    pub waiting_for_user: bool,
     /// What the lead expects back (ADR 0014 `deliverables`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]

@@ -1820,6 +1820,13 @@ export type DelegationTask_Deserialize = {
 	 *  only set when the agent reports it.
 	 */
 	budgetUsed: UsageReport_Deserialize,
+	/**  The `delegate_many` group that started the task. */
+	groupId?: string | null,
+	/**
+	 *  The child waits for the user to answer a permission, a question or
+	 *  an edit review.
+	 */
+	waitingForUser?: boolean,
 	/**  What the lead expects back (ADR 0014 `deliverables`). */
 	deliverables?: Deliverables_Deserialize | null,
 };
@@ -1858,6 +1865,13 @@ export type DelegationTask_Serialize = {
 	 *  only set when the agent reports it.
 	 */
 	budgetUsed: UsageReport_Serialize,
+	/**  The `delegate_many` group that started the task. */
+	groupId?: string,
+	/**
+	 *  The child waits for the user to answer a permission, a question or
+	 *  an edit review.
+	 */
+	waitingForUser: boolean,
 	/**  What the lead expects back (ADR 0014 `deliverables`). */
 	deliverables?: Deliverables_Serialize,
 };
