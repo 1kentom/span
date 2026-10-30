@@ -155,6 +155,29 @@ Mostly invisible; check that nothing regressed.
   same agent still asks.
 - A workspace `.span/settings.jsonc` that tries to set a mode has no effect.
 
+### Turn checkpoints (ADR 0013, native pass)
+
+Use a scratch Git repository and an agent that writes files directly
+(OpenCode, or any agent with its own file tools).
+
+- Agent edits a file: after the turn, the Changes tab lists it under
+  "This turn" with +/- counts, and "All turns" shows the whole session.
+- Revert one hunk: only that hunk goes back on disk; the other hunks of the
+  file stay. Edit the file by hand where a second hunk was, then Revert that
+  hunk: Span refuses and says the change no longer applies.
+- Restore turn: in the thread, "Restore files to before this turn" asks
+  first and says the agent conversation is not rolled back. After confirming,
+  the files match the turn's start.
+- Undo: the toast's Undo brings the later work back exactly.
+- `git status`, `git stash list`, `git branch -a` and `git log -1` show
+  nothing new from checkpoints; `git for-each-ref refs/span` lists them.
+- Non-Git folder: open a plain folder. The Changes tab says checkpoints are
+  unavailable and offers "Enable checkpoints"; nothing runs `git init`
+  until it is clicked.
+- Delete the thread: `git for-each-ref refs/span` no longer lists its refs.
+- Follow agent: turn it on in the thread header, restart Span, and it is
+  still on; files the agent touches open without taking focus.
+
 ## Phase 6: worktrees, steer or queue, goals, child tree
 
 - A new thread gets its own worktree; edits there do not appear in the main

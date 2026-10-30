@@ -1,4 +1,5 @@
 //! Local Git operates on repository files and the index, never editor buffers.
+mod checkpoint_git;
 mod history;
 mod mutation;
 mod process;
