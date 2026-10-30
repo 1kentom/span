@@ -22,7 +22,7 @@ struct CachedService {
     service: GitService,
 }
 
-async fn current_service(
+pub(crate) async fn current_service(
     state: &DesktopState,
 ) -> Result<(Arc<Mutex<CoreWorkspace>>, GitService), String> {
     let _gate = state.connection_gate.lock().await;

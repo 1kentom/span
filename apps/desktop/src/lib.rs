@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tauri_specta::{collect_commands, collect_events, Builder, ErrorHandlingMode};
 mod agents;
+mod checkpoints;
 mod cli;
 mod clipboard_files;
 mod events;
@@ -68,6 +69,7 @@ pub struct DesktopState {
     pub file_index: file_index::FileIndexRuntime,
     pub file_index_root: Arc<Mutex<Option<PathBuf>>>,
     pub(crate) git: git::GitAdapterState,
+    pub(crate) checkpoints: checkpoints::CheckpointState,
 }
 
 async fn with_workspace<T, F>(state: DesktopState, operation: F) -> Result<T, String>
@@ -975,11 +977,20 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             startup::StartupRequestError,
             agents::AgentSessionStatesChanged,
             agents::AgentHealthChanged,
-            agents::AgentKeyedEvent
+            agents::AgentKeyedEvent,
+            checkpoints::CheckpointsChanged
         ])
         .commands(collect_commands![
             open_workspace,
             git::git_context,
+            checkpoints::checkpoint_status,
+            checkpoints::checkpoint_enable,
+            checkpoints::checkpoint_list,
+            checkpoints::checkpoint_turn_changes,
+            checkpoints::checkpoint_revert_hunks,
+            checkpoints::checkpoint_revert_files,
+            checkpoints::checkpoint_restore,
+            checkpoints::checkpoint_undo_restore,
             git::git_enable,
             git::git_status,
             git::git_diff,
@@ -1228,6 +1239,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .setup(move |app| {
             builder.mount_events(app);
             events::mark_mounted(app);
+            app.state::<DesktopState>()
+                .checkpoints
+                .set_app(app.handle().clone());
             let cache = app.path().app_cache_dir()?.join("language-servers");
             let lsp = language_servers::production(
                 cache,
