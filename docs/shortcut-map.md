@@ -28,6 +28,7 @@ The requested **Cmd+E shows and focuses the Files sidebar** and **Cmd+P opens Go
 | Rename Symbol | F2 | `renameSymbol`, editor focus. |
 | Go Back / Go Forward | Mod+Alt+ArrowLeft / Mod+Alt+ArrowRight | `goBack`, `goForward`. |
 | Format with Language Server | Mod+Alt+Shift+F | `formatWithLanguageServer`, editor focus. Rebindable like every command above. |
+| Toggle Zen Mode | Ctrl+Cmd+Z on macOS / Ctrl+Alt+Z elsewhere | `toggleZenMode`, View menu and command palette. VS Code uses the chord Cmd+K Z, and Span has no chords, so the nearest free key was chosen: Cmd+Shift+Z stays Redo, and Ctrl+Cmd+Z / Ctrl+Alt+Z clash with no Span default, native menu item or CodeMirror keymap. Escape pressed twice also leaves zen, but only when nothing else (a popover, find, completion, stopping the agent) answered either press. |
 
 Code navigation commands all dispatch to one registry (`ui/src/lib/navigation-actions.ts`). Until a language feature registers a handler, running the command shows "Not available for this file". Function keys (F1 to F24) may be bound alone or with Shift; every other key still needs Mod, Ctrl, Meta or Alt. The new navigation defaults were checked against every existing default, the native menu accelerators and the CodeMirror keymaps in use (default, search, fold, completion, history and Span's own). F12 is also bound inside the editor by the language server extension, which handles it first when the editor has focus. In a browser preview, Ctrl+T and Ctrl+Shift+I are browser shortcuts and may not reach the page.
 
