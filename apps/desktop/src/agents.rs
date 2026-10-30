@@ -958,6 +958,7 @@ pub async fn agent_delete_session(
     let key = agent.key(&session_id);
     state.run_approvals.cancel_lead(&key);
     state.sessions.delete(&key).await?;
+    crate::checkpoints::session_deleted(state.inner(), &key.session_id);
     forget_session(state.inner(), &key)
 }
 
@@ -984,8 +985,31 @@ async fn prompt_key(
     text: String,
     attachments: Vec<PromptAttachment>,
 ) -> Result<(), PromptError> {
-    let done = state.sessions.start_turn(key, text, attachments)?;
-    match done.await {
+    // Only an idle session starts a turn; a busy one refuses below, so its
+    // prompt is not held back by a snapshot.
+    let idle = state
+        .sessions
+        .session_state(key)
+        .is_some_and(|runtime| runtime.state == span_acp::SessionActivity::Idle);
+    let checkpoint = if idle {
+        crate::checkpoints::turn_started(state, key).await
+    } else {
+        None
+    };
+    let done = match state.sessions.start_turn(key, text, attachments) {
+        Ok(done) => done,
+        Err(refusal) => {
+            if let Some(checkpoint) = checkpoint {
+                crate::checkpoints::turn_refused(state, checkpoint);
+            }
+            return Err(refusal);
+        }
+    };
+    let outcome = done.await;
+    if let Some(checkpoint) = checkpoint {
+        crate::checkpoints::turn_ended(state, checkpoint);
+    }
+    match outcome {
         Ok(Ok(())) => Ok(()),
         // The agent itself still had a turn in flight (it started between
         // the manager's check and the prompt reaching it).

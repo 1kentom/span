@@ -7,6 +7,32 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	openWorkspace: (path: string) => __TAURI_INVOKE<Workspace>("open_workspace", { path }),
 	gitContext: () => __TAURI_INVOKE<GitContext_Serialize>("git_context"),
+	/**  Whether checkpoints work in the open folder, and why not. */
+	checkpointStatus: () => __TAURI_INVOKE<CheckpointStatus_Serialize>("checkpoint_status"),
+	/**
+	 *  "Enable checkpoints": create a Git repository in the open folder. Only
+	 *  ever run from this explicit user action.
+	 */
+	checkpointEnable: () => __TAURI_INVOKE<CheckpointStatus_Serialize>("checkpoint_enable"),
+	/**  The session's checkpointed turns, oldest first. */
+	checkpointList: (sessionId: string) => __TAURI_INVOKE<CheckpointTurn[]>("checkpoint_list", { sessionId }),
+	/**  Files and hunks one turn changed, or every turn of the session when `turn` is null. */
+	checkpointTurnChanges: (sessionId: string, turn: number | null) => __TAURI_INVOKE<CheckpointChanges_Serialize>("checkpoint_turn_changes", { sessionId, turn }),
+	/**
+	 *  Undo hunks of a change set on disk. Each hunk is refused, and reported,
+	 *  when the file no longer holds the post-turn text around it.
+	 */
+	checkpointRevertHunks: (sessionId: string, revision: string, hunks: CheckpointHunkRef[]) => __TAURI_INVOKE<CheckpointRevertReport_Serialize>("checkpoint_revert_hunks", { sessionId, revision, hunks }),
+	/**  Undo whole files of a change set; a file changed since is refused. */
+	checkpointRevertFiles: (sessionId: string, revision: string, paths: string[]) => __TAURI_INVOKE<CheckpointRevertReport_Serialize>("checkpoint_revert_files", { sessionId, revision, paths }),
+	/**
+	 *  Put the folder's files back to how they were before `turn`. The agent
+	 *  conversation is not rolled back. A snapshot is taken first; pass the
+	 *  returned `undoId` to `checkpoint_undo_restore`.
+	 */
+	checkpointRestore: (sessionId: string, turn: number) => __TAURI_INVOKE<CheckpointRestoreReport_Serialize>("checkpoint_restore", { sessionId, turn }),
+	/**  Undo a restore or revert, leaving files changed since then as they are. */
+	checkpointUndoRestore: (sessionId: string, undoId: string) => __TAURI_INVOKE<CheckpointRestoreReport_Serialize>("checkpoint_undo_restore", { sessionId, undoId }),
 	gitEnable: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStatus_Serialize>("git_enable", { context }),
 	gitStatus: (context: GitContext_Deserialize) => __TAURI_INVOKE<GitStatus_Serialize>("git_status", { context }),
 	gitDiff: (context: GitContext_Deserialize, path: string, side: GitDiffSide, expectedIndexRevision: string) => __TAURI_INVOKE<GitDiff_Serialize>("git_diff", { context, path, side, expectedIndexRevision }),
@@ -458,6 +484,7 @@ export const events = {
 	agentHealthChanged: makeEvent<AgentHealthChanged_Serialize, AgentHealthChanged_Deserialize>("agent-health-changed"),
 	agentKeyedEvent: makeEvent<AgentKeyedEvent_Serialize, AgentKeyedEvent_Deserialize>("agent-keyed-event"),
 	agentSessionStatesChanged: makeEvent<AgentSessionStatesChanged_Serialize, AgentSessionStatesChanged_Deserialize>("agent-session-states-changed"),
+	checkpointsChanged: makeEvent<CheckpointsChanged, CheckpointsChanged>("checkpoints-changed"),
 	diagnosticsPublished: makeEvent<DiagnosticsPublished_Serialize, DiagnosticsPublished_Deserialize>("diagnostics-published"),
 	formatWarning: makeEvent<FormatWarning, FormatWarning>("format-warning"),
 	languageServerError: makeEvent<LanguageServerError_Serialize, LanguageServerError_Deserialize>("language-server-error"),
@@ -1269,6 +1296,128 @@ export type CapabilitiesDto = {
 	typeHierarchy: boolean,
 	documentHighlight: boolean,
 	signatureHelp: boolean,
+};
+
+export type CheckpointChanges = CheckpointChanges_Serialize | CheckpointChanges_Deserialize;
+
+export type CheckpointChanges_Deserialize = {
+	sessionId: string,
+	/**  `None` for all turns of the session. */
+	turn?: number | null,
+	/**  Identifies the two snapshots compared; pass it back to revert. */
+	revision?: string | null,
+	files: CheckpointFileChange[],
+};
+
+export type CheckpointChanges_Serialize = {
+	sessionId: string,
+	/**  `None` for all turns of the session. */
+	turn: number | null,
+	/**  Identifies the two snapshots compared; pass it back to revert. */
+	revision: string | null,
+	files: CheckpointFileChange[],
+};
+
+export type CheckpointConflict = CheckpointConflict_Serialize | CheckpointConflict_Deserialize;
+
+export type CheckpointConflict_Deserialize = {
+	path: string,
+	hunkId?: string | null,
+	reason: string,
+};
+
+export type CheckpointConflict_Serialize = {
+	path: string,
+	hunkId: string | null,
+	reason: string,
+};
+
+export type CheckpointFileChange = {
+	/**  Relative to the workspace folder. */
+	path: string,
+	kind: CheckpointFileKind,
+	additions: number,
+	deletions: number,
+	/**  Binary or too large for line hunks; only whole-file revert applies. */
+	binary: boolean,
+	/**  Line hunks in the pre-turn file's UTF-16 coordinates, as in edit proposals. */
+	hunks: ProposalHunk[],
+};
+
+export type CheckpointFileKind = "added" | "modified" | "deleted";
+
+export type CheckpointHunkRef = {
+	path: string,
+	hunkId: string,
+};
+
+export type CheckpointRestoreReport = CheckpointRestoreReport_Serialize | CheckpointRestoreReport_Deserialize;
+
+export type CheckpointRestoreReport_Deserialize = {
+	restored: string[],
+	/**  Left alone: symlinks, files over the size cap, or (on undo) files changed since. */
+	skipped: CheckpointConflict_Deserialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId?: string | null,
+};
+
+export type CheckpointRestoreReport_Serialize = {
+	restored: string[],
+	/**  Left alone: symlinks, files over the size cap, or (on undo) files changed since. */
+	skipped: CheckpointConflict_Serialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId: string | null,
+};
+
+export type CheckpointRevertReport = CheckpointRevertReport_Serialize | CheckpointRevertReport_Deserialize;
+
+export type CheckpointRevertReport_Deserialize = {
+	reverted: CheckpointHunkRef[],
+	revertedFiles: string[],
+	conflicts: CheckpointConflict_Deserialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId?: string | null,
+};
+
+export type CheckpointRevertReport_Serialize = {
+	reverted: CheckpointHunkRef[],
+	revertedFiles: string[],
+	conflicts: CheckpointConflict_Serialize[],
+	/**  Pass to `undo_restore`; `None` when nothing was written. */
+	undoId: string | null,
+};
+
+export type CheckpointStatus = CheckpointStatus_Serialize | CheckpointStatus_Deserialize;
+
+export type CheckpointStatus_Deserialize = {
+	available: boolean,
+	/**  Why checkpoints are off (for example, not a Git repository). */
+	reason?: string | null,
+	/**  The folder is not in a Git repository, so "Enable checkpoints" (git init) may be offered. */
+	canInit: boolean,
+};
+
+export type CheckpointStatus_Serialize = {
+	available: boolean,
+	/**  Why checkpoints are off (for example, not a Git repository). */
+	reason: string | null,
+	/**  The folder is not in a Git repository, so "Enable checkpoints" (git init) may be offered. */
+	canInit: boolean,
+};
+
+export type CheckpointTurn = {
+	turn: number,
+	/**  Unix seconds of the newest snapshot of this turn. */
+	capturedAt: number,
+	hasStart: boolean,
+	hasEnd: boolean,
+	/**  Files that differ between the turn's start and end; 0 while running. */
+	changedFiles: number,
+};
+
+/**  Checkpoints of a session changed (a turn was captured, a restore ran). */
+export type CheckpointsChanged = {
+	sessionId: string,
 };
 
 /**  What `UploadStore::clear` removed. */
