@@ -36,6 +36,20 @@ describe("first paint before the app bundle runs", () => {
     expect(canvasOf(".ide.theme-purple")).toBe(CANVAS_COLORS.purple);
   });
 
+  it("sets a readable text colour per theme equal to the workbench text token", () => {
+    const tokenOf = (selector: string, token: string) => workbench.split("\n").find(line => line.startsWith(`${selector}{`))?.match(new RegExp(`--${token}:(#[0-9a-f]+)`, "i"))?.[1];
+    expect(bootCss).toMatch(new RegExp(`html,\\s*body\\s*\\{[^}]*\\bcolor:\\s*${tokenOf(".ide", "text")}`));
+    expect(bootCss).toMatch(new RegExp(`html\\[data-theme="light"\\][^{]*\\{[^}]*\\bcolor:\\s*${tokenOf(".ide.theme-light", "text")}`));
+    expect(bootCss).toMatch(new RegExp(`html\\[data-theme="purple"\\][^{]*\\{[^}]*\\bcolor:\\s*${tokenOf(".ide.theme-purple", "text")}`));
+  });
+
+  it("shows a plain fallback only when the app entry never ran", () => {
+    expect(bootJs).toContain("dataset.spanEntry");
+    expect(read("src/index.tsx")).toContain("dataset.spanEntry = \"true\"");
+    expect(bootJs).toMatch(/span\.".*span:"|indexOf\("span\."\)/s);
+    expect(bootCss).toContain(".boot-fallback");
+  });
+
   it("reads the same storage key the app writes", () => {
     expect(bootJs).toContain(`"${THEME_STORAGE_KEY}"`);
     for (const theme of Object.keys(CANVAS_COLORS)) expect(bootJs).toContain(`"${theme}"`);
