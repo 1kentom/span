@@ -2,12 +2,13 @@ import { createSignal, onCleanup, type Accessor } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type {
   CapabilitiesDto, DiagnosticsPublished_Deserialize, LanguageServerId, LanguageServerInstallProgress_Deserialize,
-  LanguageServerStateDto_Deserialize, LocationDto, LspErrorDto, ServerStatusDto_Serialize,
+  LanguageServerStateDto_Deserialize, LanguageServerWatchRecovery, LocationDto, LspErrorDto, ServerStatusDto_Serialize,
 } from "../bindings";
 import { createLspSession, describeLspError, runtimeMissingMessage, serverForBuffer, serverLabels, type LspPort } from "../lib/lsp-client";
 import type { LspBinding } from "../lib/lsp-codemirror";
 import { readHubFields, type HubActivity, type HubPort, type HubRowFields, type WorkProgressEvent } from "../lib/hub-port";
 import { percentOf } from "../lib/language-intelligence-copy";
+import type { WatchWarning } from "../lib/watch-recovery";
 
 export type BufferLspState =
   | { kind: "unsupported" }
@@ -152,6 +153,8 @@ export interface LanguageServers {
   latestDiagnostics: (path: string) => DiagnosticsPublished_Deserialize | undefined;
   /** Drops cached diagnostics for paths `keep` rejects, or all of them when called without an argument. */
   pruneDiagnostics: (keep?: (path: string) => boolean) => void;
+  /** The latest line about a server catching up on file changes ("Refreshing TypeScript server"), while it is current. */
+  watchStatus: (server: LanguageServerId) => string | undefined;
 }
 
 export interface LanguageServersOptions {
@@ -159,9 +162,13 @@ export interface LanguageServersOptions {
   onError?: (message: string) => void;
   /** The generated hub commands and the work progress event, see hub-port.ts. Without it cancel, trust and work progress are inert. */
   hub?: HubPort;
+  /** Called when a server keeps falling behind on file changes after its automatic restarts, so the app can offer a restart. */
+  onWatchWarning?: (warning: WatchWarning) => void;
 }
 
 const MAX_CACHED_DIAGNOSTICS = 200;
+/** How long the "was refreshed" line stays in the popover after an automatic restart. */
+export const WATCH_REFRESHED_MS = 15000;
 const failureKinds: ReadonlySet<BufferLspState["kind"]> = new Set(["install-failed", "start-failed", "runtime-missing", "crashed", "needs-install"]);
 
 export interface BindingContext {
@@ -190,6 +197,8 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
   const [error, setErrorText] = createSignal("");
   const [errorServer, setErrorServer] = createSignal<LanguageServerId | undefined>();
   const [statusError, setStatusError] = createSignal("");
+  const [watch, setWatch] = createStore<Record<string, string | undefined>>({});
+  const watchTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const diagnosticListeners = new Set<(event: DiagnosticsPublished_Deserialize) => void>();
   interface ResetListener { listener: () => void; root?: () => string | null | undefined }
   const resetListeners = new Map<LanguageServerId, Set<ResetListener>>();
@@ -283,6 +292,8 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
             rows.forEach((row, index) => { if (exact ? row.root === event.root : row.root === null) setEntries(event.server, index, "state", event.state); });
           }
           if (event.state.kind !== "installing") setProgress(event.server, undefined);
+          // A refresh that ended in a failure or a switch-off has nothing left to report; the state says the rest.
+          if (event.state.kind === "crashed" || event.state.kind === "startFailed" || event.state.kind === "disabled") clearWatch(event.server);
           if (event.state.kind !== "ready") setWork(workKey(event.server, event.root), undefined as unknown as HubActivity[]);
           if (event.state.kind !== "ready") { dropHints(event.server); dropCachedDiagnostics(event.server); fireReset(event.server, event.root); }
           void refresh();
@@ -290,6 +301,7 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
         subscribe(port.onInstallProgress, event => handleProgress(event)),
         ...(options.hub ? [subscribe(options.hub.onWorkProgress, handleWork)] : []),
         subscribe(port.onError, event => fail(`${serverLabels[event.server]}: ${event.message}`, event.server)),
+        ...(port.onWatchRecovery ? [subscribe(port.onWatchRecovery.bind(port), handleWatchRecovery)] : []),
         subscribe(port.onDiagnostics, event => {
           cacheDiagnostics(event);
           for (const listener of [...diagnosticListeners]) { try { listener(event); } catch { /* ignore */ } }
@@ -338,8 +350,26 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
     setWork(key, earlier ? current.map(entry => entry.token === event.token ? item : entry) : [...current, item]);
   }
 
+  function clearWatch(server: string) {
+    clearTimeout(watchTimers.get(server));
+    watchTimers.delete(server);
+    setWatch(server, undefined);
+  }
+
+  function handleWatchRecovery(event: LanguageServerWatchRecovery) {
+    clearWatch(event.server);
+    if (event.phase === "exhausted") {
+      try { options.onWatchWarning?.({ server: event.server, message: event.message }); } catch { /* a toast failure must not break the store */ }
+      return;
+    }
+    setWatch(event.server, event.message);
+    if (event.phase === "refreshed") watchTimers.set(event.server, setTimeout(() => { watchTimers.delete(event.server); setWatch(event.server, undefined); }, WATCH_REFRESHED_MS));
+  }
+
   function dispose() {
     disposed = true;
+    for (const timer of watchTimers.values()) clearTimeout(timer);
+    watchTimers.clear();
     for (const stop of stops.splice(0)) { try { stop(); } catch { /* already gone */ } }
     diagnosticListeners.clear();
     resetListeners.clear();
@@ -421,7 +451,7 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
     entries, loaded, error, init, statusError,
     errorFor: server => { const owner = errorServer(); return !owner || owner === server ? error() : ""; }, refresh, dispose,
     install: server => command(server, "Installing", () => port.install(server)),
-    restart: server => command(server, "Restarting", () => port.restart(server)),
+    restart: server => { clearWatch(server); return command(server, "Restarting", () => port.restart(server)); },
     retry: server => {
       const kind = entryFor(server)?.state.kind;
       const install = kind === "installFailed" || kind === "needsInstall";
@@ -447,6 +477,7 @@ export function createLanguageServers(port: LspPort, options: LanguageServersOpt
     onReset,
     latestDiagnostics: path => diagnosticsCache.get(path),
     pruneDiagnostics: keep => { for (const path of [...diagnosticsCache.keys()]) if (!keep || !keep(path)) diagnosticsCache.delete(path); },
+    watchStatus: server => watch[server],
   };
 }
 

@@ -35,7 +35,8 @@ import { createRunApprovals } from "./stores/run-approvals";
 import { ToastStack, NotificationBell } from "./components/Notifications";
 import { ProblemsBadge } from "./components/ProblemsBadge";
 import { ingestDiagnostics, problemCounts, problemsFor, pruneProblems } from "./stores/problems";
-import { notifyError } from "./stores/notifications";
+import { notify, notifyError } from "./stores/notifications";
+import { isSilenced, SILENCED_WATCH_WARNINGS_KEY, watchWarningNotification, type WatchWarning } from "./lib/watch-recovery";
 import { TerminalDock, type TerminalDockController } from "./components/TerminalDock";
 import { createTerminalTransport } from "./lib/terminal-transport";
 import { ResizeHandle } from "./components/ResizeHandle";
@@ -120,7 +121,18 @@ const countPdfPages = (bytes: Uint8Array) => pdfPageCountWithFallback(bytes, isD
 export default function App() {
   const w = createWorkbench();
   const explorer = createExplorerState(w);
-  const languageServers = useLanguageServers(lspPort, { onError: message => w.setError(message), hub: hubPort });
+  const languageServers = useLanguageServers(lspPort, { onError: message => w.setError(message), hub: hubPort, onWatchWarning: warning => showWatchWarning(warning) });
+  /** A server kept falling behind on file changes after its automatic restarts: offer one click to restart it, or to stop this warning for it. */
+  function showWatchWarning(warning: WatchWarning) {
+    const silenced = () => w.settings().languageServers?.silencedWatchWarnings;
+    if (isSilenced(warning.server, silenced())) return;
+    notify(watchWarningNotification(warning, {
+      restart: server => languageServers.restart(server),
+      silenced,
+      saveSilenced: servers => w.updateSettingKey(SILENCED_WATCH_WARNINGS_KEY, servers, "user"),
+      onError: error => notifyError(error),
+    }));
+  }
   const explorerPrefs = () => explorerPreferences(w.settings());
   const setExplorerPreference = (key: string, value: boolean) => void w.updateSettingKey(`explorer.${key}`, value, w.workspace() ? "workspace" : "user").catch(error => w.setError(String(error)));
   const hub = createLanguageIntelligence({ servers: languageServers, activePath: () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? path : undefined; }, workspaceRoot: () => w.workspace()?.root, autoInstall: () => w.settings().languageServers?.autoInstall ?? true, preview: !isDesktop, setUserSetting: (key, value) => w.updateSettingKey(key, value, "user"), pickPath: hubPort.pickPath, openSettings: () => openSettings() });

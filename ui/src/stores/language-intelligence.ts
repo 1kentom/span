@@ -87,7 +87,11 @@ export interface HubView {
   statusBar: { visible: boolean; text: string; tone: HubTone; label: string; state: LanguageState; pill: string; tooltip: string };
 }
 
-export interface HubServerSnapshot { id: LanguageServerId; state: BufferLspState; entry?: ServerEntry; activity: readonly HubActivity[]; error?: string }
+export interface HubServerSnapshot {
+  id: LanguageServerId; state: BufferLspState; entry?: ServerEntry; activity: readonly HubActivity[]; error?: string;
+  /** "Refreshing TypeScript server" while the server catches up on file changes it missed. */
+  watch?: string;
+}
 export interface HubSnapshot {
   hasFile: boolean;
   fileServer?: LanguageServerId;
@@ -219,6 +223,8 @@ function buildCard(snapshot: HubServerSnapshot, input: HubSnapshot, kind: HubSta
     case "unavailable": card.status = copy.hubText.unavailable; card.statusTip = input.statusError; break;
     default: card.status = copy.checkingLine;
   }
+  // Catching up on missed file changes is quiet: one status line, no toast, no extra action.
+  if (snapshot.watch && (kind === "ready" || kind === "working" || kind === "starting")) { card.status = snapshot.watch; card.statusTip = copy.watchRecoveryTip; }
   const trust = entry?.hub.trust;
   if (trust && copy.projectCodeServers.has(id) && (kind === "ready" || kind === "working" || kind === "starting" || kind === "idle")) {
     if (input.trustRestarting) {
@@ -356,7 +362,7 @@ export function createLanguageIntelligence(options: LanguageIntelligenceOptions)
         entry = { ...entry, enabled: want };
         state = want ? { kind: "starting", server: id } : { kind: "disabled", server: id };
       }
-      return { id, state, entry, activity: want === false ? [] : servers.work(id, entry?.root), error: servers.errorFor(id) || undefined };
+      return { id, state, entry, activity: want === false ? [] : servers.work(id, entry?.root), error: servers.errorFor(id) || undefined, watch: servers.watchStatus(id) };
     });
     const entry = current ? list.find(item => item.id === current)?.entry : undefined;
     const mark = restarting()[trustKey(entry, options.workspaceRoot())];
