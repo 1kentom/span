@@ -1,5 +1,11 @@
 # Expanded Git verification record
 
+## Current published status
+
+The structural Git sidebar source is published in [draft PR #225](https://github.com/1kentom/span/pull/225) at `f24b76a`, following merged PR #195. Earlier unpublished-branch and pending-integration statements below are historical checkpoints. Native testing of the exact `f24b76a` ad hoc review app passed local first push, selected-line staging, staged commit, message-only amend, history/reflog and worktree creation. Separate-process opening is only partially verified; child visual/session restoration and native zoom acceptance remain open. User visual acceptance and #210 completion are not claimed.
+
+Exact-head hosted run [41016639250](https://github.com/1kentom/span/actions/runs/41016639250) passed every job except the Windows check, which exposed two test-fixture defects. Fixture-only corrections now pass both focused macOS tests and strict core Clippy; a complete green hosted rerun remains pending. The broader unfinished Git/GitHub scope remains active.
+
 Checked 2026-10-29 for [#186](https://github.com/1kentom/span/issues/186). The behavior and remaining parity work are specified in [expanded Git workflows](git-expanded-workflows.md).
 
 ## Source and review
@@ -82,7 +88,7 @@ Native GitHub authentication and the actual PR list succeeded. A PR detail reque
 
 ## Phase 3 source and automated evidence
 
-The prior phase 2 published-head run [40905440358](https://github.com/1kentom/span/actions/runs/40905440358) passed all required checks at `a578b38`, including platform checks. This is phase 2 evidence only. The current uncommitted phase 3 source has not inherited that hosted verification.
+The prior phase 2 published-head run [40905440358](https://github.com/1kentom/span/actions/runs/40905440358) passed all required checks at `a578b38`, including platform checks. This is phase 2 evidence only. Phase 3 was subsequently published as `d59f982` in PR #195 and has not inherited that hosted verification.
 
 Phase 3 adds reviewed selected-line staging with Git-normalized text and metadata snapshots, exact-HEAD amend with hook handling, all-ref history/search, HEAD reflog, revision content/comparison, bounded line history, selected-remote operations and first push with explicit upstream intent, standalone welcome-screen clone, and worktree opening in a separate process. Workspace-scoped SHA256 session keys and startup restoration fixes support independent workspace restoration. Source presence does not establish native correctness or full reference-product parity. Partial-staging mode handling was corrected to follow effective core.filemode and owner-executable semantics. Ten focused tests passed, including 30 real-Git stage/unstage comparisons (95.97 seconds). The corrected full core rerun passed 288 tests with two ignored cases in 136.37 seconds, including the 30 mode comparisons.
 
@@ -94,8 +100,73 @@ Phase 3 adds reviewed selected-line staging with Git-normalized text and metadat
 | Rust quality | Strict workspace Clippy passed again after the partial-staging correction and the development binding-export guard fix. |
 | Browser | 20 dedicated Git Playwright workflows passed in 45.8 seconds on an isolated server, with explicit mocked IPC. The six added workflows cover first-push review invalidation, selected IDs and failed-selection retention, stale-HEAD amend, advanced history filters/reflog/revision, welcome clone retry/open, and validated new-window callbacks. These do not execute native Git or window creation. |
 | Native | Phase 3 rebuilt app acceptance pending. Earlier installed runtime observations remain limited to the separately identified binaries above. |
-| Hosted | Phase 3 exact-head publication and checks pending. The green phase 2 run is not substituted. |
+| Hosted | Phase 3 is published as `d59f982` in PR #195. Exact-head hosted checks have not yet been verified. The green phase 2 run is not substituted. |
 
 The active completion checklist retains both the new acceptance gates and the broader unfinished Git/GitHub scope. No hosted write, native phase 3 operation, signing/notarization, release channel or full GitLens/VS Code/Zed parity is claimed by these automated results. Local logs and raw acceptance artifacts remain outside publication.
 
-During phase 3 verification, launching an older installed debug runtime overwrote the generated bindings through its startup exporter. The authoritative bindings were regenerated and verified, and the startup export guard now uses `#[cfg(dev)]` instead of `debug_assertions`, so bundled debug apps do not export source bindings on launch. TypeScript, production build and strict workspace Clippy passed after this correction. The native build is in progress; no actual phase 3 native operation is counted yet.
+During phase 3 verification, launching an older installed debug runtime overwrote the generated bindings through its startup exporter. The authoritative bindings were regenerated and verified, and the startup export guard now uses `#[cfg(dev)]` instead of `debug_assertions`, so bundled debug apps do not export source bindings on launch. TypeScript, production build and strict workspace Clippy passed after this correction. The native bundle built; no actual phase 3 native mutation is counted yet.
+
+## Rejected polish and earlier rail overhaul
+
+The user rejected the visual polish published in phase 3 commit `d59f982` in [PR #195](https://github.com/1kentom/span/pull/195), and [issue #210](https://github.com/1kentom/span/issues/210) remains open for a complete overhaul. Earlier completed checkboxes represent checks that ran, not accepted visual quality. Inspection of the older native UI showed a faint staged marker and an expanded wall of remote controls, supporting the user's feedback.
+
+The earlier rail overhaul added full-lane hunk button rails, dashed staged and solid working markers, a keyboard/accessibility CodeMirror bridge with one Tab stop per hunk, retained untouched rails while typing and cleared touched rails, and structured 40-row index/live previews. Review saved preserves the current draft and prefix. Remotes are compact and collapsed with an explicit empty state and checkbox correction; the repository path is compact after consent. Remote summaries use the project Iconsax chevrons.
+
+The full overhaul UI run passed 3,104 tests across 279 files in 117.68 seconds. TypeScript and the production build passed. Twenty-four dedicated browser workflows passed in 60 seconds with mocked IPC. These include actual rendered geometry and accessibility checks, light theme, 20-pixel editor font, wrapping, folding, scrolling and narrow layouts. They do not establish native Git behavior or installed acceptance.
+
+A locally ad hoc signed native overhaul test bundle was built. Actual native overhaul and zoom acceptance are pending, as are exact-head hosted checks and the broader functional completion gates. Issue #210 is not complete. Raw screenshots, visual artifacts and local logs remain ignored and outside publication.
+
+## Current structural sidebar revision
+
+The user also rejected the initial rail overhaul at local head `54645eb`, rating the sidebar 0/10. The current structural redesign integrates incoming main revision `83cc464`; that hash identifies incoming main, not a completed integration commit. Neither visual revision has acceptance. #210 remains open.
+
+The current source puts repository basename and branch in the header, provides six icon navigation items with a responsive selected label, and moves repository management into a header popup instead of an idle body band. A 64-pixel two-row composer keeps Amend options collapsed, with concise commit/count feedback, a hint and a neutral disabled state. Changes are collapsible, separate filename from directory, use 14-pixel status indicators and fixed 48-pixel actions shown on hover or focus, and omit empty sections. Narrow overflow at 230 pixels and short-name truncation were caught and corrected. Direct inspection covered 230-pixel dark and 348-pixel light renders.
+
+Twenty-eight Git browser workflows passed in 60 seconds. They use mocked IPC with real rendered CSS/geometry checks at 230, 348 and 500 pixels in dark/light themes, plus menu, draft, focus and safety coverage. This is not native acceptance. The merged core suite passed 311 tests with two ignored in 324.36 seconds. The combined Specta binding export, including checkpoint and Git commands, and TypeScript passed. The final production UI build passed in 3.96 seconds, and strict workspace Clippy passed in 14.40 seconds.
+
+The first merged desktop run passed 199 tests and failed three. These exposed an excluded-path watcher rescan-budget regression, an outdated unsupported Rename Any fixture after main added support, and an asynchronous LSP didOpen log race. After the source corrections, the final desktop rerun passed all 203 tests in 12.72 seconds. The full UI run passed 3,193 tests and failed one outdated closed FailureReason list after main added four reasons. Only that explicit test list was updated; the final full UI rerun passed all 3,194 tests in 286 files in 128.83 seconds.
+
+Integration source excludes private `refs/span` entries from all-ref history. Checkpoint disk mutations share the editor workspace gate and dirty/refresh authority. New desktop dirty-buffer, serialization and partial-reload tests passed in the final 203-test suite. Actual native and exact-head hosted acceptance for this source remain open.
+
+[Issue #222](https://github.com/1kentom/span/issues/222) records a separately reproduced native caret defect at `54645eb`: moving Up from 3:3 reached 2:8 with blame enabled versus 2:3 with blame disabled; Undo restored the blank text but left the caret at 2:37. The issue includes native proof and a source audit. Its fix is outside the authorized current review task and remains open for user review.
+
+No visual acceptance, completed Git/GitHub objective, release readiness or hosted verification is inferred from these results. The remaining hosted merge, issue actions, review threads, signing setup, interactive rebase, submodule and multi-repository scope stays active. Raw native proof, screenshots and machine-specific artifacts remain local.
+
+## Historical branch and integration boundary
+
+[PR #195](https://github.com/1kentom/span/pull/195) merged as `b14e0ca`. Main revision `84767a9` includes ignored-file protection for worktree removal and follow-up fixes through [PR #224](https://github.com/1kentom/span/pull/224). The unpublished `feature/git-ui-overhaul` branch at `d8e7b23` contains the initial rails and second structural sidebar design and is now integrating that incoming main.
+
+The 311 core, 203 desktop, 3,194 UI and 28 browser passing results above belong to `d8e7b23`, before this latest integration. They are not verification of the new merge. Latest-merge automated results are recorded below; exact-head hosted checks remain pending. A separate Sidebar Review native app built from `d8e7b23` is installed; actual native acceptance remains pending. Neither rejected visual revision nor issue #210 is accepted or complete. The separately reported caret issue #222 and the broader unfinished Git/GitHub scope remain open.
+
+## Pre-publication incoming-main verification
+
+The latest integration source passed 3,216 UI tests in 289 files (144.87 seconds), 203 desktop tests (13.81 seconds), and 321 core tests with two ignored (235.63 seconds). The desktop semantic merge restored Show Usage menu handling. Strict workspace Clippy completed successfully in 2 minutes 14 seconds. The final production UI build after authoritative Show Usage binding regeneration passed in 4.18 seconds. These results supersede the earlier pre-integration counts for their respective layers; a final integration commit is still pending.
+
+All 28 Git browser workflows passed in 1.2 minutes with mocked IPC and real rendering checks. The initial run had 27 passes and one timeout and remains a recorded failed run; it is not counted as a pass.
+
+Actual native inspection of the separately installed `d8e7b23` Sidebar Review app exposed spontaneous closing of the outer details-based repository popup. Source now uses an explicit button and a mounted hidden popup, with 14 focused tests passing. A newly built native runtime and acceptance of this correction remain pending. Neither the automated passes nor this identified native defect establishes visual acceptance or completion of #210. Exact-head hosted checks and the broader Git/GitHub completion gates remain open.
+
+### Native repository actions refresh correction
+
+The separate native review build at `0bfec5c` confirmed that replacing the outer disclosure alone did not stop the popup from closing. Source investigation found that the repository-context effect closed it on every context refresh, including new context objects with the same repository ID. The corrected callback compares the current and previous IDs. A focused regression replaces context and status objects for the same repository, verifies the open popup and remote/commit drafts survive, then changes repository identity and verifies dismissal. All 15 Source Control tests passed. Rebuilt native acceptance for this additional correction remains pending.
+
+## Exact-source native and hosted follow-up
+
+The separate macOS ad hoc Sidebar Review app uses source `f24b76ae91a308370942d363d6b50df95f41b0f6` and binary SHA256 `880f9ee8adf067821f26bbb37d0f29dc007eec219eb5f7668ed172aca2ca8c99`. Actual native interaction and independent repository inspection established:
+
+- First push to a disposable local bare remote sent the exact reviewed SHA and set the explicit upstream, while retaining dirty working files.
+- Selecting one removed line changed only the index; the replacement remained unstaged and the working-file hash stayed unchanged.
+- A staged commit included the two reviewed staged files and left the README modification and untracked file outside the commit.
+- Message-only amend replaced HEAD while retaining its tree and parent and preserving the remaining working files.
+- Native history displayed the amended HEAD, initial commit and real branch/remote decorations. HEAD reflog displayed the amend, preceding commit and initial commit.
+- New-branch linked-worktree creation succeeded. Open in new window launched a separate process at the correct linked root while retaining the parent. Child visual/session restoration remains unverified because the app binding selected the parent process.
+
+Repository-popup stability now passed native refresh observations after the repository-identity effect fix. Earlier native attempts remain failures: `d8e7b23` closed the details disclosure spontaneously, and `0bfec5c9` still dismissed the popup despite using an explicit button. They are not substituted for the corrected runtime's result.
+
+A one-step native zoom observation showed a stale Worktrees underline while accessibility reported Changes selected. Native zoom acceptance is not established and requires further investigation. User visual acceptance remains pending.
+
+Hosted run [41016639250](https://github.com/1kentom/span/actions/runs/41016639250) at exact source `f24b76a` passed all jobs except Windows. Its first-push fixture compared a canonicalized verbatim URL against a raw path, and a partial-staging fixture used filenames illegal on Windows. These failures are retained. Follow-up changes are restricted to tests, preserving Unix hostile-name cases and adding legal cross-platform cases with target and disk assertions; no production Windows routing change is claimed. The corrected complete hosted run remains pending.
+
+Raw fixture metadata, process identifiers, machine paths and screenshots remain local and ignored. These results do not close #210, #222, child-session/zoom gates or the broader hosted collaboration and Git parity requirements.
+
+The two fixture corrections passed their focused macOS tests: first-push review/upstream in 1.14 seconds and literal-path staging isolation in 9.75 seconds. These local passes do not verify Windows; follow-up strict core Clippy and hosted Windows execution remain pending. Further native interaction stopped when user activity moved the review app to the main workspace; no edits were performed there. Native auto-fetch/merge follow-up remains pending.

@@ -49,7 +49,8 @@ pub(crate) fn exclusions() -> Arc<Exclusions> {
 
 /// Whether some path of `event` could matter to a language server: not inside an
 /// excluded directory and not inside a nested checkout. Used before an event is
-/// queued, so dependency installs and builds never count as lost notifications.
+/// queued, so benign dependency installs and builds do not count as lost
+/// notifications. Rescan flags always signal global loss.
 pub(crate) fn lsp_relevant(
     root: &Path,
     supplied_root: &Path,
@@ -57,7 +58,8 @@ pub(crate) fn lsp_relevant(
     exclusions: &Exclusions,
     nested: &mut HashMap<PathBuf, bool>,
 ) -> bool {
-    event.paths.is_empty()
+    event.need_rescan()
+        || event.paths.is_empty()
         || event.paths.iter().any(|path| {
             let relative = path
                 .strip_prefix(root)
@@ -67,14 +69,12 @@ pub(crate) fn lsp_relevant(
             let parent_excluded = relative
                 .parent()
                 .is_some_and(|parent| exclusions.excludes(parent));
-            // The reported entry itself only counts as excluded when it is a folder
-            // (or a rescan request, which always names one): a regular file may share
-            // a name such as `dist`.
+            // The reported entry itself only counts as excluded when it is a
+            // folder: a regular file may share a name such as `dist`.
             let self_excluded = relative
                 .file_name()
                 .is_some_and(|name| exclusions.excludes_dir(name))
-                && (event.need_rescan()
-                    || fs::symlink_metadata(&absolute).is_ok_and(|meta| meta.is_dir()));
+                && fs::symlink_metadata(&absolute).is_ok_and(|meta| meta.is_dir());
             !parent_excluded && !self_excluded && !in_nested_checkout(root, &absolute, nested)
         })
 }
@@ -118,12 +118,17 @@ pub(crate) fn watched_batch(
             result.incomplete = true;
             continue;
         };
-        // Events that only touch excluded folders or nested checkouts are dropped
-        // before anything else, so they can never mark the batch incomplete.
+        // Global loss signals and the raw endpoint budget apply even when all
+        // endpoints belong to excluded folders or nested checkouts.
+        result.incomplete |= event.need_rescan();
+        if event.paths.len() > MAX_INPUT - paths_examined {
+            result.incomplete = true;
+            break;
+        }
+        paths_examined += event.paths.len();
         if !lsp_relevant(&canonical_root, root, event, &exclusions, &mut nested) {
             continue;
         }
-        result.incomplete |= event.need_rescan();
         let (typ, hint) = match event.kind {
             EventKind::Access(_) => continue,
             EventKind::Create(kind) => (
@@ -150,11 +155,6 @@ pub(crate) fn watched_batch(
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::To)) => (FileChangeType::CREATED, None),
             EventKind::Modify(ModifyKind::Name(RenameMode::Both)) if event.paths.len() == 2 => {
-                if paths_examined + 2 > MAX_INPUT {
-                    result.incomplete = true;
-                    break;
-                }
-                paths_examined += 2;
                 for ((path_index, path), typ) in event
                     .paths
                     .iter()
@@ -203,11 +203,6 @@ pub(crate) fn watched_batch(
                     result.incomplete = true;
                 }
                 for path in &event.paths {
-                    if paths_examined >= MAX_INPUT {
-                        result.incomplete = true;
-                        break;
-                    }
-                    paths_examined += 1;
                     match scoped_path(&canonical_root, root, path) {
                         Ok(None) => {}
                         Ok(Some(path)) => {
@@ -225,11 +220,6 @@ pub(crate) fn watched_batch(
             result.incomplete = true;
         }
         for (path_index, path) in event.paths.iter().enumerate() {
-            if paths_examined >= MAX_INPUT {
-                result.incomplete = true;
-                break;
-            }
-            paths_examined += 1;
             push_change(
                 &mut result,
                 &mut policy,
@@ -1029,12 +1019,17 @@ mod tests {
             assert!(result.changes.is_empty());
             assert!(result.incomplete);
         }
-        // A rescan scoped to an excluded folder is dropped with the folder.
+        // A rescan is a global loss signal even when its endpoint is excluded.
         let result = watched_batch(&root, &[Ok(excluded.clone().set_flag(Flag::Rescan))], false);
         assert!(result.changes.is_empty());
-        assert!(!result.incomplete);
-        // Excluded folders are dropped before the path limit, so the limit is
-        // exercised with endpoints that only the ignore policy excludes.
+        assert!(result.incomplete);
+        // Raw endpoint limits also apply to ignored and excluded paths.
+        let oversized_excluded = (0..MAX_INPUT).fold(excluded, |event, _| {
+            event.add_path(root.join(".git/index.lock"))
+        });
+        let result = watched_batch(&root, &[Ok(oversized_excluded)], false);
+        assert!(result.changes.is_empty());
+        assert!(result.incomplete);
         fs::write(root.join(".ignore"), "*.ignored\n").unwrap();
         let ignored = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any)))
             .add_path(root.join("first.ignored"));
@@ -1159,12 +1154,10 @@ mod tests {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
         fs::write(root.join("_work/feature/.git"), "gitdir: elsewhere\n").unwrap();
-        let mut rescan = Event::new(EventKind::Other).add_path(root.join("node_modules"));
-        rescan = rescan.set_flag(Flag::Rescan);
         let result = watched_batch(
             &root,
             &[
-                Ok(rescan),
+                event(EventKind::Other, &[&root.join("node_modules")]),
                 event(
                     EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
                     &[&root.join("node_modules/.pnpm/pkg/index.js")],
@@ -1190,6 +1183,38 @@ mod tests {
         );
         assert!(!result.incomplete);
         assert!(result.changes.is_empty());
+    }
+
+    #[test]
+    fn global_rescan_is_relevant_even_when_its_endpoints_are_excluded() {
+        let temp = root();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::create_dir_all(root.join("node_modules")).unwrap();
+        fs::create_dir_all(root.join("_work/feature/src")).unwrap();
+        fs::write(root.join("_work/feature/.git"), "gitdir: elsewhere\n").unwrap();
+        let exclusions = exclusions();
+        let mut nested = HashMap::new();
+        for path in [".git/index", "node_modules", "_work/feature/src/a.ts"] {
+            let benign = Event::new(EventKind::Other).add_path(root.join(path));
+            assert!(!lsp_relevant(
+                &root,
+                &root,
+                &benign,
+                &exclusions,
+                &mut nested
+            ));
+            let rescan = benign.set_flag(Flag::Rescan);
+            assert!(lsp_relevant(
+                &root,
+                &root,
+                &rescan,
+                &exclusions,
+                &mut nested
+            ));
+            let result = watched_batch(&root, &[Ok(rescan)], false);
+            assert!(result.incomplete, "{path}");
+            assert!(result.changes.is_empty(), "{path}");
+        }
     }
 
     #[test]

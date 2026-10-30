@@ -1,0 +1,24 @@
+/* Repository tools live in the header popup, outside the commit workflow. */
+.git-network-panel { min-width: 0; padding: 8px 0; font-size: 12px; }
+.git-network-summary { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 8px; padding: 4px 12px 8px; }
+.git-network-summary > strong { font-size: 12px; font-weight: 500; }
+.git-network-summary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 11px; }
+.git-network-empty { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px 4px; color: var(--dim); font-size: 11px; }
+.git-network-panel details > summary { display: flex; align-items: center; gap: 6px; min-height: 28px; box-sizing: border-box; padding: 4px 12px; cursor: pointer; list-style: none; font-size: 12px; }
+.git-network-panel details > summary:hover { background: var(--hover); }
+.git-network-panel details > summary::-webkit-details-marker { display: none; }
+.git-network-panel details > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+.git-network-panel .git-network-chevron { flex: 0 0 auto; }
+.git-network-panel details[open] > summary > .git-network-chevron { transform: rotate(90deg); }
+.git-network-panel .git-inline-form { min-width: 0; gap: 8px; margin: 0; padding: 8px 12px 12px; border-bottom: 1px solid var(--border); }
+.git-network-panel .git-inline-form > label:not(.git-auto-fetch) { color: var(--dim); font-size: 11px; }
+.git-network-panel .git-inline-form input, .git-network-panel .git-inline-form select { min-width: 0; box-sizing: border-box; padding: 6px 8px; font: inherit; }
+.git-network-panel .git-inline-form select { width: 100%; border: 1px solid var(--border); border-radius: 4px; background: var(--field, var(--canvas)); color: var(--text); }
+.git-network-panel .git-auto-fetch { display: flex; align-items: flex-start; justify-content: flex-start; gap: 8px; color: var(--dim); font-size: 11px; line-height: 16px; }
+.git-network-panel .git-auto-fetch input[type="checkbox"] { width: auto; min-width: 0; flex: 0 0 auto; padding: 0; margin: 2px 0 0; }
+.git-network-panel .git-note { margin: 0; padding: 0; overflow-wrap: anywhere; font-size: 11px; line-height: 16px; }
+.git-network-panel .git-network-management > .git-auto-fetch, .git-network-panel .git-network-management > .git-note { margin: 8px 12px; }
+.git-network-panel .git-network-management > .git-text-action { margin: 4px 12px; }
+.git-network-panel .git-auto-fetch input[type="number"] { width: 64px; flex: none; margin-left: auto; border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; background: var(--field, var(--canvas)); color: var(--text); }
+.git-network-panel .git-worktree-path { overflow-wrap: anywhere; font-size: 11px; color: var(--dim); }
+.git-network-panel .git-network-management { padding: 0; }

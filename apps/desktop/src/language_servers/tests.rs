@@ -1320,6 +1320,12 @@ async fn hierarchy_tokens_cannot_aim_requests_elsewhere() {
 async fn read_source_is_read_only_and_never_opens_documents_in_the_server() {
     let mut f = fixture(true, "nav", Duration::from_secs(10));
     f.open_ready().await;
+    eventually("the workspace didOpen in the server log", || {
+        sent(&f.log, "textDocument/didOpen").len() == 1
+    })
+    .await;
+    let opened_before = sent(&f.log, "textDocument/didOpen");
+    assert_eq!(opened_before.len(), 1);
     let lib = f._dir.path().join("lib");
     std::fs::create_dir_all(&lib).unwrap();
     let text: String = (0..1000).map(|i| format!("line {i}\n")).collect();
@@ -1390,6 +1396,10 @@ async fn read_source_is_read_only_and_never_opens_documents_in_the_server() {
 
     let opened = sent(&f.log, "textDocument/didOpen");
     assert_eq!(opened.len(), 1, "only the workspace buffer was ever opened");
+    assert_eq!(
+        opened, opened_before,
+        "reading source never opens a document"
+    );
     assert!(opened[0]["params"]["textDocument"]["uri"]
         .as_str()
         .unwrap()

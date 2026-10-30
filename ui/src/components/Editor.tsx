@@ -68,6 +68,7 @@ export interface EditorProps {
   gitBaseline?: GitFileBaseline_Serialize;
   gitBlame?: GitBlame;
   gitBlameEnabled?: boolean;
+  onGitReview?: (side: "working" | "staged") => void;
   document?: Text;
   change?: EditorDocumentChange;
   onEdit: (edit: EditorEdit) => void;
@@ -410,7 +411,7 @@ export default function Editor(props: EditorProps) {
       // Tooltips may only use the editor itself. The default is the whole window, which puts a tall hover under the tab bar.
       tooltips({ tooltipSpace: view => { const box = view.scrollDOM.getBoundingClientRect(); return { top: box.top, left: box.left, bottom: box.bottom, right: box.right }; } }),
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), activeLineLayer(), drawSelection(), selectionPointer(), lineSelection(), indentationSupport(),
-      javaRun.of(javaRunExtensions()), gitStagedGutter(appliedStagedBaseline = stagedBaseline()), gitGutter(appliedGitBaseline = gitBaseline(), setGitChangeCount), gitInlineBlame(appliedGitBlame = gitBlameConfig()),
+      javaRun.of(javaRunExtensions()), gitStagedGutter(appliedStagedBaseline = stagedBaseline(), props.onGitReview ? () => props.onGitReview?.("staged") : undefined), gitGutter(appliedGitBaseline = gitBaseline(), setGitChangeCount, props.onGitReview ? () => props.onGitReview?.("working") : undefined), gitInlineBlame(appliedGitBlame = gitBlameConfig()),
       props.onUndo ? [] : history(), rectangularSelection({ eventFilter: event => event.altKey && event.shiftKey && event.button === 0 }), crosshairCursor(), indentOnInput(), bracketMatching(),
       closeBrackets(), autocompletion({ maxRenderedOptions: 30, interactionDelay: 0 }), completionTabSupport, foldGutter({ foldingChanged: (update) => update.transactions.some((transaction) => transaction.effects.length > 0), markerDOM: (open) => {
         const marker = document.createElement("span");

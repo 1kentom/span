@@ -80,6 +80,23 @@ async fn checkpoints(state: &DesktopState) -> Result<Checkpoints, String> {
     Ok(Checkpoints::new(service))
 }
 
+/// Checkpoint opt-in is independent of Git UI consent. Only share the editor
+/// mutation boundary, keeping checkpoint snapshots on their private index.
+async fn mutate_checkpoint<T, F, Fut>(state: DesktopState, operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(Checkpoints) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = span_core::Result<T>> + Send + 'static,
+{
+    let (workspace, service) = git::current_service(&state).await?;
+    git::mutate_workspace(state, workspace, true, "checkpoint", move || async move {
+        operation(Checkpoints::new(service))
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
 /// A turn in progress: what to finish with [`turn_ended`].
 pub(crate) struct TurnCheckpoint {
     session: String,
@@ -272,11 +289,13 @@ pub async fn checkpoint_revert_hunks(
     revision: String,
     hunks: Vec<CheckpointHunkRef>,
 ) -> Result<CheckpointRevertReport, String> {
-    let report = checkpoints(state.inner())
-        .await?
-        .revert_hunks(&session_id, &revision, hunks, CancellationToken::default())
-        .await
-        .map_err(|error| error.to_string())?;
+    let session = session_id.clone();
+    let report = mutate_checkpoint(state.inner().clone(), move |service| async move {
+        service
+            .revert_hunks(&session, &revision, hunks, CancellationToken::default())
+            .await
+    })
+    .await?;
     state.checkpoints.notify(&session_id);
     Ok(report)
 }
@@ -290,11 +309,13 @@ pub async fn checkpoint_revert_files(
     revision: String,
     paths: Vec<String>,
 ) -> Result<CheckpointRevertReport, String> {
-    let report = checkpoints(state.inner())
-        .await?
-        .revert_files(&session_id, &revision, paths, CancellationToken::default())
-        .await
-        .map_err(|error| error.to_string())?;
+    let session = session_id.clone();
+    let report = mutate_checkpoint(state.inner().clone(), move |service| async move {
+        service
+            .revert_files(&session, &revision, paths, CancellationToken::default())
+            .await
+    })
+    .await?;
     state.checkpoints.notify(&session_id);
     Ok(report)
 }
@@ -309,11 +330,13 @@ pub async fn checkpoint_restore(
     session_id: String,
     turn: u32,
 ) -> Result<CheckpointRestoreReport, String> {
-    let report = checkpoints(state.inner())
-        .await?
-        .restore(&session_id, turn, CancellationToken::default())
-        .await
-        .map_err(|error| error.to_string())?;
+    let session = session_id.clone();
+    let report = mutate_checkpoint(state.inner().clone(), move |service| async move {
+        service
+            .restore(&session, turn, CancellationToken::default())
+            .await
+    })
+    .await?;
     state.checkpoints.notify(&session_id);
     Ok(report)
 }
@@ -326,11 +349,13 @@ pub async fn checkpoint_undo_restore(
     session_id: String,
     undo_id: String,
 ) -> Result<CheckpointRestoreReport, String> {
-    let report = checkpoints(state.inner())
-        .await?
-        .undo_restore(&session_id, &undo_id, CancellationToken::default())
-        .await
-        .map_err(|error| error.to_string())?;
+    let session = session_id.clone();
+    let report = mutate_checkpoint(state.inner().clone(), move |service| async move {
+        service
+            .undo_restore(&session, &undo_id, CancellationToken::default())
+            .await
+    })
+    .await?;
     state.checkpoints.notify(&session_id);
     Ok(report)
 }

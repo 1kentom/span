@@ -1,20 +1,21 @@
-import { expect, test, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { expect, test, type Page, type Locator } from "@playwright/test";
+import { readFileSync, mkdirSync } from "node:fs";
 
 // Explicit IPC fixture: browser tests never execute Git, change a repository, or contact hosting services.
 const schema = JSON.parse(readFileSync("crates/core/settings.schema.json", "utf8")).properties;
 const defaults = Object.fromEntries(Object.entries(schema as Record<string, { default?: unknown }>).filter(([key, value]) => !key.includes(".") && key !== "$schema" && "default" in value).map(([key, value]) => [key, value.default]));
 
-async function fixture(page: Page, clean = false, noRoot = false) {
+async function fixture(page: Page, clean = false, noRoot = false, sidebarVariant = false) {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.addInitScript(({ settings, clean, noRoot }) => {
+  await page.addInitScript(({ settings, clean, noRoot, sidebarVariant }) => {
     let callback = 0;
+    let currentSettings = { ...settings };
     let revision = 1;
     let enabled = false;
-    let root = noRoot ? null : "/fixture/repository/project";
-    const repo = { id: "git-fixture-session", root: "/fixture/repository", workspacePrefix: "project", branch: "feature/review", head: "b".repeat(40), detached: false, unborn: false };
-    const trace = { phase3: [] as any[], noUpstream: false, changeHead: false, failLines: false, failClone: true, baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false, hosting: [] as any[], conflictReads: [] as any[], conflictSaves: [] as any[], failCreate: true, failReview: true, failDetail: false };
+    let root = noRoot ? null : sidebarVariant ? "/fixture/span-infrastructure-editor-workspace-with-long-name/project" : "/fixture/repository/project";
+    const repo = { id: "git-fixture-session", root: sidebarVariant ? "/fixture/span-infrastructure-editor-workspace-with-long-name" : "/fixture/repository", workspacePrefix: "project", branch: sidebarVariant ? "feature/source-control-sidebar-redesign-with-long-branch-name" : "feature/review", head: "b".repeat(40), detached: false, unborn: false };
+    const trace = { phase3: [] as any[], noRemotes: false, stagedBaseline: false, folds: false, noUpstream: false, changeHead: false, failLines: false, failClone: true, baseline: [] as any[], blame: [] as any[], checkout: [] as any[], stashes: [] as any[], tags: [] as any[], worktrees: [] as any[], remotes: [] as any[], hunk: [] as any[], integration: [] as any[], enables: 0, statusReads: 0, stage: [] as any[], unstage: [] as any[], commits: [] as any[], diffs: [] as any[], history: [] as any[], diskSaves: 0, remoteConfigChanged: false, hosting: [] as any[], conflictReads: [] as any[], conflictSaves: [] as any[], failCreate: true, failReview: true, failDetail: false };
     let treeRevision = 1;
     const text = "const value = 3;\nconst stable = true;\nconst other = 4;\nconst tail = true;\n";
     const indexText = "const value = 2;\nconst stable = true;\nconst other = 3;\nconst tail = true;\n";
@@ -31,6 +32,11 @@ async function fixture(page: Page, clean = false, noRoot = false) {
       { id: "source", path: "project/src/file.ts", displayPath: "project/src/file.ts", oldPath: null, displayOldPath: null, indexStatus: "M", worktreeStatus: "M", untracked: false, conflicted: false, submodule: false, unsupportedReason: null },
       { id: "outside", path: "outside.md", displayPath: "outside.md", oldPath: null, displayOldPath: null, indexStatus: "A", worktreeStatus: ".", untracked: false, conflicted: false, submodule: false, unsupportedReason: null },
     ];
+    if (sidebarVariant) {
+      changes[0].displayPath = "project/packages/desktop/components/source-control/ExtremelyLongSourceControlSidebarComponent.tsx";
+      changes[1].displayPath = "docs/audit.md";
+      changes.push({ ...changes[0], id: "short", path: "project/src/app.ts", displayPath: "src/app.ts", indexStatus: ".", worktreeStatus: "M" });
+    }
     if (clean) for (const entry of changes) { entry.indexStatus = "."; entry.worktreeStatus = "."; }
     const commit = { id: "a".repeat(40), parents: [repo.head], author: "Fixture author", authorEmail: "fixture@example.test", timestamp: 1700000000, subject: "Review staged changes", body: "Review staged changes\n\nFull commit details" };
     const status = () => ({ repository: structuredClone(repo), indexRevision: `index-${revision}`, stagedSnapshot: `tree-${revision}`, entries: structuredClone(changes.filter(entry => entry.indexStatus !== "." || entry.worktreeStatus !== ".")), operation, truncated: false });
@@ -65,7 +71,7 @@ async function fixture(page: Page, clean = false, noRoot = false) {
           if (command === "git_worktree_set_locked" || command === "git_worktree_prune") { trace.worktrees.push({ command, ...args }); if (args.expectedSnapshot !== `worktrees-${treeRevision}`) throw new Error("Worktree review changed"); if (command === "git_worktree_set_locked") worktrees.find(tree => tree.path === args.path)!.locked = args.locked; treeRevision++; return { status: status(), output: "Updated fixture worktree metadata." }; }
           if (command === "git_conflict_resource") { trace.conflictReads.push(args); if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Conflict index changed"); return { path: args.path, base: "const value = 1;\n", ours: "const value = 2;\n", theirs: "const value = 3;\n", working: buffer.text, state: { status: status(), worktreeSnapshot: `disk-${revision}` } }; }
           if (command === "git_save_conflict_resolution") { trace.conflictSaves.push(args); if (args.expectedIndexRevision !== `index-${revision}` || args.expectedWorktreeSnapshot !== `disk-${revision}`) throw new Error("Reviewed conflict changed"); buffer.text = args.content; buffer.revision++; buffer.savedRevision = buffer.revision; revision++; return { status: status(), worktreeSnapshot: `disk-${revision}` }; }
-          if (command === "git_file_baseline") { trace.baseline.push(args); return { repositoryId: repo.id, path: args.path, indexRevision: `index-${revision}`, headText: clean ? text : indexText, indexText: clean ? text : indexText, binary: false, truncated: false }; }
+          if (command === "git_file_baseline") { trace.baseline.push(args); return { repositoryId: repo.id, path: args.path, indexRevision: `index-${revision}`, headText: trace.stagedBaseline ? indexText.replace("stable = true", "stable = false") : clean ? text : indexText, indexText: clean ? text : indexText, binary: false, truncated: false }; }
           if (command === "git_blame") { trace.blame.push(args); return { repositoryId: repo.id, path: args.path, head: repo.head, lines: [1, 2, 3, 4, 5].map(line => ({ line, originalLine: line, commitId: repo.head, author: "Fixture author", authorEmail: "fixture@example.test", timestamp: commit.timestamp, summary: "Initial fixture" })) }; }
           if (command === "git_branches") return [{ name: repo.branch, commitId: repo.head, remote: false, current: true, upstream: trace.noUpstream ? null : "origin/feature/review", ahead: 1, behind: 0 }, { name: "main", commitId: "c".repeat(40), remote: false, current: false, upstream: null, ahead: 0, behind: 0 }];
           if (command === "git_checkout") { trace.checkout.push(args); if (args.expectedIndexRevision !== `index-${revision}`) throw new Error("Index changed"); repo.branch = args.branch; revision++; return status(); }
@@ -77,7 +83,7 @@ async function fixture(page: Page, clean = false, noRoot = false) {
           if (command === "git_worktrees") return structuredClone(worktrees);
           if (command === "git_worktree_add") { trace.worktrees.push({ command, ...args }); worktrees.push({ path: args.path, branch: args.branch, head: repo.head, main: false, bare: false, locked: false, prunable: false }); return { status: status(), output: "Added fixture worktree." }; }
           if (command === "git_worktree_remove") { trace.worktrees.push({ command, ...args }); worktrees.splice(worktrees.findIndex(tree => tree.path === args.path), 1); return { status: status(), output: "Removed fixture worktree." }; }
-          if (command === "git_remotes") return { remotes: [{ name: "origin", fetchUrl: "https://example.test/fixture/repo.git", pushUrl: "https://example.test/fixture/push.git", current: true }], configFingerprint: "reviewed-config-1" };
+          if (command === "git_remotes") return { remotes: trace.noRemotes ? [] : [{ name: "origin", fetchUrl: "https://example.test/fixture/repo.git", pushUrl: "https://example.test/fixture/push.git", current: true }], configFingerprint: "reviewed-config-1" };
           if (command === "git_remote") { trace.remotes.push(args); if (args.expectedConfigFingerprint !== (trace.remoteConfigChanged ? "changed-config-2" : "reviewed-config-1")) throw new Error("Remote configuration changed. Review remotes again."); throw new Error("Fixture authentication failed. No remote operation ran."); }
           if (command === "git_hunk_diff") { const diff = patch(args.path, args.side); return { diff, worktreeSnapshot: `disk-${revision}`, hunks: [{ id: `hunk-${revision}`, header: "@@ -1 +1 @@", patch: diff.patch }] }; }
           if (command === "git_apply_hunk") { trace.hunk.push(args); if (args.expectedIndexRevision !== `index-${revision}` || args.expectedWorktreeSnapshot !== `disk-${revision}` || args.hunkId !== `hunk-${revision}`) throw new Error("Reviewed hunk changed"); revision++; return status(); }
@@ -120,7 +126,9 @@ async function fixture(page: Page, clean = false, noRoot = false) {
           if (command === "git_commit_diff") return patch(args.path || "project/src/file.ts", "commit");
           if (command === "get_session") return { workspaceRoot: root, groups: noRoot ? [] : [{ paths: ["src/file.ts"], activePath: "src/file.ts" }], activeGroup: 0, markdownViews: {}, panels: { projectWidth: 320, assistantWidth: 350, terminalHeight: 230, projectCollapsed: false, assistantCollapsed: true, terminalCollapsed: true } };
           if (command === "open_workspace") { if (noRoot) { trace.phase3.push({ command, ...args }); root = args.path; } return { root, name: "Project folder" }; }
-          if (command === "get_settings" || command === "get_settings_for_scope") return { ...settings };
+          if (command === "get_settings" || command === "get_settings_for_scope") return { ...currentSettings };
+          if (command === "update_setting") { currentSettings = { ...currentSettings, [args.key]: JSON.parse(args.valueJson) }; return { ...currentSettings }; }
+          if (command === "syntax") return { revision: buffer.revision, language: "typescript", highlights: [], folds: trace.folds && buffer.text.startsWith("function") ? [{ from: buffer.text.indexOf("{") + 1, to: buffer.text.lastIndexOf("}") }] : [], indentGuides: [], truncated: false };
           if (command === "get_settings_jsonc" || command === "get_settings_jsonc_for_scope") return "{}";
           if (["take_startup_requests", "recent_projects", "get_settings_keys_for_scope", "agent_installed", "agent_registry", "agent_presets", "pending_run_approvals", "list_runs", "lsp_status", "sync_native_menu", "session_meta_list", "uploads_list"].includes(command)) return [];
           if (command === "agent_session_states") return { connectionId: null, sessions: [] };
@@ -141,7 +149,7 @@ async function fixture(page: Page, clean = false, noRoot = false) {
         },
       },
     });
-  }, { settings: defaults, clean, noRoot });
+  }, { settings: defaults, clean, noRoot, sidebarVariant });
   await page.goto("/");
   await expect(page.getByRole("main", { name: "span editor", exact: true })).toHaveAttribute("aria-busy", "false");
   return errors;
@@ -157,7 +165,8 @@ test("repository-wide saved/index diffs preserve a dirty editor and constrain ou
   await expect(panel).toContainText("/fixture/repository");
   expect((await trace(page)).statusReads).toBe(0); expect((await trace(page)).enables).toBe(0);
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
-  await expect(panel).toContainText("/fixture/repository"); await expect(panel).toContainText("whole repository");
+  await expect(panel.locator(".git-repo-identity")).toHaveAttribute("title", "/fixture/repository");
+  await expect(panel.locator(".git-repo-identity > strong")).toHaveText("repository");
   await panel.getByRole("button", { name: "Review staged changes in project/src/file.ts", exact: true }).click();
   const comparison = page.getByRole("region", { name: "Git comparison", exact: true });
   await expect(comparison).toContainText("HEAD compared with index"); await expect(comparison).toContainText("+index version");
@@ -181,8 +190,10 @@ test("explicit stage/unstage and staged-only commit preserve a failed message an
   await page.getByRole("button", { name: "Git", exact: true }).click();
   const panel = page.getByRole("region", { name: "Git source control", exact: true });
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await panel.getByRole("button", { name: "Review staged changes in project/src/file.ts", exact: true }).hover();
   await panel.getByRole("button", { name: "Unstage project/src/file.ts", exact: true }).click();
   await expect.poll(async () => (await trace(page)).unstage.length).toBe(1);
+  await panel.getByRole("button", { name: "Review working changes in project/src/file.ts", exact: true }).hover();
   await panel.getByRole("button", { name: "Stage project/src/file.ts", exact: true }).click();
   await expect.poll(async () => (await trace(page)).stage.length).toBe(1);
   const message = panel.getByRole("textbox", { name: "Git commit message", exact: true });
@@ -341,6 +352,9 @@ test("worktree removal is explicit and remote failure retains message and unsave
   const message = panel.getByRole("textbox", { name: "Git commit message", exact: true }); await message.fill("Keep this commit draft");
   const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
   await editor.click(); await editor.press("ControlOrMeta+End"); await page.keyboard.insertText("// keep after remote failure\n");
+  await openRepositoryActions(panel);
+  await expect(panel.locator(".git-network-actions")).not.toHaveAttribute("open", "");
+  await panel.locator("summary").filter({ hasText: /^Remote actions$/ }).click();
   await expect(panel.locator("[aria-label=\"Selected remote operations\"]")).toContainText("https://example.test/fixture/repo.git");
   await expect(panel.locator("[aria-label=\"Selected remote operations\"]")).toContainText("Push: https://example.test/fixture/push.git");
   await panel.getByRole("checkbox", { name: "I reviewed this remote and target", exact: true }).check();
@@ -594,6 +608,10 @@ test("selected remote first push requires review and invalidates it when the tar
   await page.getByRole("button", { name: "Git", exact: true }).click();
   const panel = page.getByRole("region", { name: "Git source control", exact: true });
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await openRepositoryActions(panel);
+  await expect(panel.locator(".git-network-actions")).not.toHaveAttribute("open", "");
+  await overhaulScreenshot(page, "remote-compact-after");
+  await panel.locator("summary").filter({ hasText: /^Remote actions$/ }).click();
   const push = panel.getByRole("button", { name: "Push", exact: true });
   await expect(push).toBeDisabled();
   await panel.getByLabel("Remote", { exact: true }).selectOption("origin");
@@ -602,10 +620,14 @@ test("selected remote first push requires review and invalidates it when the tar
   await panel.getByLabel("Remote branch (pull or push)", { exact: true }).fill("published-branch");
   await expect(push).toBeDisabled();
   await page.screenshot({ animations: "disabled", path: info.outputPath("git-first-push-target-review.png") });
+  mkdirSync("artifacts/git-overhaul-browser", { recursive: true });
+  await page.screenshot({ animations: "disabled", path: "artifacts/git-overhaul-browser/remote-after.png" });
   expect((await trace(page)).remotes).toHaveLength(0);
   await panel.getByLabel("I reviewed this remote and target", { exact: true }).check();
   await push.click();
   await expect(panel).toContainText("Published fixture branch.");
+  await openRepositoryActions(panel);
+  await openGitDetails(panel, ".git-network-actions");
   await expect(push).toBeDisabled();
   expect((await trace(page)).remotes).toEqual([expect.objectContaining({ action: "push", remoteName: "origin", targetBranch: "published-branch", setUpstream: true, expectedConfigFingerprint: "reviewed-config-1", expectedIndexRevision: "index-1" })]);
   expect(errors).toEqual([]);
@@ -638,6 +660,7 @@ test("amend captures HEAD and blocks submission after an external HEAD change", 
   const panel = page.getByRole("region", { name: "Git source control", exact: true });
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
   await panel.getByRole("textbox", { name: "Git commit message", exact: true }).fill("Amended message only");
+  await openGitDetails(panel, ".git-commit-options");
   await panel.getByLabel("Amend last commit", { exact: true }).check();
   await expect(panel.getByRole("button", { name: "Amend bbbbbbbb", exact: true })).toBeEnabled();
   await page.evaluate(() => { (window as any).__gitFixture.changeHead = true; });
@@ -711,4 +734,322 @@ test("worktree new-window callback uses the backend-validated path without chang
   expect((await trace(page)).phase3.map(call => ({ command: call.command, path: call.path }))).toEqual([{ command: "git_worktree_window_path", path: "/fixture/review" }, { command: "git_open_worktree_window", path: "/fixture/review" }]);
   await expect(page.getByRole("textbox", { name: "Edit file.ts", exact: true })).toBeVisible();
   await expect(panel.locator(".git-repo-branch")).toContainText("feature/review"); expect(errors).toEqual([]);
+});
+
+async function expectWorkingRailGeometry(marker: Locator, codeLine?: Locator) {
+  const geometry = await marker.evaluate(node => {
+    const rail = node.querySelector(".cm-git-rail")!;
+    const box = node.getBoundingClientRect(), railBox = rail.getBoundingClientRect();
+    const row = node.parentElement!.getBoundingClientRect();
+    return { tag: node.tagName, width: box.width, height: box.height, railWidth: railBox.width, rowHeight: row.height, top: box.top, rowTop: row.top };
+  });
+  expect(geometry.tag).toBe("BUTTON");
+  expect(geometry.width).toBeCloseTo(12, 1);
+  expect(geometry.railWidth).toBeCloseTo(3, 1);
+  expect(geometry.height).toBeGreaterThanOrEqual(geometry.rowHeight - 1);
+  expect(Math.abs(geometry.top - geometry.rowTop)).toBeLessThanOrEqual(1);
+  if (codeLine) {
+    const line = (await codeLine.boundingBox())!;
+    expect(Math.abs(geometry.top - line.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.height - line.height)).toBeLessThanOrEqual(1);
+  }
+  await marker.hover();
+  expect((await marker.boundingBox())!.width).toBeCloseTo(geometry.width, 1);
+}
+
+async function expectAccessibleGitMarker(marker: Locator) {
+  await expect(marker).toHaveAccessibleName(/change/);
+  expect(await marker.evaluate(node => {
+    for (let current: Element | null = node; current; current = current.parentElement) if (current.getAttribute("aria-hidden") === "true") return true;
+    return false;
+  })).toBe(false);
+}
+
+async function overhaulScreenshot(page: Page, name: string) {
+  mkdirSync("artifacts/git-overhaul-browser", { recursive: true });
+  await page.screenshot({ animations: "disabled", path: `artifacts/git-overhaul-browser/${name}.png` });
+}
+
+test("rendered working rails keep their full hit lane and keyboard previews distinguish live and saved changes", async ({ page }) => {
+  const errors = await fixture(page);
+  const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
+  await editor.click(); await editor.press("ControlOrMeta+End"); await page.keyboard.insertText("// unsaved review stays in buffer\n");
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  await page.getByRole("button", { name: "Enable Git", exact: true }).click();
+  const markers = page.locator(".cm-git-gutter:not(.cm-git-staged-gutter) button.cm-git-marker");
+  await expect(markers.first()).toBeVisible();
+  await expectWorkingRailGeometry(markers.first(), page.locator(".cm-line").first());
+  await expect(markers.first()).toHaveAccessibleName(/modified.*Click to review change/);
+  await expectAccessibleGitMarker(markers.first());
+  await markers.first().focus(); await markers.first().press("Enter");
+  const preview = page.getByRole("dialog", { name: "Git change preview", exact: true });
+  await expect(preview).toContainText("Index compared with live buffer, including unsaved edits.");
+  await expect(preview.locator(".cm-git-preview-before .cm-git-preview-caption")).toHaveText("Index: line 1");
+  await expect(preview.locator(".cm-git-preview-after .cm-git-preview-caption")).toHaveText("Live buffer: line 1");
+  await expect(preview.locator(".cm-git-preview-number")).toHaveText(["1", "1"]);
+  await expect(preview.locator(".cm-git-preview-sign")).toHaveText(["−", "+"]);
+  await expect(preview.locator(".cm-git-preview-code")).toHaveText(["const value = 2;", "const value = 3;"]);
+  await expect(markers.first()).toHaveAttribute("aria-expanded", "true");
+  await expect(markers.first()).toHaveClass(/cm-git-selected/);
+  await overhaulScreenshot(page, "working-preview-dark-after");
+  await preview.getByRole("button", { name: "Close Git change preview", exact: true }).focus();
+  await page.keyboard.press("Escape");
+  await expect(preview).toHaveCount(0); await expect(editor).toBeFocused();
+  await expect(markers.first()).toHaveAttribute("aria-expanded", "false");
+  await markers.first().focus(); await markers.first().press("Space");
+  await expect(preview).toBeVisible();
+  await editor.click({ position: { x: 700, y: 300 } });
+  await expect(preview).toHaveCount(0); await expect(editor).toBeFocused();
+  await markers.first().focus(); await markers.first().press("Enter");
+  await expect(preview).toContainText("Saved comparison excludes unsaved buffer edits.");
+  await expect(preview.getByRole("button", { name: /stage/i })).toHaveCount(0);
+  await preview.getByRole("button", { name: "Review saved changes", exact: true }).click();
+  const comparison = page.getByRole("region", { name: "Git comparison", exact: true });
+  await expect(comparison).toContainText("Index compared with working file");
+  await expect(comparison).not.toContainText("unsaved review stays in buffer");
+  await page.getByRole("tab", { name: "file.ts", exact: true }).click();
+  await expect(editor).toContainText("unsaved review stays in buffer");
+  expect((await trace(page)).diskSaves).toBe(0); expect((await trace(page)).stage).toHaveLength(0); expect(errors).toEqual([]);
+});
+
+test("rendered staged rails review HEAD against index without changing the dirty working buffer", async ({ page }) => {
+  const errors = await fixture(page);
+  await page.evaluate(() => { (window as any).__gitFixture.stagedBaseline = true; });
+  const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
+  await editor.click(); await editor.press("ControlOrMeta+End"); await page.keyboard.insertText("// staged review keeps draft\n");
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  await page.getByRole("button", { name: "Enable Git", exact: true }).click();
+  const marker = page.locator("button.cm-git-staged-marker").first();
+  await expect(marker).toBeEnabled();
+  await expect(marker).toHaveAccessibleName(/Staged modified change, HEAD compared with index/);
+  await expectAccessibleGitMarker(marker);
+  await expect(marker.locator(".cm-git-rail")).toHaveCount(1);
+  await overhaulScreenshot(page, "staged-rail-after");
+  await marker.focus(); await marker.press("Enter");
+  const comparison = page.getByRole("region", { name: "Git comparison", exact: true });
+  await expect(comparison).toContainText("HEAD compared with index");
+  await expect(comparison).toContainText("index version");
+  await expect(comparison).not.toContainText("staged review keeps draft");
+  expect((await trace(page)).diffs.at(-1)).toMatchObject({ path: "project/src/file.ts", side: "staged", expectedIndexRevision: "index-1" });
+  await page.getByRole("tab", { name: "file.ts", exact: true }).click();
+  await expect(editor).toContainText("staged review keeps draft");
+  expect((await trace(page)).diskSaves).toBe(0); expect(errors).toEqual([]);
+});
+
+test("working rail geometry follows real light theme, font, wrapping and folding settings at narrow width", async ({ page }) => {
+  const errors = await fixture(page);
+  await page.evaluate(() => { (window as any).__gitFixture.folds = true; });
+  const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
+  await editor.click(); await editor.press("ControlOrMeta+a");
+  await page.keyboard.insertText(`function changed() {\n  const longValue = "${"wrapped-content ".repeat(20)}";\n${Array.from({ length: 20 }, (_, index) => `  const extra${index} = ${index};`).join("\n")}\n  return longValue;\n}\n`);
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  await page.getByRole("button", { name: "Enable Git", exact: true }).click();
+  const markers = page.locator(".cm-git-gutter:not(.cm-git-staged-gutter) button.cm-git-marker");
+  await expect(markers.first()).toBeVisible();
+  await expectWorkingRailGeometry(markers.first(), page.locator(".cm-line").first());
+  await overhaulScreenshot(page, "geometry-dark-before-settings");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const search = page.getByRole("searchbox", { name: "Search settings", exact: true });
+  await search.fill("theme");
+  await page.getByRole("radio", { name: "Light theme", exact: true }).click();
+  await expect(page.locator(".ide")).toHaveClass(/theme-light/);
+  await search.fill("Editor font size");
+  const font = page.getByRole("spinbutton", { name: "Editor font size", exact: true });
+  await font.fill("20"); await font.press("Tab");
+  await search.fill("Word wrap");
+  await page.getByRole("switch", { name: "Word wrap", exact: true }).click();
+  await expect(page.getByRole("switch", { name: "Word wrap", exact: true })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("tab", { name: "file.ts", exact: true }).click();
+  await expect(editor).toHaveCSS("font-size", "20px");
+  await page.getByRole("button", { name: "Toggle project panel", exact: true }).click();
+  await page.setViewportSize({ width: 720, height: 700 });
+  await expect(page.locator(".cm-content")).toHaveClass(/cm-lineWrapping/);
+  await expectWorkingRailGeometry(markers.first(), page.locator(".cm-line").first());
+  const wrappedLine = page.locator(".cm-line").filter({ hasText: "const longValue" });
+  expect((await wrappedLine.boundingBox())!.height).toBeGreaterThan(40);
+  await expectWorkingRailGeometry(markers.nth(1), wrappedLine);
+  await markers.first().click();
+  const preview = page.getByRole("dialog", { name: "Git change preview", exact: true });
+  await expect(preview).toBeVisible();
+  const box = (await preview.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(721);
+  await overhaulScreenshot(page, "geometry-light-font20-wrap-narrow-after");
+  await preview.getByRole("button", { name: "Close Git change preview", exact: true }).click();
+  const scroller = page.locator(".cm-scroller").first();
+  await scroller.hover(); await page.mouse.wheel(0, 500);
+  await expect.poll(async () => scroller.evaluate(node => node.scrollTop)).toBeGreaterThan(100);
+  await expectAccessibleGitMarker(markers.first());
+  await page.mouse.wheel(0, -2000);
+  await expect.poll(async () => scroller.evaluate(node => node.scrollTop)).toBe(0);
+  const fold = page.locator(".cm-foldGutter .cm-gutterElement").filter({ has: page.locator(".cm-fold-chevron.is-open") }).first();
+  await expect(fold).toBeVisible(); await fold.click();
+  await expect(page.locator(".cm-foldPlaceholder")).toBeVisible();
+  await expectWorkingRailGeometry(markers.first(), page.locator(".cm-line").first());
+  await expectAccessibleGitMarker(markers.first());
+  await overhaulScreenshot(page, "geometry-light-font20-folded-after");
+  await page.locator(".cm-foldPlaceholder").click();
+  await expect(page.locator(".cm-foldPlaceholder")).toHaveCount(0);
+  await expectWorkingRailGeometry(markers.nth(1), wrappedLine);
+  await expectAccessibleGitMarker(markers.first());
+  expect((await trace(page)).diskSaves).toBe(0); expect(errors).toEqual([]);
+});
+
+test("no-remotes summary keeps changes visible and opens management only after Add remote", async ({ page }) => {
+  const errors = await fixture(page);
+  await page.evaluate(() => { (window as any).__gitFixture.noRemotes = true; });
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  await openRepositoryActions(panel);
+  const remotes = panel.getByRole("region", { name: "Remotes", exact: true });
+  await expect(remotes).toContainText("No remotes configured");
+  await expect(remotes.locator(".git-network-actions")).toHaveCount(0);
+  await expect(remotes.getByLabel("URL", { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: "Git commit message", exact: true })).toBeVisible();
+  await expect(panel.getByRole("region", { name: "Working changes", exact: true })).toBeVisible();
+  await overhaulScreenshot(page, "remote-empty-compact-after");
+  await remotes.getByRole("button", { name: "Add remote", exact: true }).click();
+  await expect(remotes.getByLabel("Name", { exact: true })).toBeVisible();
+  await expect(remotes.getByLabel("URL", { exact: true })).toBeVisible();
+  await expect(remotes.locator(".git-network-management")).toHaveAttribute("open", "");
+  expect((await trace(page)).remotes).toHaveLength(0); expect(errors).toEqual([]);
+});
+
+async function openGitDetails(panel: Locator, selector: string) {
+  const details = panel.locator(selector);
+  if (!await details.evaluate(node => (node as HTMLDetailsElement).open)) await details.locator(":scope > summary").click();
+  await expect(details).toHaveAttribute("open", "");
+}
+async function openRepositoryActions(panel: Locator) {
+  const trigger = panel.getByRole("button", { name: "Repository actions", exact: true });
+  if (await trigger.getAttribute("aria-expanded") !== "true") await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(panel.getByRole("group", { name: "Repository actions", exact: true })).toBeVisible();
+}
+
+async function resizeGitSidebar(page: Page, width: number) {
+  const sidebar = page.getByRole("complementary", { name: "Project", exact: true });
+  const handle = page.getByRole("separator", { name: "Resize project panel", exact: true });
+  const current = (await sidebar.boundingBox())!.width;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + width - current, box.y + box.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(async () => Math.abs((await sidebar.boundingBox())!.width - width)).toBeLessThanOrEqual(1);
+}
+
+async function sidebarScreenshot(page: Page, name: string) {
+  mkdirSync("artifacts/git-sidebar-redesign", { recursive: true });
+  await page.screenshot({ animations: "disabled", path: `artifacts/git-sidebar-redesign/${name}.png` });
+}
+
+for (const width of [230, 348, 500]) {
+  test(`redesigned sidebar keeps long names, navigation and row actions aligned at ${width}px`, async ({ page }) => {
+    const errors = await fixture(page, false, false, true);
+    await page.getByRole("button", { name: "Git", exact: true }).click();
+    const panel = page.getByRole("region", { name: "Git source control", exact: true });
+    await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+    await resizeGitSidebar(page, width);
+    await expect(panel.locator(".git-repo-identity > strong")).toHaveText("span-infrastructure-editor-workspace-with-long-name");
+    await expect(panel.locator(".git-repo-branch")).toContainText("feature/source-control-sidebar-redesign-with-long-branch-name");
+    await expect(panel.locator(".git-remote-actions")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Repository actions", exact: true })).toHaveAttribute("aria-expanded", "false");
+    const message = panel.getByRole("textbox", { name: "Git commit message", exact: true });
+    expect((await message.boundingBox())!.height).toBe(64);
+    const commit = panel.getByRole("button", { name: "Commit 2 staged files", exact: true });
+    await expect(commit).toBeDisabled();
+    const color = await commit.evaluate(node => getComputedStyle(node).backgroundColor.match(/[\d.]+/g)!.slice(0, 3).map(Number));
+    expect(Math.max(...color) - Math.min(...color)).toBeLessThanOrEqual(32);
+    const nav = panel.getByRole("tablist", { name: "Source control view", exact: true });
+    expect(await nav.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+    for (const name of ["History", "Branches", "Stash", "Worktrees", "GitHub", "Changes"]) {
+      const tab = nav.getByRole("tab", { name, exact: true });
+      await tab.click();
+      await expect(tab).toHaveAttribute("aria-selected", "true");
+      expect(await nav.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+      const label = tab.locator(".git-subview-label");
+      if (width < 260) await expect(label).toBeHidden();
+      else {
+        await expect(label).toBeVisible();
+        const bounds = await label.evaluate(node => {
+          const range = document.createRange(); range.selectNodeContents(node);
+          const text = range.getBoundingClientRect(), button = node.parentElement!.getBoundingClientRect();
+          return { left: text.left - button.left, right: button.right - text.right };
+        });
+        expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeGreaterThanOrEqual(0);
+      }
+    }
+    const rows = panel.locator(".git-change-row");
+    await expect(rows).toHaveCount(4);
+    const alignment = await rows.evaluateAll(nodes => nodes.map(node => {
+      const row = node.getBoundingClientRect(), status = node.querySelector(".git-change-status")!.getBoundingClientRect(), actions = node.querySelector(".git-row-actions")!.getBoundingClientRect();
+      return { statusX: status.x, actionsX: actions.x, actionsWidth: actions.width, right: actions.right, rowRight: row.right };
+    }));
+    expect(Math.max(...alignment.map(value => value.statusX)) - Math.min(...alignment.map(value => value.statusX))).toBeLessThanOrEqual(1);
+    expect(Math.max(...alignment.map(value => value.actionsX)) - Math.min(...alignment.map(value => value.actionsX))).toBeLessThanOrEqual(1);
+    for (const value of alignment) { expect(value.actionsWidth).toBe(48); expect(value.right).toBeLessThanOrEqual(value.rowRight + 1); }
+    await page.mouse.move(1200, 600);
+    await expect(rows.first().locator(".git-row-actions")).toHaveCSS("opacity", "0");
+    await rows.first().hover();
+    await expect(rows.first().locator(".git-row-actions")).toHaveCSS("opacity", "1");
+    const statusX = (await rows.first().locator(".git-change-status").boundingBox())!.x;
+    expect(statusX).toBeCloseTo(alignment[0].statusX, 1);
+    await sidebarScreenshot(page, `sidebar-${width}-long-paths-dark`);
+    expect(await panel.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+    const panelBox = (await panel.boundingBox())!;
+    for (const control of [panel.getByRole("button", { name: "Refresh Git", exact: true }), panel.getByRole("button", { name: "Repository actions", exact: true })]) {
+      const box = (await control.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(panelBox.x); expect(box.x + box.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 1);
+    }
+    for (const filename of ["app.ts", "audit.md"]) {
+      const label = panel.locator(".git-change-name").filter({ hasText: new RegExp(`^${filename.replace(".", "\\.")}$`) });
+      const fits = await label.evaluate(node => { const range = document.createRange(); range.selectNodeContents(node); return range.getBoundingClientRect().width <= node.getBoundingClientRect().width + 1; });
+      expect(fits, `Short filename ${filename} should fit at ${width}px`).toBe(true);
+    }
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("theme");
+    await page.getByRole("radio", { name: "Light theme", exact: true }).click();
+    await expect(page.locator(".ide")).toHaveClass(/theme-light/);
+    await page.getByRole("tab", { name: "file.ts", exact: true }).click();
+    await page.mouse.move(1200, 600);
+    await sidebarScreenshot(page, `sidebar-${width}-long-paths-light`);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("repository actions keyboard and outside dismissal preserve commit, remote and editor drafts", async ({ page }) => {
+  const errors = await fixture(page);
+  const editor = page.getByRole("textbox", { name: "Edit file.ts", exact: true });
+  await editor.click(); await editor.press("ControlOrMeta+End"); await page.keyboard.insertText("// sidebar menu keeps unsaved editor text\n");
+  await page.getByRole("button", { name: "Git", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Git source control", exact: true });
+  await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
+  const message = panel.getByRole("textbox", { name: "Git commit message", exact: true });
+  await message.fill("Preserve the sidebar commit draft");
+  const trigger = panel.getByRole("button", { name: "Repository actions", exact: true });
+  await trigger.focus(); await trigger.press("Enter");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await openGitDetails(panel, ".git-network-actions");
+  const target = panel.getByLabel("Remote branch (pull or push)", { exact: true });
+  await target.fill("preserved-remote-target");
+  await target.press("Escape");
+  await expect(trigger).toHaveAttribute("aria-expanded", "false"); await expect(trigger).toBeFocused();
+  await expect(message).toHaveValue("Preserve the sidebar commit draft");
+  await trigger.press("Space");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(target).toHaveValue("preserved-remote-target");
+  await editor.click({ position: { x: 700, y: 300 } });
+  await expect(trigger).toHaveAttribute("aria-expanded", "false"); await expect(editor).toBeFocused();
+  await expect(message).toHaveValue("Preserve the sidebar commit draft");
+  await expect(editor).toContainText("sidebar menu keeps unsaved editor text");
+  const row = panel.getByRole("button", { name: "Review working changes in project/src/file.ts", exact: true });
+  await row.focus();
+  await expect(row.locator("..").locator(".git-row-actions")).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Tab");
+  await expect(panel.getByRole("button", { name: "Discard saved changes in project/src/file.ts", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(panel.getByRole("button", { name: "Stage project/src/file.ts", exact: true })).toBeFocused();
+  await sidebarScreenshot(page, "sidebar-keyboard-row-focus");
+  expect((await trace(page)).diskSaves).toBe(0); expect((await trace(page)).stage).toHaveLength(0); expect((await trace(page)).remotes).toHaveLength(0); expect(errors).toEqual([]);
 });
