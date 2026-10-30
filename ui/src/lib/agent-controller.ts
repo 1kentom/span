@@ -51,6 +51,7 @@ import { sessionKeyId } from "./agent-stores/live-sessions";
 import { editQueuedEntry, mergeQueued } from "./agent-threads/thread-queue";
 import { createUsageRecorder } from "./usage";
 import { BRANCH_CONTEXT_NOTE, branchCut, branchReason, changesAfter, type BranchMode } from "./agent-rewind";
+import { createFeedFollow } from "./feed-follow";
 
 const DELEGATION_POLL_MS = 3000;
 
@@ -66,6 +67,11 @@ export type AgentPanelProps = {
   /** Removes an installed agent from Span, and with `uninstall` also deletes its managed adapter files. */
   removeAgent?: (id: string, uninstall: boolean) => Promise<void>;
   /** Opens a workspace file in the editor, at `line` (1-based) when given. */
+  /**
+   * Opens a file the user did not click: follow mode and an export. Without it `onOpenFile` is used. The app keeps the
+   * Agents page in place for these instead of switching to the editor.
+   */
+  onRevealFile?: (path: string, line?: number) => void;
   onOpenFile?: (path: string, line?: number) => void;
   onOpenExternal?: (url: string) => void;
   /** The merged `agents.delegation.enabled`. Unset means the default, which is on. */
@@ -1451,7 +1457,7 @@ export function createAgentController(props: AgentPanelProps) {
       const markdown = await sessionExportMarkdown(exportTranscript(title, state().feed));
       const saved = await api.saveAttachment("", exportFileName(title), bytesToBase64(new TextEncoder().encode(markdown)));
       props.onFilesChanged?.();
-      props.onOpenFile?.(saved.path);
+      (props.onRevealFile ?? props.onOpenFile)?.(saved.path);
     } catch (cause) {
       if (!disposed) setSessionsError(`Could not export that chat: ${errorText(cause)}`);
     }
@@ -1608,6 +1614,20 @@ export function createAgentController(props: AgentPanelProps) {
   }
   const newChat = () => switchChat(() => api.agentNewSession(), "Could not start a new chat", { fresh: true });
   const resumeChat = (id: string) => (id === state().sessionId ? (setView("session"), Promise.resolve()) : switchChat(() => api.agentResumeSession(id), "Could not resume that chat", { target: id }));
+  /** A native subagent session opened from its parent's Subagents disclosure or its own row. Shown read-only. */
+  const [openedSubagent, setOpenedSubagent] = createSignal<string>();
+  const openSubagent = (id: string) => {
+    setOpenedSubagent(id);
+    return resumeChat(id);
+  };
+  /**
+   * True while the open session is a native subagent session: the agent's own subagent run owns it, so the chat is
+   * read-only (no composer). It belongs to the agent and is never deleted from Span.
+   */
+  const viewingSubagent = () => {
+    const id = state().sessionId;
+    return Boolean(id && (id === openedSubagent() || sessionHistory.isSubagent(id)));
+  };
   const canClose = createMemo(() => Boolean(state().agent?.features.canCloseSessions));
   const canDelete = createMemo(() => Boolean(state().agent?.features.canDeleteSessions));
   /**
@@ -2161,7 +2181,7 @@ export function createAgentController(props: AgentPanelProps) {
       const key = `${event.toolCallId}:${relative}:${location.line ?? ""}`;
       if (followed.has(key)) return;
       followed.add(key);
-      if (openInEditor(relative, location.line)) return;
+      if (openInEditor(relative, location.line, props.onRevealFile ?? props.onOpenFile)) return;
     }
   }
   const toggleFollow = () => {
@@ -2176,25 +2196,12 @@ export function createAgentController(props: AgentPanelProps) {
   };
 
   const scrollers: { content?: HTMLDivElement } = {};
-  // Streaming text grows the feed every frame and several watchers ask to follow it: coalesce them into one scroll write
-  // per animation frame, and skip it if the reader scrolled away before the frame ran.
-  let scrollFrame: number | undefined;
-  let scrollSmooth = false;
-  const scrollToLatest = (smooth = false) => {
-    scrollSmooth ||= smooth;
-    if (scrollFrame !== undefined) return scrollFrame;
-    scrollFrame = requestAnimationFrame(() => {
-      const behavior = scrollSmooth && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto";
-      scrollFrame = undefined;
-      scrollSmooth = false;
-      if (!pinned()) return;
-      scrollers.content?.scrollTo({ top: scrollers.content.scrollHeight, behavior });
-    });
-    return scrollFrame;
-  };
+  // The one follow authority for both layouts (feed-follow.ts): only a user gesture detaches the feed, sending and the
+  // Latest pill re-attach it, and its single writer pins instantly, at most once per frame or right after layout.
+  const follow = createFeedFollow({ following: pinned, setFollowing: setPinned, scroller: () => scrollers.content, active: () => view() !== "history" });
+  const scrollToLatest = () => follow.pin();
   function followLatest() {
-    setPinned(true);
-    scrollToLatest(true);
+    follow.send();
   }
 
   /** The step running in the open chat: the newest unfinished tool call. */
@@ -2363,6 +2370,7 @@ export function createAgentController(props: AgentPanelProps) {
     focusPrompt,
     scrollToLatest,
     followLatest,
+    follow,
     dismissFailure: () => patch({ failure: undefined }),
     leaveConnecting: () => setConnecting(undefined),
     loadAgents,
@@ -2401,6 +2409,11 @@ export function createAgentController(props: AgentPanelProps) {
     loadSessions,
     newChat,
     resumeChat,
+    openSubagent,
+    viewingSubagent,
+    subagentsFor: sessionHistory.subagentsFor,
+    subagentCount: sessionHistory.subagentCount,
+    isSubagent: sessionHistory.isSubagent,
     stop,
     answerPermission,
     cancelTask,

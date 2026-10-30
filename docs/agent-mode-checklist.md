@@ -39,6 +39,12 @@ seen) or not checked.
   after sitting idle" error. A fifth parallel delegation is refused while
   four run. Reopening the app resumes the last chat without leaving an
   extra empty session in the agent's history.
+- Native subagent sessions (ADR 0005, amendment of 2026-10-29): in an
+  OpenCode 2.x chat ask for a task that spawns its own subagent. History and
+  the Agents rail show only the parent row, with a "Subagents (1)"
+  disclosure that opens the child read-only, without a composer and without
+  a delete action. The "Subagents" pill lists the child as a row of its own;
+  turning it off hides it again. Restarting the app keeps the child hidden.
 - Delegation trust: with Codex set to its own default mode for chats
   (full access), a Claude lead's delegation to Codex still asks the user
   before Codex edits a file. Ask the child to reply with text such as

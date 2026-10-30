@@ -151,5 +151,9 @@ export type SessionRow = {
   locked?: boolean;
   /** The session's state from the backend. Absent for a session Span does not hold, which then shows no state. */
   status?: import("../../lib/agent-chats").RowStatus;
+  /** A native subagent session (the agent's own subagent tool), listed only when the preference shows them. Never deletable here. */
+  subagent?: boolean;
+  /** Native subagent sessions the agent listed under this row's session, for its Subagents disclosure. */
+  subagents?: { id: string; title: string }[];
 };
 export type HistoryScope = "workspace" | "all";
