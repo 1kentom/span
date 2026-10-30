@@ -1,0 +1,202 @@
+/* Turn checkpoints (ADR 0013): calm, neutral, theme tokens only. */
+.cp-changes,
+.cp-timeline,
+.cp-unavailable {
+  box-sizing: border-box;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text);
+}
+.cp-changes *,
+.cp-timeline * {
+  box-sizing: border-box;
+}
+.cp-changes {
+  margin-bottom: 14px;
+}
+.cp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.cp-filter {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--sepLine);
+  border-radius: 6px;
+  background: var(--field);
+}
+.cp-filter button {
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.cp-filter button.on {
+  background: var(--pill);
+  color: var(--text);
+}
+.cp-filter button:focus-visible,
+.cp-changes button:focus-visible,
+.cp-timeline button:focus-visible,
+.cp-toast button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+.cp-delta {
+  display: inline-flex;
+  gap: 6px;
+  font-size: 11px;
+}
+.cp-delta .add {
+  color: var(--success);
+}
+.cp-delta .del {
+  color: var(--error);
+}
+.cp-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cp-file {
+  border: 1px solid var(--sepLine);
+  border-radius: 6px;
+  background: var(--island);
+  overflow: hidden;
+}
+.cp-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 6px 4px 10px;
+}
+.cp-file-name {
+  flex: none;
+  font-size: 11.5px;
+}
+.cp-file-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+  font-size: 11px;
+}
+.cp-file-kind {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--hover);
+  color: var(--dim);
+  font-size: 10px;
+}
+.cp-file .ap-fine {
+  margin: 0;
+  padding: 0 10px 8px;
+}
+.cp-hunk {
+  border-top: 1px solid var(--sepLine);
+}
+.cp-hunk-head {
+  display: flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 6px 2px 10px;
+  color: var(--dim);
+  font-size: 11px;
+}
+.cp-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 4px 6px 10px;
+  border: 1px solid var(--amberBorder);
+  border-radius: 6px;
+  background: var(--amberSurface);
+  color: var(--text);
+  font-size: 11.5px;
+}
+.cp-notice > span {
+  flex: 1;
+  min-width: 0;
+}
+.cp-unavailable {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 2px;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.cp-timeline {
+  margin: 12px 0 4px;
+}
+.cp-timeline ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-left: 1px solid var(--sepLine);
+}
+.cp-turn {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 0 2px 14px;
+}
+.cp-turn-dot {
+  position: absolute;
+  left: -4px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--pillBd);
+  border-radius: 50%;
+  background: var(--island);
+}
+.cp-turn[data-state="done"] .cp-turn-dot {
+  background: var(--pill);
+}
+.cp-turn[data-state="capturing"] .cp-turn-dot {
+  border-color: var(--accent);
+}
+.cp-turn-title {
+  font-weight: 500;
+  font-size: 11.5px;
+}
+.cp-turn-meta {
+  color: var(--dim);
+  font-size: 11px;
+}
+.cp-sidebar .cp-head {
+  flex-wrap: wrap;
+}
+.cp-toast-host {
+  top: auto;
+  bottom: 72px;
+}
+.cp-toast {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cp-toast {
+    animation: none;
+  }
+}

@@ -115,6 +115,23 @@ failure this record is written to avoid.
   during it, including edits by the user or another thread in the same
   folder.
 
+### e. Where the user sees it
+
+- Agents page: the Changes tab gets an "All turns | This turn" filter, file
+  rows with +/- counts, per-hunk Revert, Revert file, Revert all and an
+  explicit Open in editor, above the existing proposal review (whose
+  Accept/Reject stays as it was). The thread shows a timeline row per turn
+  ("Checkpoint", turn number, changed file count, View changes, Restore
+  files to before this turn) and an Undo toast after a revert or restore.
+- Editor sidebar: the same changes list and timeline under the feed.
+- States: unavailable (with "Enable checkpoints (git init)"), capturing
+  (turn still running), conflict (hunk no longer applies) and restore
+  failed, each with the backend's reason. A session without checkpoints
+  shows nothing new.
+- Follow agent: the existing toggle (open files from tool call locations
+  without taking focus) is now also in the Agents page thread header, and
+  its state is remembered per device (default off).
+
 ## UNVERIFIED
 
 - No native window pass: the Changes tab filter, turn timeline, confirm

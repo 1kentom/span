@@ -167,6 +167,8 @@ Use a scratch Git repository and an agent that writes files directly
   unavailable and offers "Enable checkpoints"; nothing runs `git init`
   until it is clicked.
 - Delete the thread: `git for-each-ref refs/span` no longer lists its refs.
+- Follow agent: turn it on in the thread header, restart Span, and it is
+  still on; files the agent touches open without taking focus.
 
 ## Phase 6: worktrees, steer or queue, goals, child tree
 
