@@ -5,7 +5,8 @@ import { copyName, creationFolder, join, rangeBetween, renameSelectionEnd, topLe
 import { compactChain } from "./compact-tree";
 import { explorerPreferences } from "./explorer-prefs";
 import { fileName, parentPath } from "./navigation";
-import { desktopTransfer, importSummary, pastedName, sameEntries, type ConflictPolicy, type ExplorerTransfer, type ImportItems, type ImportProgress, type PastedKind } from "./explorer-transfer";
+import { archiveSummary, desktopTransfer, importSummary, pastedName, sameEntries, type ConflictPolicy, type ExplorerTransfer, type ImportItems, type ImportProgress, type PastedKind } from "./explorer-transfer";
+import type { ArchiveCommands, ArchiveReport } from "./archive-desktop";
 import type { DroppedPath } from "./native-drop";
 import { notify } from "../stores/notifications";
 
@@ -45,7 +46,8 @@ export function createExplorerState(w: Workbench, transfer: ExplorerTransfer = d
   const [notice, setNotice] = createSignal("");
   const undoStack: Array<{ label: string; run: () => Promise<void> }> = [];
   /** The import from outside Span that is running, with its latest progress. */
-  const [importing, setImporting] = createSignal<{ folder: string; progress?: ImportProgress }>();
+  const [importing, setImporting] = createSignal<{ folder: string; progress?: ImportProgress; label?: string }>();
+  let archiveJob: string | undefined;
 
   const listing = (folder: string): readonly FileEntry[] | undefined => w.directories[folder];
   const entryOf = (path: string) => listing(parentPath(path))?.find(entry => entry.path === path);
@@ -269,7 +271,55 @@ export function createExplorerState(w: Workbench, transfer: ExplorerTransfer = d
     notify({ level: report.created.length ? "success" : "info", message: importSummary(report, folder), actions: added.length ? [{ label: "Undo", run: () => void undo() }] : [] });
     return report.created.length > 0;
   }
-  async function cancelImport() { try { await transfer.cancel(); } catch (error) { fail(error); } }
+  async function cancelImport() {
+    try { if (archiveJob && transfer.archive) await transfer.archive.cancel(archiveJob); else await transfer.cancel(); }
+    catch (error) { fail(error); }
+  }
+  /**
+   * Extracts a workspace archive into a new folder inside `folder` (ADR 0016): the import clash dialog (Keep both by
+   * default), the same progress strip and Cancel, then a toast with Undo, which moves the new folder to the Trash.
+   */
+  async function extractArchive(path: string, folder: string): Promise<boolean> {
+    const archive = transfer.archive;
+    if (!archive) { setNotice("Extracting archives requires the desktop app."); return false; }
+    if (importing()) { setNotice("Wait for the running copy to finish."); return false; }
+    const source = { kind: "workspace" as const, path };
+    const request = (policy: ConflictPolicy) => ({ targetDir: folder, folderName: null, policy, options: { paths: null, keepStructure: true, skipHidden: false, keepExecutable: false } });
+    let plan: Awaited<ReturnType<ArchiveCommands["plan"]>>;
+    try { plan = await archive.plan(source, request("keepBoth")); } catch (error) { fail(error); return false; }
+    let policy: ConflictPolicy = "keepBoth";
+    if (plan.conflicts.length) {
+      const choice = await new Promise<ImportChoice | undefined>(resolve => setDialog({ kind: "import-conflict", folder, name: plan.conflicts[0], remaining: 0, resolve }));
+      setDialog(undefined);
+      if (!choice) return false;
+      policy = choice.policy;
+    }
+    const name = fileName(path);
+    const label = `Extracting ${name}`;
+    const job = `explorer-${Date.now()}`;
+    archiveJob = job;
+    setImporting({ folder, label });
+    let report: ArchiveReport;
+    try { report = await archive.extract(job, source, request(policy), progress => { if (importing()) setImporting({ folder, label, progress }); }); }
+    catch (error) { fail(error); return false; }
+    finally { archiveJob = undefined; setImporting(undefined); }
+    await archiveExtracted(report, folder, name);
+    return !!report.created;
+  }
+  /** Refreshes the tree after an extraction (Explorer or viewer), selects the new folder and offers Undo. */
+  async function archiveExtracted(report: ArchiveReport, folder: string, name: string) {
+    await w.refreshFiles();
+    if (report.error) w.setError(report.error);
+    const created = report.created ?? undefined;
+    const undoable = created && !report.replaced ? created : undefined;
+    if (undoable) undoPush(`Extract ${name}`, async () => { await w.trashPath(undoable); });
+    if (created) {
+      await ensureExpanded(folder);
+      batch(() => { setSelection([created]); setFocus(created); setAnchor(created); });
+      scrollIntoView(created);
+    }
+    notify({ level: created ? "success" : "info", message: archiveSummary(report, name), actions: undoable ? [{ label: "Undo", run: () => void undo() }] : [] });
+  }
   async function duplicate(path = focus() ?? selection()[0]) {
     if (!path) return;
     const folder = parentPath(path);
@@ -284,6 +334,6 @@ export function createExplorerState(w: Workbench, transfer: ExplorerTransfer = d
   }
   function collapseAll() { for (const path of [...w.expanded()]) if (path !== "") void w.toggleDirectory(path); }
 
-  return { clearClipboard, selectAll, scrollTo, selection, focus, setFocus, anchor, edit, clipboard, dialog, setDialog, templateRequest, setTemplateRequest, notice, setNotice, selectOnly, toggleSelect, selectRange, clearSelection, targets, startCreate, startTemplate, startRename, setEditValue, cancelEdit, commitEdit, setClip, paste, duplicate, trash, transfer: move, importDropped, importItems, importing, cancelImport, undo, reveal, ensureExpanded, collapseAll, creationParent, isDirectory, entryOf, visiblePaths };
+  return { clearClipboard, selectAll, scrollTo, selection, focus, setFocus, anchor, edit, clipboard, dialog, setDialog, templateRequest, setTemplateRequest, notice, setNotice, selectOnly, toggleSelect, selectRange, clearSelection, targets, startCreate, startTemplate, startRename, setEditValue, cancelEdit, commitEdit, setClip, paste, duplicate, trash, transfer: move, importDropped, importItems, importing, cancelImport, extractArchive, archiveExtracted, undo, reveal, ensureExpanded, collapseAll, creationParent, isDirectory, entryOf, visiblePaths };
 }
 export type ExplorerState = ReturnType<typeof createExplorerState>;

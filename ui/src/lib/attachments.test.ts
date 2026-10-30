@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_IMAGE_BYTES } from './asset-preview';
-import { MAX_ATTACHMENT_COUNT, MAX_FILE_BYTES, MAX_TOTAL_ATTACHMENT_BYTES, PASTE_CHIP_MIN_LINES, addAttachments, bytesToBase64, classifyFile, createFileAttachment, createPastedText, createSelection, createWorkspaceFile, createFolderAttachment, dedupeKey, folderMeta, folderOutline, gateAttachments, isInWorkspace, needsStoredLink, pastedTextName, redactPaths, planAttachment, previewText, rejectionReason, shouldChipPastedText, type Attachment, type PromptCapabilities } from './attachments';
+import { MAX_ATTACHMENT_COUNT, MAX_FILE_BYTES, MAX_TOTAL_ATTACHMENT_BYTES, PASTE_CHIP_MIN_LINES, addAttachments, archiveOutline, bytesToBase64, classifyFile, createFileAttachment, createPastedText, createSelection, createWorkspaceFile, createFolderAttachment, dedupeKey, folderMeta, folderOutline, gateAttachments, isInWorkspace, needsStoredLink, pastedTextName, redactPaths, planAttachment, previewText, rejectionReason, shouldChipPastedText, type Attachment, type PromptCapabilities } from './attachments';
 
 const all: PromptCapabilities = { image: true, audio: true, embeddedContext: true };
 const none: PromptCapabilities = { image: false, audio: false, embeddedContext: false };
@@ -191,5 +191,28 @@ describe('uploads store links, folder outlines and redaction (#91)', () => {
     expect(redactPaths('see /w/src/a.ts and /Users/me/notes/plan.md', '/w')).toBe('see ./src/a.ts and \u2026/plan.md');
     expect(redactPaths('open /home/kim/x/y.txt', undefined, '/home/kim')).toBe('open ~/x/y.txt');
     expect(redactPaths('C:\\Users\\kim\\a.txt here')).toBe('\u2026/a.txt here');
+  });
+});
+
+describe('archive outline', () => {
+  const entry = (path: string, size = 10, extra: { dir?: boolean; unsafeReason?: string | null } = {}) => ({ path, dir: false, size, ...extra });
+  it('lists names and sizes only, flags refused entries and never includes contents', () => {
+    const outline = archiveOutline('site.zip', { format: 'ZIP', truncated: false, entries: [entry('docs/', 0, { dir: true }), entry('docs/a.txt', 2048), entry('../x', 4, { unsafeReason: 'parent folder component (..)' })] });
+    expect(outline.files).toBe(2);
+    expect(outline.truncated).toBe(false);
+    expect(outline.text.split('\n')).toEqual([
+      'Archive outline of site.zip (ZIP, 2 files). Listed by Span: the archive was not extracted and no entry was read. Added by Span, not an ACP content type.',
+      '',
+      'docs/',
+      'docs/a.txt (2.0 KiB)',
+      '../x (not extractable: parent folder component (..))',
+    ]);
+  });
+  it('caps the outline and says so', () => {
+    const entries = Array.from({ length: 5 }, (_, i) => entry(`f${i}`));
+    const outline = archiveOutline('many.tar', { format: 'TAR', truncated: false, entries }, 3);
+    expect(outline.truncated).toBe(true);
+    expect(outline.text.split('\n')[0]).toContain('(TAR, 5+ files, first 3 entries)');
+    expect(outline.text.split('\n')).toHaveLength(5);
   });
 });

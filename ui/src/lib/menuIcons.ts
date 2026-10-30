@@ -2,7 +2,7 @@
 export const menuIconAssets = {
   save: "save", discard: "discard", cancel: "cancel", cut: "cut", copy: "copy", duplicate: "copy",
   paste: "paste", path: "copy", file: "file", folder: "folder", trash: "trash", rename: "rename",
-  newFolder: "new-folder", openFolder: "open-folder",
+  newFolder: "new-folder", openFolder: "open-folder", archive: "archive",
   search: "search", keyboard: "keyboard", filter: "filter", reset: "reset",
 } as const;
 /** Owner-chosen rounded outline glyphs, vendored as top-level icons (see public/icons/status-provenance.json). */

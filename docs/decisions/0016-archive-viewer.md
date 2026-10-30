@@ -157,7 +157,28 @@ The commands are renderer only. They are not agent tools and not MCP methods
 archive attached to a chat is listed as a text outline; it is never extracted
 and its contents never enter the model context.
 
-### 7. The older branches are superseded
+### 7. Viewer and Explorer
+
+- The shared viewer lists a workspace archive (or an upload) through these
+  commands without reading the file into the webview, so the 64 MiB browser
+  preview cap does not apply. The outline is virtualised, filterable, and
+  shows each refusal reason.
+- Row actions (context menu, Shift+F10): Preview (inline text or image),
+  Extract here, Extract to... (a folder picker that starts next to the
+  archive and accepts only folders inside the project) and Copy path.
+- The Explorer menu of an archive file has Extract here and Extract to...,
+  reusing the import clash dialog, progress strip, Cancel and Undo (Undo moves
+  the new folder to the Trash).
+- Cancel shows "Cancelling..." until the extractor reports; the result says
+  nothing was extracted. "Open folder when done" is not offered natively.
+- The archive menu icon is `archive/iconsax-archive` from the local rounded
+  linear Iconsax library, vendored with its hashes in
+  `ui/public/icons/rounded-linear/provenance.json`.
+- An archive attached to a chat (Explorer drag or native drop) becomes a text
+  outline built from `archive_list`; a listing failure refuses the
+  attachment instead of reading the file.
+
+### 8. The older branches are superseded
 
 The owner decision between `feature/archive-backend` and
 `feature/archive-extraction` is closed by this ADR: both branches are

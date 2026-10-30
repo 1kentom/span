@@ -1,6 +1,7 @@
 import { Match, Show, Switch, createEffect, createMemo, createSignal, on } from 'solid-js';
 import { MAX_IMAGE_BYTES, MAX_SVG_BYTES, formatAssetBytes, safeRasterSource, sanitizeSvg } from '../../lib/asset-preview';
 import type { UploadExtras } from '../../lib/uploads-api';
+import type { ArchiveApi } from '../../lib/archive-api';
 import {
   FONT_READ_BYTES, MEDIA_MAX_BYTES, TEXT_PREVIEW_BYTES, bytesToDataUrl, classifyFile, decodeTextPreview, formatDuration, isLikelyBinary, lineEnding, mediaMime, modeLabelFor, modeUsesIcons, parseJson,
   rasterMime, splitLines, supportedModes, type ViewerMode,
@@ -51,6 +52,9 @@ export interface ViewerSource {
 
 export interface FileViewerProps {
   name: string;
+  /** Native archive backend (ADR 0016). With it an archive is listed by Rust and its bytes are not needed. */
+  archiveApi?: ArchiveApi;
+  onCopyArchivePath?: (path: string) => void;
   mime?: string;
   /** Byte size. Falls back to the loaded content length. */
   size?: number;
@@ -143,6 +147,7 @@ export function FileViewer(props: FileViewerProps) {
     const { kind, reason, label } = classification();
     if (asBinary()) return data ? { t: 'hex', bytes: data, binary: false } : { t: 'damaged', text: 'File data is not available.' };
     const office = officeKindOf(props.name, props.mime);
+    if (office === 'archive' && props.archiveApi) return { t: 'office', kind: office, bytes: data ?? new Uint8Array() };
     if (office) {
       const limit = OFFICE_PREVIEW_BYTES[office];
       if (Math.max(size(), data?.byteLength ?? 0) > limit) return { t: 'too-large', text: `${officeLabels[office]} preview is limited to ${formatAssetBytes(limit)}.`, canShow: false };
@@ -311,7 +316,7 @@ export function FileViewer(props: FileViewerProps) {
             <Show when={v().error || mode() === 'source'} fallback={<JsonView value={v().value} name={props.name} />}><TextView text={v().text} name={props.name} /></Show>
           </>; })()}</Match>
         <Match when={view().t === 'office'}>{(() => { const v = () => view() as { kind: OfficeKind; bytes: Uint8Array };
-          return <OfficeView kind={v().kind} name={props.name} bytes={v().bytes} onMeta={setOfficeMeta} onOpenWithSystem={props.onOpenWithSystem ? () => void run('Open with system app', props.onOpenWithSystem!) : undefined} />; })()}</Match>
+          return <OfficeView kind={v().kind} name={props.name} bytes={v().bytes} archiveApi={props.archiveApi} onCopyPath={props.onCopyArchivePath} onMeta={setOfficeMeta} onOpenWithSystem={props.onOpenWithSystem ? () => void run('Open with system app', props.onOpenWithSystem!) : undefined} />; })()}</Match>
         <Match when={view().t === 'hex'}>{(() => { const v = () => view() as { bytes: Uint8Array; binary: boolean };
           return <>
             <HexView bytes={v().bytes} name={props.name} />

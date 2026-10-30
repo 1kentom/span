@@ -3,7 +3,7 @@ import { extensionOf } from '../file-extension';
 
 export type OfficeKind = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'archive';
 
-const byExt: Record<string, OfficeKind> = { docx: 'docx', pptx: 'pptx', xlsx: 'xlsx', xlsm: 'xlsx', pdf: 'pdf', zip: 'archive', tar: 'archive', tgz: 'archive', gz: 'archive' };
+const byExt: Record<string, OfficeKind> = { docx: 'docx', pptx: 'pptx', xlsx: 'xlsx', xlsm: 'xlsx', pdf: 'pdf', zip: 'archive', tar: 'archive', tgz: 'archive', gz: 'archive', jar: 'archive', war: 'archive', apk: 'archive', whl: 'archive', vsix: 'archive' };
 const byMime: Record<string, OfficeKind> = {
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',

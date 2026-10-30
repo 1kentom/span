@@ -36,8 +36,10 @@ import {
 } from "./agent-session";
 
 import { buildPrompt, coerceAnswer, formFields, leaf, promptCapabilities, saveName, splitCommandLine, toolImages, toolLocations, workspaceRelative } from "./agent-view";
-import { FOLDER_OUTLINE_LIMIT, bytesToBase64, classifyFile, createFileAttachment, createFolderAttachment, createWorkspaceFile, folderOutline, isInWorkspace, isTextLike, maxBytesFor, needsStoredLink, planAttachment, redactPaths, resolveMime, type Attachment, type PromptCapabilities } from "./attachments";
+import { FOLDER_OUTLINE_LIMIT, archiveOutline, bytesToBase64, classifyFile, createFileAttachment, createFolderAttachment, createWorkspaceFile, folderOutline, isInWorkspace, isTextLike, maxBytesFor, needsStoredLink, planAttachment, redactPaths, resolveMime, type Attachment, type PromptCapabilities } from "./attachments";
 import { droppedPathInfo, droppedRelative, readDroppedFile } from "./native-drop";
+import { desktopArchiveCommands, type ArchiveRef } from "./archive-desktop";
+import { officeKindOf } from "./office/kind";
 import { uploadOrigin, type UploadRecorder } from "./uploads-desktop";
 import { feedTurns } from "./agent-handoff";
 import { moveItem } from "./agent-queue";
@@ -2059,6 +2061,11 @@ export function createAgentController(props: AgentPanelProps) {
         else items.push(createFolderAttachment({ name: info.name, text: `${info.name}/ (folder outside the open project)\nPath: ${info.path}`, files: 0, truncated: false, path: info.path, source: "dropped" }));
         continue;
       }
+      // An archive is listed natively as an outline; it is never read into the prompt or extracted.
+      if (officeKindOf(info.name) === "archive") {
+        await attachArchive(relative !== undefined ? { kind: "workspace", path: relative } : { kind: "dropped", path: info.path }, info.name, relative ?? info.path, relative !== undefined ? "workspace-file" : "dropped");
+        continue;
+      }
       const mime = resolveMime(info.name, "");
       const limit = maxBytesFor(classifyFile(info.name, mime), mime);
       if (info.size > limit) {
@@ -2094,6 +2101,10 @@ export function createAgentController(props: AgentPanelProps) {
         await attachWorkspaceFolder(relative);
         continue;
       }
+      if (isDesktop && officeKindOf(leaf(relative)) === "archive") {
+        await attachArchive({ kind: "workspace", path: relative }, leaf(relative), relative, "workspace-file");
+        continue;
+      }
       const item = createWorkspaceFile(relative);
       if (isTextLike(item.name, item.mime)) {
         try {
@@ -2108,6 +2119,15 @@ export function createAgentController(props: AgentPanelProps) {
     }
     if (items.length) intake.addItems(items);
     focusPrompt();
+  }
+  /** An archive as a text outline of its entries (ADR 0016). Nothing inside it is read or extracted. */
+  async function attachArchive(source: ArchiveRef, name: string, path: string, origin: "workspace-file" | "dropped") {
+    try {
+      const outline = archiveOutline(name, await desktopArchiveCommands.list(source));
+      intake.addItems([createFolderAttachment({ name, text: outline.text, files: outline.files, truncated: outline.truncated, path, source: origin })]);
+    } catch (cause) {
+      intake.reject([{ name, reason: `Could not list the archive: ${errorText(cause)}` }]);
+    }
   }
   /** A workspace folder ("" is the root) as a bounded outline plus a link to the folder. */
   async function attachWorkspaceFolder(relative: string) {
