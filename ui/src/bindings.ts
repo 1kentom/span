@@ -658,7 +658,12 @@ meta?: Value | null; internal?: boolean | null } | { kind: "permissionResolved";
  *  modes this session can run in; `child` is true for a delegated child,
  *  which can never be looser than Ask.
  */
-{ kind: "permissionMode"; sessionId: string; mode: ThreadPermissionMode; supported: ThreadPermissionMode[]; child: boolean } |
+{ kind: "permissionMode"; sessionId: string; mode: ThreadPermissionMode; supported: ThreadPermissionMode[]; child: boolean;
+/**
+ *  Agent option ids the mode sets (the agent's mode option, Codex's
+ *  collaboration mode). The UI shows the Span modes in their place.
+ */
+managed: string[] } |
 /**
  *  Span answered a permission request itself under the thread's mode,
  *  without prompting (ADR 0015): `rejected` in Plan mode, `allowed` in
@@ -743,7 +748,12 @@ meta?: Value; internal?: boolean } | { kind: "permissionResolved"; sessionId: st
  *  modes this session can run in; `child` is true for a delegated child,
  *  which can never be looser than Ask.
  */
-{ kind: "permissionMode"; sessionId: string; mode: ThreadPermissionMode; supported: ThreadPermissionMode[]; child: boolean } |
+{ kind: "permissionMode"; sessionId: string; mode: ThreadPermissionMode; supported: ThreadPermissionMode[]; child: boolean;
+/**
+ *  Agent option ids the mode sets (the agent's mode option, Codex's
+ *  collaboration mode). The UI shows the Span modes in their place.
+ */
+managed: string[] } |
 /**
  *  Span answered a permission request itself under the thread's mode,
  *  without prompting (ADR 0015): `rejected` in Plan mode, `allowed` in

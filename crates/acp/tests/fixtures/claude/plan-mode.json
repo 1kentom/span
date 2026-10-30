@@ -25,7 +25,10 @@
         "auto",
         "full"
       ],
-      "child": false
+      "child": false,
+      "managed": [
+        "mode"
+      ]
     },
     {
       "kind": "_step",

@@ -16,7 +16,11 @@
   "events": [
     {
       "kind": "permissionMode",
-      "mode": "ask"
+      "mode": "ask",
+      "managed": [
+        "mode",
+        "collaboration_mode"
+      ]
     },
     {
       "kind": "_step",

@@ -547,6 +547,9 @@ pub enum AgentEvent {
         mode: span_core::ThreadPermissionMode,
         supported: Vec<span_core::ThreadPermissionMode>,
         child: bool,
+        /// Agent option ids the mode sets (the agent's mode option, Codex's
+        /// collaboration mode). The UI shows the Span modes in their place.
+        managed: Vec<String>,
     },
     /// Span answered a permission request itself under the thread's mode,
     /// without prompting (ADR 0015): `rejected` in Plan mode, `allowed` in

@@ -601,11 +601,21 @@ impl Adapter {
         } else {
             self.available_modes(options)
         };
+        let managed = if self.kind == AgentKind::Generic {
+            Vec::new()
+        } else {
+            options
+                .iter()
+                .filter(|o| is_mode_option(o) || o.id == "collaboration_mode")
+                .map(|o| o.id.clone())
+                .collect()
+        };
         AgentEvent::PermissionMode {
             session_id: session.to_owned(),
             mode,
             supported,
             child,
+            managed,
         }
     }
 

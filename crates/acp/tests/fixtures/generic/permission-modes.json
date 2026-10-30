@@ -27,7 +27,8 @@
         "acceptEdits",
         "auto",
         "full"
-      ]
+      ],
+      "managed": []
     },
     {
       "kind": "_step",
