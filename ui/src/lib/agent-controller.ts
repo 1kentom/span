@@ -1516,7 +1516,8 @@ export function createAgentController(props: AgentPanelProps) {
     // A Send now picked here waits for this chat's turn boundary, which the chat leaves: it must not lock the order.
     pick(undefined);
     if (!state().sessionId || !connectionKey()) return;
-    updateThread((chat) => toBackground({ ...chat, scrollTop: scrollers.content?.scrollTop, touchedAt: Date.now() }));
+    const position = follow.position();
+    updateThread((chat) => toBackground({ ...chat, scrollTop: position?.top, scrollAnchor: position, touchedAt: Date.now() }));
   }
   /** Shows another chat by focusing its thread. The chat left stays in the background, unless it is transient or `discard`. */
   function focusThread(next: Thread, options: { discard?: boolean } = {}) {
@@ -1554,8 +1555,8 @@ export function createAgentController(props: AgentPanelProps) {
       queueSending: undefined,
       touchedAt: Date.now(),
     }));
-    const top = full && stored && !stored.pinned ? stored.scrollTop : undefined;
-    if (top !== undefined) requestAnimationFrame(() => scrollers.content?.scrollTo({ top }));
+    const saved = full && stored && !stored.pinned ? (stored.scrollAnchor ?? (stored.scrollTop !== undefined ? { top: stored.scrollTop } : undefined)) : undefined;
+    if (saved) follow.restore(saved);
     return { thread, stored };
   }
   /**
@@ -1602,7 +1603,9 @@ export function createAgentController(props: AgentPanelProps) {
       if (threads.get(left.key) === left) {
         focusThread(left);
         left.update((chat) => ({ ...chat, conversation: { ...withConversation(fields, chat.conversation), sessionId: previousId } }));
-        if (!left.state().pinned && left.state().scrollTop !== undefined) requestAnimationFrame(() => scrollers.content?.scrollTo({ top: left.state().scrollTop }));
+        const back = left.state();
+        const saved = back.scrollAnchor ?? (back.scrollTop !== undefined ? { top: back.scrollTop } : undefined);
+        if (!back.pinned && saved) follow.restore(saved);
       } else {
         showChat(previousId, false);
       }
