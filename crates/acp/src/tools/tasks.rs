@@ -3,7 +3,7 @@
 //! with its own id. Tasks of one child run in order, matching the manager's
 //! one-prompt-per-session queue.
 use super::budget::{Budget, Meter};
-use super::result::{FailureReason, UsageReport};
+use super::result::{Deliverables, FailureReason, UsageReport};
 use crate::{AgentEvent, SessionEvent, SessionKey};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -114,6 +114,8 @@ pub struct Task {
     /// Milliseconds since the Unix epoch.
     pub started_at_ms: u64,
     pub finished_at_ms: Option<u64>,
+    /// What the lead expects back, for the task a delegation started with.
+    pub deliverables: Option<Deliverables>,
     last_progress: Option<String>,
     /// The user cancelled this task. Its terminal state is then always
     /// `failed` with reason `cancelled`, whatever the child reports later.
@@ -141,6 +143,9 @@ struct Delegation {
     generation: u64,
     /// Span ended the child after it sat idle: `message` is refused.
     closed: bool,
+    /// Delegated with `onApproval: "fail"`: a permission request or edit
+    /// review stops the running turn instead of waiting for the user.
+    fail_on_approval: bool,
 }
 
 /// Why a child was closed while idle, as the lead reads it.
@@ -216,8 +221,24 @@ impl Registry {
                 last_finished: None,
                 generation: 0,
                 closed: false,
+                fail_on_approval: false,
             },
         );
+    }
+
+    /// `onApproval: "fail"` for this child: Span stops its turn when it asks
+    /// for a permission or an edit review, and never answers the request.
+    pub fn fail_on_approval(&self, key: &SessionKey) {
+        if let Some(delegation) = self.inner().delegations.get_mut(key) {
+            delegation.fail_on_approval = true;
+        }
+    }
+
+    /// Record what the lead expects back from a task.
+    pub fn set_deliverables(&self, task_id: &str, deliverables: Deliverables) {
+        if let Some(task) = self.inner().tasks.get_mut(task_id) {
+            task.deliverables = Some(deliverables);
+        }
     }
 
     /// Register the next prompt for a child. Refused when the turn budget
@@ -271,6 +292,7 @@ impl Registry {
                 changed: Vec::new(),
                 started_at_ms: now_ms(),
                 finished_at_ms: None,
+                deliverables: None,
                 last_progress: None,
                 user_cancelled: false,
                 permission_rejected: false,
@@ -325,6 +347,9 @@ impl Registry {
         let mut breach = None;
         let mut touched = true;
         let mut late_usage = false;
+        // A request the user must answer, under `onApproval: "fail"`.
+        let mut approval_stop: Option<String> = None;
+        let has_running = running.is_some();
         match (&event.event, running) {
             (AgentEvent::Text { text, .. }, Some(task)) => {
                 append(&mut task.text, text);
@@ -349,6 +374,7 @@ impl Registry {
             }
             (AgentEvent::Permission { title, .. }, task) => {
                 delegation.waiting_for_user += 1;
+                approval_stop = Some(format!("a permission request ({title})"));
                 if let Some(task) = task {
                     task.activity =
                         format!("waiting for the user to answer a permission request: {title}");
@@ -370,6 +396,7 @@ impl Registry {
                     .proposals
                     .insert(proposal.id.clone(), proposal.path.clone());
                 delegation.waiting_for_user += 1;
+                approval_stop = Some(format!("an edit review of {}", proposal.path));
                 if let Some(task) = task {
                     task.activity = format!(
                         "waiting for the user to review an edit to {}",
@@ -445,6 +472,16 @@ impl Registry {
                 }
             }
             _ => touched = false,
+        }
+        if let Some(what) = approval_stop {
+            if delegation.fail_on_approval && has_running && delegation.stop_override.is_none() {
+                let detail = format!(
+                    "the child raised {what} and this task was delegated with onApproval fail, so Span stopped its turn without answering the request; delegate again with onApproval ask_user to let the user decide"
+                );
+                delegation.stop_override =
+                    Some((FailureReason::PermissionRequired, detail.clone()));
+                breach = Some((key.clone(), FailureReason::PermissionRequired, detail));
+            }
         }
         if late_usage && delegation.queue.is_empty() {
             // The last turn already ended: refresh its quiet overrun note,

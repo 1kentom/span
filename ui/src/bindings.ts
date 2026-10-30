@@ -1602,7 +1602,11 @@ export type DelegationEvent_Deserialize =
  *  Display name of the model the child runs, when the agent
  *  reported one (the lead's `model` choice, else the agent default).
  */
-model?: string | null } |
+model?: string | null;
+/**  What the lead expects back (ADR 0014 `deliverables`). */
+deliverables?: Deliverables_Deserialize | null;
+/**  The `delegate_many` group the task belongs to. */
+groupId?: string | null } |
 /**  A task finished, successfully or not. */
 { kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason?: FailureReason | null } |
 /**
@@ -1656,7 +1660,11 @@ export type DelegationEvent_Serialize =
  *  Display name of the model the child runs, when the agent
  *  reported one (the lead's `model` choice, else the agent default).
  */
-model?: string } |
+model?: string;
+/**  What the lead expects back (ADR 0014 `deliverables`). */
+deliverables?: Deliverables_Serialize;
+/**  The `delegate_many` group the task belongs to. */
+groupId?: string } |
 /**  A task finished, successfully or not. */
 { kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason: FailureReason | null } |
 /**
@@ -1765,7 +1773,10 @@ export type DelegationTask_Deserialize = {
 	agentName: string,
 	/**  Display name of the model the child runs, when the agent reported one. */
 	model?: string | null,
-	/**  `queued`, `running`, `completed` or `failed`. */
+	/**
+	 *  `queued`, `running`, `completed`, `failed` or `lost` (the child
+	 *  session is gone, ADR 0014).
+	 */
 	status: string,
 	stopReason?: string | null,
 	reason?: FailureReason | null,
@@ -1788,6 +1799,8 @@ export type DelegationTask_Deserialize = {
 	 *  only set when the agent reports it.
 	 */
 	budgetUsed: UsageReport_Deserialize,
+	/**  What the lead expects back (ADR 0014 `deliverables`). */
+	deliverables?: Deliverables_Deserialize | null,
 };
 
 /**  One delegated task, for listing. */
@@ -1798,7 +1811,10 @@ export type DelegationTask_Serialize = {
 	agentName: string,
 	/**  Display name of the model the child runs, when the agent reported one. */
 	model?: string,
-	/**  `queued`, `running`, `completed` or `failed`. */
+	/**
+	 *  `queued`, `running`, `completed`, `failed` or `lost` (the child
+	 *  session is gone, ADR 0014).
+	 */
 	status: string,
 	stopReason: string | null,
 	reason: FailureReason | null,
@@ -1821,6 +1837,8 @@ export type DelegationTask_Serialize = {
 	 *  only set when the agent reports it.
 	 */
 	budgetUsed: UsageReport_Serialize,
+	/**  What the lead expects back (ADR 0014 `deliverables`). */
+	deliverables?: Deliverables_Serialize,
 };
 
 /**
@@ -1848,6 +1866,37 @@ export type DelegationTranscript_Deserialize = {
 export type DelegationTranscript_Serialize = {
 	task: DelegationTask_Serialize,
 	text: string,
+};
+
+/**
+ *  What a lead expects back from a delegated task (ADR 0014): files the
+ *  child should create or update and the shape of its summary. Shown on the
+ *  delegation card and appended to the child's task text.
+ */
+export type Deliverables = Deliverables_Serialize | Deliverables_Deserialize;
+
+/**
+ *  What a lead expects back from a delegated task (ADR 0014): files the
+ *  child should create or update and the shape of its summary. Shown on the
+ *  delegation card and appended to the child's task text.
+ */
+export type Deliverables_Deserialize = {
+	/**  Workspace relative paths, forward slashes. */
+	files: string[],
+	/**  `summary`, `diff` or `json`. */
+	format?: string | null,
+};
+
+/**
+ *  What a lead expects back from a delegated task (ADR 0014): files the
+ *  child should create or update and the shape of its summary. Shown on the
+ *  delegation card and appended to the child's task text.
+ */
+export type Deliverables_Serialize = {
+	/**  Workspace relative paths, forward slashes. */
+	files: string[],
+	/**  `summary`, `diff` or `json`. */
+	format: string | null,
 };
 
 export type DetectedRunTask = DetectedRunTask_Serialize | DetectedRunTask_Deserialize;
@@ -2065,7 +2114,22 @@ export type ExternalFilesUpdate_Serialize = {
 };
 
 /**  Why a delegation failed. Closed set: the lead can branch on it. */
-export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout";
+export type FailureReason = "auth_required" | "permission_rejected" | "refused" | "cancelled" | "output_limit" | "agent_unavailable" | "depth_exceeded" | "budget_exceeded" | "timeout" |
+/**
+ *  The child session is gone (its agent exited, the session ended, or
+ *  Span restarted) while the task was queued or running (ADR 0014).
+ */
+"lost" |
+/**
+ *  The task was delegated with `onApproval: "fail"` and the child raised
+ *  a permission request or an edit review: Span cancelled its turn and
+ *  never answered the request (ADR 0014).
+ */
+"permission_required" |
+/**  The agent has no mode the child may run in for this request. */
+"mode_unavailable" |
+/**  `workspace: "worktree"` was asked for; worktrees are not available yet. */
+"worktree_unavailable";
 
 /**  What a file holds, as far as the editor is concerned. */
 export type FileContentKind = "text" | "binary" | "missing" | "directory";

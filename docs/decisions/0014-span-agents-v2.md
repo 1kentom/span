@@ -1,7 +1,7 @@
 # 0014: span-agents v2, an orchestration MCP server
 
-Status: proposed for the owner, 2026-10-30. Planning only: no code ships
-with this record. Builds on 0001 (session manager), 0003 (span-agents tool
+Status: accepted, 2026-10-30. Stages 1 and 2 are implemented (see the
+implementation note at the end); stages 3 to 7 are planned. Builds on 0001 (session manager), 0003 (span-agents tool
 server and its amendments, including the delegate model choice in
 progress), 0005 (session metadata), 0011 (agent mode), 0012 (usage page)
 and 0013 (turn checkpoints).
@@ -296,3 +296,36 @@ results and one `lost` task.
   which have an adapter-enforceable plan mode, is unknown.
 - MCP tasks primitive support in agent clients was not checked.
 - None of this design has run; sizes are estimates.
+
+## Implementation note, 2026-10-30
+
+Stage 1 shipped in `crates/acp/src/tools` (fixture tests in
+`crates/acp/tests/tool_server.rs`):
+
+- `delegate` accepts `context` (`files` as resource links inside the
+  workspace, at most 20; `notes` at most 20,000 characters, about 5,000
+  tokens, framed in the child's task as `<lead-context>` from the lead and
+  never the user, with the closing tag defused), `deliverables` (`files` at
+  most 20, `format` summary, diff or json; appended to the child's task,
+  shown on the delegation card, existing files returned as resource links
+  and missing ones as `deliverables.missing` on completion), `workspace`
+  (`worktree` fails with `worktree_unavailable`), `onApproval`
+  (`ask_user` default, `fail`; `auto` is -32602) and `clientRequestId`
+  (at most 256 characters; a repeat with the same arguments, even while the
+  first call runs, returns the same task with `retried: true`; the same id
+  with other arguments is -32602; a first call that created nothing is
+  forgotten so a corrected retry runs).
+- `onApproval: "fail"`: a permission request or edit review from the child
+  makes Span cancel the turn (the pending request resolves as cancelled,
+  no option is selected) and the task fails with `permission_required`.
+- New closed reasons: `lost`, `permission_required`, `mode_unavailable`,
+  `worktree_unavailable`. `delegate` results add `applied {model, effort,
+  workspace}`, `onApproval` and `deliverables`; every delegation tool
+  declares an `outputSchema`.
+
+Deviations from this record in stage 1: `context.handoff` is in the schema
+but refused with -32602 until the transcript store exists (stage 4 needs
+it); `effort` keeps the free string and the `effort_unavailable` error
+from the delegate model choice change instead of `applied.effort: null`;
+the run tools (a separate feature) did not gain output schemas.
+
