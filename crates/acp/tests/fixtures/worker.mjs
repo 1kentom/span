@@ -17,6 +17,8 @@
 //   created             answer with the number of sessions created with session/new so far
 //   health-prompts      answer with the JSON list of session ids that received a health check prompt
 //   forget              forget every other session: prompting one fails with "Session not found"
+//   requests            answer with the JSON list of session/new, session/set_config_option and
+//                       session/prompt requests so far, as "method sessionId [configId=value]"
 // Flags: --name=<n>, --mcp-http, --mcp-sse, --image, --reject-session (session/new fails),
 //   --auth-required (session/new answers -32000 Authentication required),
 //   --close, --delete, --list (advertise and answer session/close, session/delete, session/list;
@@ -25,7 +27,9 @@
 //   --permission-health (ask for permission before answering it), --keep-closed (closed and
 //   deleted sessions stay listed, as real agents keep them), --seed-health=<n> (list <n>
 //   health sessions of an earlier run, titled "Health check. Reply with exactly one word..."),
-//   --seed-chats (list user chats whose titles nearly match the health check prompt).
+//   --seed-chats (list user chats whose titles nearly match the health check prompt),
+//   --models (session/new lists model, mode and effort config options; session/set_config_option
+//   changes them and answers with the full list).
 import readline from 'node:readline';
 const input = readline.createInterface({ input: process.stdin });
 const flag = name => process.argv.includes(name);
@@ -42,6 +46,14 @@ const ended = [];
 let prompts = 0;
 const forgotten = new Set();
 const healthPrompts = [];
+const requests = [];
+const configs = new Map();
+const MODELS = [['fast-1', 'Fast One'], ['claude-haiku-4-5', 'Claude Haiku 4.5'], ['deep-2', 'Deep Two']];
+const configOptions = c => [
+  { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: c.model, options: MODELS.map(([value, name]) => ({ value, name })) },
+  { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: c.mode, options: [{ value: 'default', name: 'Ask' }, { value: 'acceptEdits', name: 'Accept edits' }, { value: 'plan', name: 'Plan' }, { value: 'bypassPermissions', name: 'Bypass permissions' }] },
+  { id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: c.effort, options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
+];
 const seedHealth = Number(process.argv.find(arg => arg.startsWith('--seed-health='))?.slice(14) ?? 0);
 for (let i = 1; i <= seedHealth; i++) titles.set(`old-health-${i}`, 'Health check. Reply with exactly one word...');
 if (flag('--seed-chats')) {
@@ -108,6 +120,7 @@ async function prompt(message) {
     for (const known of titles.keys()) if (known !== sessionId) forgotten.add(known);
     say(sessionId, 'forgot'); return finish(sessionId, id, 'end_turn');
   }
+  if (first === 'requests') { say(sessionId, JSON.stringify(requests)); return finish(sessionId, id, 'end_turn'); }
   if (first === 'prompts') { say(sessionId, String(prompts)); return finish(sessionId, id, 'end_turn'); }
   if (first.startsWith('mcp ')) return lead(sessionId, id, first);
   if (first === 'wait') return;
@@ -194,7 +207,17 @@ input.on('line', line => {
     const sessionId = `${agentName}-${++sessions}`;
     servers.set(sessionId, message.params.mcpServers ?? null);
     titles.set(sessionId, '');
-    send({ id: message.id, result: { sessionId } });
+    requests.push(`session/new ${sessionId}`);
+    if (!flag('--models')) return send({ id: message.id, result: { sessionId } });
+    configs.set(sessionId, { model: 'fast-1', mode: 'default', effort: 'low' });
+    send({ id: message.id, result: { sessionId, configOptions: configOptions(configs.get(sessionId)) } });
+  } else if (message.method === 'session/set_config_option' && flag('--models')) {
+    const { sessionId, configId, value } = message.params;
+    requests.push(`session/set_config_option ${sessionId} ${configId}=${value}`);
+    const config = configs.get(sessionId);
+    if (!config || !(configId in config)) return send({ id: message.id, error: { code: -32602, message: 'Unknown config option' } });
+    config[configId] = value;
+    send({ id: message.id, result: { configOptions: configOptions(config) } });
   } else if (message.method === 'session/close' || (message.method === 'session/delete' && flag('--delete'))) {
     ended.push(message.params.sessionId);
     forgotten.add(message.params.sessionId);
@@ -204,6 +227,7 @@ input.on('line', line => {
     const listed = [...titles.keys()].map(sessionId => ({ sessionId, cwd, title: titles.get(sessionId) || null }));
     send({ id: message.id, result: { sessions: listed } });
   } else if (message.method === 'session/prompt') {
+    requests.push(`session/prompt ${message.params.sessionId}`);
     prompt(message).catch(error => { console.error(error); process.exit(9); });
   } else if (message.method === 'session/cancel') {
     const sessionId = message.params.sessionId;
