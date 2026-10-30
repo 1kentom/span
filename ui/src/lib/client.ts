@@ -926,7 +926,7 @@ export async function usageSessions(range: import('../bindings').UsageRange_Dese
   return isDesktop ? commands.usageSessions(range) : [];
 }
 
-/** Starts a background scan of Claude Code's and Codex's local logs when `agents.usage.importLocalLogs` is on (ADR 0012). Returns at once. */
+/** Starts a background scan of the agents' local usage logs when `agents.usage.importLocalLogs` is on (the default, ADR 0012). Returns at once. */
 export async function usageImportScan(): Promise<import('../bindings').UsageImportStatus_Serialize | undefined> {
   return isDesktop ? commands.usageImportScan() : undefined;
 }
