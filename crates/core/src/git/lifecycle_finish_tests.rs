@@ -36,6 +36,7 @@ async fn selected_first_push_sets_explicit_upstream_and_refuses_stale_review() {
     git(&local, &["init", "-b", "main"]);
     git(&local, &["commit", "--allow-empty", "-m", "initial"]);
     git(&remote, &["init", "--bare"]);
+    // A verbatim Windows path would read as an scp-style SSH host.
     let remote_source = git_path(&remote);
     git(
         &local,

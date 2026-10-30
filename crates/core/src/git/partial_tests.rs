@@ -224,6 +224,7 @@ async fn literal_paths_and_diff_prefixes_cannot_stage_another_file() {
         "café.txt",
         "author's file.txt",
         "[glob].txt",
+        "(glob)[ab]",
         "--option",
     ];
     #[cfg(unix)]
