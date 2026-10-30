@@ -59,6 +59,16 @@ seen) or not checked.
   for a model OpenCode does not offer: the lead retries with a listed id,
   no extra card appears and no stray OpenCode session is left in History.
 
+- Parallel delegation (ADR 0014 stages 1 and 2): with OpenCode, Claude
+  and Codex installed, ask a lead to "run these three tasks in parallel
+  with OpenCode, Claude and Codex" (three small read-only tasks). The lead
+  calls `delegate_many` once, not three `delegate` calls, then `wait`. Three
+  delegation cards appear, each showing "Batch n of 3 done" as tasks
+  finish, and the Agents tab lists the three children. Ask one child to
+  edit a file: its card reads "Needs you" and the lead's `wait` returns
+  early instead of hanging; the user answers in the dock. No agent CLI runs
+  in the lead's shell.
+
 ## Phase 1: backend multi-session
 
 Mostly invisible; check that nothing regressed.

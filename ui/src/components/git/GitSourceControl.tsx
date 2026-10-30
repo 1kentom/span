@@ -23,8 +23,8 @@ export function GitSourceControl(props: GitSourceControlProps) {
   const g = props.git;
   const v = props.view;
   const [toolsOpen, setToolsOpen] = createSignal(false);
-  let tools!: HTMLDetailsElement;
-  let toolsSummary!: HTMLElement;
+  let tools!: HTMLDivElement;
+  let toolsButton!: HTMLButtonElement;
   createEffect(on(() => g.context()?.repository?.id, () => setToolsOpen(false)));
   createEffect(() => { if (!props.active || !g.context()?.enabled) setToolsOpen(false); });
   createEffect(() => {
@@ -52,10 +52,10 @@ export function GitSourceControl(props: GitSourceControlProps) {
   return (
     <section class="git-source-control" tabIndex={-1} aria-label="Git source control">
       <GitRepositoryHeader git={g} available={props.available} onRefresh={refresh} tools={<Show when={g.context()?.enabled}>
-        <details ref={tools} class="git-repo-tools" open={toolsOpen()} onToggle={event => setToolsOpen(event.currentTarget.open)} onKeyDown={event => { if (event.key === "Escape" && toolsOpen()) { event.preventDefault(); event.stopPropagation(); setToolsOpen(false); toolsSummary?.focus(); } }}>
-          <summary ref={toolsSummary} aria-label="Repository actions" title="Repository actions" aria-expanded={toolsOpen()} aria-controls="git-repository-actions" onClick={event => { event.preventDefault(); setToolsOpen(value => !value); }}><Icon name="3DotsMore" size={14} /></summary>
-          <div id="git-repository-actions" class="git-repo-tools-body" role="group" aria-label="Repository actions"><GitRemotes git={g} /></div>
-        </details>
+        <div ref={tools} class="git-repo-tools" data-open={toolsOpen() ? "true" : "false"} onKeyDown={event => { if (event.key === "Escape" && toolsOpen()) { event.preventDefault(); event.stopPropagation(); setToolsOpen(false); toolsButton?.focus(); } }}>
+          <button ref={toolsButton} type="button" class="git-repo-tools-trigger" aria-label="Repository actions" title="Repository actions" aria-expanded={toolsOpen()} aria-controls="git-repository-actions" onClick={() => setToolsOpen(value => !value)}><Icon name="3DotsMore" size={14} /></button>
+          <div id="git-repository-actions" class="git-repo-tools-body" hidden={!toolsOpen()} role="group" aria-label="Repository actions"><GitRemotes git={g} /></div>
+        </div>
       </Show>} />
       <div ref={list} class="git-subview-switch" role="tablist" aria-label="Source control view" onKeyDown={keydown}>
         <For each={subViews}>{item => (

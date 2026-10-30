@@ -983,6 +983,8 @@ mod tests {
             vec![Path::new(".git/index"), Path::new("visible.java")],
             vec![Path::new("visible.java"), Path::new(".git/index")],
         ] {
+            // A single-path directionless rename is settled by existence, so the
+            // generic kind is what still reaches the unsupported branch.
             let result = watched_batch(&root, &[event(EventKind::Any, &paths)], false);
             assert!(result.changes.is_empty());
             assert!(result.incomplete, "{paths:?}");
@@ -1005,7 +1007,6 @@ mod tests {
             .add_path(root.join(".git/index"));
         for (batch, overflow) in [
             (vec![Ok(excluded.clone())], true),
-            (vec![Ok(excluded.clone().set_flag(Flag::Rescan))], false),
             (
                 vec![
                     Ok(excluded.clone()),
@@ -1018,8 +1019,22 @@ mod tests {
             assert!(result.changes.is_empty());
             assert!(result.incomplete);
         }
-        let oversized = (0..MAX_INPUT).fold(excluded, |event, _| {
+        // A rescan is a global loss signal even when its endpoint is excluded.
+        let result = watched_batch(&root, &[Ok(excluded.clone().set_flag(Flag::Rescan))], false);
+        assert!(result.changes.is_empty());
+        assert!(result.incomplete);
+        // Raw endpoint limits also apply to ignored and excluded paths.
+        let oversized_excluded = (0..MAX_INPUT).fold(excluded, |event, _| {
             event.add_path(root.join(".git/index.lock"))
+        });
+        let result = watched_batch(&root, &[Ok(oversized_excluded)], false);
+        assert!(result.changes.is_empty());
+        assert!(result.incomplete);
+        fs::write(root.join(".ignore"), "*.ignored\n").unwrap();
+        let ignored = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any)))
+            .add_path(root.join("first.ignored"));
+        let oversized = (0..MAX_INPUT).fold(ignored, |event, index| {
+            event.add_path(root.join(format!("{index}.ignored")))
         });
         let result = watched_batch(&root, &[Ok(oversized)], false);
         assert!(result.changes.is_empty());

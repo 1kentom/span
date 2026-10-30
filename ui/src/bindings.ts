@@ -254,6 +254,12 @@ export const commands = {
 	 *  last scan's outcome.
 	 */
 	usageImportStatus: () => __TAURI_INVOKE<UsageImportStatus_Serialize>("usage_import_status"),
+	/**
+	 *  Claude Code's five-hour usage blocks (ccusage rules) from its local logs,
+	 *  oldest first, over the last `days` days (at most 90). Empty when the
+	 *  importer is off.
+	 */
+	usageBlocks: (days: number) => __TAURI_INVOKE<UsageBlock_Serialize[]>("usage_blocks", { days }),
 	agentRegistry: () => __TAURI_INVOKE<RegistryAgent_Serialize[]>("agent_registry"),
 	agentInstalled: () => __TAURI_INVOKE<InstalledAgent_Serialize[]>("agent_installed"),
 	agentInstall: (id: string) => __TAURI_INVOKE<InstalledAgent_Serialize>("agent_install", { id }),
@@ -1874,6 +1880,13 @@ export type DelegationTask_Deserialize = {
 	 *  only set when the agent reports it.
 	 */
 	budgetUsed: UsageReport_Deserialize,
+	/**  The `delegate_many` group that started the task. */
+	groupId?: string | null,
+	/**
+	 *  The child waits for the user to answer a permission, a question or
+	 *  an edit review.
+	 */
+	waitingForUser?: boolean,
 	/**  What the lead expects back (ADR 0014 `deliverables`). */
 	deliverables?: Deliverables_Deserialize | null,
 };
@@ -1912,6 +1925,13 @@ export type DelegationTask_Serialize = {
 	 *  only set when the agent reports it.
 	 */
 	budgetUsed: UsageReport_Serialize,
+	/**  The `delegate_many` group that started the task. */
+	groupId?: string,
+	/**
+	 *  The child waits for the user to answer a permission, a question or
+	 *  an edit review.
+	 */
+	waitingForUser: boolean,
 	/**  What the lead expects back (ADR 0014 `deliverables`). */
 	deliverables?: Deliverables_Serialize,
 };
@@ -4213,10 +4233,12 @@ export type ScanReport = {
 	skipped: number,
 	/**  True when a cap stopped the file listing early. */
 	truncated: boolean,
-	/**  Compressed files read (gzip rollouts). */
+	/**  Compressed files read (gzip and zstd rollouts). */
 	compressedRead: number,
-	/**  Compressed files found but not read (`.zst`: no zstd decoder). */
+	/**  Compressed files skipped because they decode past the size cap. */
 	compressedSkipped: number,
+	/**  OpenCode databases read. */
+	databasesRead: number,
 	/**  Kinds that had at least one log file, in a fixed order. */
 	kinds: ImportKind[],
 	/**  Plain notes about sources found but not read. */
@@ -5438,6 +5460,55 @@ export type Upload_Serialize = {
 	createdMs: number,
 	/**  True when the blob file is gone from the store. Computed on list. */
 	missing: boolean,
+};
+
+/**
+ *  One Claude Code five-hour usage block, by ccusage's rules: a block starts
+ *  at the hour of the first message after the previous block ended and lasts
+ *  five hours. Read from Claude Code's local logs at hour resolution.
+ */
+export type UsageBlock = UsageBlock_Serialize | UsageBlock_Deserialize;
+
+/**
+ *  One Claude Code five-hour usage block, by ccusage's rules: a block starts
+ *  at the hour of the first message after the previous block ended and lasts
+ *  five hours. Read from Claude Code's local logs at hour resolution.
+ */
+export type UsageBlock_Deserialize = {
+	/**  Unix milliseconds of the block's first hour. */
+	startMs: number,
+	/**  Unix milliseconds the block ends (start plus five hours). */
+	endMs: number,
+	/**  Unix milliseconds of the start of the last hour with a message. */
+	lastMs: number,
+	/**  The block has not ended yet. */
+	active: boolean,
+	turns: number,
+	tokens: TokenCounts_Deserialize,
+	cost: UsageCost,
+	/**  Models used in the block, largest first. */
+	models: string[],
+};
+
+/**
+ *  One Claude Code five-hour usage block, by ccusage's rules: a block starts
+ *  at the hour of the first message after the previous block ended and lasts
+ *  five hours. Read from Claude Code's local logs at hour resolution.
+ */
+export type UsageBlock_Serialize = {
+	/**  Unix milliseconds of the block's first hour. */
+	startMs: number,
+	/**  Unix milliseconds the block ends (start plus five hours). */
+	endMs: number,
+	/**  Unix milliseconds of the start of the last hour with a message. */
+	lastMs: number,
+	/**  The block has not ended yet. */
+	active: boolean,
+	turns: number,
+	tokens: TokenCounts_Serialize,
+	cost: UsageCost,
+	/**  Models used in the block, largest first. */
+	models: string[],
 };
 
 /**  What one model did on one day of a session. Zero means not reported. */

@@ -65,7 +65,7 @@ export type DiffLine = { kind: "add" | "del" | "ctx"; n?: number; text: string }
 export type TermLine = { kind: "cmd" | "out" | "err"; text: string };
 export type SearchMatch = { loc: string; text: string };
 export type StepDetail =
-  | { type: "terminal"; lines: TermLine[]; cwd?: string; exitCode?: number | null; running?: boolean }
+  | { type: "terminal"; lines: TermLine[]; cwd?: string; exitCode?: number | null; running?: boolean; /** Output lines left out before `lines`. */ hidden?: number; /** Every output line, read again from the event on demand. */ full?: () => TermLine[] }
   | { type: "diff"; path: string; lines: DiffLine[]; onOpen?: () => void }
   | { type: "matches"; matches: SearchMatch[] };
 export type StepImage = { id: string; name: string; mime: string; src: string; onOpen?: () => void };

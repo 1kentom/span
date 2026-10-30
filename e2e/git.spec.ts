@@ -921,7 +921,9 @@ async function openGitDetails(panel: Locator, selector: string) {
   await expect(details).toHaveAttribute("open", "");
 }
 async function openRepositoryActions(panel: Locator) {
-  await openGitDetails(panel, ".git-repo-tools");
+  const trigger = panel.getByRole("button", { name: "Repository actions", exact: true });
+  if (await trigger.getAttribute("aria-expanded") !== "true") await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
   await expect(panel.getByRole("group", { name: "Repository actions", exact: true })).toBeVisible();
 }
 
@@ -952,7 +954,7 @@ for (const width of [230, 348, 500]) {
     await expect(panel.locator(".git-repo-identity > strong")).toHaveText("span-infrastructure-editor-workspace-with-long-name");
     await expect(panel.locator(".git-repo-branch")).toContainText("feature/source-control-sidebar-redesign-with-long-branch-name");
     await expect(panel.locator(".git-remote-actions")).toHaveCount(0);
-    await expect(panel.locator(".git-repo-tools")).not.toHaveAttribute("open", "");
+    await expect(panel.getByRole("button", { name: "Repository actions", exact: true })).toHaveAttribute("aria-expanded", "false");
     const message = panel.getByRole("textbox", { name: "Git commit message", exact: true });
     expect((await message.boundingBox())!.height).toBe(64);
     const commit = panel.getByRole("button", { name: "Commit 2 staged files", exact: true });
@@ -996,7 +998,7 @@ for (const width of [230, 348, 500]) {
     await sidebarScreenshot(page, `sidebar-${width}-long-paths-dark`);
     expect(await panel.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
     const panelBox = (await panel.boundingBox())!;
-    for (const control of [panel.getByRole("button", { name: "Refresh Git", exact: true }), panel.locator(".git-repo-tools > summary")]) {
+    for (const control of [panel.getByRole("button", { name: "Refresh Git", exact: true }), panel.getByRole("button", { name: "Repository actions", exact: true })]) {
       const box = (await control.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(panelBox.x); expect(box.x + box.width).toBeLessThanOrEqual(panelBox.x + panelBox.width + 1);
     }
@@ -1025,20 +1027,20 @@ test("repository actions keyboard and outside dismissal preserve commit, remote 
   await panel.getByRole("button", { name: "Enable Git", exact: true }).click();
   const message = panel.getByRole("textbox", { name: "Git commit message", exact: true });
   await message.fill("Preserve the sidebar commit draft");
-  const summary = panel.locator(".git-repo-tools > summary");
-  await summary.focus(); await summary.press("Enter");
-  await expect(summary).toHaveAttribute("aria-expanded", "true");
+  const trigger = panel.getByRole("button", { name: "Repository actions", exact: true });
+  await trigger.focus(); await trigger.press("Enter");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
   await openGitDetails(panel, ".git-network-actions");
   const target = panel.getByLabel("Remote branch (pull or push)", { exact: true });
   await target.fill("preserved-remote-target");
   await target.press("Escape");
-  await expect(summary).toHaveAttribute("aria-expanded", "false"); await expect(summary).toBeFocused();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false"); await expect(trigger).toBeFocused();
   await expect(message).toHaveValue("Preserve the sidebar commit draft");
-  await summary.press("Space");
-  await expect(summary).toHaveAttribute("aria-expanded", "true");
+  await trigger.press("Space");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
   await expect(target).toHaveValue("preserved-remote-target");
   await editor.click({ position: { x: 700, y: 300 } });
-  await expect(summary).toHaveAttribute("aria-expanded", "false"); await expect(editor).toBeFocused();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false"); await expect(editor).toBeFocused();
   await expect(message).toHaveValue("Preserve the sidebar commit draft");
   await expect(editor).toContainText("sidebar menu keeps unsaved editor text");
   const row = panel.getByRole("button", { name: "Review working changes in project/src/file.ts", exact: true });

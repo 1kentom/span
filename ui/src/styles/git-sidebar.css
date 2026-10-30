@@ -19,9 +19,9 @@
 .git-repo-path { margin-top: 8px; color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
 .git-repo-unconfirmed .git-note { padding: 8px 0; }
 .git-repo-tools { flex: none; }
-.git-repo-tools > summary { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: var(--dim); cursor: pointer; list-style: none; }
-.git-repo-tools > summary::-webkit-details-marker { display: none; }
-.git-repo-tools > summary:hover, .git-repo-tools[open] > summary { color: var(--text); background: var(--hover); }
+.git-repo-tools > button { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: var(--dim); cursor: pointer; list-style: none; }
+.git-repo-tools > button:hover, .git-repo-tools > button[aria-expanded="true"] { color: var(--text); background: var(--hover); }
+.git-repo-tools-body[hidden] { display: none; }
 .git-repo-tools-body { position: absolute; z-index: 30; right: 0; top: calc(100% + 8px); width: min(320px, 100%); box-sizing: border-box; max-height: min(70dvh, 620px); overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--popup, var(--canvas)); box-shadow: var(--shadow); }
 .git-subview-switch { display: flex; align-items: stretch; flex: none; height: 30px; gap: 0; padding: 0 8px; border-bottom: 1px solid var(--border); }
 .git-subview-switch button { display: flex; align-items: center; justify-content: center; flex: 1 1 0; min-width: 0; gap: 4px; height: 30px; padding: 0 6px; border-bottom: 2px solid transparent; color: var(--dim); font-size: 11px; white-space: nowrap; }
@@ -30,7 +30,7 @@
 .git-subview-switch button[aria-selected="true"] { flex: 0 0 auto; color: var(--text); border-bottom-color: var(--accent); font-weight: 500; }
 .git-subview-switch button[aria-selected="true"] .git-subview-label { display: inline; }
 .git-subview-switch button:hover { color: var(--text); background: var(--hover); }
-.git-subview-switch button:focus-visible, .git-repo-tools > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+.git-subview-switch button:focus-visible, .git-repo-tools > button:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 .git-remote-actions { display: flex; flex: none; gap: 8px; padding: 4px 12px; color: var(--dim); font-size: 11px; }
 .git-commit-box { display: flex; flex: none; flex-direction: column; gap: 4px; padding: 12px; border-bottom: 1px solid var(--border); }
 .git-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }

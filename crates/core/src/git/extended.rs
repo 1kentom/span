@@ -636,6 +636,35 @@ impl GitService {
         }) {
             return Err(error("Select an existing unlocked linked worktree"));
         }
+        // Git's own cleanliness check skips ignored files, so `worktree remove`
+        // would silently delete them (local secrets, databases, build output).
+        let ignored = self
+            .run_at(
+                &target,
+                vec![
+                    "-C".into(),
+                    git_path(&target),
+                    "status".into(),
+                    "--porcelain=v1".into(),
+                    "-z".into(),
+                    "--ignored=matching".into(),
+                    "--untracked-files=normal".into(),
+                ],
+                vec![],
+                None,
+                &token,
+            )
+            .await?;
+        require_success(&ignored)?;
+        if ignored
+            .stdout
+            .split(|byte| *byte == 0)
+            .any(|entry| entry.starts_with(b"!! "))
+        {
+            return Err(error(
+                "This worktree contains ignored files that removal would delete. Move them aside before removing it.",
+            ));
+        }
         self.operation_result(
             &repo,
             vec![

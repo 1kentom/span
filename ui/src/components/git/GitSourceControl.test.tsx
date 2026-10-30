@@ -32,32 +32,46 @@ const tabs = (host: HTMLElement) => [...host.querySelectorAll<HTMLButtonElement>
 const radio = (host: HTMLElement, name: string) => [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(node => node.textContent?.trim() === name)!;
 
 describe("Git source control view", () => {
-  it("closes Repository actions on Escape and restores summary focus", async () => {
+  it("keeps the explicit Repository actions popup stable across queued native toggle events", async () => {
     const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes");
     f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
-    const summary = f.host.querySelector<HTMLElement>('summary[aria-label="Repository actions"]')!;
-    const details = summary.parentElement as HTMLDetailsElement;
-    expect(details.open).toBe(false); summary.click(); expect(details.open).toBe(true);
+    const trigger = f.host.querySelector<HTMLButtonElement>('button[aria-label="Repository actions"]')!;
+    const popup = f.host.querySelector<HTMLElement>("#git-repository-actions")!;
+    expect(trigger.type).toBe("button"); expect(trigger.getAttribute("aria-controls")).toBe(popup.id);
+    expect(popup.hidden).toBe(true); trigger.click();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true"); expect(popup.hidden).toBe(false);
+    popup.parentElement!.dispatchEvent(new Event("toggle"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(popup.hidden).toBe(false); expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    trigger.click(); expect(popup.hidden).toBe(true); expect(popup.isConnected).toBe(true);
+    expect(trigger.closest("details")).toBeNull();
+  });
+  it("closes Repository actions on Escape and restores trigger focus", async () => {
+    const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes");
+    f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
+    const summary = f.host.querySelector<HTMLButtonElement>('button[aria-label="Repository actions"]')!;
+    const popup = f.host.querySelector<HTMLElement>("#git-repository-actions")!;
+    expect(popup.hidden).toBe(true); summary.click(); expect(popup.hidden).toBe(false);
     const field = f.host.querySelector<HTMLInputElement>("#git-network-branch")!; field.focus();
     const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     field.dispatchEvent(escape);
-    expect(escape.defaultPrevented).toBe(true); expect(details.open).toBe(false);
+    expect(escape.defaultPrevented).toBe(true); expect(popup.hidden).toBe(true);
     expect(summary.getAttribute("aria-expanded")).toBe("false"); expect(document.activeElement).toBe(summary);
   });
   it("closes Repository actions on outside pointer without stealing focus", async () => {
     const f = fixture(); await f.git.refresh();
     f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
-    const summary = f.host.querySelector<HTMLElement>('summary[aria-label="Repository actions"]')!;
-    summary.click(); expect((summary.parentElement as HTMLDetailsElement).open).toBe(true);
+    const summary = f.host.querySelector<HTMLButtonElement>('button[aria-label="Repository actions"]')!;
+    summary.click(); expect(f.host.querySelector<HTMLElement>("#git-repository-actions")!.hidden).toBe(false);
     const outside = f.host.querySelector<HTMLTextAreaElement>('[aria-label="Git commit message"]')!;
     outside.focus(); outside.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    expect((summary.parentElement as HTMLDetailsElement).open).toBe(false);
+    expect(f.host.querySelector<HTMLElement>("#git-repository-actions")!.hidden).toBe(true);
     expect(document.activeElement).toBe(outside);
   });
   it("retains network and commit drafts across Repository actions toggles without starting network operations", async () => {
     const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes"); f.git.setMessage("Keep commit draft");
     f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
-    const summary = f.host.querySelector<HTMLElement>('summary[aria-label="Repository actions"]')!;
+    const summary = f.host.querySelector<HTMLButtonElement>('button[aria-label="Repository actions"]')!;
     const reads = f.transport.gitRemotes.mock.calls.length;
     summary.click();
     const field = f.host.querySelector<HTMLInputElement>("#git-network-branch")!;

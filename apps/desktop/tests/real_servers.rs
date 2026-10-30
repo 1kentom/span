@@ -150,6 +150,8 @@ impl Fetch for CountingFetch {
 // ---------------------------------------------------------------------------
 
 /// Every process as `(pid, ppid, state)`, excluding the native lister.
+/// Unix state is the `ps` stat column. Windows has no zombies, so its
+/// state is always `R` and reaping is checked by absence.
 #[cfg(unix)]
 fn process_table() -> Vec<(u32, u32, String)> {
     let out = Command::new("ps")

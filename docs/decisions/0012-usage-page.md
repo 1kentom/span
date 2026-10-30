@@ -339,6 +339,79 @@ transcripts as soon as its Usage page opens.
   recording service, OpenCode's message schema), and the tests use
   generated samples only.
 
+### g. Amendment (2026-10-30): OpenCode database, zstd rollouts, blocks
+
+The owner wants Span to read all local usage, like T3 Code, and allowed new
+dependencies for it. Two were added to `crates/core`, both building without
+a system library:
+
+- `rusqlite` 0.40.2 with the `bundled` feature (SQLite compiled from source
+  by the CI runners' C compiler; `libsqlite3-sys` 0.38.2).
+- `ruzstd` 0.9.1, a pure Rust streaming zstd decoder (no C build).
+
+OpenCode database (`crates/core/src/usage_import_opencode.rs`):
+
+- Found as `opencode*.db` in OpenCode's data folder
+  (`$XDG_DATA_HOME/opencode`, else `~/.local/share/opencode` on every
+  platform, Windows included, since OpenCode resolves it with
+  `xdg-basedir`; `OPENCODE_DATA_DIR` is honoured as before).
+- Layout verified in github.com/anomalyco/opencode: releases 1.2 to 1.19
+  have `message(id, session_id, time_created, time_updated, data)` in
+  `packages/opencode/src/session/session.sql.ts` (later
+  `packages/core/src/session/sql.ts`). `data` holds the assistant message
+  info: `role`, `modelID`, `providerID`, `cost`, `time.created` and
+  `tokens.{input, output, reasoning, cache.{read, write}}`. Text lives in the
+  `part` table, which is never read. Newer schemas also keep per-session
+  totals (`tokens_input`, `tokens_output`, `tokens_reasoning`,
+  `tokens_cache_read`, `tokens_cache_write`, `cost`, `model`,
+  `time_updated` on `session` or `session_v2`); those are used, one entry
+  per session, when no `message` table exists.
+- Strictly read only. Without a live write-ahead log the file is opened with
+  `SQLITE_OPEN_READ_ONLY` and `file:...?mode=ro&immutable=1`, so SQLite
+  takes no lock and creates no journal. OpenCode runs in WAL mode; when its
+  `-wal` file is not empty, the `-wal` and then the database are copied into
+  a fresh folder under the profile's `usage-import/tmp`, read there, and the
+  folder is removed after the scan.
+- Counters only: SQLite's `json_extract` returns the numeric fields and the
+  model id from `data`, so no message JSON reaches Span. Queries are paged
+  (2,000 rows) and capped (2,000,000 rows). A scan reopens the database only
+  when its or its log's size or time changed, and then rereads only sessions
+  with a message newer than the stored `time_updated` watermark. Deleted
+  sessions drop out.
+- A database in neither layout adds the row "OpenCode database format not
+  recognised (version X)" (X from `PRAGMA user_version`, else the number of
+  applied migrations) instead of failing the scan.
+- Sessions the database holds replace the same session ids read from the
+  older JSON message files, so nothing counts twice. Cache read and write
+  and reasoning tokens are kept (reasoning is billed as output).
+
+Codex `.zst` rollouts are decoded as a stream, every frame, with the decoded
+size capped at 256 MiB per file. A larger file is skipped and listed ("larger
+than 256 MB once decompressed"); a corrupt one keeps the complete lines
+decoded before the damage, or is skipped. The same `session_meta`,
+`turn_context` and `token_count` rules apply. When one session has a plain
+and a compressed rollout (gzip or zstd), the plain copy counts and the
+compressed copies give way; among compressed copies only, the one with the
+most turns counts. The cache format is now version 3, so the first scan
+after upgrading reads everything again.
+
+Quick wins also done:
+
+- While the Usage page is open and the window is visible, it rescans every
+  60 seconds. The scan is incremental, so unchanged files are not read.
+- A "Blocks" chart mode lists Claude Code's five-hour blocks (ccusage rules:
+  a block starts at the hour of the first message after the previous block
+  ended and lasts five hours), newest first, with tokens, estimated cost and
+  the time left in an open block. Hour resolution, Claude Code logs only.
+- The one-time notice is a compact left-aligned row (icon, text with the
+  Settings link, dismiss on the right) on the tiles' surface and radius.
+
+Still not read: an `OPENCODE_DB` override path, OpenCode schemas newer than
+the two layouts above (they show the "not recognised" row), and file
+watching (the page polls instead). Unverified: no real `opencode.db` or
+Codex `.zst` was available; tests build SQLite databases (rollback and live
+WAL) and zstd files in the test itself. Not run in the native window.
+
 ## Consequences
 
 - Tracked usage history starts when stage A ships. Earlier Claude Code and

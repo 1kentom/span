@@ -1,9 +1,10 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { SessionUsageRow_Serialize as SessionUsageRow, UsageImportStatus_Serialize as ImportStatus, UsageRange_Deserialize as UsageRange, UsageSummary_Serialize as UsageSummary } from "../../bindings";
+import type { UsageBlock_Serialize as UsageBlock, SessionUsageRow_Serialize as SessionUsageRow, UsageImportStatus_Serialize as ImportStatus, UsageRange_Deserialize as UsageRange, UsageSummary_Serialize as UsageSummary } from "../../bindings";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { ModelIcon } from "../agent/ModelPopover";
 import { UsageChart, UsageChartTable, UsageShare, seriesVar, type ChartMetric, type SeriesInfo } from "./UsageChart";
+import { UsageBlocks } from "./UsageBlocks";
 import { ModelList, Panel, ProviderList, SessionTable, SourceList, brandId, type ProviderRow } from "./UsageTables";
 import { RANGES, SOURCES, assignSlots, chartColumns, compactTokens, costShort, costText, sumCosts, csvFileName, deltaText, fullNumber, money, percentChange, previousRangeFor, providerKey, providerName, rangeFor, relativeTime, shareText, sparkline, sumTotals, usageCsv, type RangeKey, type SourceKey } from "../../lib/usage";
 import "../../styles/usage.css";
@@ -14,9 +15,13 @@ export type UsageApi = {
   /** The local log importer (ADR 0012, source B). */
   importScan?: () => Promise<ImportStatus | undefined>;
   importStatus?: () => Promise<ImportStatus | undefined>;
+  /** Claude Code's five-hour blocks from its local logs over the last `days` days. */
+  blocks?: (days: number) => Promise<UsageBlock[]>;
 };
 
 const NOTICE_KEY = "span.usage.importNotice.v1";
+/** Background rescan interval while the page is open and visible. */
+export const RESCAN_MS = 60_000;
 const KIND_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", openCode: "OpenCode" };
 /** Series slots for the by-model view: the five largest models in view, the rest folded into Other. */
 const MODEL_SLOTS = 5;
@@ -51,7 +56,8 @@ export function UsagePage(props: {
   const [importState, setImportState] = createSignal<ImportStatus>();
   const [importBusy, setImportBusy] = createSignal(false);
   const [metric, setMetric] = createSignal<ChartMetric>("tokens");
-  const [groupBy, setGroupBy] = createSignal<"agent" | "model">("agent");
+  const [groupBy, setGroupBy] = createSignal<"agent" | "model" | "blocks">("agent");
+  const [blocks, setBlocks] = createSignal<UsageBlock[]>([]);
   const [notice, setNotice] = createSignal(false);
   const [showTable, setShowTable] = createSignal(false);
   const [data, setData] = createSignal<Loaded>();
@@ -76,6 +82,11 @@ export function UsagePage(props: {
       const before = previousRangeFor(range(), new Date(), effectiveSource());
       const [summary, sessions, previous] = await Promise.all([props.api.summary(target), props.api.sessions(target), before ? props.api.summary(before).catch(() => undefined) : Promise.resolve(undefined)]);
       if (id === request) { setData({ summary, sessions, previous, at: Date.now() }); setNow(Date.now()); }
+      if (id === request && props.api.blocks && props.importEnabled) {
+        const days = RANGES.find((entry) => entry.key === range())?.days ?? 90;
+        const list = await props.api.blocks(Math.min(90, days)).catch(() => []);
+        if (id === request) setBlocks(list);
+      }
     } catch (cause) {
       if (id === request) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -97,13 +108,17 @@ export function UsagePage(props: {
       setImportState((current) => ({ enabled: true, running: false, report: current?.report ?? null, scannedMs: current?.scannedMs ?? null, error: cause instanceof Error ? cause.message : String(cause) }));
     }
   }
-  createEffect(on(() => props.importEnabled, (enabled) => { if (enabled) void followImport(true); else { clearTimeout(poll); setImportState(undefined); setSource("all"); } }));
+  createEffect(on(() => props.importEnabled, (enabled) => { if (enabled) void followImport(true); else { clearTimeout(poll); setImportState(undefined); setSource("all"); if (groupBy() === "blocks") setGroupBy("agent"); } }));
+  const blocksOn = () => Boolean(props.api.blocks && props.importEnabled);
   onCleanup(() => clearTimeout(poll));
   async function toggleImport(enabled: boolean) {
     if (!props.onImportChange) return;
     setImportBusy(true);
     try { await props.onImportChange(enabled); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setImportBusy(false); }
   }
+  // While the page is open and the window visible, rescan every minute (incremental: unchanged files are not read).
+  const rescan = setInterval(() => { if (document.visibilityState === "visible" && props.importEnabled && !importState()?.running) void followImport(true); }, RESCAN_MS);
+  onCleanup(() => clearInterval(rescan));
   const refresh = () => { if (props.importEnabled && props.api.importScan) void followImport(true); else void load(); };
   // A one-time quiet notice that the local logs are read (ADR 0012 amendment): shown on the first visit only.
   createEffect(on(() => Boolean(props.importEnabled && props.desktop), (shown) => {
@@ -234,11 +249,11 @@ export function UsagePage(props: {
               <button type="button" class="usage-icon-button" aria-label="Close usage" title="Close (Escape)" onClick={() => props.onClose()}><span class="cross" /></button>
             </div>
             <Show when={notice()}>
-              <p class="usage-notice" role="note">
+              <div class="usage-notice" role="note">
                 <Icon name="InfoCircle" size={13} />
                 <span class="usage-notice-text">Reading local usage from Claude Code, Codex, Gemini CLI and OpenCode logs. Turn off in <Show when={props.onOpenSettings} fallback="Settings">{(open) => <button type="button" class="usage-link" onClick={() => open()()}>Settings</button>}</Show>.</span>
                 <button type="button" class="usage-icon-button small" aria-label="Dismiss" title="Dismiss" onClick={() => setNotice(false)}><span class="cross" /></button>
-              </p>
+              </div>
             </Show>
             <Show when={scanning()}>
               <div class="usage-progress" role="progressbar" aria-label="Scanning local logs" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress()}><i style={{ width: `${Math.max(3, progress())}%` }} /></div>
@@ -307,17 +322,19 @@ export function UsagePage(props: {
                     <span class="usage-tile-foot"><Show when={topModel()}>{(model) => <>{shareText(model().totals.tokens.total, totalTokens())} of tokens · {fullNumber(models().length)} {models().length === 1 ? "model" : "models"}</>}</Show></span>
                   </div>
                 </div>
-                <Panel title={metric() === "tokens" ? "Tokens over time" : "Estimated cost over time"} class="usage-chart-panel" actions={<>
+                <Panel title={groupBy() === "blocks" ? "Claude Code five-hour blocks" : metric() === "tokens" ? "Tokens over time" : "Estimated cost over time"} class="usage-chart-panel" actions={<>
                   <div class="usage-segmented small" role="group" aria-label="Group chart by">
                     <button type="button" aria-pressed={groupBy() === "agent"} onClick={() => setGroupBy("agent")}>By agent</button>
                     <button type="button" aria-pressed={groupBy() === "model"} onClick={() => setGroupBy("model")}>By model</button>
+                    <Show when={blocksOn()}><button type="button" aria-pressed={groupBy() === "blocks"} title="Claude Code's five-hour usage blocks" onClick={() => setGroupBy("blocks")}>Blocks</button></Show>
                   </div>
                   <div class="usage-segmented small" role="group" aria-label="Chart measure">
                     <button type="button" aria-pressed={metric() === "tokens"} onClick={() => setMetric("tokens")}>Tokens</button>
                     <button type="button" aria-pressed={metric() === "cost"} onClick={() => setMetric("cost")}>Cost</button>
                   </div>
-                  <button type="button" class="usage-text-button" aria-pressed={showTable()} onClick={() => setShowTable(!showTable())}>{showTable() ? "Chart" : "Table"}</button>
+                  <Show when={groupBy() !== "blocks"}><button type="button" class="usage-text-button" aria-pressed={showTable()} onClick={() => setShowTable(!showTable())}>{showTable() ? "Chart" : "Table"}</button></Show>
                 </>}>
+                  <Show when={groupBy() === "blocks"} fallback={<>
                   <div class="usage-legend" aria-label="Legend">
                     <For each={legendRows()}>{(row) => <span><i style={{ background: seriesVar(row.slot) }} />{row.name}<b>{metric() === "tokens" ? compactTokens(row.tokens) : costShort(row.cost).text}</b></span>}</For>
                     <Show when={view().chart.weekly}><span class="usage-legend-note">Weekly totals</span></Show>
@@ -327,6 +344,7 @@ export function UsagePage(props: {
                     <Match when={view().chart.columns.length === 1 ? view().chart.columns[0] : undefined}>{(column) => <UsageShare column={column()} series={view().series} metric={metric()} />}</Match>
                     <Match when={true}><UsageChart columns={view().chart.columns} series={view().series} metric={metric()} weekly={view().chart.weekly} /></Match>
                   </Switch>
+                  </>}><UsageBlocks blocks={blocks()} metric={metric()} now={now()} /></Show>
                 </Panel>
                 <div class="usage-split">
                   <ModelList rows={models()} totalTokens={totalTokens()} agentName={agentName} />
@@ -344,9 +362,9 @@ export function UsagePage(props: {
                     <p>Dollar figures are API-equivalent estimates at list prices, not your subscription bill: Claude and ChatGPT plans have usage limits, not per-token charges. Where an agent reported its own cost, that figure is used.</p>
                     <Show when={summary()?.prices}>{(prices) => <p>Prices as of {prices().asOf} from the <For each={prices().sources}>{(entry, index) => <>{index() > 0 ? (index() === prices().sources.length - 1 ? " and " : ", ") : ""}<a href={entry.url} target="_blank" rel="noreferrer noopener" onClick={(event) => openExternal(event, entry.url)}>{entry.provider}</a></>}</For> pricing pages, standard tier. Set your own in <code>agents.usage.prices</code>.</p>}</Show>
                     <Show when={props.importEnabled && importState()?.report}>{(report) => <>
-                      <p>Local logs: read only, counters only, nothing uploaded. {report().kinds.length ? `Found ${report().kinds.map((kind) => KIND_NAMES[kind] ?? kind).join(", ")} logs` : "No agent logs found"}, {fullNumber(report().filesTotal)} files{report().compressedRead ? `, ${fullNumber(report().compressedRead)} compressed` : ""}. Messages repeated across files (resumed sessions, subagents) count once.</p>
+                      <p>Local logs: read only, counters only, nothing uploaded. {report().kinds.length ? `Found ${report().kinds.map((kind) => KIND_NAMES[kind] ?? kind).join(", ")} logs` : "No agent logs found"}, {fullNumber(report().filesTotal)} files{report().compressedRead ? `, ${fullNumber(report().compressedRead)} compressed` : ""}{report().databasesRead ? `, ${fullNumber(report().databasesRead)} OpenCode ${report().databasesRead === 1 ? "database" : "databases"}` : ""}. Messages repeated across files (resumed sessions, subagents) count once.</p>
                       <ul class="usage-skips">
-                        <Show when={report().compressedSkipped > 0}><li><Icon name="Warning2" size={12} />{fullNumber(report().compressedSkipped)} compressed Codex {report().compressedSkipped === 1 ? "log" : "logs"} (.zst) skipped: Span has no zstd reader yet.</li></Show>
+                        <Show when={report().compressedSkipped > 0}><li><Icon name="Warning2" size={12} />{fullNumber(report().compressedSkipped)} compressed Codex {report().compressedSkipped === 1 ? "log" : "logs"} skipped: larger than 256 MB once decompressed.</li></Show>
                         <Show when={report().skipped > 0}><li><Icon name="Warning2" size={12} />{fullNumber(report().skipped)} {report().skipped === 1 ? "file" : "files"} skipped for a size cap or a read error.</li></Show>
                         <Show when={report().truncated}><li><Icon name="Warning2" size={12} />The file cap was reached, so the oldest logs may be missing.</li></Show>
                         <For each={report().notes}>{(note) => <li><Icon name="Warning2" size={12} />{note}</li>}</For>
