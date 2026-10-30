@@ -841,6 +841,17 @@ async fn expanded_mutations_switch_stash_and_manage_real_worktrees_without_force
         .is_err());
     assert!(target.join("tracked.txt").exists());
     git(&target, &["restore", "--", "tracked.txt"]);
+    // Ignored files pass Git's own cleanliness check, so removal must refuse.
+    fs::create_dir_all(fixture.root.join(".git/info")).unwrap();
+    fs::write(fixture.root.join(".git/info/exclude"), ".env\n").unwrap();
+    fs::write(target.join(".env"), "secret\n").unwrap();
+    let refused = service
+        .worktree_remove(&id, target.to_str().unwrap(), token())
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("ignored files"), "{refused}");
+    assert_eq!(fs::read_to_string(target.join(".env")).unwrap(), "secret\n");
+    fs::remove_file(target.join(".env")).unwrap();
     service
         .worktree_remove(&id, target.to_str().unwrap(), token())
         .await
