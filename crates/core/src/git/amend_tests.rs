@@ -9,6 +9,7 @@ use tempfile::TempDir;
 struct Fixture {
     _temp: TempDir,
     root: PathBuf,
+    #[cfg_attr(not(unix), allow(dead_code))]
     hooks: PathBuf,
 }
 
