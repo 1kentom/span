@@ -1003,14 +1003,56 @@ pub fn install_plan(id: ServerId, platform: Platform) -> Result<InstallPlan, Cat
 // Launch
 // ---------------------------------------------------------------------------
 
+/// Drops the Windows verbatim prefix that `fs::canonicalize` adds:
+/// `\\?\C:\x` becomes `C:\x` and `\\?\UNC\host\share\x` becomes `\\host\share\x`.
+/// Other verbatim forms (volume GUIDs, devices) have no plain spelling and are
+/// returned unchanged, as is any text without the prefix.
+pub fn strip_verbatim_prefix(text: &str) -> String {
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return rest.to_string();
+        }
+    }
+    text.to_string()
+}
+
+/// Spelling of `path` handed to a child process (as its program or an argument).
+///
+/// On Windows every separator becomes `\` and the verbatim prefix is dropped. A
+/// verbatim path disables Win32 normalisation, so the `/` separators of a relative
+/// catalog entry joined onto a canonicalized cache directory become literal file
+/// name characters: Node then cannot find the script, exits at once and the client
+/// sees `Unexpected EOF` before `initialize` returns. Other platforms are unchanged.
+pub fn process_path_text(path: &Path, os: Os) -> String {
+    let text = path.to_string_lossy();
+    if os != Os::Windows {
+        return text.into_owned();
+    }
+    strip_verbatim_prefix(&text.replace('/', "\\"))
+}
+
+/// Joins a `/`-separated catalog entry onto `base` and spells it for a child
+/// process on `os` (see [`process_path_text`]).
+pub fn process_entry_path(base: &Path, entry: &str, os: Os) -> String {
+    process_path_text(&base.join(entry), os)
+}
+
+/// `node <script> --stdio`, with the script passed straight to Node (never a
+/// `.cmd` shim or a shell) in a spelling Node can resolve on every platform.
 fn node_launch(ctx: &LaunchContext, entry: &str) -> LaunchSpec {
+    let os = ctx.platform.os;
     LaunchSpec {
         program: ctx
             .runtime_program
-            .clone()
+            .as_deref()
+            .map(|p| PathBuf::from(process_path_text(p, os)))
             .unwrap_or_else(|| PathBuf::from("node")),
         args: vec![
-            ctx.install_dir.join(entry).to_string_lossy().into_owned(),
+            process_entry_path(&ctx.install_dir, entry, os),
             "--stdio".to_string(),
         ],
         env: Vec::new(),
@@ -1482,6 +1524,87 @@ mod tests {
         );
         let css = launch_spec(ServerId::Css, &ctx).unwrap();
         assert!(css.args[0].ends_with("bin/vscode-css-language-server"));
+    }
+
+    #[test]
+    fn verbatim_prefix_is_dropped_only_where_a_plain_spelling_exists() {
+        assert_eq!(strip_verbatim_prefix(r"\\?\C:\cache\v"), r"C:\cache\v");
+        assert_eq!(strip_verbatim_prefix(r"\\?\d:\x"), r"d:\x");
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\host\share\v"),
+            r"\\host\share\v"
+        );
+        // Volume GUID and device paths have no drive spelling: kept as they are.
+        let guid = r"\\?\Volume{0b1c2d3e-0000-0000-0000-000000000000}\v";
+        assert_eq!(strip_verbatim_prefix(guid), guid);
+        assert_eq!(strip_verbatim_prefix(r"\\.\pipe\x"), r"\\.\pipe\x");
+        assert_eq!(strip_verbatim_prefix(r"C:\cache\v"), r"C:\cache\v");
+        assert_eq!(strip_verbatim_prefix("/cache/v"), "/cache/v");
+    }
+
+    #[test]
+    fn windows_entry_paths_are_plain_with_backslashes() {
+        // A canonicalized Windows cache directory joined with a `/` catalog entry:
+        // under `\\?\` the `/` would be a literal name character.
+        let base = Path::new(r"\\?\C:\Users\me\AppData\Local\Temp\.tmpX\cache\json\4.10.0");
+        assert_eq!(
+            process_entry_path(base, JSON_ENTRY, Os::Windows),
+            r"C:\Users\me\AppData\Local\Temp\.tmpX\cache\json\4.10.0\node_modules\vscode-langservers-extracted\bin\vscode-json-language-server"
+        );
+        let unc = Path::new(r"\\?\UNC\srv\share\cache");
+        assert_eq!(
+            process_entry_path(unc, VTSLS_ENTRY, Os::Windows),
+            r"\\srv\share\cache\node_modules\@vtsls\language-server\bin\vtsls.js"
+        );
+        // Already plain, forward slash spellings are normalised too.
+        assert_eq!(
+            process_entry_path(Path::new("C:/c"), "a/b.js", Os::Windows),
+            r"C:\c\a\b.js"
+        );
+        // Unix keeps the path byte for byte, including a literal backslash.
+        assert_eq!(
+            process_entry_path(Path::new("/cache/v"), "a/b.js", Os::MacOs),
+            "/cache/v/a/b.js"
+        );
+        assert_eq!(
+            process_path_text(Path::new(r"/odd\name"), Os::Linux),
+            r"/odd\name"
+        );
+    }
+
+    #[test]
+    fn windows_node_launch_runs_node_with_a_plain_script_path() {
+        let win = Platform::new(Os::Windows, Arch::X86_64);
+        let mut ctx = LaunchContext::new(r"\\?\C:\cache\json\4.10.0", win);
+        ctx.runtime_program = Some(PathBuf::from(r"\\?\C:\Program Files\nodejs\node.exe"));
+        let l = launch_spec(ServerId::Json, &ctx).unwrap();
+        assert_eq!(
+            l.program,
+            PathBuf::from(r"C:\Program Files\nodejs\node.exe")
+        );
+        assert_eq!(
+            l.args,
+            vec![
+                r"C:\cache\json\4.10.0\node_modules\vscode-langservers-extracted\bin\vscode-json-language-server".to_string(),
+                "--stdio".to_string()
+            ]
+        );
+        for id in [
+            ServerId::Vtsls,
+            ServerId::Html,
+            ServerId::Css,
+            ServerId::Basedpyright,
+            ServerId::Svelte,
+            ServerId::Vue,
+            ServerId::Astro,
+        ] {
+            let l = launch_spec(id, &LaunchContext::new(r"\\?\C:\c", win)).unwrap();
+            assert_eq!(l.program, PathBuf::from("node"), "{id:?}");
+            assert!(l.args[0].starts_with(r"C:\c\node_modules\"), "{id:?}");
+            assert!(!l.args[0].contains('/'), "{id:?}: {}", l.args[0]);
+            assert!(!l.args[0].ends_with(".cmd"), "{id:?}");
+            assert_eq!(l.args[1], "--stdio");
+        }
     }
 
     #[test]
