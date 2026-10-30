@@ -27,9 +27,15 @@
   white-space:nowrap
 }
 .git-repo-path {
-  overflow-wrap:anywhere;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
   color:var(--dim);
   font-size:12px
+}
+.git-repo-unconfirmed .git-repo-path {
+  overflow-wrap:anywhere;
+  white-space:normal
 }
 .git-repo-branch {
   display:flex;

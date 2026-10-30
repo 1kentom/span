@@ -22,7 +22,6 @@ export function GitSourceControl(props: GitSourceControlProps) {
   const g = props.git;
   const v = props.view;
   createEffect(() => { if (props.active && g.context()?.enabled && !g.remotes() && !g.resourceLoading().remotes && !g.resourceErrors().remotes) void g.loadResource("remotes"); });
-  const selectedRemote = () => g.remotes()?.remotes.find(remote => remote.current) || g.remotes()?.remotes[0];
   let list!: HTMLDivElement;
   const refresh = () => {
     if (v.subView() === "history") void g.refresh().then(() => g.loadHistory());
@@ -58,11 +57,9 @@ export function GitSourceControl(props: GitSourceControlProps) {
       <GitRepositoryHeader git={g} available={props.available} onRefresh={refresh} />
       <Show when={props.available && (!g.hasWorkspace() || (g.context() && !g.context()?.repository))}><GitSetup git={g} allowInitialize={g.hasWorkspace()} /></Show>
       <Show when={g.context()?.enabled}>
-        <Show when={selectedRemote()}>{remote => <div class="git-remote-target"><strong>{remote().name}</strong><span title={remote().fetchUrl}>{remote().fetchUrl}</span><Show when={remote().pushUrl !== remote().fetchUrl}><span title={remote().pushUrl}>Push: {remote().pushUrl}</span></Show></div>}</Show>
         <Show when={g.resourceErrors().remotes}><div class="git-error" role="alert">{g.resourceErrors().remotes}<button class="git-text-action" onClick={() => void g.loadResource("remotes")}>Review remotes</button></div></Show>
         <GitRemotes git={g} />
         <div class="git-remote-actions" aria-label="Remote operations">
-          <Show when={g.remotes() && !g.remotes()?.remotes.length}><span>No remotes configured</span></Show>
           <Show when={g.resourceLoading().remotes}><span role="status">Reading remotes…</span></Show>
           <Show when={g.operation()}><span role="status">{g.operation()}…</span></Show>
         </div>

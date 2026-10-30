@@ -1,0 +1,101 @@
+.git-network-panel {
+  min-width: 0;
+  padding: 8px 0;
+  font-size: 12px;
+}
+.git-network-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 12px 8px;
+}
+.git-network-summary > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+  font-size: 11px;
+}
+.git-network-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 12px 6px;
+  color: var(--dim);
+}
+.git-network-panel details > summary {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.git-network-panel .git-inline-form {
+  min-width: 0;
+  gap: 7px;
+  margin: 4px 10px 10px;
+  padding: 10px;
+}
+.git-network-panel .git-inline-form > label:not(.git-auto-fetch) {
+  font-size: 11px;
+  color: var(--dim);
+}
+.git-network-panel .git-inline-form input,
+.git-network-panel .git-inline-form select {
+  min-width: 0;
+  box-sizing: border-box;
+}
+.git-network-panel .git-auto-fetch {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 7px;
+  line-height: 1.45;
+  font-size: 11px;
+}
+.git-network-panel .git-auto-fetch input[type="checkbox"] {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+}
+.git-network-panel .git-note {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.git-network-panel .git-network-management > .git-auto-fetch,
+.git-network-panel .git-network-management > .git-note {
+  margin: 8px 12px;
+}
+.git-network-panel .git-network-management > .git-text-action {
+  margin: 4px 12px;
+}
+.git-network-panel .git-auto-fetch input[type="number"] {
+  width: 62px;
+  margin-left: auto;
+}
+.git-network-panel .git-worktree-path {
+  overflow-wrap: anywhere;
+}
+
+.git-network-panel .git-network-management {
+  padding: 0;
+}
+
+.git-network-panel details > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+}
+.git-network-panel details > summary::-webkit-details-marker {
+  display: none;
+}
+.git-network-panel .git-network-chevron {
+  flex: 0 0 auto;
+}
+.git-network-panel details[open] > summary > .git-network-chevron {
+  transform: rotate(90deg);
+}

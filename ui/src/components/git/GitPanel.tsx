@@ -16,7 +16,7 @@ export function GitRepositoryHeader(props: GitPanelProps & { onRefresh?: () => v
     else void props.git.refresh().then(() => { if (props.git.context()?.enabled) return props.git.loadIntegrationState(); });
   };
   return (
-    <header class="git-repo-header">
+    <header class="git-repo-header" classList={{ "git-repo-unconfirmed": !props.git.context()?.enabled }}>
       <div class="git-repo-row">
         <strong>{repository() ? "Repository" : "Source control"}</strong>
         <button

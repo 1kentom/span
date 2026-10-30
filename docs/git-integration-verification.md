@@ -82,7 +82,7 @@ Native GitHub authentication and the actual PR list succeeded. A PR detail reque
 
 ## Phase 3 source and automated evidence
 
-The prior phase 2 published-head run [40905440358](https://github.com/1kentom/span/actions/runs/40905440358) passed all required checks at `a578b38`, including platform checks. This is phase 2 evidence only. The current uncommitted phase 3 source has not inherited that hosted verification.
+The prior phase 2 published-head run [40905440358](https://github.com/1kentom/span/actions/runs/40905440358) passed all required checks at `a578b38`, including platform checks. This is phase 2 evidence only. Phase 3 was subsequently published as `d59f982` in PR #195 and has not inherited that hosted verification.
 
 Phase 3 adds reviewed selected-line staging with Git-normalized text and metadata snapshots, exact-HEAD amend with hook handling, all-ref history/search, HEAD reflog, revision content/comparison, bounded line history, selected-remote operations and first push with explicit upstream intent, standalone welcome-screen clone, and worktree opening in a separate process. Workspace-scoped SHA256 session keys and startup restoration fixes support independent workspace restoration. Source presence does not establish native correctness or full reference-product parity. Partial-staging mode handling was corrected to follow effective core.filemode and owner-executable semantics. Ten focused tests passed, including 30 real-Git stage/unstage comparisons (95.97 seconds). The corrected full core rerun passed 288 tests with two ignored cases in 136.37 seconds, including the 30 mode comparisons.
 
@@ -94,8 +94,18 @@ Phase 3 adds reviewed selected-line staging with Git-normalized text and metadat
 | Rust quality | Strict workspace Clippy passed again after the partial-staging correction and the development binding-export guard fix. |
 | Browser | 20 dedicated Git Playwright workflows passed in 45.8 seconds on an isolated server, with explicit mocked IPC. The six added workflows cover first-push review invalidation, selected IDs and failed-selection retention, stale-HEAD amend, advanced history filters/reflog/revision, welcome clone retry/open, and validated new-window callbacks. These do not execute native Git or window creation. |
 | Native | Phase 3 rebuilt app acceptance pending. Earlier installed runtime observations remain limited to the separately identified binaries above. |
-| Hosted | Phase 3 exact-head publication and checks pending. The green phase 2 run is not substituted. |
+| Hosted | Phase 3 is published as `d59f982` in PR #195. Exact-head hosted checks have not yet been verified. The green phase 2 run is not substituted. |
 
 The active completion checklist retains both the new acceptance gates and the broader unfinished Git/GitHub scope. No hosted write, native phase 3 operation, signing/notarization, release channel or full GitLens/VS Code/Zed parity is claimed by these automated results. Local logs and raw acceptance artifacts remain outside publication.
 
-During phase 3 verification, launching an older installed debug runtime overwrote the generated bindings through its startup exporter. The authoritative bindings were regenerated and verified, and the startup export guard now uses `#[cfg(dev)]` instead of `debug_assertions`, so bundled debug apps do not export source bindings on launch. TypeScript, production build and strict workspace Clippy passed after this correction. The native build is in progress; no actual phase 3 native operation is counted yet.
+During phase 3 verification, launching an older installed debug runtime overwrote the generated bindings through its startup exporter. The authoritative bindings were regenerated and verified, and the startup export guard now uses `#[cfg(dev)]` instead of `debug_assertions`, so bundled debug apps do not export source bindings on launch. TypeScript, production build and strict workspace Clippy passed after this correction. The native bundle built; no actual phase 3 native mutation is counted yet.
+
+## Rejected polish and current visual overhaul
+
+The user rejected the visual polish published in phase 3 commit `d59f982` in [PR #195](https://github.com/1kentom/span/pull/195), and [issue #210](https://github.com/1kentom/span/issues/210) remains open for a complete overhaul. Earlier completed checkboxes represent checks that ran, not accepted visual quality. Inspection of the older native UI showed a faint staged marker and an expanded wall of remote controls, supporting the user's feedback.
+
+The current uncommitted overhaul adds full-lane hunk button rails, dashed staged and solid working markers, a keyboard/accessibility CodeMirror bridge with one Tab stop per hunk, retained untouched rails while typing and cleared touched rails, and structured 40-row index/live previews. Review saved preserves the current draft and prefix. Remotes are compact and collapsed with an explicit empty state and checkbox correction; the repository path is compact after consent. Remote summaries use the project Iconsax chevrons.
+
+The full overhaul UI run passed 3,104 tests across 279 files in 117.68 seconds. TypeScript and the production build passed. Twenty-four dedicated browser workflows passed in 60 seconds with mocked IPC. These include actual rendered geometry and accessibility checks, light theme, 20-pixel editor font, wrapping, folding, scrolling and narrow layouts. They do not establish native Git behavior or installed acceptance.
+
+A locally ad hoc signed native overhaul test bundle was built. Actual native overhaul and zoom acceptance are pending, as are exact-head hosted checks and the broader functional completion gates. Issue #210 is not complete. Raw screenshots, visual artifacts and local logs remain ignored and outside publication.
