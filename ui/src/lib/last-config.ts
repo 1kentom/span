@@ -1,30 +1,22 @@
 import type { ConfigOption } from "../bindings";
+import { readStored, recordOf, stringRecord, writeStored } from "./stored";
 
 // UI-only memory of the config values the user picked per agent (model, effort, mode...), re-applied to its new sessions.
 export type SavedConfig = Record<string, string>;
 
 const KEY = "span.agent.lastConfig";
 
-function readAll(): Record<string, SavedConfig> {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(KEY) ?? "{}");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
+/** Agent id to its saved values. Entries in another shape (null, arrays, numbers) are dropped, never thrown on. */
+const readAll = (): Record<string, SavedConfig> => readStored(KEY, recordOf(stringRecord), {});
 
 export function readLastConfig(agentId: string): SavedConfig {
-  const found = readAll()[agentId];
-  if (!found || typeof found !== "object") return {};
-  return Object.fromEntries(Object.entries(found).filter(([, value]) => typeof value === "string"));
+  return readAll()[agentId] ?? {};
 }
 
 export function writeLastConfig(agentId: string, configId: string, value: string) {
   const all = readAll();
-  const mine = all[agentId] && typeof all[agentId] === "object" ? all[agentId] : {};
-  all[agentId] = { ...mine, [configId]: value };
-  try { window.localStorage.setItem(KEY, JSON.stringify(all)); } catch { /* storage can be unavailable */ }
+  all[agentId] = { ...all[agentId], [configId]: value };
+  writeStored(KEY, all);
 }
 
 /**

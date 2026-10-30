@@ -1,5 +1,14 @@
 /* Painted before the app bundle loads, so the first webview frame already has the theme's
-   canvas colour instead of a white or black flash. Colours match --canvas in styles/workbench.css. */
-html, body { margin: 0; height: 100%; background: #090909; color-scheme: dark; }
-html[data-theme="light"], html[data-theme="light"] body { background: #eeeff0; color-scheme: light; }
-html[data-theme="purple"], html[data-theme="purple"] body { background: #080810; color-scheme: dark; }
+   canvas colour instead of a white or black flash. Colours match --canvas and --text in styles/workbench.css.
+   The text colour is set here too, so a stylesheet that fails to load never leaves dark text on a dark canvas. */
+html, body { margin: 0; height: 100%; background: #090909; color: #e0e1e4; color-scheme: dark; font: 13px/18px Inter, system-ui, sans-serif; }
+html[data-theme="light"], html[data-theme="light"] body { background: #eeeff0; color: #252629; color-scheme: light; }
+html[data-theme="purple"], html[data-theme="purple"] body { background: #080810; color: #eeedfd; color-scheme: dark; }
+
+/* Shown by boot.js only when the app bundle never started (see public/boot.js). */
+.boot-fallback { box-sizing: border-box; position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 24px; background: inherit; }
+.boot-fallback-card { max-width: 480px; }
+.boot-fallback h1 { margin: 0 0 9px; font-size: 16px; line-height: 22px; font-weight: 500; }
+.boot-fallback p { margin: 0 0 16px; font-size: 13px; line-height: 20px; opacity: 0.8; }
+.boot-fallback button { margin-right: 8px; padding: 6px 12px; border: 1px solid #37383a; border-radius: 5px; background: #28292b; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+html[data-theme="light"] .boot-fallback button { border-color: #d3d5d9; background: #e0e1e4; }

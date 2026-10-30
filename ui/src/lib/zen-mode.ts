@@ -3,6 +3,7 @@
  * zen is on and shows a derived one instead, so leaving zen puts back exactly what was there (VS Code `zenMode.restore`).
  * Zen itself is never persisted: the app always starts in the normal layout.
  */
+import { isRecord, readStored } from "./stored";
 
 /** Preferences kept on this device (localStorage), since adding user settings needs the Rust settings schema. */
 export interface ZenSettings {
@@ -19,19 +20,17 @@ export interface ZenSettings {
 export const ZEN_DEFAULTS: Readonly<ZenSettings> = { hideTabs: true, hideLineNumbers: false, centerLayout: false, fullScreen: false };
 export const ZEN_SETTINGS_KEY = "span.zenMode.settings";
 
-type Storage = Pick<globalThis.Storage, "getItem" | "setItem">;
+type Storage = Pick<globalThis.Storage, "getItem" | "setItem"> & Partial<Pick<globalThis.Storage, "removeItem">>;
 const browserStorage = (): Storage | undefined => { try { return typeof localStorage === "undefined" ? undefined : localStorage; } catch { return undefined; } };
 
 /** Saved preferences merged over the defaults. Unknown keys, wrong types and unreadable storage fall back to defaults. */
 export function readZenSettings(storage: Storage | undefined = browserStorage()): ZenSettings {
-  try {
-    const raw = storage?.getItem(ZEN_SETTINGS_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : undefined;
-    if (!parsed || typeof parsed !== "object") return { ...ZEN_DEFAULTS };
-    const record = parsed as Record<string, unknown>;
-    const pick = (key: keyof ZenSettings) => typeof record[key] === "boolean" ? record[key] as boolean : ZEN_DEFAULTS[key];
+  const settings = (value: unknown): ZenSettings | undefined => {
+    if (!isRecord(value)) return undefined;
+    const pick = (key: keyof ZenSettings) => typeof value[key] === "boolean" ? value[key] as boolean : ZEN_DEFAULTS[key];
     return { hideTabs: pick("hideTabs"), hideLineNumbers: pick("hideLineNumbers"), centerLayout: pick("centerLayout"), fullScreen: pick("fullScreen") };
-  } catch { return { ...ZEN_DEFAULTS }; }
+  };
+  return readStored(ZEN_SETTINGS_KEY, settings, { ...ZEN_DEFAULTS }, storage);
 }
 
 /** Best effort: a private window or blocked storage keeps the preference for this session only. */

@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ConfigOption } from "../bindings";
 import { chooseRestores, readLastConfig, writeLastConfig } from "./last-config";
+import { rememberedMode } from "./permission-modes";
 
 const option = (id: string, currentValue: string, values: string[]): ConfigOption => ({
   id, name: id, description: null, category: id, currentValue,
@@ -53,5 +54,22 @@ describe("last config storage", () => {
     expect(readLastConfig("codex")).toEqual({});
     writeLastConfig("codex", "model", "a");
     expect(readLastConfig("codex")).toEqual({ model: "a" });
+  });
+  it("reads state saved before Span permission modes without throwing (startup regression)", () => {
+    // The shape an installed build from before ADR 0015 left behind: raw agent mode values, no Span mode key.
+    window.localStorage.setItem("span.agent.lastConfig", JSON.stringify({ opencode: { model: "provider/model", mode: "plan" }, "claude-acp": { model: "sonnet" }, "codex-acp": { mode: "agent-full-access" } }));
+    expect(rememberedMode(readLastConfig("codex-acp"))).toBe("full");
+    expect(rememberedMode(readLastConfig("opencode"))).toBe("plan");
+    expect(rememberedMode(readLastConfig("claude-acp"))).toBeUndefined();
+    // Entries in shapes no build wrote on purpose are dropped per agent, the rest stays usable.
+    window.localStorage.setItem("span.agent.lastConfig", JSON.stringify({ a: null, b: [1, 2], c: 3, d: { mode: 5, model: "m" } }));
+    for (const id of ["a", "b", "c", "missing"]) expect(readLastConfig(id)).toEqual({});
+    expect(readLastConfig("d")).toEqual({ model: "m" });
+    writeLastConfig("a", "model", "x");
+    expect(readLastConfig("a")).toEqual({ model: "x" });
+    // A top level value in the wrong shape is removed rather than read again on every start.
+    window.localStorage.setItem("span.agent.lastConfig", "[1,2]");
+    expect(readLastConfig("a")).toEqual({});
+    expect(window.localStorage.getItem("span.agent.lastConfig")).toBeNull();
   });
 });

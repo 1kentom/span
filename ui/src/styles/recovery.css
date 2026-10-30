@@ -1,0 +1,14 @@
+/* Startup recovery screen (components/RecoveryScreen.tsx). Workbench tokens only: the root carries the `ide` class. */
+.recovery-screen { align-items: center; justify-content: center; padding: 24px; overflow: auto; }
+.recovery-overlay { position: fixed; inset: 0; z-index: 1000; }
+.recovery-card { width: min(520px, 100%); padding: 24px; border: 1px solid var(--border); border-radius: 9px; background: var(--popup); box-shadow: var(--shadow); color: var(--text); }
+.recovery-title { margin: 0 0 9px; font-size: 16px; line-height: 22px; font-weight: 500; color: var(--strong); }
+.recovery-message { margin: 0 0 8px; font-size: 13px; line-height: 20px; }
+.recovery-hint { margin: 0 0 18px; font-size: 12px; line-height: 18px; color: var(--dim); }
+.recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+.recovery-actions .button { margin-top: 0; }
+.recovery-status { min-height: 18px; margin: 10px 0 0; font-size: 12px; line-height: 18px; color: var(--dim); }
+.recovery-details { margin-top: 8px; font-size: 12px; color: var(--dim); }
+.recovery-details summary { cursor: pointer; color: var(--text); }
+.recovery-error { margin: 8px 0; color: var(--errFg); overflow-wrap: anywhere; }
+.recovery-diagnostics { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--field); color: var(--text); font: 11px/17px "JetBrains Mono", ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
