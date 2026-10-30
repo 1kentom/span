@@ -449,11 +449,24 @@ pub struct DaySlice {
     pub cost: UsageCost,
 }
 
+/// One model of one agent on one day, for the chart's by-model view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DayModelSlice {
+    pub agent_id: String,
+    pub model: String,
+    pub tokens: u64,
+    pub cost: UsageCost,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DayUsage {
     pub day: String,
     pub agents: Vec<DaySlice>,
+    /// The same day by agent and model.
+    #[serde(default)]
+    pub models: Vec<DayModelSlice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
@@ -574,6 +587,9 @@ pub fn summarize(
 ) -> UsageSummary {
     let mut totals = UsageTotals::default();
     let mut days: BTreeMap<String, BTreeMap<String, (u64, UsageCost)>> = BTreeMap::new();
+    #[allow(clippy::type_complexity)]
+    let mut day_models: BTreeMap<String, BTreeMap<(String, String), (u64, UsageCost)>> =
+        BTreeMap::new();
     let mut agents: HashMap<String, AgentUsage> = HashMap::new();
     let mut models: HashMap<String, ModelUsage> = HashMap::new();
     let mut tracked = 0u32;
@@ -596,6 +612,15 @@ pub fn summarize(
                 .or_insert_with(|| (0, UsageCost::empty()));
             slice.0 = slice.0.saturating_add(bucket.tokens().effective_total());
             slice.1.add(&cost);
+            let model_slice = day_models
+                .entry(bucket.day.clone())
+                .or_default()
+                .entry((meta.agent_id.clone(), bucket.model.clone()))
+                .or_insert_with(|| (0, UsageCost::empty()));
+            model_slice.0 = model_slice
+                .0
+                .saturating_add(bucket.tokens().effective_total());
+            model_slice.1.add(&cost);
             let agent = agents
                 .entry(meta.agent_id.clone())
                 .or_insert_with(|| AgentUsage {
@@ -649,8 +674,20 @@ pub fn summarize(
     if let (Some(first), Some(last)) = (first, last) {
         for day in day_span(&first, &last, 400) {
             let slices = days.remove(&day).unwrap_or_default();
+            let models = day_models
+                .remove(&day)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|((agent_id, model), (tokens, cost))| DayModelSlice {
+                    agent_id,
+                    model,
+                    tokens,
+                    cost,
+                })
+                .collect();
             day_rows.push(DayUsage {
                 day,
+                models,
                 agents: slices
                     .into_iter()
                     .map(|(agent_id, (tokens, cost))| DaySlice {
