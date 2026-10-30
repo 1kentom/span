@@ -13,6 +13,7 @@ import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { PageFailure } from "./PageFailure";
 import { FollowPill } from "../agent/FollowPill";
+import { FeedFind } from "../agent/FeedFind";
 import type { CheckpointStore } from "../../lib/checkpoints";
 import { CheckpointTimeline, CheckpointUndoToast } from "./Checkpoints";
 
@@ -155,6 +156,7 @@ export function ThreadView(props: ThreadViewProps) {
       <div class="agent-feed-region">
         <div
           class="agent-content ap-thread-scroll"
+          tabIndex={-1}
           ref={(element) => {
             a.scrollers.content = element;
             onCleanup(a.follow.attach(element));
@@ -234,6 +236,7 @@ export function ThreadView(props: ThreadViewProps) {
             <PageFailure agent={a} label={label()} onChooseAgent={props.onChooseAgent} onShowLog={() => a.setView("logs")} />
           </Show>
         </div>
+        <FeedFind agent={a} scope={() => section} feed={feedElement} />
         <button type="button" class="agent-jump" classList={{ shown: jumpShown() }} aria-label="Jump to latest message" aria-hidden={jumpShown() ? undefined : "true"} tabIndex={jumpShown() ? 0 : -1} onClick={a.followLatest}>
           <Icon name="arrow-down4" size={11} />
           {a.running() ? "New activity" : "Latest"}
