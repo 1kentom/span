@@ -259,7 +259,9 @@ pub fn read_database(
     };
     let outcome = match layout {
         Layout::Messages => read_messages(&conn, state, limits, report),
-        Layout::Sessions { table, model } => read_sessions(&conn, table, model, state, limits, report),
+        Layout::Sessions { table, model } => {
+            read_sessions(&conn, table, model, state, limits, report)
+        }
     };
     match outcome {
         Ok(()) => {
@@ -372,19 +374,31 @@ fn read_messages(
         let mut after = String::new();
         loop {
             #[allow(clippy::type_complexity)]
-            let rows: Vec<(String, i64, String, [Option<i64>; 5], Option<f64>, Option<f64>)> =
-                statement
-                    .query_map(rusqlite::params![session, after, page], |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                            row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                            [row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?],
-                            row.get(8)?,
-                            row.get(9)?,
-                        ))
-                    })?
-                    .collect::<rusqlite::Result<_>>()?;
+            let rows: Vec<(
+                String,
+                i64,
+                String,
+                [Option<i64>; 5],
+                Option<f64>,
+                Option<f64>,
+            )> = statement
+                .query_map(rusqlite::params![session, after, page], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        [
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                        ],
+                        row.get(8)?,
+                        row.get(9)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
             let Some(last) = rows.last() else {
                 break;
             };
@@ -403,7 +417,9 @@ fn read_messages(
                 if counts.is_empty() {
                     continue;
                 }
-                let created = created.filter(|c| *c > 0.0).unwrap_or(created_column as f64);
+                let created = created
+                    .filter(|c| *c > 0.0)
+                    .unwrap_or(created_column as f64);
                 let Some(hour) = hour_of_ms(created) else {
                     continue;
                 };
@@ -483,7 +499,13 @@ fn read_sessions(
                     row.get(0)?,
                     row.get::<_, Option<i64>>(1)?.unwrap_or(0),
                     row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                    [row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?],
+                    [
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ],
                     row.get(8)?,
                 ))
             })?
@@ -525,4 +547,335 @@ fn read_sessions(
     add_entries(ImportKind::OpenCode, state, entries, "", report);
     state.watermark = newest;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::usage_import::{imported_sessions, scan_in, ImportCache, IMPORTED_OPENCODE_ID};
+    use std::collections::HashSet;
+
+    /// The 1.2 to 1.19 tables, as in OpenCode's `session.sql.ts`.
+    const SCHEMA: &str = "
+        CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT,
+          slug TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL,
+          time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+        CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+          time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+        CREATE INDEX message_session_idx ON message (session_id);
+        CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+          time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);";
+
+    const T0: i64 = 1_792_000_000_000;
+
+    fn assistant(
+        conn: &Connection,
+        id: &str,
+        session: &str,
+        at: i64,
+        model: &str,
+        tokens: (u64, u64, u64, u64, u64),
+        cost: f64,
+    ) {
+        let (input, output, reasoning, read, write) = tokens;
+        let data = format!(
+            r#"{{"role":"assistant","modelID":"{model}","providerID":"sample","cost":{cost},"time":{{"created":{at},"completed":{}}},"tokens":{{"input":{input},"output":{output},"reasoning":{reasoning},"cache":{{"read":{read},"write":{write}}}}},"system":["sample system prompt"]}}"#,
+            at + 1000
+        );
+        conn.execute(
+            "INSERT OR REPLACE INTO message (id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, session, at, at + 1000, data],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            rusqlite::params![format!("prt_{id}"), id, session, at, r#"{"type":"text","text":"generated sample reply"}"#],
+        )
+        .unwrap();
+    }
+
+    fn user(conn: &Connection, id: &str, session: &str, at: i64) {
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?3, ?4)",
+            rusqlite::params![id, session, at, r#"{"role":"user","time":{"created":1},"summary":{"title":"sample prompt"}}"#],
+        )
+        .unwrap();
+    }
+
+    fn sample_db(path: &Path) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        user(&conn, "msg_0", "ses_1", T0);
+        assistant(
+            &conn,
+            "msg_1",
+            "ses_1",
+            T0 + 1,
+            "claude-sonnet-5",
+            (1200, 300, 50, 9000, 400),
+            0.25,
+        );
+        assistant(
+            &conn,
+            "msg_2",
+            "ses_1",
+            T0 + 2,
+            "gpt-5.5",
+            (100, 10, 0, 900, 0),
+            0.0,
+        );
+        assistant(
+            &conn,
+            "msg_3",
+            "ses_2",
+            T0 + 3,
+            "claude-haiku-4-5",
+            (10, 1, 0, 0, 0),
+            0.0,
+        );
+        conn
+    }
+
+    fn stamp(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+        (
+            fs::read(path).unwrap(),
+            fs::metadata(path).unwrap().modified().unwrap(),
+        )
+    }
+
+    fn scan_data(data: &Path, work: &Path, cache: &mut ImportCache) -> ScanReport {
+        let roots = vec![(ImportKind::OpenCode, data.join("storage/message"))];
+        scan_in(&roots, cache, &ImportLimits::default(), work, &mut |_| {})
+    }
+
+    fn by_model(
+        cache: &ImportCache,
+    ) -> std::collections::BTreeMap<String, (u64, u64, u64, u64, u64, u64, u32)> {
+        let mut out = std::collections::BTreeMap::new();
+        for s in imported_sessions(cache, 0, &HashSet::new()) {
+            for b in s.usage.unwrap().buckets {
+                let e = out.entry(b.model).or_insert((0, 0, 0, 0, 0, 0, 0));
+                e.0 += b.input;
+                e.1 += b.output;
+                e.2 += b.cache_read;
+                e.3 += b.cache_write;
+                e.4 += b.thought;
+                e.5 += b.cost_micros;
+                e.6 += b.turns;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn usage_opencode_db_counts_messages_read_only_without_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("opencode");
+        fs::create_dir_all(&data).unwrap();
+        let db = data.join("opencode.db");
+        drop(sample_db(&db));
+        let before = stamp(&db);
+        let work = dir.path().join("work");
+        let mut cache = ImportCache::default();
+        let report = scan_data(&data, &work, &mut cache);
+        assert_eq!(report.databases_read, 1);
+        assert_eq!(report.entries, 3);
+        assert_eq!(report.kinds, vec![ImportKind::OpenCode]);
+        let models = by_model(&cache);
+        // Anthropic convention: input apart from cache; reasoning is output.
+        assert_eq!(
+            models["claude-sonnet-5"],
+            (1200, 350, 9000, 400, 50, 250_000, 1)
+        );
+        // OpenAI convention: cached tokens folded into input.
+        assert_eq!(models["gpt-5.5"].0, 1000);
+        let sessions = imported_sessions(&cache, 0, &HashSet::new());
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().all(|s| s.agent_id == IMPORTED_OPENCODE_ID));
+        // Read only: same bytes, same time, no journal files, no copy left.
+        assert_eq!(stamp(&db), before);
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert!(
+                !data.join(format!("opencode.db{suffix}")).exists(),
+                "{suffix}"
+            );
+        }
+        assert!(!work.exists() || fs::read_dir(&work).unwrap().next().is_none());
+        let text = serde_json::to_string(&cache).unwrap();
+        for content in [
+            "sample prompt",
+            "generated sample reply",
+            "sample system prompt",
+        ] {
+            assert!(!text.contains(content), "{content}");
+        }
+        // Unchanged: not opened again.
+        let again = scan_data(&data, &work, &mut cache);
+        assert_eq!((again.databases_read, again.entries), (0, 0));
+        assert_eq!(by_model(&cache), models);
+    }
+
+    #[test]
+    fn usage_opencode_db_live_wal_is_read_through_a_removed_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("opencode");
+        fs::create_dir_all(&data).unwrap();
+        let db = data.join("opencode.db");
+        let writer = sample_db(&db);
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        // Only in the log: never checkpointed while the writer stays open.
+        assistant(
+            &writer,
+            "msg_4",
+            "ses_3",
+            T0 + 4,
+            "claude-opus-5-5",
+            (7, 3, 0, 0, 0),
+            0.0,
+        );
+        let wal = data.join("opencode.db-wal");
+        assert!(fs::metadata(&wal).unwrap().len() > 0);
+        let (db_before, wal_before) = (stamp(&db), stamp(&wal));
+        let work = dir.path().join("work");
+        let mut cache = ImportCache::default();
+        let report = scan_data(&data, &work, &mut cache);
+        assert_eq!(report.databases_read, 1);
+        assert_eq!(report.entries, 4);
+        assert_eq!(by_model(&cache)["claude-opus-5-5"].0, 7);
+        assert_eq!(stamp(&db), db_before);
+        assert_eq!(stamp(&wal), wal_before);
+        assert!(
+            fs::read_dir(&work).unwrap().next().is_none(),
+            "the copy is removed"
+        );
+        drop(writer);
+    }
+
+    #[test]
+    fn usage_opencode_db_rescans_only_changed_sessions_without_double_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("opencode");
+        fs::create_dir_all(&data).unwrap();
+        let db = data.join("opencode.db");
+        drop(sample_db(&db));
+        let work = dir.path().join("work");
+        let mut cache = ImportCache::default();
+        scan_data(&data, &work, &mut cache);
+        {
+            let conn = Connection::open(&db).unwrap();
+            assistant(
+                &conn,
+                "msg_5",
+                "ses_2",
+                T0 + 10_000,
+                "claude-haiku-4-5",
+                (5, 1, 0, 0, 0),
+                0.0,
+            );
+            conn.execute("DELETE FROM message WHERE session_id = 'ses_1'", [])
+                .unwrap();
+        }
+        let report = scan_data(&data, &work, &mut cache);
+        assert_eq!(report.entries, 2, "only ses_2 is read again");
+        let models = by_model(&cache);
+        assert_eq!(models["claude-haiku-4-5"], (15, 2, 0, 0, 0, 0, 2));
+        assert!(
+            !models.contains_key("claude-sonnet-5"),
+            "a deleted session drops out"
+        );
+    }
+
+    #[test]
+    fn usage_opencode_db_replaces_the_same_sessions_from_json_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("opencode");
+        let json = data.join("storage/message/ses_1/msg_1.json");
+        fs::create_dir_all(json.parent().unwrap()).unwrap();
+        fs::write(&json, r#"{"id":"msg_1","sessionID":"ses_1","role":"assistant","modelID":"claude-sonnet-5","cost":0.25,"time":{"created":1792000000001},"tokens":{"input":1200,"output":300,"reasoning":50,"cache":{"read":9000,"write":400}}}"#).unwrap();
+        let old = data.join("storage/message/ses_0/msg_9.json");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, r#"{"id":"msg_9","sessionID":"ses_0","role":"assistant","modelID":"kimi-k2","time":{"created":1791000000000},"tokens":{"input":40,"output":4,"reasoning":0,"cache":{"read":0,"write":0}}}"#).unwrap();
+        drop(sample_db(&data.join("opencode.db")));
+        let mut cache = ImportCache::default();
+        scan_data(&data, &dir.path().join("work"), &mut cache);
+        let models = by_model(&cache);
+        assert_eq!(models["claude-sonnet-5"].6, 1, "ses_1 counts once");
+        assert_eq!(models["claude-sonnet-5"].0, 1200);
+        // A session only the JSON files hold still counts.
+        assert_eq!(models["kimi-k2"].0, 40);
+        assert_eq!(imported_sessions(&cache, 0, &HashSet::new()).len(), 3);
+    }
+
+    #[test]
+    fn usage_opencode_db_unknown_format_leaves_a_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("opencode");
+        fs::create_dir_all(&data).unwrap();
+        let db = data.join("opencode.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch("CREATE TABLE chat (id TEXT, body TEXT); PRAGMA user_version = 7;")
+                .unwrap();
+        }
+        let mut cache = ImportCache::default();
+        let report = scan_data(&data, &dir.path().join("work"), &mut cache);
+        assert_eq!(report.databases_read, 0);
+        assert_eq!(report.skipped, 0);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("OpenCode database format not recognised (version 7)")),
+            "{:?}",
+            report.notes
+        );
+        assert!(imported_sessions(&cache, 0, &HashSet::new()).is_empty());
+        // Not a database at all: skipped, the scan goes on.
+        fs::write(&db, b"not a database").unwrap();
+        let report = scan_data(&data, &dir.path().join("work"), &mut ImportCache::default());
+        assert_eq!(report.databases_read, 0);
+        assert!(report.skipped + report.notes.len() as u32 >= 1);
+    }
+
+    #[test]
+    fn usage_opencode_db_session_totals_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("opencode");
+        fs::create_dir_all(&data).unwrap();
+        let conn = Connection::open(data.join("opencode.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, title TEXT, cost REAL NOT NULL DEFAULT 0,
+               tokens_input INTEGER NOT NULL DEFAULT 0, tokens_output INTEGER NOT NULL DEFAULT 0,
+               tokens_reasoning INTEGER NOT NULL DEFAULT 0, tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+               tokens_cache_write INTEGER NOT NULL DEFAULT 0, model TEXT,
+               time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+             INSERT INTO session_v2 VALUES ('ses_a', 'sample title', 1.5, 100, 20, 5, 1000, 50,
+               '{\"id\":\"claude-sonnet-5\",\"providerID\":\"anthropic\"}', 1792000000000, 1792000500000);",
+        )
+        .unwrap();
+        drop(conn);
+        let mut cache = ImportCache::default();
+        let report = scan_data(&data, &dir.path().join("work"), &mut cache);
+        assert_eq!(report.databases_read, 1);
+        assert_eq!(
+            by_model(&cache)["claude-sonnet-5"],
+            (100, 25, 1000, 50, 5, 1_500_000, 1)
+        );
+        assert!(!serde_json::to_string(&cache)
+            .unwrap()
+            .contains("sample title"));
+    }
+
+    #[test]
+    fn usage_opencode_file_uri_escapes_and_handles_drive_letters() {
+        assert_eq!(
+            file_uri(Path::new("/a b/x?#%.db")),
+            "file:/a b/x%3f%23%25.db"
+        );
+        assert_eq!(
+            file_uri(Path::new("C:\\Users\\s\\opencode.db")),
+            "file:/C:/Users/s/opencode.db"
+        );
+    }
 }

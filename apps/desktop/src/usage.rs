@@ -7,7 +7,8 @@ use serde::Serialize;
 use span_core::{
     usage::{session_rows, summarize, PriceTable, SessionUsageRow, UsageRange, UsageSummary},
     usage_import::{
-        default_roots, imported_sessions, more_roots, scan, ImportCache, ImportLimits, ScanReport,
+        default_roots, imported_sessions, more_roots, scan_in, ImportCache, ImportLimits,
+        ScanReport,
     },
     AgentUsageSettings, CoreWorkspace, SessionMeta, SessionMetaStore, SettingsScope,
 };
@@ -164,10 +165,16 @@ fn run_scan() -> Result<(ScanReport, u64), String> {
     ));
     let path = import_cache_path()?;
     let mut cache = ImportCache::load(&path);
-    let report = scan(
+    // A live OpenCode database is copied here for the read, then removed.
+    let work = path
+        .parent()
+        .map(|dir| dir.join("tmp"))
+        .ok_or_else(|| "Cannot locate the usage import folder".to_owned())?;
+    let report = scan_in(
         &roots,
         &mut cache,
         &ImportLimits::default(),
+        &work,
         &mut |report| {
             if let Ok(mut current) = status().lock() {
                 current.report = Some(report.clone());

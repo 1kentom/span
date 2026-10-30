@@ -3541,10 +3541,12 @@ export type ScanReport = {
 	skipped: number,
 	/**  True when a cap stopped the file listing early. */
 	truncated: boolean,
-	/**  Compressed files read (gzip rollouts). */
+	/**  Compressed files read (gzip and zstd rollouts). */
 	compressedRead: number,
-	/**  Compressed files found but not read (`.zst`: no zstd decoder). */
+	/**  Compressed files skipped because they decode past the size cap. */
 	compressedSkipped: number,
+	/**  OpenCode databases read. */
+	databasesRead: number,
 	/**  Kinds that had at least one log file, in a fixed order. */
 	kinds: ImportKind[],
 	/**  Plain notes about sources found but not read. */

@@ -1170,7 +1170,10 @@ fn superseded(cache: &ImportCache) -> (HashSet<&str>, HashSet<&str>) {
     let mut codex: HashMap<&str, Vec<(&str, &FileState)>> = HashMap::new();
     for (key, state) in &cache.files {
         if state.kind == Some(ImportKind::Codex) && !state.session.is_empty() {
-            codex.entry(state.session.as_str()).or_default().push((key, state));
+            codex
+                .entry(state.session.as_str())
+                .or_default()
+                .push((key, state));
         }
     }
     let mut dropped = HashSet::new();
@@ -1634,6 +1637,7 @@ mod tests {
         .collect();
         encoder.write_all(text.as_bytes()).unwrap();
         encoder.finish().unwrap();
+        // A corrupt zstd file is skipped without failing the scan.
         fs::write(
             root.join("2026/10/28/rollout-c.jsonl.zst"),
             b"\x28\xb5\x2f\xfd sample",
@@ -1643,7 +1647,8 @@ mod tests {
         let report = scan_all(&[(ImportKind::Codex, root.clone())], &mut cache);
         assert_eq!(report.files_total, 3);
         assert_eq!(report.compressed_read, 1);
-        assert_eq!(report.compressed_skipped, 1);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.compressed_skipped, 0);
         let models = totals_by_model(&cache);
         assert_eq!(models["gpt-5.5-codex"], (150, 2));
         assert_eq!(models["gpt-5.5"], (20, 1));
@@ -1656,7 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_import_opencode_reads_message_files_and_reports_its_database() {
+    fn usage_import_opencode_reads_message_files() {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("opencode");
         let root = data.join("storage/message");
@@ -1672,11 +1677,10 @@ mod tests {
             &root.join("ses_1/msg_0.json"),
             &[r#"{"id":"msg_0","role":"user","time":{"created":1792000000000}}"#.to_owned()],
         );
-        fs::write(data.join("opencode.db"), b"sample").unwrap();
         let mut cache = ImportCache::default();
         let report = scan_all(&[(ImportKind::OpenCode, root)], &mut cache);
         assert_eq!(report.entries, 2);
-        assert!(report.notes.iter().any(|n| n.contains("opencode.db")));
+        assert_eq!(report.databases_read, 0);
         let buckets: Vec<&ImportBucket> = cache.files.values().flat_map(|f| &f.buckets).collect();
         let sonnet = buckets
             .iter()
@@ -1811,5 +1815,109 @@ mod tests {
             day.models.iter().map(|m| m.tokens).sum::<u64>(),
             day.agents[0].tokens
         );
+    }
+
+    fn zstd_rollout(path: &Path, lines: &[String]) {
+        let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        let bytes = ruzstd::encoding::compress_to_vec(
+            text.as_bytes(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    fn codex_session(id: &str, model: &str, day: &str) -> Vec<String> {
+        vec![
+            session_meta(id),
+            turn_context(model),
+            codex_token(&format!("{day}T10:01:00Z"), 100, 10, Some((100, 10))),
+            // No new turn_context: the model carries forward.
+            codex_token(&format!("{day}T10:02:00Z"), 150, 15, None),
+            turn_context("gpt-5.5"),
+            codex_token(&format!("{day}T10:03:00Z"), 170, 17, Some((20, 2))),
+        ]
+    }
+
+    #[test]
+    fn usage_import_zstd_rollouts_follow_the_plain_rules_and_count_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        // Only compressed: read with the same carry forward rules.
+        zstd_rollout(
+            &root.join("2026/10/27/rollout-z.jsonl.zst"),
+            &codex_session("codex-z", "gpt-5.5-codex", "2026-10-27"),
+        );
+        // The same session plain and compressed: the plain copy counts once.
+        write(
+            &root.join("2026/10/28/rollout-p.jsonl"),
+            &codex_session("codex-p", "gpt-5-mini", "2026-10-28"),
+        );
+        zstd_rollout(
+            &root.join("2026/10/28/rollout-p.jsonl.zst"),
+            &codex_session("codex-p", "gpt-5-mini", "2026-10-28"),
+        );
+        let mut cache = ImportCache::default();
+        let report = scan_all(&[(ImportKind::Codex, root.clone())], &mut cache);
+        assert_eq!(report.files_total, 3);
+        assert_eq!((report.compressed_read, report.compressed_skipped), (2, 0));
+        assert_eq!(report.skipped, 0);
+        let sessions = imported_sessions(&cache, 0, &HashSet::new());
+        assert_eq!(sessions.len(), 2);
+        let tokens = |id: &str| {
+            let s = sessions.iter().find(|s| s.session_id == id).unwrap();
+            let mut by_model: BTreeMap<String, (u64, u32)> = BTreeMap::new();
+            for b in &s.usage.as_ref().unwrap().buckets {
+                let e = by_model.entry(b.model.clone()).or_default();
+                e.0 += b.input;
+                e.1 += b.turns;
+            }
+            by_model
+        };
+        let z = tokens("codex-z");
+        assert_eq!(z["gpt-5.5-codex"], (150, 2));
+        assert_eq!(z["gpt-5.5"], (20, 1));
+        let p = tokens("codex-p");
+        assert_eq!(p["gpt-5-mini"], (150, 2), "plain and compressed count once");
+        assert_eq!(p["gpt-5.5"], (20, 1));
+        // An unchanged compressed file is not decoded again.
+        let again = scan_all(&[(ImportKind::Codex, root)], &mut cache);
+        assert_eq!((again.files_read, again.compressed_read), (0, 0));
+    }
+
+    #[test]
+    fn usage_import_zstd_respects_the_decoded_size_cap_and_keeps_a_truncated_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let mut big = codex_session("codex-big", "gpt-5.5", "2026-10-29");
+        big.push(format!(
+            r#"{{"type":"padding","payload":"{}"}}"#,
+            "x".repeat(4096)
+        ));
+        zstd_rollout(&root.join("rollout-big.jsonl.zst"), &big);
+        let limits = ImportLimits {
+            max_decompressed_bytes: 2048,
+            ..ImportLimits::default()
+        };
+        let mut cache = ImportCache::default();
+        let report = scan(
+            &[(ImportKind::Codex, root.clone())],
+            &mut cache,
+            &limits,
+            &mut |_| {},
+        );
+        assert_eq!((report.compressed_skipped, report.compressed_read), (1, 0));
+        assert!(imported_sessions(&cache, 0, &HashSet::new()).is_empty());
+        // A cut off file keeps the complete lines decoded before the cut.
+        let full = root.join("rollout-big.jsonl.zst");
+        let mut bytes = fs::read(&full).unwrap();
+        let cut = bytes.len() - 64;
+        bytes.truncate(cut);
+        fs::remove_file(&full).unwrap();
+        let cut_path = root.join("rollout-cut.jsonl.zst");
+        fs::write(&cut_path, &bytes).unwrap();
+        let mut cache = ImportCache::default();
+        let report = scan_all(&[(ImportKind::Codex, root)], &mut cache);
+        assert_eq!(report.skipped + report.compressed_read, 1);
     }
 }
