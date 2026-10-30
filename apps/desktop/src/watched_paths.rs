@@ -993,14 +993,9 @@ mod tests {
             vec![Path::new(".git/index"), Path::new("visible.java")],
             vec![Path::new("visible.java"), Path::new(".git/index")],
         ] {
-            let result = watched_batch(
-                &root,
-                &[event(
-                    EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
-                    &paths,
-                )],
-                false,
-            );
+            // A single-path directionless rename is settled by existence, so the
+            // generic kind is what still reaches the unsupported branch.
+            let result = watched_batch(&root, &[event(EventKind::Any, &paths)], false);
             assert!(result.changes.is_empty());
             assert!(result.incomplete, "{paths:?}");
         }
@@ -1022,7 +1017,6 @@ mod tests {
             .add_path(root.join(".git/index"));
         for (batch, overflow) in [
             (vec![Ok(excluded.clone())], true),
-            (vec![Ok(excluded.clone().set_flag(Flag::Rescan))], false),
             (
                 vec![
                     Ok(excluded.clone()),
@@ -1035,8 +1029,17 @@ mod tests {
             assert!(result.changes.is_empty());
             assert!(result.incomplete);
         }
-        let oversized = (0..MAX_INPUT).fold(excluded, |event, _| {
-            event.add_path(root.join(".git/index.lock"))
+        // A rescan scoped to an excluded folder is dropped with the folder.
+        let result = watched_batch(&root, &[Ok(excluded.clone().set_flag(Flag::Rescan))], false);
+        assert!(result.changes.is_empty());
+        assert!(!result.incomplete);
+        // Excluded folders are dropped before the path limit, so the limit is
+        // exercised with endpoints that only the ignore policy excludes.
+        fs::write(root.join(".ignore"), "*.ignored\n").unwrap();
+        let ignored = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any)))
+            .add_path(root.join("first.ignored"));
+        let oversized = (0..MAX_INPUT).fold(ignored, |event, index| {
+            event.add_path(root.join(format!("{index}.ignored")))
         });
         let result = watched_batch(&root, &[Ok(oversized)], false);
         assert!(result.changes.is_empty());
