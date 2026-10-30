@@ -861,6 +861,7 @@ async fn probe(agent: &str, out: &Path) -> Res<()> {
                     Box::pin(async { Err("the live probe does not start agents".to_owned()) })
                 }),
             )),
+            health: None,
             events: Some(Arc::new(move |event| {
                 events_rec.write(
                     "events",

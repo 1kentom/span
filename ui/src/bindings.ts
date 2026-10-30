@@ -1597,7 +1597,12 @@ export type DelegationEvent_Deserialize =
 /**  The lead recorded a decision (`record_decision`, #54). */
 { kind: "decision"; lead: SessionKey; decision: DecisionRecord } |
 /**  The lead started a child. */
-{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string } |
+{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string;
+/**
+ *  Display name of the model the child runs, when the agent
+ *  reported one (the lead's `model` choice, else the agent default).
+ */
+model?: string | null } |
 /**  A task finished, successfully or not. */
 { kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason?: FailureReason | null } |
 /**
@@ -1646,7 +1651,12 @@ export type DelegationEvent_Serialize =
 /**  The lead recorded a decision (`record_decision`, #54). */
 { kind: "decision"; lead: SessionKey; decision: DecisionRecord } |
 /**  The lead started a child. */
-{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string } |
+{ kind: "delegated"; lead: SessionKey; child: SessionKey; taskId: string; agentName: string;
+/**
+ *  Display name of the model the child runs, when the agent
+ *  reported one (the lead's `model` choice, else the agent default).
+ */
+model?: string } |
 /**  A task finished, successfully or not. */
 { kind: "taskFinished"; lead: SessionKey; child: SessionKey; taskId: string; status: string; reason: FailureReason | null } |
 /**
@@ -1753,6 +1763,8 @@ export type DelegationTask_Deserialize = {
 	lead: SessionKey,
 	child: SessionKey,
 	agentName: string,
+	/**  Display name of the model the child runs, when the agent reported one. */
+	model?: string | null,
 	/**  `queued`, `running`, `completed` or `failed`. */
 	status: string,
 	stopReason?: string | null,
@@ -1784,6 +1796,8 @@ export type DelegationTask_Serialize = {
 	lead: SessionKey,
 	child: SessionKey,
 	agentName: string,
+	/**  Display name of the model the child runs, when the agent reported one. */
+	model?: string,
 	/**  `queued`, `running`, `completed` or `failed`. */
 	status: string,
 	stopReason: string | null,
@@ -2985,7 +2999,7 @@ export type ModelUse_Serialize = {
 	subagent?: boolean,
 };
 
-export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
+export type NativeAction = "quickOpen" | "toggleFiles" | "focusFiles" | "showSourceControl" | "openFile" | "commandPalette" | "findInFile" | "searchWorkspace" | "settings" | "closeTab" | "save" | "openFolder" | "splitEditor" | "splitEditorDown" | "newFile" | "newFolder" | "newFromTemplate" | "toggleProject" | "toggleAssistant" | "toggleTerminal" | "toggleWordWrap" | "markdownPreview" | "formatDocument" | "goToLine" | "formatWithLanguageServer" | "goToDefinition" | "goToTypeDefinition" | "goToImplementation" | "peekDefinition" | "peekTypeDefinition" | "peekImplementation" | "findReferences" | "peekReferences" | "goToSymbolInFile" | "goToSymbolInWorkspace" | "quickInfo" | "showCallHierarchy" | "showTypeHierarchy" | "renameSymbol" | "goBack" | "goForward" | "focusBreadcrumbs" | "showUsage" | "zoomIn" | "zoomOut" | "resetZoom" | "quit";
 
 export type NativeActionEvent = {
 	action: NativeAction,

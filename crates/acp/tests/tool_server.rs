@@ -100,6 +100,7 @@ impl Harness {
                 launch: worker(&[]),
             }],
             background: None,
+            health: None,
             events: Some(Arc::new(move |event| sink.lock().unwrap().push(event))),
         }
     }
@@ -2900,4 +2901,304 @@ async fn a_lead_runs_at_most_the_concurrent_cap_of_delegated_tasks() {
         )
         .await;
     assert_eq!(after["isError"], false, "{after}");
+}
+
+// Model selection for delegated children (ADR 0003, amendment of 2026-10-30).
+
+/// The requests one `--models` worker received, read through a user chat on it.
+async fn worker_requests(h: &mut Harness, worker: &str) -> Vec<String> {
+    let chat = h
+        .manager
+        .open_session(worker, None, SessionOrigin::User)
+        .await
+        .unwrap();
+    serde_json::from_str(&h.ask(&chat, "requests").await).unwrap()
+}
+
+fn sessions_on(h: &Harness, connection: &str) -> Vec<SessionKey> {
+    h.manager
+        .sessions()
+        .into_iter()
+        .filter(|s| s.key.connection_id == connection)
+        .map(|s| s.key)
+        .collect()
+}
+
+#[tokio::test]
+async fn list_agents_lists_models_only_once_an_agent_reported_them() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h.connect(&["--name=model-list", "--models"]).await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+    let find = |listed: &Value, id: &str| {
+        structured(listed)["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id || a["name"] == id)
+            .cloned()
+            .unwrap()
+    };
+
+    // No session of model-list exists yet and nothing was cached: unknown,
+    // never invented. The installed agent that never ran is unknown too.
+    let listed = client.tool("list_agents", json!({})).await;
+    let before = find(&listed, "model-list");
+    assert_eq!(before["modelsKnown"], false, "{before}");
+    assert_eq!(before["models"], json!([]));
+    assert_eq!(before["connected"], true);
+    let gemini = find(&listed, "gemini-cli");
+    assert_eq!(gemini["modelsKnown"], false, "{gemini}");
+    assert_eq!(gemini["installed"], true);
+    assert_eq!(gemini["connected"], false);
+    assert_eq!(gemini["health"], Value::Null);
+    assert!(gemini["modelsNote"]
+        .as_str()
+        .unwrap()
+        .contains("checked against the agent's own list when the child session starts"));
+
+    // Once a session of the agent reported its model option, the lead sees it.
+    h.manager
+        .open_session(&worker, None, SessionOrigin::User)
+        .await
+        .unwrap();
+    let listed = client.tool("list_agents", json!({})).await;
+    let after = find(&listed, "model-list");
+    assert_eq!(after["modelsKnown"], true, "{after}");
+    assert_eq!(after["modelsSource"], "live");
+    assert_eq!(after["defaultModel"], "fast-1");
+    assert_eq!(
+        after["models"],
+        json!([
+            {"id": "fast-1", "name": "Fast One"},
+            {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5"},
+            {"id": "deep-2", "name": "Deep Two"},
+        ])
+    );
+    assert_eq!(after["installed"], false);
+    assert_eq!(after["signedIn"], Value::Null);
+    let text = listed["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("claude-haiku-4-5 (Claude Haiku 4.5)") && text.contains("default fast-1"),
+        "{text}"
+    );
+    // The list is remembered (ids and names only) for when it is not running.
+    let cached = span_acp::cached_models("model-list").unwrap();
+    assert_eq!(cached.models.len(), 3);
+    assert_eq!(cached.default_model.as_deref(), Some("fast-1"));
+
+    // The instructions steer leads to these tools and away from agent CLIs.
+    let init = client
+        .rpc("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}))
+        .await;
+    let instructions = init.response["result"]["instructions"].as_str().unwrap();
+    for needle in [
+        "Call list_agents first",
+        "Pass model to delegate",
+        "Use message to continue",
+        "Never run other agents' CLIs",
+        "opencode run",
+        "built-in subagent tool is fine only for helpers of your own agent and model",
+    ] {
+        assert!(instructions.contains(needle), "{needle}: {instructions}");
+    }
+    assert!(!instructions.contains('\u{2014}'));
+}
+
+#[tokio::test]
+async fn delegate_sets_model_effort_and_mode_before_the_first_prompt() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h.connect(&["--name=model-set", "--models"]).await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+    // A display name, matched case-insensitively.
+    let started = client
+        .tool(
+            "delegate",
+            json!({"agent": "model-set", "task": "reply:done", "model": "claude haiku 4.5", "effort": "HIGH", "mode": "Plan"}),
+        )
+        .await;
+    assert_eq!(started["isError"], false, "{started}");
+    assert_eq!(structured(&started)["model"], "Claude Haiku 4.5");
+    let child = structured(&started)["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task = structured(&started)["taskId"].as_str().unwrap().to_owned();
+    let finished = client.until_finished(&task).await;
+    assert_eq!(structured(&finished)["status"], "completed");
+
+    let requests = worker_requests(&mut h, &worker).await;
+    let mine: Vec<&str> = requests
+        .iter()
+        .map(String::as_str)
+        .filter(|r| r.split(' ').nth(1) == Some(child.as_str()))
+        .collect();
+    assert_eq!(
+        mine,
+        [
+            format!("session/new {child}"),
+            format!("session/set_config_option {child} model=claude-haiku-4-5"),
+            format!("session/set_config_option {child} effort=high"),
+            format!("session/set_config_option {child} mode=plan"),
+            format!("session/prompt {child}"),
+        ]
+    );
+    // The card and the event carry the model's display name.
+    assert_eq!(server.tasks()[0].model.as_deref(), Some("Claude Haiku 4.5"));
+    assert!(h.tool_events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        DelegationEvent::Delegated { model: Some(m), .. } if m == "Claude Haiku 4.5"
+    )));
+
+    // Without a model the card still names the model the child runs, and no
+    // config request is sent.
+    let plain = client
+        .tool(
+            "delegate",
+            json!({"agent": "model-set", "task": "reply:plain"}),
+        )
+        .await;
+    assert_eq!(plain["isError"], false, "{plain}");
+    assert_eq!(structured(&plain)["model"], "Fast One");
+    let second = structured(&plain)["sessionId"].as_str().unwrap().to_owned();
+    client
+        .until_finished(structured(&plain)["taskId"].as_str().unwrap())
+        .await;
+    let requests = worker_requests(&mut h, &worker).await;
+    assert!(!requests
+        .iter()
+        .any(|r| r.starts_with("session/set_config_option") && r.contains(&second)));
+}
+
+#[tokio::test]
+async fn an_unknown_model_lists_the_choices_and_leaves_no_child_behind() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h
+        .connect(&["--name=model-bad", "--models", "--delete"])
+        .await;
+    let policy = ToolPolicy {
+        max_delegations: 1,
+        ..scaled()
+    };
+    let (_lead, server) = h.lead(&lead_connection, policy).await;
+    let mut client = Client::new(&server);
+    let refused = client
+        .tool(
+            "delegate",
+            json!({"agent": "model-bad", "task": "reply:never", "model": "opencode/claude-haiku-4-5"}),
+        )
+        .await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let details = structured(&refused);
+    assert_eq!(details["error"], "model_unavailable");
+    assert_eq!(details["sessionId"], Value::Null);
+    assert_eq!(
+        details["choices"],
+        json!([
+            {"id": "fast-1", "name": "Fast One"},
+            {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5"},
+            {"id": "deep-2", "name": "Deep Two"},
+        ])
+    );
+    let detail = details["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("claude-haiku-4-5 (Claude Haiku 4.5)") && detail.contains("Retry"),
+        "{detail}"
+    );
+    // The child was created, deleted, and forgotten; no task, no card, no prompt.
+    assert!(sessions_on(&h, &worker).is_empty());
+    assert!(server.tasks().is_empty());
+    assert!(!h
+        .tool_events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e, DelegationEvent::Delegated { .. })));
+    let ended = span_acp::ended_delegated_sessions("model-bad");
+    assert_eq!(ended, vec!["model-bad-1".to_owned()]);
+    let requests = worker_requests(&mut h, &worker).await;
+    assert!(
+        !requests.iter().any(|r| r == "session/prompt model-bad-1"),
+        "{requests:?}"
+    );
+
+    // The refused call did not use the lead's only delegation; an id match works.
+    let started = client
+        .tool(
+            "delegate",
+            json!({"agent": "model-bad", "task": "reply:ok", "model": "DEEP-2"}),
+        )
+        .await;
+    assert_eq!(started["isError"], false, "{started}");
+    assert_eq!(structured(&started)["model"], "Deep Two");
+}
+
+#[tokio::test]
+async fn bypass_and_broader_modes_are_refused_for_children() {
+    let mut h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h
+        .connect(&["--name=model-mode", "--models", "--delete"])
+        .await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+    // A bypass mode is refused before any child exists.
+    let bypass = client
+        .tool(
+            "delegate",
+            json!({"agent": "model-mode", "task": "reply:x", "mode": "bypassPermissions"}),
+        )
+        .await;
+    assert_eq!(bypass["isError"], true, "{bypass}");
+    assert_eq!(structured(&bypass)["error"], "mode_refused");
+    assert!(span_acp::open_delegated_sessions("model-mode").is_empty());
+    assert!(span_acp::ended_delegated_sessions("model-mode").is_empty());
+    // A mode broader than the approval mode is refused and its child ended.
+    let broader = client
+        .tool(
+            "delegate",
+            json!({"agent": "model-mode", "task": "reply:x", "mode": "Accept edits"}),
+        )
+        .await;
+    assert_eq!(broader["isError"], true, "{broader}");
+    assert_eq!(structured(&broader)["error"], "mode_refused");
+    assert_eq!(
+        structured(&broader)["choices"],
+        json!([{"id": "default", "name": "Ask"}, {"id": "plan", "name": "Plan"}])
+    );
+    assert!(sessions_on(&h, &worker).is_empty());
+    assert!(server.tasks().is_empty());
+    let requests = worker_requests(&mut h, &worker).await;
+    assert!(
+        !requests.iter().any(|r| r.contains("mode=")),
+        "{requests:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_model_for_an_agent_without_model_choices_is_refused_cleanly() {
+    let h = harness();
+    let lead_connection = h.connect(&["--name=lead", "--mcp-http"]).await;
+    let worker = h.connect(&["--name=model-none", "--close"]).await;
+    let (_lead, server) = h.lead(&lead_connection, scaled()).await;
+    let mut client = Client::new(&server);
+    let refused = client
+        .tool(
+            "delegate",
+            json!({"agent": "model-none", "task": "reply:x", "model": "fast-1"}),
+        )
+        .await;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(structured(&refused)["error"], "model_unavailable");
+    assert_eq!(structured(&refused)["choices"], json!([]));
+    assert!(sessions_on(&h, &worker).is_empty());
+    assert!(server.tasks().is_empty());
+    assert_eq!(
+        span_acp::ended_delegated_sessions("model-none"),
+        vec!["model-none-1".to_owned()]
+    );
 }

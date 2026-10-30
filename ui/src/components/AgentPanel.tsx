@@ -26,6 +26,8 @@ import { HistoryList } from "./agent/HistoryList";
 import { ENTER_KEY } from "./agent/KeyGlyph";
 import type { ActionView, KeyHint } from "./agent/types";
 import { modalOpen } from "./agent/util";
+import { createCheckpoints } from "../lib/checkpoints";
+import { CheckpointChanges, CheckpointTimeline, CheckpointUndoToast } from "./agents-page/Checkpoints";
 import "../styles/agent.css";
 
 const KEYS: KeyHint[] = [
@@ -40,6 +42,8 @@ const KEYS: KeyHint[] = [
  */
 export function AgentPanel(props: AgentPanelProps & { controller?: AgentController }) {
   const a = props.controller ?? createAgentController(props);
+  /** Turn checkpoints of the open chat (ADR 0013). Nothing renders for folders without them. */
+  const checkpoints = isDesktop ? createCheckpoints(() => a.state().sessionId ?? undefined) : undefined;
   const [query, setQuery] = createSignal("");
   /** A curated agent's local command, placed in the custom ACP row for the user to confirm. */
   const [customDraft, setCustomDraft] = createSignal<{ command: string }>();
@@ -466,6 +470,14 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
           </Match>
           <Match when={body() === "feed"}>
             <AgentFeed agent={a} ref={setFeedElement} />
+            <Show when={checkpoints}>
+              {(store) => (
+                <div class="agent-pad cp-sidebar">
+                  <CheckpointTimeline store={store()} running={a.running()} onViewChanges={(turn) => store().viewTurn(turn)} />
+                  <CheckpointChanges store={store()} running={a.running()} onOpenFile={(path) => void a.openInEditor(path)} />
+                </div>
+              )}
+            </Show>
             <Show when={!a.connected() && !failure()}>
               <div class="sb-actions agent-pad">
                 <Show when={a.launch()}>
@@ -579,6 +591,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
         }}
       </Show>
       <DropOverlay visible={a.intake.dragging() || nativeOver() || Boolean(props.dropHover)} capabilities={a.caps()} description={isDesktop ? undefined : ATTACH_UNAVAILABLE} />
+      <Show when={checkpoints}>{(store) => <CheckpointUndoToast store={store()} />}</Show>
       <EditorToast name={a.toast()} onDismiss={a.clearToast} />
       <OpenRefusal refusal={a.openRefusal()} onCopy={(path) => api.writeClipboard(path)} onDismiss={a.clearOpenRefusal} />
     </section>
