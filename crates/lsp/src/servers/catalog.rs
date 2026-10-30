@@ -1561,10 +1561,11 @@ mod tests {
             process_entry_path(Path::new("C:/c"), "a/b.js", Os::Windows),
             r"C:\c\a\b.js"
         );
-        // Unix keeps the path byte for byte, including a literal backslash.
+        // Unix keeps the joined path byte for byte, including a literal backslash.
+        // (The join itself is the host's, so compare against the host join.)
         assert_eq!(
             process_entry_path(Path::new("/cache/v"), "a/b.js", Os::MacOs),
-            "/cache/v/a/b.js"
+            Path::new("/cache/v").join("a/b.js").to_string_lossy()
         );
         assert_eq!(
             process_path_text(Path::new(r"/odd\name"), Os::Linux),
