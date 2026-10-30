@@ -1,7 +1,7 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { api, isDesktop } from "../lib/client";
 import { ATTACH_UNAVAILABLE, createAgentController, NATIVE_UNAVAILABLE, type AgentController, type AgentPanelProps } from "../lib/agent-controller";
-import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
+import { isHealthCheckSession, listedTitle, sameFolder, threadRowMeta, visibleThreadRows } from "../lib/session-threads";
 import { isNativeSubagent, setShowSubagentSessions, showSubagentSessions } from "../lib/subagent-sessions";
 import { relativeTime, pillVisible } from "../lib/agent-feed";
 import { classifyFailure, leaf } from "../lib/agent-view";
@@ -207,7 +207,8 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
     a.state().canLoad
       ? a
           .sessions()
-          .filter((session) => session.sessionId !== a.state().sessionId)
+          // "Recent in this workspace" never offers a health check session (ADR 0010), whatever list it is given.
+          .filter((session) => session.sessionId !== a.state().sessionId && !isHealthCheckSession(session))
           .slice(0, 4)
           .map((session) => ({ id: session.sessionId, title: session.title || "Untitled chat", time: relativeTime(session.updatedAt) }))
       : [],

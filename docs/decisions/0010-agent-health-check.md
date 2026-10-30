@@ -167,6 +167,13 @@ reached History. Changed:
   where delete is advertised, else closes it.
 - No cheaper liveness request exists in the protocol version Span speaks
   (no ping method), so none is used.
+- Renamed titles: agents may regenerate an old health session's title from
+  the exchange, so listings, the History store, the Agents page rail and
+  "Recent in this workspace" also hide a session whose whole title is one of
+  a small explicit set ("Health check", "Health check response", "Health
+  check response request" and similar; case insensitive, one trailing period
+  allowed, at most two messages when the listing reports a count), display
+  only: cleanup never deletes by this rule.
 
 Tests: `crates/acp/tests/health.rs` adds N consecutive checks creating one
 session and prompting it N times (plain, with close, with close and

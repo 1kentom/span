@@ -5,7 +5,7 @@
  */
 import type { LiveSession_Serialize as LiveSession, SessionMeta_Serialize as SessionMeta, SessionSummary } from "../bindings";
 import type { RowStatus } from "./agent-chats";
-import { listedTitle, sameFolder, threadRowMeta, visibleThreadRows, type Thread } from "./session-threads";
+import { isHealthCheckSession, listedTitle, sameFolder, threadRowMeta, visibleThreadRows, type Thread } from "./session-threads";
 
 export type AgentMode = "editor" | "agents";
 
@@ -258,7 +258,8 @@ export function railRows(input: RailInput): RailRow[] {
   const seen = new Set<string>();
   const shown = new Set(visibleThreadRows(input.listed.map((session) => session.sessionId), input.metas, input.agentId));
   for (const session of input.listed) {
-    if (!shown.has(session.sessionId) || seen.has(session.sessionId)) continue;
+    // Health check sessions (ADR 0010) are never rows, even when a caller passes an unfiltered list.
+    if (!shown.has(session.sessionId) || seen.has(session.sessionId) || isHealthCheckSession(session)) continue;
     seen.add(session.sessionId);
     const stored = threadRowMeta(input.threadFor(session.sessionId));
     const isCurrent = session.sessionId === input.current.sessionId;

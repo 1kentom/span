@@ -44,6 +44,10 @@ describe("agent history store", () => {
       { sessionId: "ci", title: "Health check of the CI pipeline" },
       { sessionId: "two", title: "Health check. Reply with exactly two words: ALL GOOD" },
       { sessionId: "plain", title: "Health check" },
+      { sessionId: "renamed", title: "Health check response" },
+      { sessionId: "renamed2", title: "health check response request." },
+      { sessionId: "endpoint", title: "Health check endpoint" },
+      { sessionId: "k8s", title: "Health checks for k8s" },
       { sessionId: "untitled", title: null },
     ]);
     mocks.sessionMetaList.mockResolvedValue([]);
@@ -51,10 +55,11 @@ describe("agent history store", () => {
     history.setSessionScope("workspace");
     await history.loadSessions(() => true);
     const listed = history.sessions().map((entry) => entry.sessionId);
-    expect(listed).toEqual(["ci", "two", "plain", "untitled"]);
+    // Titles an agent regenerated for an old health session ("Health check response") are hidden too; near misses stay.
+    expect(listed).toEqual(["ci", "two", "endpoint", "k8s", "untitled"]);
     // Resuming the last chat only picks a session History lists (agent-controller restoreLastSession), so a health
     // session saved by an earlier version is never resumed.
-    expect(listed.some((id) => ["h1", "h2", "h3"].includes(id))).toBe(false);
+    expect(listed.some((id) => ["h1", "h2", "h3", "plain", "renamed", "renamed2"].includes(id))).toBe(false);
     dispose();
   });
 
