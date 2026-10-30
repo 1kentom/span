@@ -116,9 +116,17 @@ impl Drop for CopyDir {
     }
 }
 
+/// An open database and, for a live one, its private copy folder. Fields drop
+/// in order, so the connection closes before the folder is removed (Windows
+/// cannot remove files that are still open).
+struct Opened {
+    conn: Connection,
+    _copy: Option<CopyDir>,
+}
+
 /// Opens `db` without ever writing to or locking it: immutable read only, or
 /// a private copy (database plus `-wal`) when a write-ahead log is live.
-fn open(db: &Path, work_dir: &Path) -> Result<(Connection, Option<CopyDir>), String> {
+fn open(db: &Path, work_dir: &Path) -> Result<Opened, String> {
     let wal = wal_path(db);
     let live = fs::symlink_metadata(&wal).is_ok_and(|m| m.is_file() && m.len() > 0);
     if !live {
@@ -129,7 +137,7 @@ fn open(db: &Path, work_dir: &Path) -> Result<(Connection, Option<CopyDir>), Str
         let conn = Connection::open_with_flags(uri, flags).map_err(|e| e.to_string())?;
         conn.pragma_update(None, "query_only", true)
             .map_err(|e| e.to_string())?;
-        return Ok((conn, None));
+        return Ok(Opened { conn, _copy: None });
     }
     let stamp = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -148,7 +156,10 @@ fn open(db: &Path, work_dir: &Path) -> Result<(Connection, Option<CopyDir>), Str
     let conn = Connection::open_with_flags(&copy, flags).map_err(|e| e.to_string())?;
     conn.pragma_update(None, "query_only", true)
         .map_err(|e| e.to_string())?;
-    Ok((conn, Some(guard)))
+    Ok(Opened {
+        conn,
+        _copy: Some(guard),
+    })
 }
 
 enum Layout {
@@ -236,17 +247,18 @@ pub fn read_database(
     if state.database && state.kind == Some(ImportKind::OpenCode) && state.head == hash {
         return;
     }
-    let (conn, _copy) = match open(db, work_dir) {
+    let opened = match open(db, work_dir) {
         Ok(opened) => opened,
         Err(_) => {
             report.skipped += 1;
             return;
         }
     };
-    let Some(layout) = layout(&conn) else {
+    let conn = &opened.conn;
+    let Some(layout) = layout(conn) else {
         report.notes.push(format!(
             "OpenCode database format not recognised (version {}), so it was not read.",
-            version_label(&conn)
+            version_label(conn)
         ));
         *state = FileState {
             kind: Some(ImportKind::OpenCode),
@@ -258,9 +270,9 @@ pub fn read_database(
         return;
     };
     let outcome = match layout {
-        Layout::Messages => read_messages(&conn, state, limits, report),
+        Layout::Messages => read_messages(conn, state, limits, report),
         Layout::Sessions { table, model } => {
-            read_sessions(&conn, table, model, state, limits, report)
+            read_sessions(conn, table, model, state, limits, report)
         }
     };
     match outcome {
