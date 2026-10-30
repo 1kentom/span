@@ -11,12 +11,13 @@ use notify::{
     Event, EventKind,
 };
 use span_lsp::lsp_types::{FileChangeType, FileEvent};
+use span_lsp::watch_sync::{in_nested_checkout, is_nested_checkout, Exclusions};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
     io::{self, Read},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 const MAX_CHANGES: usize = 1024;
@@ -28,6 +29,55 @@ const MAX_IGNORE_FILES: usize = 256;
 const MAX_IGNORE_CACHE: usize = 4096;
 const MAX_IGNORE_LINES: usize = 8192;
 const MAX_IGNORE_LINE_BYTES: usize = 4096;
+
+static EXCLUSIONS: RwLock<Option<Arc<Exclusions>>> = RwLock::new(None);
+
+/// Directory exclusions for language server notifications, from user settings.
+pub(crate) fn set_exclusions(exclusions: Exclusions) {
+    if let Ok(mut current) = EXCLUSIONS.write() {
+        *current = Some(Arc::new(exclusions));
+    }
+}
+
+pub(crate) fn exclusions() -> Arc<Exclusions> {
+    EXCLUSIONS
+        .read()
+        .ok()
+        .and_then(|current| current.clone())
+        .unwrap_or_default()
+}
+
+/// Whether some path of `event` could matter to a language server: not inside an
+/// excluded directory and not inside a nested checkout. Used before an event is
+/// queued, so dependency installs and builds never count as lost notifications.
+pub(crate) fn lsp_relevant(
+    root: &Path,
+    supplied_root: &Path,
+    event: &Event,
+    exclusions: &Exclusions,
+    nested: &mut HashMap<PathBuf, bool>,
+) -> bool {
+    event.paths.is_empty()
+        || event.paths.iter().any(|path| {
+            let relative = path
+                .strip_prefix(root)
+                .or_else(|_| path.strip_prefix(supplied_root))
+                .unwrap_or(path);
+            let absolute = root.join(relative);
+            let parent_excluded = relative
+                .parent()
+                .is_some_and(|parent| exclusions.excludes(parent));
+            // The reported entry itself only counts as excluded when it is a folder
+            // (or a rescan request, which always names one): a regular file may share
+            // a name such as `dist`.
+            let self_excluded = relative
+                .file_name()
+                .is_some_and(|name| exclusions.excludes_dir(name))
+                && (event.need_rescan()
+                    || fs::symlink_metadata(&absolute).is_ok_and(|meta| meta.is_dir()));
+            !parent_excluded && !self_excluded && !in_nested_checkout(root, &absolute, nested)
+        })
+}
 
 pub(crate) struct WatchedBatch {
     pub(crate) root: PathBuf,
@@ -54,7 +104,9 @@ pub(crate) fn watched_batch(
         return result;
     }
     result.root = canonical_root.clone();
-    let mut policy = IgnorePolicy::new(&canonical_root);
+    let exclusions = exclusions();
+    let mut nested = HashMap::new();
+    let mut policy = IgnorePolicy::new(&canonical_root, &exclusions);
     let rename_kinds = rename_kinds(&canonical_root, root, batch);
     let mut seen = HashMap::new();
     let mut paths_examined = 0;
@@ -66,6 +118,11 @@ pub(crate) fn watched_batch(
             result.incomplete = true;
             continue;
         };
+        // Events that only touch excluded folders or nested checkouts are dropped
+        // before anything else, so they can never mark the batch incomplete.
+        if !lsp_relevant(&canonical_root, root, event, &exclusions, &mut nested) {
+            continue;
+        }
         result.incomplete |= event.need_rescan();
         let (typ, hint) = match event.kind {
             EventKind::Access(_) => continue,
@@ -116,6 +173,27 @@ pub(crate) fn watched_batch(
                     );
                 }
                 continue;
+            }
+            // macOS reports renames without a direction and some backends report
+            // unspecific modifications. The path's existence settles what happened.
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any | RenameMode::Other))
+                if event.paths.len() == 1 =>
+            {
+                if fs::symlink_metadata(canonical_root.join(&event.paths[0])).is_ok() {
+                    (FileChangeType::CREATED, None)
+                } else {
+                    (FileChangeType::DELETED, None)
+                }
+            }
+            // An unspecific modification of an entry that still exists (Windows
+            // reports every write this way) is a change. Anything vaguer stays
+            // uncertain and leads to a resync rather than an invented event.
+            EventKind::Modify(ModifyKind::Any | ModifyKind::Other)
+                if event.paths.len() == 1
+                    && !event.need_rescan()
+                    && fs::symlink_metadata(canonical_root.join(&event.paths[0])).is_ok() =>
+            {
+                (FileChangeType::CHANGED, None)
             }
             _ => {
                 result.incomplete = true;
@@ -332,15 +410,17 @@ type CachedIgnore = Result<Option<Arc<Gitignore>>, ()>;
 
 struct IgnorePolicy<'a> {
     root: &'a Path,
+    exclusions: &'a Exclusions,
     cache: HashMap<PathBuf, CachedIgnore>,
     bytes: usize,
     files: usize,
 }
 
 impl<'a> IgnorePolicy<'a> {
-    fn new(root: &'a Path) -> Self {
+    fn new(root: &'a Path, exclusions: &'a Exclusions) -> Self {
         Self {
             root,
+            exclusions,
             cache: HashMap::new(),
             bytes: 0,
             files: 0,
@@ -372,7 +452,11 @@ impl<'a> IgnorePolicy<'a> {
             };
             prefix.push(name);
             let directory = index + 1 < components.len() || is_dir;
-            if protected(name, directory) || ignored(&rules, &prefix, directory) {
+            if protected(name, directory)
+                || directory && self.exclusions.excludes_dir(name)
+                || directory && index + 1 < components.len() && is_nested_checkout(&prefix)
+                || ignored(&rules, &prefix, directory)
+            {
                 return Ok(false);
             }
             if index + 1 < components.len() {
@@ -928,5 +1012,86 @@ mod tests {
         );
         assert!(result.incomplete);
         assert!(result.changes.is_empty());
+    }
+
+    #[test]
+    fn dependency_build_and_nested_checkout_churn_never_marks_a_batch_incomplete() {
+        let temp = root();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        for dir in [
+            "node_modules/.pnpm/pkg",
+            "target/debug",
+            ".pnpm-store/v3",
+            "dist",
+            "_work/feature/src",
+        ] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("_work/feature/.git"), "gitdir: elsewhere\n").unwrap();
+        let mut rescan = Event::new(EventKind::Other).add_path(root.join("node_modules"));
+        rescan = rescan.set_flag(Flag::Rescan);
+        let result = watched_batch(
+            &root,
+            &[
+                Ok(rescan),
+                event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                    &[&root.join("node_modules/.pnpm/pkg/index.js")],
+                ),
+                event(
+                    EventKind::Modify(ModifyKind::Any),
+                    &[&root.join("target/debug/span")],
+                ),
+                event(
+                    EventKind::Create(CreateKind::File),
+                    &[&root.join(".pnpm-store/v3/blob")],
+                ),
+                event(
+                    EventKind::Create(CreateKind::File),
+                    &[&root.join("dist/index.js")],
+                ),
+                event(
+                    EventKind::Create(CreateKind::File),
+                    &[&root.join("_work/feature/src/a.ts")],
+                ),
+            ],
+            false,
+        );
+        assert!(!result.incomplete);
+        assert!(result.changes.is_empty());
+    }
+
+    #[test]
+    fn undirected_renames_and_unspecific_modifications_are_resolved_from_disk() {
+        let temp = root();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join("present.ts"), "x").unwrap();
+        let result = watched_batch(
+            &root,
+            &[
+                event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                    &[&root.join("present.ts")],
+                ),
+                event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                    &[&root.join("moved-away.ts")],
+                ),
+                event(
+                    EventKind::Modify(ModifyKind::Any),
+                    &[&root.join("present.ts")],
+                ),
+            ],
+            false,
+        );
+        assert!(!result.incomplete);
+        assert_eq!(
+            result.changes,
+            vec![
+                actual(&root, "present.ts", FileChangeType::CREATED),
+                actual(&root, "moved-away.ts", FileChangeType::DELETED),
+                actual(&root, "present.ts", FileChangeType::CHANGED),
+            ]
+        );
     }
 }

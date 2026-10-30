@@ -16,7 +16,7 @@ type Rule = { type?: string | string[]; enum?: unknown[]; minimum?: number; maxi
 const rules = schema.properties as Record<string, Rule & { default?: unknown }>;
 const defaults = Object.fromEntries(Object.entries(rules).filter(([key, rule]) => !key.includes('.') && key !== '$schema' && 'default' in rule).map(([key, rule]) => [key, structuredClone(rule.default)])) as Settings;
 // The schema gives `languageServers` no default of its own, so the browser preview supplies the plain one.
-defaults.languageServers = { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [] };
+defaults.languageServers = { autoInstall: false, enabled: {}, javaHome: null, nodePath: null, runProjectCode: false, trustedWorkspaces: [], watchIncludeDirectories: [], silencedWatchWarnings: [] };
 const canonical = (key: string) => aliases[key] || key;
 
 /** Splits a dotted key such as `editor.syntaxColors.dark.keyword` into the known setting and the path below it. */

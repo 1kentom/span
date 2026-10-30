@@ -17,12 +17,13 @@ const MAX_PATTERN_BYTES: usize = 4096;
 const MAX_TOTAL_PATTERN_BYTES: usize = 256 * 1024;
 const MAX_ID_BYTES: usize = 256;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct WatchedFiles {
     roots: Vec<PathBuf>,
     registrations: HashMap<String, Vec<Rule>>,
 }
 
+#[derive(Clone)]
 struct Rule {
     matcher: GlobMatcher,
     target: Target,
@@ -30,6 +31,7 @@ struct Rule {
     pattern_bytes: usize,
 }
 
+#[derive(Clone)]
 enum Target {
     Workspace,
     Absolute,
@@ -168,33 +170,45 @@ impl WatchedFiles {
                     _ => return None,
                 };
                 let path = file_path(&event.uri)?;
-                if !self.roots.iter().any(|root| path.starts_with(root)) {
-                    return None;
-                }
                 // A masked transition must still separate two observable creates.
                 let repeated = seen.insert(path.clone(), event.typ) == Some(event.typ);
-                let matches = self.registrations.values().flatten().any(|rule| {
-                    if !rule.kind.contains(kind) {
-                        return false;
-                    }
-                    match &rule.target {
-                        Target::Absolute => rule.matcher.is_match(&path),
-                        Target::Relative(base) => path
-                            .strip_prefix(base)
-                            .is_ok_and(|relative| rule.matcher.is_match(relative)),
-                        Target::Workspace => self.roots.iter().any(|root| {
-                            path.strip_prefix(root)
-                                .is_ok_and(|relative| rule.matcher.is_match(relative))
-                        }),
-                    }
-                });
-                if !matches || repeated {
+                if repeated || !self.matches(&path, kind) {
                     return None;
                 }
                 event.uri = crate::path_to_uri(&path).ok()?;
                 Some(event)
             })
             .collect()
+    }
+}
+
+impl WatchedFiles {
+    /// The server roots this client was initialized with.
+    pub(crate) fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    /// Whether an event of `kind` at `path` is inside a server root and requested by
+    /// an active registration.
+    pub(crate) fn matches(&self, path: &Path, kind: WatchKind) -> bool {
+        if !self.roots.iter().any(|root| path.starts_with(root)) {
+            return false;
+        }
+        self.registrations.values().flatten().any(|rule| {
+            if !rule.kind.contains(kind) {
+                return false;
+            }
+            match &rule.target {
+                Target::Absolute => rule.matcher.is_match(path),
+                Target::Relative(base) => path
+                    .strip_prefix(base)
+                    .is_ok_and(|relative| rule.matcher.is_match(relative)),
+                Target::Workspace => self.roots.iter().any(|root| {
+                    path.strip_prefix(root)
+                        .is_ok_and(|relative| rule.matcher.is_match(relative))
+                }),
+            }
+        })
     }
 }
 

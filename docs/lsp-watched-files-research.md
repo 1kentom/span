@@ -31,3 +31,14 @@ cargo test --release --locked -p span-lsp -p span-desktop --features span-deskto
 ```
 
 The backend test build uses the same placeholder frontend bundle seam as hosted CI; no native UI or installed app is exercised. Strict hosted Clippy, full CI and native acceptance remain gates. No production server or multi-root parity claim follows from fixtures.
+
+## 2026-10-29: scoped watches and quiet recovery
+
+vtsls kept showing "Restart this language server" after installs and builds. The native event channel holds 1024 events, and an install or build in `node_modules`, `.pnpm-store`, `target` or a nested `_work/*` checkout filled it before any filtering ran. Exclusions applied only after the batch was already marked incomplete. macOS renames (`Modify(Name(Any))`) and Windows writes (`Modify(Any)`) also fell into the unknown-kind arm, so an atomic save alone could trigger the warning.
+
+- Dependency and build folders (`node_modules`, `target`, `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) and nested checkouts (a directory with a `.git` file) are filtered before anything can mark a batch incomplete. Version control folders always stay excluded. The user-only `languageServers.watchIncludeDirectories` setting re-includes named folders.
+- Undirected renames and unspecific modifications are resolved by checking whether the path exists. A native overflow only affects language servers when a dropped event touched a path a server could be watching.
+- Events are coalesced over 100 ms (create then delete cancels out), capped at 8192 paths with an overflow flag, and sent in notifications of at most 500 changes.
+- Lost notifications first trigger a bounded resync scan limited to the globs the server registered. Repeated loss restarts the server automatically with 1, 2 and 4 second backoff, at most 3 times in 10 minutes. The popover status line shows "Refreshing TypeScript server" and then that it was refreshed; there is no toast. Only after the restarts are used up does one warning toast appear, with a one-click Restart and "Don't warn again for this server" (the user-only `languageServers.silencedWatchWarnings` setting). A manual restart resets the counters.
+
+Verified with fixtures only: `watch_sync` unit tests in span-lsp, the desktop service and `watched_paths` regressions, core settings tests for the two keys, and a UI fixture test for the store, popover line and toast. No real vtsls run, native window or installed app exercised this change; native acceptance on macOS and Windows remains a gate.

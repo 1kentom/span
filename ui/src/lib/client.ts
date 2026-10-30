@@ -762,6 +762,7 @@ export const lspPort: LspPort = {
   onState: listener => isDesktop ? events.languageServerStateChanged.listen(event => listener(event.payload)) : hubPreview!.onState(listener),
   onInstallProgress: listener => isDesktop ? events.languageServerInstallProgress.listen(event => listener(event.payload)) : hubPreview!.onInstallProgress(listener),
   onError: listener => isDesktop ? events.languageServerError.listen(event => listener(event.payload)) : noListener(),
+  onWatchRecovery: listener => isDesktop ? events.languageServerWatchRecovery.listen(event => listener(event.payload)) : noListener(),
 };
 
 /** Sign in with a method whose `input` is `apiKey` or `gateway`. The secret goes to the agent only; Span does not log or store it. Returns the session id. */

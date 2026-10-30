@@ -463,6 +463,7 @@ export const events = {
 	languageServerError: makeEvent<LanguageServerError_Serialize, LanguageServerError_Deserialize>("language-server-error"),
 	languageServerInstallProgress: makeEvent<LanguageServerInstallProgress_Serialize, LanguageServerInstallProgress_Deserialize>("language-server-install-progress"),
 	languageServerStateChanged: makeEvent<LanguageServerStateChanged_Serialize, LanguageServerStateChanged_Deserialize>("language-server-state-changed"),
+	languageServerWatchRecovery: makeEvent<LanguageServerWatchRecovery, LanguageServerWatchRecovery>("language-server-watch-recovery"),
 	languageServerWorkProgress: makeEvent<LanguageServerWorkProgress_Serialize, LanguageServerWorkProgress_Deserialize>("language-server-work-progress"),
 	nativeActionEvent: makeEvent<NativeActionEvent, NativeActionEvent>("native-action-event"),
 	runApprovalsChanged: makeEvent<RunApprovalsChanged, RunApprovalsChanged>("run-approvals-changed"),
@@ -2440,6 +2441,14 @@ export type LanguageServerSettings_Deserialize = {
 	 *  global override meaning "trust every folder".
 	 */
 	trustedWorkspaces?: string[],
+	/**
+	 *  Directory names from the built in watched-file exclusions (`node_modules`, `target`,
+	 *  `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) that
+	 *  language servers should be told about anyway. Version control folders stay excluded.
+	 */
+	watchIncludeDirectories?: string[],
+	/**  Server ids whose "fell behind on file changes" warning the user turned off. */
+	silencedWatchWarnings?: string[],
 };
 
 /**
@@ -2477,6 +2486,14 @@ export type LanguageServerSettings_Serialize = {
 	 *  global override meaning "trust every folder".
 	 */
 	trustedWorkspaces: string[],
+	/**
+	 *  Directory names from the built in watched-file exclusions (`node_modules`, `target`,
+	 *  `dist`, `build`, `out`, `.next`, `.turbo`, `.cache`, `.pnpm-store`, `.span`) that
+	 *  language servers should be told about anyway. Version control folders stay excluded.
+	 */
+	watchIncludeDirectories: string[],
+	/**  Server ids whose "fell behind on file changes" warning the user turned off. */
+	silencedWatchWarnings: string[],
 };
 
 export type LanguageServerStateChanged = LanguageServerStateChanged_Serialize | LanguageServerStateChanged_Deserialize;
@@ -2520,6 +2537,13 @@ export type LanguageServerStateDto_Serialize = { kind: "notStarted" } | { kind: 
  *  then `lsp_restart`.
  */
 { kind: "runtimeMissing"; runtime: string; requiredVersion: number; found: string[] };
+
+/**  A server fell behind on filesystem notifications and is being brought back in step. */
+export type LanguageServerWatchRecovery = {
+	server: LanguageServerId,
+	phase: WatchRecoveryPhase,
+	message: string,
+};
 
 /**
  *  A server is busy: importing, building, indexing. Keyed by `(server, root, token)`,
@@ -4771,6 +4795,14 @@ export type UserAttachment_Serialize = {
 };
 
 export type Value = null | boolean | number | string | Value[] | { [key in string]: Value };
+
+export type WatchRecoveryPhase =
+/**  An automatic restart is about to happen. Shown quietly in the status popover. */
+"refreshing" |
+/**  The automatic restart finished. */
+"refreshed" |
+/**  Automatic restarts are used up for now. The user may restart it. */
+"exhausted";
 
 export type WorkProgressKindDto = "begin" | "report" | "end";
 
