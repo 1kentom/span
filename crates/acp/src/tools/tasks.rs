@@ -123,6 +123,8 @@ pub struct Task {
 
 struct Delegation {
     agent: String,
+    /// Display name of the model the child runs, when the agent reported one.
+    model: Option<String>,
     budget: Budget,
     meter: Meter,
     /// Task ids in prompt order. The front one is running.
@@ -203,6 +205,7 @@ impl Registry {
             key,
             Delegation {
                 agent,
+                model: None,
                 budget,
                 meter: Meter::new(),
                 queue: VecDeque::new(),
@@ -764,6 +767,21 @@ impl Registry {
     }
 
     /// Every child with the agent name it was delegated to.
+    /// Record the display name of the model a child runs.
+    pub fn set_model(&self, key: &SessionKey, model: Option<String>) {
+        if let Some(delegation) = self.inner().delegations.get_mut(key) {
+            delegation.model = model;
+        }
+    }
+
+    /// The display name of the model a child runs, when known.
+    pub fn model_of(&self, key: &SessionKey) -> Option<String> {
+        self.inner()
+            .delegations
+            .get(key)
+            .and_then(|d| d.model.clone())
+    }
+
     pub fn children_with_agents(&self) -> Vec<(SessionKey, String)> {
         self.inner()
             .delegations

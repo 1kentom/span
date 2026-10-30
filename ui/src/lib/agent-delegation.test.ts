@@ -21,6 +21,15 @@ describe("delegation reducer", () => {
     expect(cards(done)[0]).toMatchObject({ status: "completed", agentName: "Codex" });
   });
 
+  it("keeps the child's model from the delegated event and the polled status", () => {
+    const running = apply([delegation({ kind: "delegated", lead, child, taskId: "t1", agentName: "OpenCode", model: "Claude Haiku 4.5" })]);
+    expect(cards(running)[0]).toMatchObject({ agentName: "OpenCode", model: "Claude Haiku 4.5" });
+    const unnamed = apply([delegation({ kind: "delegated", lead, child, taskId: "t1", agentName: "OpenCode" })]);
+    expect(cards(unnamed)[0].model).toBeUndefined();
+    const polled = applyDelegationStatus(unnamed, { enabled: true, available: true, reason: null, lead, attached: true, decisions: [], tasks: [{ taskId: "t1", lead, child, agentName: "OpenCode", model: "Deep Two", status: "running", stopReason: null, reason: null, detail: null, startedAtMs: 1, finishedAtMs: null, progressText: null, resultSummary: null, artifacts: [], budgetUsed: { turns: 1, elapsedSeconds: 1 } }] } as unknown as Parameters<typeof applyDelegationStatus>[1]);
+    expect(cards(polled)[0].model).toBe("Deep Two");
+  });
+
   it("maps a failed task with each reason, and a failed cancel to cancelled", () => {
     const failed = apply([delegation({ kind: "delegated", lead, child, taskId: "t1", agentName: "Gemini" }), delegation({ kind: "taskFinished", lead, child, taskId: "t1", status: "failed", reason: "budget_exceeded" })]);
     expect(cards(failed)[0]).toMatchObject({ status: "failed", reason: "budget_exceeded" });

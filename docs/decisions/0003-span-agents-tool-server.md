@@ -554,3 +554,94 @@ Claude honours `persistSession: false` for ACP sessions and whether Codex
 keeps closed children in its own history were not observed. The desktop
 exit path was not exercised in a native window.
 
+
+## Amendment (2026-10-30): model selection, models in list_agents, no agent CLIs from the shell
+
+Owner report: a Codex lead asked to "use opencode for this" with Claude
+Haiku tried `opencode run --model opencode/claude-haiku-4-5 ...` through
+its shell (it failed), then fell back to its own subagent tool, whose model
+list has no Haiku. Span had no way to name a child's model, `list_agents`
+did not say which models an agent offers, and the instructions did not
+steer leads away from agent CLIs (which bypass budgets, approvals, the
+cancel cascade and the delegation card).
+
+What changed:
+
+1. `delegate` takes optional `model`, `effort` and `mode`. Each is matched
+   case-insensitively and exactly against the new child's own select
+   options, on the choice id first and then its display name. They are
+   applied with `AgentControl::configure` (the same
+   `session/set_config_option` path, or legacy `set_model` and `set_mode`,
+   as the user's picker) right after `session/new` and before the first
+   prompt, in the order model, effort, mode. `effort` uses the option with
+   category `thought_level` (else id `effort`, `reasoning_effort`,
+   `thought_level` or `reasoning`).
+2. Refusals. A model, effort or mode the child does not offer, an agent
+   with no such option, or a change the agent rejects returns an `isError`
+   result with `structuredContent.error` (`model_unavailable`,
+   `effort_unavailable`, `mode_unavailable`, `mode_refused`), a detail that
+   names every valid choice as `id (name)`, and `choices` as `{id, name}`.
+   The child is ended at once with the same delete-else-close path as any
+   recorded child and forgotten by the manager, so no session, task, card
+   or `Delegated` event is left, and the call does not use one of the
+   lead's `max_delegations`. Unlike T3 Code's `delegate_task`, whose
+   `model_unavailable` message does not list choices (the caller has to
+   call `orchestrator_capabilities` again), the error itself lists them.
+3. Modes. A child still starts in the approval start mode (amendment of
+   2026-10-29, item 7). `mode` may only keep that mode or pick a plan or
+   read-only one; a bypass-like request (`bypassPermissions`,
+   `agent-full-access`, `yolo`, `never`, or a name containing bypass, yolo,
+   full access and the like) is refused before any child exists, and any
+   other mode (for example `acceptEdits`) is refused as broader.
+4. `list_agents` adds, per agent: `models` (`{id, name}`), `defaultModel`,
+   `currentModel` (live sessions), `modelsKnown`, `modelsSource` (`live` or
+   `cache`), `installed`, `connected`, `health` (`{state, checkedAtMs,
+   detail}` from the existing health monitor, never started for this) and
+   `signedIn` (false when the last check said signed out, true when live
+   or slow, null otherwise). Models come from the `model` option of a live
+   session on that agent, else from `crate::model_cache`: per agent name,
+   the ids, display names and the model a new session started on, written
+   to `agent-models.json` in app data whenever an agent reports a model
+   option (no prompts, titles or session ids), and aliased to the installed
+   agent id when a background connection reports another name. Nothing is
+   invented: without either source `modelsKnown` is false and `modelsNote`
+   says the model is checked when the child session starts. Cost tiers are
+   not listed: the only model cost table is in the UI
+   (`ui/src/lib/model-cost.ts`) and has no Rust equivalent.
+5. Instructions. The server instructions tell the lead to use these tools
+   for any other agent or model, call `list_agents` first, pass `model`
+   (for example a cheaper one for simple work), use `message` to continue a
+   child, never run other agents' CLIs (`opencode run`, `claude -p`,
+   `codex exec` and the like) through the shell for this, and keep its own
+   built-in subagent tool for helpers of its own agent and model.
+6. UI. `DelegationEvent::Delegated` and `DelegationTask` carry an optional
+   `model` (the display name of the model the child runs: the lead's
+   choice, else the agent default when reported). The delegation card shows
+   it next to the agent name and the Agents tab tree row shows it in the
+   row's model slot. A refused model never reaches the user: the lead gets
+   the error and no card is created.
+
+Differences from T3 Code (`docs/orchestration-v2/orchestrator-mcp-server.md`
+and `packages/contracts/src/orchestratorMcp.ts` in pingdotgg/t3code): T3
+selects with a `target` object (`providerInstanceId`, `driverKind`,
+`model`, free form `options` such as `{effort: "max"}`, plus
+`runtimeMode` and `interactionMode` with escalation errors) and lists
+providers and models through `orchestrator_capabilities` (short model
+lists with `omittedModels` and a `search` input). Span keeps the agent as
+the provider selector, adds flat `model`, `effort` and `mode` fields, lists
+models in `list_agents`, and allows no mode escalation at all.
+
+Tests: `crates/acp/tests/tool_server.rs` (models listed only after the
+agent reported them and unknown for an installed agent that never ran;
+model, effort and mode applied before the first prompt in request order;
+display name and id matches; an unknown model lists the choices, deletes
+the child and leaves no session, task or event and no used delegation; a
+bypass mode refused before any child and a broader mode refused with its
+child ended; a model for an agent without a model option), the unit test in
+`model_cache.rs`, and the UI tests in `Delegation.test.tsx`,
+`agent-delegation.test.ts` and `agents-page-tree.test.ts`.
+
+Unverified: no run against a live Codex, Claude or OpenCode lead or child,
+so whether real leads follow the new instructions instead of their shell,
+and whether each agent's model ids match what users type, were not
+observed. No native window run.

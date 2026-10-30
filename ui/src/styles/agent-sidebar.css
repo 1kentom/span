@@ -488,6 +488,7 @@ button.sb-step-row:hover { background: var(--sb-hover); }
 .sb-decision-alts { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 2px 0 2px 16px; list-style: none; font-size: 12px; line-height: 17px; color: var(--sb-dim); overflow-wrap: anywhere; }
 .sb-delegation-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .sb-delegation-name { font-size: 12.5px; font-weight: 500; color: var(--sb-strong); }
+.sb-delegation-model { min-width: 0; font-size: 11px; color: var(--sb-dim); }
 .sb-delegation-status { display: inline-flex; align-items: center; gap: 5px; flex: none; }
 .sb-delegation.failed { background: var(--sb-error-surface); border-color: var(--sb-error-border); }
 .sb-delegation-note { overflow-wrap: anywhere; }
