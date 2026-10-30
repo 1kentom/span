@@ -25,7 +25,7 @@ pub use run_tools::{
 pub use server::{tool_definitions, ToolServer, MCP_PROTOCOL_VERSIONS, SERVER_NAME};
 pub use tasks::DecisionRecord;
 
-use crate::{AgentFeatures, BackgroundAgents, InstalledAgent, SessionKey};
+use crate::{AgentFeatures, BackgroundAgents, HealthMonitor, InstalledAgent, SessionKey};
 use serde::{Deserialize, Serialize};
 use span_core::CoreWorkspace;
 use specta::Type;
@@ -116,6 +116,11 @@ pub enum DelegationEvent {
         child: SessionKey,
         task_id: String,
         agent_name: String,
+        /// Display name of the model the child runs, when the agent
+        /// reported one (the lead's `model` choice, else the agent default).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        model: Option<String>,
     },
     /// A task finished, successfully or not.
     TaskFinished {
@@ -218,6 +223,10 @@ pub struct DelegationTask {
     pub lead: SessionKey,
     pub child: SessionKey,
     pub agent_name: String,
+    /// Display name of the model the child runs, when the agent reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub model: Option<String>,
     /// `queued`, `running`, `completed` or `failed`.
     pub status: String,
     pub stop_reason: Option<String>,
@@ -268,6 +277,8 @@ pub struct ToolServerConfig {
     /// Starts installed agents on demand. Without it, an installed agent
     /// that is not running cannot be delegated to.
     pub background: Option<BackgroundAgents>,
+    /// The latest health check results, listed per agent for the lead.
+    pub health: Option<HealthMonitor>,
     pub events: Option<DelegationEventSink>,
 }
 

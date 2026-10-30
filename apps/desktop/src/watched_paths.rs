@@ -863,7 +863,9 @@ mod tests {
             "config.local",
             "blocked/deep/Keep.java",
             ".project",
+            // `build` is a default watch exclusion, so only the other folder survives.
             "build/Source.txt",
+            "generated/Source.txt",
         ];
         let batch: Vec<_> = names
             .iter()
@@ -877,7 +879,7 @@ mod tests {
                 "nested/Keep.java",
                 "nested/visible.secret",
                 ".project",
-                "build/Source.txt"
+                "generated/Source.txt"
             ]
             .iter()
             .map(|name| actual(&root, name, FileChangeType::DELETED))

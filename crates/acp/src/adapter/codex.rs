@@ -1,11 +1,20 @@
 //! Codex (codex-acp 2.3.0, read from source, not run live).
-use super::{annotate, Quirks, SessionState};
+use super::{annotate, Profile, Quirks, SessionState};
 use crate::ConfigOption;
 use serde_json::{json, Value};
 
 pub(crate) struct Codex;
 
 impl Quirks for Codex {
+    /// Native app-server file approvals return a decision to Codex, which
+    /// performs the write itself rather than staging a Span buffer proposal.
+    fn profile(&self) -> Profile {
+        Profile {
+            edits_bypass_review: true,
+            ..Profile::default()
+        }
+    }
+
     /// `agent` (Auto review) is codex-acp's own default: it asks before
     /// actions it detects as potentially unsafe.
     fn approval_mode(&self, option: &ConfigOption) -> Option<String> {

@@ -204,6 +204,9 @@ pub fn load_delegated_ledger(app: &tauri::AppHandle) {
         // Native subagent session ids (ADR 0005, amendment of 2026-10-29):
         // ids and parent ids only, so History keeps nesting them after a restart.
         span_acp::set_native_subagent_ledger(directory.join("agent-native-subagents.json"));
+        // Model ids and display names each agent last advertised, for the
+        // lead's list_agents (ADR 0003, amendment of 2026-10-30). No prompts.
+        span_acp::set_model_cache(directory.join("agent-models.json"));
     }
 }
 
@@ -400,6 +403,16 @@ async fn delegation_config(
         run_tools,
         installed,
         background: background_agents,
+        // Only an existing monitor: listing agents never starts health checks.
+        health: delegation_enabled
+            .then(|| {
+                state
+                    .health
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+            })
+            .flatten(),
         events: Some(events),
     }))
 }

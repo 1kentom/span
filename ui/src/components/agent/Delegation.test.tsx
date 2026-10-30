@@ -29,6 +29,16 @@ describe("DecisionCard", () => {
 });
 
 describe("DelegationCard", () => {
+  it("shows the child's model next to the agent name only when reported", () => {
+    const host = mount(() => <DelegationCard agent="OpenCode" model="Claude Haiku 4.5" status="running" />);
+    const head = host.querySelector(".sb-delegation-head")!;
+    expect(text(head.querySelector(".sb-delegation-name"))).toBe("OpenCode");
+    expect(text(head.querySelector(".sb-delegation-model"))).toBe("Claude Haiku 4.5");
+    expect(host.querySelector(".sb-delegation")!.getAttribute("aria-label")).toBe("Delegated to OpenCode (Claude Haiku 4.5): Running");
+    const plain = mount(() => <DelegationCard agent="OpenCode" status="running" />);
+    expect(plain.querySelector(".sb-delegation-model")).toBeNull();
+    expect(plain.querySelector(".sb-delegation")!.getAttribute("aria-label")).toBe("Delegated to OpenCode: Running");
+  });
   it("shows a spinner and no result claims while running", () => {
     const host = mount(() => <DelegationCard agent="Codex" status="running" />);
     expect(text(host.querySelector(".sb-delegation-head"))).toContain("Codex");

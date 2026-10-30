@@ -12,6 +12,8 @@ export type DelegationTaskState = {
   child: SessionKey;
   /** Absent only when the task finished before the "delegated" event arrived. */
   agentName?: string;
+  /** Display name of the model the child runs, when the agent reported one. */
+  model?: string;
   status: DelegationStatusKind;
   /** The backend's status string, kept for a status Span does not know. */
   rawStatus?: string;
@@ -78,6 +80,7 @@ export type TaskPatch = {
   taskId: string;
   child: SessionKey;
   agentName?: string;
+  model?: string | null;
   status?: string;
   reason?: FailureReason | null;
   stopReason?: string | null;
@@ -97,6 +100,7 @@ export function mergeTask(previous: DelegationTaskState | undefined, patch: Task
   const base: DelegationTaskState = previous ?? { taskId: patch.taskId, child: patch.child, status: "running" };
   const next: DelegationTaskState = { ...base, child: patch.child };
   if (patch.agentName) next.agentName = patch.agentName;
+  if (patch.model) next.model = patch.model;
   if (patch.status !== undefined) {
     next.status = taskStatusKind(patch.status, reason);
     next.rawStatus = patch.status;

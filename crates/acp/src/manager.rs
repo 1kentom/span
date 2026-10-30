@@ -185,6 +185,8 @@ struct SessionMeta {
     title: Option<String>,
     model: Option<String>,
     mode: Option<String>,
+    /// The select options the agent last listed (empty lists are ignored).
+    config: Vec<crate::ConfigOption>,
 }
 
 /// Receives [`SessionStates`] whenever a connection's session states change.
@@ -769,6 +771,7 @@ impl SessionManager {
             .map(Connection::name)
             .unwrap_or_default();
         let mut session_id = event_session(event);
+        let mut remembered: Option<(Vec<crate::ConfigOption>, bool)> = None;
         let mut kinds: Option<((String, String), HashMap<String, String>)> = None;
         let mut track = |request_id: &str, kind| {
             state.pending.insert(
@@ -843,15 +846,20 @@ impl SessionManager {
                 session_id,
                 options,
             } => {
+                let meta = state
+                    .meta
+                    .entry(SessionKey::new(connection_id, session_id.clone()))
+                    .or_default();
                 if let Some(model) = options
                     .iter()
                     .find(|o| o.category.as_deref() == Some("model") || o.id == "model")
                 {
-                    state
-                        .meta
-                        .entry(SessionKey::new(connection_id, session_id.clone()))
-                        .or_default()
-                        .model = Some(model.current_value.clone());
+                    // The first options of a session carry the model it started on.
+                    remembered = Some((options.clone(), meta.model.is_none()));
+                    meta.model = Some(model.current_value.clone());
+                }
+                if !options.is_empty() {
+                    meta.config = options.clone();
                 }
             }
             _ => {}
@@ -903,6 +911,10 @@ impl SessionManager {
                 }
             }
             _ => {}
+        }
+        drop(state);
+        if let Some((options, started)) = remembered {
+            crate::model_cache::remember_models(&agent_name, &options, started);
         }
         (agent_name, session_id)
     }
@@ -1137,6 +1149,41 @@ impl SessionManager {
     pub fn live_session(&self, key: &SessionKey) -> Option<LiveSession> {
         let state = self.state();
         state.sessions.get(key).map(|s| state.live(key, s))
+    }
+
+    /// The select options (model, mode and the like) a session last
+    /// reported. Empty when it reported none or the manager does not know it.
+    pub fn config_options(&self, key: &SessionKey) -> Vec<crate::ConfigOption> {
+        self.state()
+            .meta
+            .get(key)
+            .map(|meta| meta.config.clone())
+            .unwrap_or_default()
+    }
+
+    /// The `model` option a live session on `connection_id` last reported,
+    /// for listing which models that agent offers.
+    pub fn connection_model_option(&self, connection_id: &str) -> Option<crate::ConfigOption> {
+        let state = self.state();
+        let mut keys: Vec<&SessionKey> = state
+            .meta
+            .keys()
+            .filter(|key| key.connection_id == connection_id && state.sessions.contains_key(*key))
+            .collect();
+        keys.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        keys.into_iter()
+            .find_map(|key| crate::model_cache::model_option(&state.meta[key].config).cloned())
+    }
+
+    /// Forget a session tree without asking the agent anything, for a child
+    /// whose agent can neither delete nor close it.
+    pub(crate) async fn forget(&self, key: &SessionKey) {
+        let _ = self.end_children(key);
+        self.forget_tree(key).await;
+        let service = self.service(&key.connection_id);
+        if let Some(service) = service {
+            let _ = service.cancel(key.session_id.clone());
+        }
     }
 
     /// Requests from any connection that wait for the user.
@@ -1669,6 +1716,35 @@ impl AgentControl {
     pub fn session(&self, target: &SessionKey) -> Option<SessionInfo> {
         self.below(target).ok()?;
         self.manager.session(target)
+    }
+
+    /// The select options a child last reported.
+    pub fn config_options(&self, target: &SessionKey) -> Vec<crate::ConfigOption> {
+        if self.below(target).is_err() {
+            return Vec::new();
+        }
+        self.manager.config_options(target)
+    }
+
+    /// Change one select option of a child (`session/set_config_option`, or
+    /// the legacy `set_mode` and `set_model` the adapter routes to).
+    pub async fn configure(
+        &self,
+        target: &SessionKey,
+        config_id: String,
+        value: String,
+    ) -> Result<(), String> {
+        self.below(target)?;
+        self.manager
+            .service(&target.connection_id)
+            .ok_or("Unknown or disconnected connection")?
+            .set_config(target.session_id.clone(), config_id, value)
+            .await
+    }
+
+    /// The `model` option a live session of `connection_id` last reported.
+    pub fn agent_model_option(&self, connection_id: &str) -> Option<crate::ConfigOption> {
+        self.manager.connection_model_option(connection_id)
     }
 
     /// Connections a child could be started on, with reported features.
