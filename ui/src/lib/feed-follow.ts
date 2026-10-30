@@ -59,6 +59,8 @@ export const ATTACH_PX = 48;
 export const DETACH_PX = 2;
 /** Wheel events closer together than this belong to one stream (a gesture and its inertia). */
 export const INERTIA_GAP_MS = 120;
+/** How far below the view top `reveal(..., "start")` puts its target. */
+export const REVEAL_START_PX = 12;
 /** Frames a restore keeps correcting while late layout (markdown, images, unrendered blocks) settles. */
 export const RESTORE_FRAMES = 30;
 
@@ -180,8 +182,11 @@ export interface FeedFollow {
   jump(): void;
   /** Code scrolls to an older message: stop following. */
   detach(): void;
-  /** Detaches and brings `element` to the middle of the view, scrolling only the feed (never its ancestors). */
-  reveal(element: Element): void;
+  /**
+   * Detaches and brings `target` (an element or a text range) to the middle of the view, or near its top with
+   * `"start"`, scrolling only the feed (never its ancestors, as `scrollIntoView` does).
+   */
+  reveal(target: { getBoundingClientRect(): DOMRect }, align?: "center" | "start"): void;
   /** Where the reader is now, to restore after a thread switch. */
   position(): FeedPosition | undefined;
   /** Puts a detached feed back at a saved position, holding it while late layout settles; a gesture cancels it. */
@@ -268,11 +273,26 @@ export function createFeedFollow(options: { following: Accessor<boolean>; setFol
       write();
     });
   };
-  /** A pending restore, corrected each frame until it holds or a gesture cancels it. */
-  let restoring: { position: FeedPosition; frames: number; frame?: number } | undefined;
+  /** A pending restore or reveal, corrected each frame while layout settles, until a gesture cancels it. */
+  let restoring: { frames: number; frame?: number } | undefined;
   const stopRestore = () => {
     if (restoring?.frame !== undefined && typeof cancelAnimationFrame === "function") cancelAnimationFrame(restoring.frame);
     restoring = undefined;
+  };
+  /** Runs `apply` on the next RESTORE_FRAMES frames while the feed stays detached. */
+  const settleTo = (apply: () => void) => {
+    stopRestore();
+    const mine = { frames: 0 } as { frames: number; frame?: number };
+    const run = () => {
+      if (restoring !== mine || !options.scroller() || state().mode !== "detached") return restoring === mine ? stopRestore() : undefined;
+      apply();
+      capture();
+      if (++mine.frames >= RESTORE_FRAMES || typeof requestAnimationFrame !== "function") return stopRestore();
+      mine.frame = requestAnimationFrame(run);
+    };
+    restoring = mine;
+    if (typeof requestAnimationFrame === "function") mine.frame = requestAnimationFrame(run);
+    else run();
   };
   // A thread switch or a queued send flips the mode in the store: pin as soon as it reads following.
   createEffect(on(options.following, (following) => {
@@ -440,31 +460,33 @@ export function createFeedFollow(options: { following: Accessor<boolean>; setFol
       capture();
       syncAttribute();
     },
-    reveal(element) {
+    reveal(target, align = "center") {
       const scroller = options.scroller();
       if (!scroller) return;
       stopRestore();
       dispatch({ type: "detach" });
       const view = scroller.getBoundingClientRect();
-      const rect = element.getBoundingClientRect();
-      scrollTo(scroller, scroller.scrollTop + rect.top - view.top - Math.max(0, (scroller.clientHeight - rect.height) / 2));
+      const rect = target.getBoundingClientRect();
+      const inset = align === "start" ? REVEAL_START_PX : Math.max(0, (scroller.clientHeight - rect.height) / 2);
+      const offset = Math.min(inset, Math.max(0, scroller.clientHeight - rect.height));
+      scrollTo(scroller, scroller.scrollTop + rect.top - view.top - inset);
       capture();
       syncAttribute();
+      // Blocks between the old and new view render for the first time and change height (content-visibility), which
+      // moves the target: hold the target itself where it was put while layout settles.
+      settleTo(() => {
+        const element = options.scroller();
+        if (!element) return;
+        const drift = target.getBoundingClientRect().top - element.getBoundingClientRect().top - offset;
+        if (Math.abs(drift) >= 1) scrollTo(element, element.scrollTop + drift);
+      });
     },
     position,
     restore(saved) {
-      stopRestore();
-      const run = () => {
+      settleTo(() => {
         const element = options.scroller();
-        if (!restoring || !element || state().mode !== "detached") return stopRestore();
-        applyPosition(element, saved);
-        capture();
-        if (++restoring.frames >= RESTORE_FRAMES || typeof requestAnimationFrame !== "function") return stopRestore();
-        restoring.frame = requestAnimationFrame(run);
-      };
-      restoring = { position: saved, frames: 0 };
-      if (typeof requestAnimationFrame === "function") restoring.frame = requestAnimationFrame(run);
-      else run();
+        if (element) applyPosition(element, saved);
+      });
     },
   };
 }
