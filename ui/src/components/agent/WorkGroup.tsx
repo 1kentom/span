@@ -33,12 +33,41 @@ export function Delta(props: { add: number; del: number }) {
   );
 }
 
-/** Shell output with the command, stdout and stderr lines, cwd and exit code. */
-export function TerminalOutput(props: { lines: TermLine[]; cwd?: string; exitCode?: number | null; running?: boolean; onCopy?: () => void }) {
+/** Earlier output lines each "Show earlier lines" adds. */
+const EARLIER_STEP = 1000;
+
+/**
+ * Shell output with the command, stdout and stderr lines, cwd and exit code. A long output shows its tail; earlier lines
+ * are read and drawn only when asked for, and Copy output copies all of it.
+ */
+export function TerminalOutput(props: { lines: TermLine[]; cwd?: string; exitCode?: number | null; running?: boolean; onCopy?: () => void; hidden?: number; full?: () => TermLine[]; onCopyOutput?: (text: string) => void }) {
+  const [earlier, setEarlier] = createSignal(0);
+  const all = createMemo(() => (earlier() > 0 && props.full ? props.full() : undefined));
+  const left = () => Math.max(0, (props.hidden ?? 0) - earlier());
+  const shown = () => {
+    const full = all();
+    if (!full) return props.lines;
+    const command = props.lines.filter((line) => line.kind === "cmd");
+    const tail = props.lines.length - command.length;
+    return [...command, ...full.slice(Math.max(0, full.length - tail - earlier()))];
+  };
+  const copy = () => {
+    const command = props.lines.filter((line) => line.kind === "cmd").map((line) => `$ ${line.text}`);
+    const output = (props.full ? props.full() : props.lines.filter((line) => line.kind !== "cmd")).map((line) => line.text);
+    props.onCopyOutput?.([...command, ...output].join("\n"));
+  };
   return (
     <div class="sb-term">
+      <Show when={left() > 0 && props.full}>
+        <div class="sb-term-more">
+          <span class="sb-sub">{`${left().toLocaleString("en-US")} earlier ${left() === 1 ? "line" : "lines"} not shown`}</span>
+          <button type="button" class="sb-btn ghost" onClick={() => setEarlier(earlier() + Math.min(EARLIER_STEP, left()))}>
+            {left() > EARLIER_STEP ? `Show ${EARLIER_STEP.toLocaleString("en-US")} more` : "Show all"}
+          </button>
+        </div>
+      </Show>
       <div class="sb-term-body sb-mono" role="log" aria-label="Terminal output" tabIndex={0}>
-        <For each={props.lines}>
+        <For each={shown()}>
           {(line) => (
             <div class={`sb-term-line ${line.kind}`}>
               <Show when={line.kind === "cmd"}><span class="sb-prompt">$ </span></Show>
@@ -53,6 +82,9 @@ export function TerminalOutput(props: { lines: TermLine[]; cwd?: string; exitCod
         <span class="sb-flex" />
         <Show when={props.exitCode !== undefined && props.exitCode !== null}>
           <span classList={{ "sb-bad-text": props.exitCode !== 0 }}>exit {props.exitCode}</span>
+        </Show>
+        <Show when={props.onCopyOutput}>
+          <button type="button" class="sb-icon-btn" aria-label="Copy output" title="Copy output" onClick={copy}><Icon name="Copy" size={12} /></button>
         </Show>
         <Show when={props.onCopy}>
           <button class="sb-icon-btn" aria-label="Copy command" onClick={() => props.onCopy?.()}><Icon name="Copy" size={12} /></button>
@@ -142,13 +174,13 @@ function ChildRows(props: { children: ChildStep[] }) {
   );
 }
 
-function Detail(props: { detail: StepDetail }) {
+function Detail(props: { detail: StepDetail; onCopyText?: (text: string) => void }) {
   const d = () => props.detail;
   return (
     <div class="sb-detail">
       {(() => {
         const detail = d();
-        if (detail.type === "terminal") return <TerminalOutput lines={detail.lines} cwd={detail.cwd} exitCode={detail.exitCode} running={detail.running} />;
+        if (detail.type === "terminal") return <TerminalOutput lines={detail.lines} cwd={detail.cwd} exitCode={detail.exitCode} running={detail.running} hidden={detail.hidden} full={detail.full} onCopyOutput={props.onCopyText} />;
         if (detail.type === "diff") return <DiffView path={detail.path} lines={detail.lines} onOpen={detail.onOpen} />;
         return <SearchMatches matches={detail.matches} />;
       })()}
@@ -157,7 +189,7 @@ function Detail(props: { detail: StepDetail }) {
 }
 
 /** One tool step. The row toggles its detail when it has any. */
-export function StepRow(props: { step: StepView; open?: boolean; onToggle?: () => void }) {
+export function StepRow(props: { step: StepView; open?: boolean; onToggle?: () => void; onCopyText?: (text: string) => void }) {
   const expandable = () => Boolean(props.step.detail);
   return (
     <div class="sb-step">
@@ -174,7 +206,7 @@ export function StepRow(props: { step: StepView; open?: boolean; onToggle?: () =
         </button>
       </Show>
       <Show when={props.step.note}><div class="sb-step-note sb-sub">{props.step.note}</div></Show>
-      <Show when={props.open && props.step.detail}><Detail detail={props.step.detail!} /></Show>
+      <Show when={props.open && props.step.detail}><Detail detail={props.step.detail!} onCopyText={props.onCopyText} /></Show>
       <Show when={props.step.images?.length}><StepImages images={props.step.images!} /></Show>
       <Show when={props.step.savedPath}>
         <div class="sb-step-saved sb-sub">
@@ -224,6 +256,8 @@ type WorkGroupProps = {
   defaultOpen?: boolean;
   /** Step ids shown expanded at the start. */
   defaultExpanded?: string[];
+  /** Copies a step's full output. */
+  onCopyText?: (text: string) => void;
 };
 
 /** A run of tool steps collapsed under one summary line. */
@@ -266,7 +300,7 @@ export function WorkGroup(props: WorkGroupProps) {
           <For each={segments()}>
             {(segment) =>
               segment.type === "step" ? (
-                <StepRow step={segment.step} open={isOpen(segment.step)} onToggle={() => toggle(segment.step.id)} />
+                <StepRow step={segment.step} open={isOpen(segment.step)} onToggle={() => toggle(segment.step.id)} onCopyText={props.onCopyText} />
               ) : (
                 <div class="sb-internal">
                   <button class="sb-step-row sb-internal-row" aria-expanded={internalOpen().has(segment.key)} onClick={() => toggleInternal(segment.key)}>
@@ -275,7 +309,7 @@ export function WorkGroup(props: WorkGroupProps) {
                   </button>
                   <Show when={internalOpen().has(segment.key)}>
                     <div class="sb-internal-steps">
-                      <For each={segment.steps}>{(step) => <StepRow step={step} open={isOpen(step)} onToggle={() => toggle(step.id)} />}</For>
+                      <For each={segment.steps}>{(step) => <StepRow step={step} open={isOpen(step)} onToggle={() => toggle(step.id)} onCopyText={props.onCopyText} />}</For>
                     </div>
                   </Show>
                 </div>

@@ -132,7 +132,14 @@ pub fn inside_workspace(root: &Path, relative: &str) -> Result<(PathBuf, String)
         || requested.is_absolute()
         || requested
             .components()
-            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+            // `RootDir` catches `\x` and `/x` on Windows, which are not absolute
+            // there (no drive) but still name a path outside the workspace.
+            .any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::Prefix(_) | Component::RootDir
+                )
+            })
     {
         return Err(format!(
             "Path must be relative to the workspace and stay inside it: {relative}"

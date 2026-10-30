@@ -103,6 +103,7 @@ import { createPreviewBinding, noticeFor, withHoverExtras } from "./lib/lsp-hove
 import { previewHoverCapabilities, previewHoverServer } from "./lib/hover-preview";
 import type { BindingContext } from "./stores/language-servers";
 import type { EditProposal, SyntaxSnapshot, ToolInfo, StartupRequest_Serialize as StartupRequest, StartupFile_Serialize as StartupFile, RecentProject_Serialize as RecentProject } from "./bindings";
+import { openFeedFind } from "./lib/feed-find";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -613,7 +614,7 @@ export default function App() {
     else if (target === "side") agentsPanels.toggleSide();
   }
   const handlers: ActionHandlers = {
-    quickOpen: () => { setQuickOpenQuery(""); setQuickOpen(true); }, toggleFiles, focusFiles, openFile: () => { void openFilePicker(); }, commandPalette: () => setPaletteOpen(true), findInFile: () => runEditor("find"), searchWorkspace: openSearch, showSourceControl,
+    quickOpen: () => { setQuickOpenQuery(""); setQuickOpen(true); }, toggleFiles, focusFiles, openFile: () => { void openFilePicker(); }, commandPalette: () => setPaletteOpen(true), findInFile: () => { if (!openFeedFind(document.activeElement)) runEditor("find"); }, searchWorkspace: openSearch, showSourceControl,
     settings: openSettings, showUsage: () => setUsageOpen(true), closeTab: () => { if (document.activeElement?.closest(".terminal-dock") && terminalDock) { void terminalDock.closeCurrent().catch(error => w.setError(String(error))); return; } const path = w.activeTab(); if (path) requestCloseTab(path, w.activeGroup()); else requestCloseGroup(w.activeGroup()); }, save: saveActive, openFolder: requestWorkspace,
     splitEditor: () => w.splitEditor(), newFile: () => { if (agentsMode()) setAgentsNewRequest(value => value + 1); else void withFiles(() => explorer.startCreate("file")); }, newFolder: () => { void withFiles(() => explorer.startCreate("folder")); }, newFromTemplate: openTemplatePopup, splitEditorDown: () => w.splitEditor(w.activeGroup(), undefined, "down"), toggleProject: () => togglePanel("toggleProject"), toggleAssistant: () => togglePanel("toggleAssistant"), toggleTerminal: () => togglePanel("toggleTerminal"),
     markdownPreview: () => { const path = w.activePath(); if (path && w.isMarkdown(path)) w.setMarkdownView(path, w.markdownView(path) === "preview" ? "source" : "preview"); },
@@ -695,7 +696,7 @@ export default function App() {
       void api.onFormatWarning(warning => w.setError(`Saved ${fileName(warning.path)} without formatting: ${warning.message}`)).then(unlisten => { if (disposed) unlisten(); else unlistenFormatWarning = unlisten; });
       void api.onWindowState(state => { setFullscreen(state.fullscreen); setNativeTrafficLights(state.hasNativeTrafficLights); }).then(unlisten => { if (disposed) unlisten(); else unlistenResize = unlisten; });
       void getCurrentWindow().onCloseRequested(event => { if (allowAppClose) return; event.preventDefault(); closeIntent++; if (hasUnsaved()) setPendingAppClose(true); else void closeWindow(); }).then(unlisten => { if (disposed) unlisten(); else unlistenClose = unlisten; });
-      void api.onNativeAction(action => { if (!["zoomIn", "zoomOut", "resetZoom"].includes(action) && (w.busy() || !modalAllowsGlobalShortcut(new KeyboardEvent("keydown")))) return; if (action === "quit") { void getCurrentWindow().close(); return; } if ((action === "findInFile" && w.activeTab() === SETTINGS_TAB) || canDispatchAction(action, document.activeElement)) handlers[action]?.(); }).then(unlisten => { if (disposed) unlisten(); else { unlistenNative = unlisten; setNativeReady(true); } });
+      void api.onNativeAction(action => { if (!["zoomIn", "zoomOut", "resetZoom"].includes(action) && (w.busy() || !modalAllowsGlobalShortcut(new KeyboardEvent("keydown")))) return; if (action === "quit") { void getCurrentWindow().close(); return; } if (action === "findInFile" && openFeedFind(document.activeElement)) return; if ((action === "findInFile" && w.activeTab() === SETTINGS_TAB) || canDispatchAction(action, document.activeElement)) handlers[action]?.(); }).then(unlisten => { if (disposed) unlisten(); else { unlistenNative = unlisten; setNativeReady(true); } });
     }
   });
   onCleanup(() => { window.removeEventListener("keydown", keyboard, true); window.removeEventListener("beforeunload", beforeUnload); disposed = true; unlistenClose?.(); unlistenNative?.(); unlistenResize?.(); unlistenStartup?.(); unlistenFormatWarning?.(); unlistenFocus?.(); unlistenOpenError?.(); unlistenNativeDrop?.(); endPanelDrag?.(); });

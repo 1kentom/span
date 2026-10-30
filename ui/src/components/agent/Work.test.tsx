@@ -44,6 +44,27 @@ describe("WorkGroup", () => {
 });
 
 describe("step detail views", () => {
+  it("a long output shows its tail, draws earlier lines only on request and copies all of it", () => {
+    const all = Array.from({ length: 2500 }, (_, i) => ({ kind: "out" as const, text: `line ${i}` }));
+    const full = vi.fn(() => all);
+    const copied: string[] = [];
+    const host = mount(() => <TerminalOutput lines={[{ kind: "cmd", text: "cargo build" }, ...all.slice(-200)]} hidden={2300} full={full} onCopyOutput={(value) => copied.push(value)} />);
+    expect(host.querySelectorAll(".sb-term-line")).toHaveLength(201);
+    expect(full).not.toHaveBeenCalled();
+    expect(text(host.querySelector(".sb-term-more"))).toBe("2,300 earlier lines not shownShow 1,000 more");
+    (host.querySelector(".sb-term-more button") as HTMLButtonElement).click();
+    expect(host.querySelectorAll(".sb-term-line")).toHaveLength(1201);
+    expect(host.querySelectorAll(".sb-term-line")[1].textContent).toBe("line 1300");
+    (host.querySelector(".sb-term-more button") as HTMLButtonElement).click();
+    expect(text(host.querySelector(".sb-term-more button"))).toBe("Show all");
+    (host.querySelector(".sb-term-more button") as HTMLButtonElement).click();
+    expect(host.querySelectorAll(".sb-term-line")).toHaveLength(2501);
+    expect(host.querySelector(".sb-term-more")).toBeNull();
+    (host.querySelector("[aria-label='Copy output']") as HTMLButtonElement).click();
+    expect(copied[0].split("\n")).toHaveLength(2501);
+    expect(copied[0].startsWith("$ cargo build\nline 0\n")).toBe(true);
+  });
+
   it("renders terminal lines, exit code and a copy action", () => {
     const copy = vi.fn();
     const host = mount(() => <TerminalOutput lines={[{ kind: "cmd", text: "ls" }, { kind: "out", text: "a" }, { kind: "err", text: "x" }]} cwd="~" exitCode={0} onCopy={copy} />);

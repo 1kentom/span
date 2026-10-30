@@ -67,6 +67,8 @@ pub enum TaskStatus {
     Running,
     Completed,
     Failed,
+    /// The child session is gone while the task was queued or running.
+    Lost,
 }
 
 impl TaskStatus {
@@ -76,11 +78,12 @@ impl TaskStatus {
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Lost => "lost",
         }
     }
 
     pub fn finished(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed)
+        matches!(self, Self::Completed | Self::Failed | Self::Lost)
     }
 }
 
@@ -116,6 +119,8 @@ pub struct Task {
     pub finished_at_ms: Option<u64>,
     /// What the lead expects back, for the task a delegation started with.
     pub deliverables: Option<Deliverables>,
+    /// The `delegate_many` group that started this task.
+    pub group_id: Option<String>,
     last_progress: Option<String>,
     /// The user cancelled this task. Its terminal state is then always
     /// `failed` with reason `cancelled`, whatever the child reports later.
@@ -146,7 +151,20 @@ struct Delegation {
     /// Delegated with `onApproval: "fail"`: a permission request or edit
     /// review stops the running turn instead of waiting for the user.
     fail_on_approval: bool,
+    /// The child's first task, registered but held in Span's queue until
+    /// one of the lead's running tasks finishes (`delegate_many`).
+    held: Option<String>,
+    /// What the child waits on the user for, while `waiting_for_user > 0`:
+    /// `permission`, `question` or `edit_review`.
+    waiting_for: Option<&'static str>,
 }
+
+/// Why a task is `lost` while Span keeps running.
+pub const LOST_DETAIL: &str = "the child session is gone (its agent exited or the session ended) before the task finished; delegate again";
+
+/// Why a `message` to a child whose first task waits in Span's queue is
+/// refused.
+pub const HELD_REFUSED: &str = "this child's first task is still queued in Span until one of your running tasks finishes; call wait, then send the follow-up";
 
 /// Why a child was closed while idle, as the lead reads it.
 pub const IDLE_CLOSED: &str =
@@ -169,6 +187,9 @@ pub struct TaskView {
     pub spent_tokens: Option<u64>,
     pub max_tokens: Option<u64>,
     pub waiting_for_user: u32,
+    /// `permission`, `question` or `edit_review` while the child waits on
+    /// the user.
+    pub waiting_for: Option<&'static str>,
 }
 
 pub struct Registry {
@@ -222,6 +243,8 @@ impl Registry {
                 generation: 0,
                 closed: false,
                 fail_on_approval: false,
+                held: None,
+                waiting_for: None,
             },
         );
     }
@@ -259,6 +282,9 @@ impl Registry {
         if delegation.closed {
             return Err(IDLE_CLOSED.into());
         }
+        if delegation.held.is_some() {
+            return Err(HELD_REFUSED.into());
+        }
         delegation.meter.turn_allowed(&delegation.budget)?;
         if let Some((_, detail)) = delegation.meter.over(&delegation.budget, second) {
             return Err(format!("budget spent: {detail}"));
@@ -293,6 +319,7 @@ impl Registry {
                 started_at_ms: now_ms(),
                 finished_at_ms: None,
                 deliverables: None,
+                group_id: None,
                 last_progress: None,
                 user_cancelled: false,
                 permission_rejected: false,
@@ -301,6 +328,125 @@ impl Registry {
         drop(inner);
         self.bump();
         Ok(id)
+    }
+
+    /// Register a delegation's first task without starting it: it waits in
+    /// Span's queue (status `queued`) and counts as a turn now, so the
+    /// lead's budget is charged at admission. Refused like `start_task`.
+    pub fn register_held(
+        &self,
+        key: &SessionKey,
+        save_to: Option<String>,
+        group_id: Option<String>,
+        second: Duration,
+    ) -> Result<String, String> {
+        let mut inner = self.inner();
+        inner.next_task += 1;
+        let id = format!("task-{}", inner.next_task);
+        let delegation = inner
+            .delegations
+            .get_mut(key)
+            .ok_or("Unknown delegated session")?;
+        if delegation.held.is_some() || !delegation.queue.is_empty() {
+            return Err("This child already has a task".into());
+        }
+        delegation.meter.turn_allowed(&delegation.budget)?;
+        if let Some((_, detail)) = delegation.meter.over(&delegation.budget, second) {
+            return Err(format!("budget spent: {detail}"));
+        }
+        delegation.meter.turns += 1;
+        delegation.generation += 1;
+        delegation.held = Some(id.clone());
+        let agent = delegation.agent.clone();
+        inner.tasks.insert(
+            id.clone(),
+            Task {
+                key: key.clone(),
+                agent,
+                status: TaskStatus::Queued,
+                text: String::new(),
+                stop_reason: None,
+                reason: None,
+                detail: None,
+                events: 0,
+                activity: "queued in Span until one of the lead's running tasks finishes".into(),
+                save_to,
+                changed: Vec::new(),
+                started_at_ms: now_ms(),
+                finished_at_ms: None,
+                deliverables: None,
+                group_id,
+                last_progress: None,
+                user_cancelled: false,
+                permission_rejected: false,
+            },
+        );
+        drop(inner);
+        self.bump();
+        Ok(id)
+    }
+
+    /// Move a held task to its child's queue as the running turn. False
+    /// when it is no longer held (it was cancelled or its child is gone).
+    pub fn launch_held(&self, task_id: &str) -> bool {
+        let mut inner = self.inner();
+        let Inner {
+            delegations, tasks, ..
+        } = &mut *inner;
+        let Some(task) = tasks.get_mut(task_id).filter(|t| !t.status.finished()) else {
+            return false;
+        };
+        let Some(d) = delegations
+            .get_mut(&task.key)
+            .filter(|d| d.held.as_deref() == Some(task_id))
+        else {
+            return false;
+        };
+        d.held = None;
+        d.queue.push_back(task_id.to_owned());
+        task.status = TaskStatus::Running;
+        task.activity = "starting".into();
+        // Budgets and timeouts count from the launch, not the admission.
+        d.meter.started = std::time::Instant::now();
+        drop(inner);
+        self.bump();
+        true
+    }
+
+    /// The held task of a child, if its first task still waits in Span.
+    pub fn held_task(&self, key: &SessionKey) -> Option<String> {
+        self.inner()
+            .delegations
+            .get(key)
+            .and_then(|d| d.held.clone())
+    }
+
+    /// End a held task that never launched, with Span's reason.
+    pub fn fail_held(&self, task_id: &str, reason: FailureReason, detail: String) {
+        let key = match self.inner().tasks.get(task_id) {
+            Some(task) => task.key.clone(),
+            None => return,
+        };
+        self.stopping(&key, reason, detail);
+        self.finish(task_id, Err("Stopped by Span before it started".into()));
+    }
+
+    /// Prompts all children of this lead were charged so far.
+    pub fn lead_turns(&self) -> u32 {
+        self.inner()
+            .delegations
+            .values()
+            .map(|d| d.meter.turns)
+            .sum()
+    }
+
+    /// Turns, measured tokens and reported cost of the delegation a task
+    /// belongs to.
+    pub fn delegation_usage(&self, task_id: &str) -> Option<(u32, Option<u64>, Option<f64>)> {
+        let inner = self.inner();
+        let key = &inner.tasks.get(task_id)?.key;
+        let d = inner.delegations.get(key)?;
+        Some((d.meter.turns, d.meter.used_tokens(), d.meter.cost))
     }
 
     /// The typed UI record for a permission or elicitation event from a
@@ -374,6 +520,7 @@ impl Registry {
             }
             (AgentEvent::Permission { title, .. }, task) => {
                 delegation.waiting_for_user += 1;
+                delegation.waiting_for = Some("permission");
                 approval_stop = Some(format!("a permission request ({title})"));
                 if let Some(task) = task {
                     task.activity =
@@ -383,6 +530,7 @@ impl Registry {
             }
             (AgentEvent::Elicitation { message, .. }, task) => {
                 delegation.waiting_for_user += 1;
+                delegation.waiting_for = Some("question");
                 if let Some(task) = task {
                     task.activity = format!("waiting for the user to answer: {message}");
                     task.events += 1;
@@ -396,6 +544,7 @@ impl Registry {
                     .proposals
                     .insert(proposal.id.clone(), proposal.path.clone());
                 delegation.waiting_for_user += 1;
+                delegation.waiting_for = Some("edit_review");
                 approval_stop = Some(format!("an edit review of {}", proposal.path));
                 if let Some(task) = task {
                     task.activity = format!(
@@ -473,6 +622,9 @@ impl Registry {
             }
             _ => touched = false,
         }
+        if delegation.waiting_for_user == 0 {
+            delegation.waiting_for = None;
+        }
         if let Some(what) = approval_stop {
             if delegation.fail_on_approval && has_running && delegation.stop_override.is_none() {
                 let detail = format!(
@@ -505,6 +657,17 @@ impl Registry {
     /// A prompt future resolved. Marks the task finished and starts the
     /// next queued one.
     pub fn finish(&self, task_id: &str, result: Result<(), String>) {
+        self.finish_as(task_id, result, false);
+    }
+
+    /// The task's child session is gone (its agent exited or the session
+    /// ended) before the task finished: the task is `lost`, unless Span was
+    /// stopping the child itself, which keeps that reason.
+    pub fn finish_gone(&self, task_id: &str) {
+        self.finish_as(task_id, Err("The delegated session ended".into()), true);
+    }
+
+    fn finish_as(&self, task_id: &str, result: Result<(), String>, gone: bool) {
         let mut inner = self.inner();
         let Inner {
             delegations, tasks, ..
@@ -517,6 +680,11 @@ impl Registry {
         }
         let delegation = delegations.get_mut(&task.key);
         let (override_reason, edit_rejected) = match delegation {
+            Some(d) if d.held.as_deref() == Some(task_id) => {
+                // Never launched: only Span's own stop can end it.
+                d.held = None;
+                (d.stop_override.take(), false)
+            }
             Some(d) => {
                 d.queue.retain(|id| id != task_id);
                 let rejected = std::mem::take(&mut d.edit_rejected);
@@ -559,6 +727,11 @@ impl Registry {
                         task.detail = Some(format!("the agent stopped with {stop}"));
                     }
                 }
+            }
+            Err(_) if gone && override_reason.is_none() => {
+                task.status = TaskStatus::Lost;
+                task.reason = Some(FailureReason::Lost);
+                task.detail = Some(LOST_DETAIL.into());
             }
             Err(message) => {
                 task.status = TaskStatus::Failed;
@@ -663,10 +836,10 @@ impl Registry {
             .inner()
             .delegations
             .get(key)
-            .map(|d| d.queue.iter().cloned().collect())
+            .map(|d| d.queue.iter().chain(d.held.iter()).cloned().collect())
             .unwrap_or_default();
         for id in ids {
-            self.finish(&id, Err("The delegated session ended".into()));
+            self.finish_gone(&id);
         }
     }
 
@@ -692,6 +865,9 @@ impl Registry {
             spent_tokens: delegation.and_then(|d| d.meter.used_tokens()),
             max_tokens: delegation.and_then(|d| d.budget.max_tokens),
             waiting_for_user: delegation.map_or(0, |d| d.waiting_for_user),
+            waiting_for: delegation
+                .filter(|d| d.waiting_for_user > 0)
+                .and_then(|d| d.waiting_for),
         })
     }
 
@@ -749,7 +925,7 @@ impl Registry {
     pub fn idle(&self, key: &SessionKey) -> Option<u64> {
         let inner = self.inner();
         let d = inner.delegations.get(key)?;
-        (d.queue.is_empty() && !d.closed).then_some(d.generation)
+        (d.queue.is_empty() && d.held.is_none() && !d.closed).then_some(d.generation)
     }
 
     /// Mark the child closed if no task started since `generation` and none
@@ -759,7 +935,7 @@ impl Registry {
         let Some(d) = inner.delegations.get_mut(key) else {
             return false;
         };
-        if d.closed || d.generation != generation || !d.queue.is_empty() {
+        if d.closed || d.generation != generation || !d.queue.is_empty() || d.held.is_some() {
             return false;
         }
         d.closed = true;

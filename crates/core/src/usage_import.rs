@@ -1901,12 +1901,14 @@ mod tests {
                 home.join(".local/share/opencode/storage/message")
             )
         );
-        let xdg = more_roots(Some(home), None, Some("/data"));
+        // XDG_DATA_HOME must be absolute on the host, which on Windows needs a drive.
+        let data = if cfg!(windows) { r"C:\data" } else { "/data" };
+        let xdg = more_roots(Some(home), None, Some(data));
         assert_eq!(
             xdg[1],
             (
                 ImportKind::OpenCode,
-                PathBuf::from("/data/opencode/storage/message")
+                Path::new(data).join("opencode").join("storage/message")
             )
         );
         // A relative XDG_DATA_HOME is ignored, as the XDG spec says.

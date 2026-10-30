@@ -22,6 +22,7 @@ import { modelCost } from "../lib/model-cost";
 import { EditorToast, OpenRefusal } from "./agent/EditorToast";
 import { EmptySession } from "./agent/EmptySession";
 import { FollowPill } from "./agent/FollowPill";
+import { FeedFind } from "./agent/FeedFind";
 import { HistoryList } from "./agent/HistoryList";
 import { ENTER_KEY } from "./agent/KeyGlyph";
 import type { ActionView, KeyHint } from "./agent/types";
@@ -381,6 +382,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
       <div class="agent-feed-region">
       <div
         class="agent-content"
+        tabIndex={-1}
         ref={(element) => {
           a.scrollers.content = element;
           onCleanup(a.follow.attach(element));
@@ -523,6 +525,7 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
           </div>
         </Show>
       </div>
+      <FeedFind agent={a} scope={() => panel} feed={feedElement} />
       <button
         type="button"
         class="agent-jump"
