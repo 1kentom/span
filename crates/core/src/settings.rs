@@ -2620,6 +2620,82 @@ mod language_server_key_tests {
         // Removing from the workspace scope is also refused: those keys are not valid there.
         assert!(set(Workspace, b, "languageServers.javaHome", None).is_err());
     }
+
+    #[test]
+    fn watch_lists_are_user_only_and_round_trip() {
+        let base = "{\n  // keep me\n}\n";
+        let t = set(
+            User,
+            base,
+            "languageServers.watchIncludeDirectories",
+            Some(r#"["node_modules", "dist"]"#),
+        )
+        .unwrap();
+        let t = set(
+            User,
+            &t,
+            "languageServers.silencedWatchWarnings",
+            Some(r#"["vtsls"]"#),
+        )
+        .unwrap();
+        assert!(t.contains("// keep me"));
+        let s = load_with_texts(&t, "{}").unwrap().language_servers;
+        assert_eq!(s.watch_include_directories, ["node_modules", "dist"]);
+        assert_eq!(s.silenced_watch_warnings, ["vtsls"]);
+        let back = set(User, &t, "languageServers.silencedWatchWarnings", None).unwrap();
+        assert!(!back.contains("silencedWatchWarnings"), "{back}");
+        assert!(back.contains("watchIncludeDirectories"));
+
+        // A workspace file cannot set either list, and its values are ignored on read.
+        let ws = r#"{ "languageServers": { "watchIncludeDirectories": ["target"],
+                 "silencedWatchWarnings": ["vtsls"] } }"#;
+        let loaded = load_with_texts("{}", ws).unwrap().language_servers;
+        assert!(loaded.watch_include_directories.is_empty());
+        assert!(loaded.silenced_watch_warnings.is_empty());
+        let err = reject_user_only(ws).unwrap_err().to_string();
+        assert!(err.contains("user settings only"), "{err}");
+        for key in [
+            "languageServers.watchIncludeDirectories",
+            "languageServers.silencedWatchWarnings",
+        ] {
+            let err = set(Workspace, "{}", key, Some(r#"["vtsls"]"#))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("user settings only"), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn watch_lists_reject_bad_entries() {
+        let too_many = format!(
+            "[{}]",
+            (0..65)
+                .map(|i| format!("\"d{i}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        for (key, v) in [
+            (
+                "languageServers.watchIncludeDirectories",
+                "\"node_modules\"",
+            ),
+            ("languageServers.watchIncludeDirectories", "[1]"),
+            ("languageServers.watchIncludeDirectories", r#"[""]"#),
+            ("languageServers.watchIncludeDirectories", r#"[".."]"#),
+            ("languageServers.watchIncludeDirectories", r#"["a/b"]"#),
+            ("languageServers.watchIncludeDirectories", r#"["a\\b"]"#),
+            ("languageServers.watchIncludeDirectories", too_many.as_str()),
+            ("languageServers.silencedWatchWarnings", r#"["gopls"]"#),
+            ("languageServers.silencedWatchWarnings", "true"),
+        ] {
+            assert!(set(User, "{}", key, Some(v)).is_err(), "{key} {v}");
+        }
+        assert!(load_with_texts(
+            r#"{ "languageServers": { "silencedWatchWarnings": ["nope"] } }"#,
+            "{}"
+        )
+        .is_err());
+    }
 }
 
 #[cfg(test)]
