@@ -13,7 +13,7 @@
 .ide.zen .top-left > :not(.traffic-lights),
 .ide.zen .topbar > :is(.top-center, .top-right),
 .ide.zen .statusbar,
-.ide.zen .panel-handle {
+.ide.zen .workbench-main.managed-panel-layout .panel-handle.resize-handle {
   display: none;
 }
 .ide.zen.zen-no-line-numbers .cm-lineNumbers {
