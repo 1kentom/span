@@ -329,3 +329,41 @@ it); `effort` keeps the free string and the `effort_unavailable` error
 from the delegate model choice change instead of `applied.effort: null`;
 the run tools (a separate feature) did not gain output schemas.
 
+Stage 2 shipped (same files plus `fanout.rs` and `store.rs`):
+
+- `delegate_many` (2 to 8 tasks, each with its own agent, model, effort,
+  mode, context, deliverables and `onApproval`; one group budget of turns,
+  tokens, seconds and cost; `clientRequestId`). Admission is atomic: the
+  call is refused whole with `budget_exceeded` when it would pass the
+  lead's `max_delegations` (8) or `max_lead_turns` (60), and one task that
+  cannot start (unknown agent, model or mode) discards every child it
+  already created (`failedTask` names it). Tasks beyond `max_concurrent`
+  (4) start `queued` in Span's own FIFO queue and launch as slots free.
+  A spent group budget cancels the group's unfinished tasks with
+  `budget_exceeded`; queued ones end without starting.
+- `wait` (`taskIds` 1 to 16 or `groupId`, `until` first or all,
+  `timeoutSeconds` 0 to 50, -32602 outside), with `notifications/progress`
+  in Span's own words (counts only, no child text), each finished result
+  returned once in `done` (framed text and resource links in `content`),
+  `pending`, `blocked` (`waitingFor` permission, question or edit_review)
+  and `timedOut`.
+- `task_status` and `list_tasks` (status and group filters, newest first,
+  `limit` 1 to 50, cursor pages) read a `TaskStore` trait; stage 2 uses the
+  in-memory `MemoryTaskStore`, whose `recover` already turns `queued` and
+  `running` records into `lost` for stage 3. Summaries are framed.
+- `lost`: a task whose child session ends (its agent exits or the session
+  is gone) before it finishes is `lost` with reason `lost`, unless Span
+  stopped it, which keeps that reason.
+- Lead instructions describe `delegate_many` and `wait`. The delegation
+  card shows queued, needs you, lost and "Batch n of m done"; the Agents
+  tree row shows Queued and Lost and the batch.
+
+Deviations in stage 2: a queued task's child session is created (and its
+model, effort and mode applied) at admission, so admission can be atomic
+and every task has a `sessionId` at once; only its prompt waits. A
+`message` to such a child is refused until its task launches. `wait`
+returns early only when a task becomes blocked during the call; a task
+already blocked when the call starts is listed in `blocked` but does not
+end the wait, so a lead polling it does not spin. Records are in memory
+until stage 3, so `lost` after a restart is not yet reachable in the app.
+
