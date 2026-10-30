@@ -24,6 +24,14 @@ seen) or not checked.
   a file).
 - Settings > Agents shows its switches and they persist after a restart.
 - No error card or blank panel at startup.
+- Startup with old state: install the new build over a previous one
+  without clearing anything (keep its localStorage, settings files and
+  chats). The window must render the restored workspace, never a black or
+  empty window. Then force a failure (for example a dev build that throws
+  in `App`, or a startup that hangs past 8 seconds): the recovery screen
+  shows with Reload, Reset interface state and Copy diagnostics, its text
+  is readable in the current theme, and Reset interface state keeps
+  settings files and chats.
 - Agent health check (ADR 0010): with the app open and an agent connected
   for 10 minutes or more, History shows no "Health check. Reply with exactly
   one word" rows, in this workspace and in All folders. Earlier leftovers
