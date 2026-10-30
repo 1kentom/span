@@ -4,7 +4,7 @@
  * guessed, so a row without a reported model, usage or budget simply leaves that part out.
  */
 import type { FeedItem } from "./agent-session";
-import type { DelegationTaskState } from "./agent-delegation";
+import { groupProgress, type DelegationTaskState } from "./agent-delegation";
 import { liveStateText, liveTone, type LiveAgent, type LiveTone } from "./live-agents";
 
 export type TreeTone = LiveTone | "running";
@@ -61,7 +61,13 @@ export function runningCommands(feed: readonly FeedItem[]): ToolItem[] {
   return feed.filter((item): item is ToolItem => item.kind === "tool" && item.event.toolKind === "execute" && !item.event.internal && (item.event.status == null || RUNNING_TOOL.has(item.event.status)));
 }
 
-const busy = (state: string) => state === "Working" || state === "Starting";
+const busy = (state: string) => state === "Working" || state === "Starting" || state === "Queued";
+
+/** "Batch 2 of 3 done" for a task a `delegate_many` call started. */
+export function batchMeta(tasks: readonly DelegationTaskState[], task: DelegationTaskState | undefined): string | undefined {
+  const progress = groupProgress(tasks, task?.groupId);
+  return progress ? `Batch ${progress.done} of ${progress.total} done` : undefined;
+}
 
 export function agentTree(input: { agents: readonly LiveAgent[]; feed: readonly FeedItem[]; showHealth: boolean; leadRunning: boolean }): AgentTree {
   const lead = input.agents.find((entry) => entry.lead);
@@ -101,7 +107,7 @@ export function agentTree(input: { agents: readonly LiveAgent[]; feed: readonly 
       state: liveStateText(entry, input.showHealth),
       tone: liveTone(entry, input.showHealth),
       model: task?.model,
-      meta: usageMeta(task),
+      meta: [batchMeta([...tasks.values()], task), usageMeta(task)].filter(Boolean).join(" · ") || undefined,
       note: entry.detail,
       taskId: entry.taskId,
       live: entry.state === "Working" || entry.state === "Waiting for you",
@@ -127,9 +133,10 @@ export function agentTree(input: { agents: readonly LiveAgent[]; feed: readonly 
   const agentStates = input.agents.map((entry) => entry.state);
   const run = agentStates.filter((state) => state === "Working").length + commands.length;
   const wait = agentStates.filter((state) => state === "Waiting for you").length;
-  const fail = agentStates.filter((state) => state === "Failed").length;
+  const fail = agentStates.filter((state) => state === "Failed" || state === "Lost").length;
+  const queued = agentStates.filter((state) => state === "Queued").length;
   const done = delegates.some((entry) => entry.state === "Done");
-  const head = run ? `${run} running` : wait ? `${wait} waiting for you` : fail ? `${fail} failed` : done ? "All done" : "Idle";
+  const head = run ? `${run} running` : wait ? `${wait} waiting for you` : queued ? `${queued} queued` : fail ? `${fail} failed` : done ? "All done" : "Idle";
   const sub = [run && wait ? `${wait} waiting for you` : "", "depth 1 of 1"].filter(Boolean).join(" · ");
   return { nodes, head, sub, canStopAll: input.leadRunning || delegates.some((entry) => busy(entry.state) || entry.state === "Waiting for you") };
 }
