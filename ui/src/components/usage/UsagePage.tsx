@@ -17,6 +17,8 @@ export type UsageApi = {
 };
 
 const NOTICE_KEY = "span.usage.importNotice.v1";
+/** Background rescan interval while the page is open and visible. */
+export const RESCAN_MS = 60_000;
 const KIND_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI", openCode: "OpenCode" };
 /** Series slots for the by-model view: the five largest models in view, the rest folded into Other. */
 const MODEL_SLOTS = 5;
@@ -104,6 +106,9 @@ export function UsagePage(props: {
     setImportBusy(true);
     try { await props.onImportChange(enabled); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setImportBusy(false); }
   }
+  // While the page is open and the window visible, rescan every minute (incremental: unchanged files are not read).
+  const rescan = setInterval(() => { if (document.visibilityState === "visible" && props.importEnabled && !importState()?.running) void followImport(true); }, RESCAN_MS);
+  onCleanup(() => clearInterval(rescan));
   const refresh = () => { if (props.importEnabled && props.api.importScan) void followImport(true); else void load(); };
   // A one-time quiet notice that the local logs are read (ADR 0012 amendment): shown on the first visit only.
   createEffect(on(() => Boolean(props.importEnabled && props.desktop), (shown) => {
@@ -234,11 +239,11 @@ export function UsagePage(props: {
               <button type="button" class="usage-icon-button" aria-label="Close usage" title="Close (Escape)" onClick={() => props.onClose()}><span class="cross" /></button>
             </div>
             <Show when={notice()}>
-              <p class="usage-notice" role="note">
+              <div class="usage-notice" role="note">
                 <Icon name="InfoCircle" size={13} />
                 <span class="usage-notice-text">Reading local usage from Claude Code, Codex, Gemini CLI and OpenCode logs. Turn off in <Show when={props.onOpenSettings} fallback="Settings">{(open) => <button type="button" class="usage-link" onClick={() => open()()}>Settings</button>}</Show>.</span>
                 <button type="button" class="usage-icon-button small" aria-label="Dismiss" title="Dismiss" onClick={() => setNotice(false)}><span class="cross" /></button>
-              </p>
+              </div>
             </Show>
             <Show when={scanning()}>
               <div class="usage-progress" role="progressbar" aria-label="Scanning local logs" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress()}><i style={{ width: `${Math.max(3, progress())}%` }} /></div>
@@ -344,9 +349,9 @@ export function UsagePage(props: {
                     <p>Dollar figures are API-equivalent estimates at list prices, not your subscription bill: Claude and ChatGPT plans have usage limits, not per-token charges. Where an agent reported its own cost, that figure is used.</p>
                     <Show when={summary()?.prices}>{(prices) => <p>Prices as of {prices().asOf} from the <For each={prices().sources}>{(entry, index) => <>{index() > 0 ? (index() === prices().sources.length - 1 ? " and " : ", ") : ""}<a href={entry.url} target="_blank" rel="noreferrer noopener" onClick={(event) => openExternal(event, entry.url)}>{entry.provider}</a></>}</For> pricing pages, standard tier. Set your own in <code>agents.usage.prices</code>.</p>}</Show>
                     <Show when={props.importEnabled && importState()?.report}>{(report) => <>
-                      <p>Local logs: read only, counters only, nothing uploaded. {report().kinds.length ? `Found ${report().kinds.map((kind) => KIND_NAMES[kind] ?? kind).join(", ")} logs` : "No agent logs found"}, {fullNumber(report().filesTotal)} files{report().compressedRead ? `, ${fullNumber(report().compressedRead)} compressed` : ""}. Messages repeated across files (resumed sessions, subagents) count once.</p>
+                      <p>Local logs: read only, counters only, nothing uploaded. {report().kinds.length ? `Found ${report().kinds.map((kind) => KIND_NAMES[kind] ?? kind).join(", ")} logs` : "No agent logs found"}, {fullNumber(report().filesTotal)} files{report().compressedRead ? `, ${fullNumber(report().compressedRead)} compressed` : ""}{report().databasesRead ? `, ${fullNumber(report().databasesRead)} OpenCode ${report().databasesRead === 1 ? "database" : "databases"}` : ""}. Messages repeated across files (resumed sessions, subagents) count once.</p>
                       <ul class="usage-skips">
-                        <Show when={report().compressedSkipped > 0}><li><Icon name="Warning2" size={12} />{fullNumber(report().compressedSkipped)} compressed Codex {report().compressedSkipped === 1 ? "log" : "logs"} (.zst) skipped: Span has no zstd reader yet.</li></Show>
+                        <Show when={report().compressedSkipped > 0}><li><Icon name="Warning2" size={12} />{fullNumber(report().compressedSkipped)} compressed Codex {report().compressedSkipped === 1 ? "log" : "logs"} skipped: larger than 256 MB once decompressed.</li></Show>
                         <Show when={report().skipped > 0}><li><Icon name="Warning2" size={12} />{fullNumber(report().skipped)} {report().skipped === 1 ? "file" : "files"} skipped for a size cap or a read error.</li></Show>
                         <Show when={report().truncated}><li><Icon name="Warning2" size={12} />The file cap was reached, so the oldest logs may be missing.</li></Show>
                         <For each={report().notes}>{(note) => <li><Icon name="Warning2" size={12} />{note}</li>}</For>
