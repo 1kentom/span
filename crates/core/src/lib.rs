@@ -29,6 +29,7 @@ mod transcript_export;
 mod uploads;
 pub mod usage;
 pub mod usage_import;
+pub mod usage_import_opencode;
 pub mod version;
 mod workspace;
 

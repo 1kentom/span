@@ -379,7 +379,7 @@ pub struct UsageCost {
 }
 
 impl UsageCost {
-    fn add(&mut self, other: &UsageCost) {
+    pub(crate) fn add(&mut self, other: &UsageCost) {
         self.usd += other.usd;
         self.reported_usd += other.reported_usd;
         self.estimated_usd += other.estimated_usd;
@@ -387,7 +387,7 @@ impl UsageCost {
         self.known |= other.known;
         self.complete = self.complete && other.complete;
     }
-    fn empty() -> UsageCost {
+    pub(crate) fn empty() -> UsageCost {
         UsageCost {
             complete: true,
             ..UsageCost::default()
