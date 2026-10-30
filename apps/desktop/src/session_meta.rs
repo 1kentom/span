@@ -268,6 +268,7 @@ mod tests {
             continues: None,
             changes_tracked: false,
             usage: None,
+            permission_mode: None,
         };
         span_acp::record_delegated_session("meta-worker", "meta-child-1");
         let kept = without_health_sessions(vec![

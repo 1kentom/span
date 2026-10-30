@@ -7,7 +7,8 @@
 //!
 //! The store never holds prompt text, file contents or credentials.
 use crate::{
-    io_error, usage::TokenCounts, workspace::atomic_write, CoreError, EditProposal, Result,
+    io_error, permission_mode::ThreadPermissionMode, usage::TokenCounts, workspace::atomic_write,
+    CoreError, EditProposal, Result,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -125,6 +126,27 @@ pub struct SessionMeta {
     /// only: no prompt text, replies or file contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<SessionUsage>,
+    /// The thread's permission mode (ADR 0015), by name only, restored with
+    /// the thread. An unknown name reads as absent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_mode"
+    )]
+    #[specta(type = Option<ThreadPermissionMode>)]
+    pub permission_mode: Option<ThreadPermissionMode>,
+}
+
+/// Reads a stored mode name; anything unknown (a newer Span's mode, a typo)
+/// is `None` instead of failing the whole file.
+fn lenient_mode<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<ThreadPermissionMode>, D::Error> {
+    let name = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(name
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .and_then(ThreadPermissionMode::from_name))
 }
 
 /// Usage counters of one session (ADR 0012), bucketed by local day and model
@@ -343,6 +365,10 @@ pub struct SessionMetaPatch {
     #[serde(default)]
     #[specta(optional)]
     pub usage: Option<UsagePatch>,
+    /// The thread's permission mode (ADR 0015). Set, not merged.
+    #[serde(default, deserialize_with = "lenient_mode")]
+    #[specta(optional, type = Option<ThreadPermissionMode>)]
+    pub permission_mode: Option<ThreadPermissionMode>,
 }
 
 impl SessionMetaPatch {
@@ -899,6 +925,7 @@ fn new_meta(agent_id: &str, session_id: &str, now: u64) -> SessionMeta {
         continues: None,
         changes_tracked: false,
         usage: None,
+        permission_mode: None,
     }
 }
 
@@ -998,6 +1025,9 @@ fn apply_patch(meta: &mut SessionMeta, patch: &SessionMetaPatch, now: u64) {
     }
     if let Some(usage) = &patch.usage {
         apply_usage(meta, usage, now);
+    }
+    if let Some(mode) = patch.permission_mode {
+        meta.permission_mode = Some(mode);
     }
 }
 
@@ -1221,6 +1251,44 @@ mod tests {
 
     fn turn(agent: &str, session: &str, model: &str) -> SessionMetaPatch {
         patch_for_turn_start(agent, session, Some("Agent"), Some(model), Some("high"))
+    }
+
+    #[test]
+    fn permission_mode_round_trips_by_name_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let mut patch = SessionMetaPatch::new("claude", "s1");
+        patch.permission_mode = Some(ThreadPermissionMode::Plan);
+        store.upsert_at(patch, 1_000).unwrap();
+        let text = fs::read_to_string(store.path()).unwrap();
+        assert!(text.contains("\"permissionMode\":\"plan\""), "{text}");
+        // A later patch without a mode keeps it; a new mode replaces it.
+        store
+            .upsert_at(turn("claude", "s1", "opus"), 2_000)
+            .unwrap();
+        let meta = store.get("claude", "s1").unwrap().unwrap();
+        assert_eq!(meta.permission_mode, Some(ThreadPermissionMode::Plan));
+        let mut full = SessionMetaPatch::new("claude", "s1");
+        full.permission_mode = Some(ThreadPermissionMode::Full);
+        store.upsert_at(full, 3_000).unwrap();
+        let meta = store.get("claude", "s1").unwrap().unwrap();
+        assert_eq!(meta.permission_mode, Some(ThreadPermissionMode::Full));
+        // Only the name is stored: no prompt, no agent mode value.
+        let text = fs::read_to_string(store.path()).unwrap();
+        assert!(text.contains("\"permissionMode\":\"full\""));
+        assert!(!text.contains("bypassPermissions"));
+        // An unknown name (a newer Span, a hand edit) reads as absent and
+        // never fails the file.
+        let edited = text.replace("\"permissionMode\":\"full\"", "\"permissionMode\":\"yolo\"");
+        fs::write(store.path(), edited).unwrap();
+        let meta = store.get("claude", "s1").unwrap().unwrap();
+        assert_eq!(meta.permission_mode, None);
+        assert_eq!(meta.models.len(), 1);
+        let patch: SessionMetaPatch = serde_json::from_str(
+            r#"{"agentId":"a","sessionId":"s","permissionMode":"bypassPermissions"}"#,
+        )
+        .unwrap();
+        assert_eq!(patch.permission_mode, None);
     }
 
     #[test]

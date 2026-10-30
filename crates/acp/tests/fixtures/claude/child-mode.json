@@ -1,0 +1,107 @@
+{
+  "quirk": "A delegated child starts in Ask (even under agentDefault) and can never be made looser: Full and Accept edits are refused, a bypass value through set_config (the path the delegate tool's mode argument uses) is refused, and narrowing to Plan works through both paths.",
+  "userSettings": {
+    "agents": {
+      "startMode": {
+        "claude": "agentDefault"
+      }
+    }
+  },
+  "drive": [
+    {
+      "do": "newChildSession"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "full",
+      "expectError": "never runs looser than Ask"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "acceptEdits",
+      "expectError": "never runs looser than Ask"
+    },
+    {
+      "do": "setConfig",
+      "id": "mode",
+      "value": "bypassPermissions",
+      "expectError": "Choose a permission mode"
+    },
+    {
+      "do": "setConfig",
+      "id": "mode",
+      "value": "plan"
+    }
+  ],
+  "events": [
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "default"
+        },
+        {
+          "id": "model"
+        }
+      ]
+    },
+    {
+      "kind": "permissionMode",
+      "mode": "ask",
+      "supported": [
+        "ask",
+        "plan"
+      ],
+      "child": true
+    },
+    {
+      "kind": "_step",
+      "do": "newChildSession",
+      "ok": true
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": false
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": false
+    },
+    {
+      "kind": "_step",
+      "do": "setConfig",
+      "ok": false
+    },
+    {
+      "kind": "permissionMode",
+      "mode": "plan",
+      "child": true
+    },
+    {
+      "kind": "_step",
+      "do": "setConfig",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "permissionMode",
+      "mode": "full"
+    },
+    {
+      "kind": "permissionMode",
+      "mode": "acceptEdits"
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "value": "bypassPermissions"
+      }
+    }
+  ]
+}

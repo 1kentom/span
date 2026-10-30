@@ -14,6 +14,7 @@ import { branchDivider } from "../../lib/agent-rewind";
 import { api } from "../../lib/client";
 import { EditsBypassNote, ErrorCard, Notice, StopCard, WarningNote } from "./Banners";
 import { DecisionCard } from "./DecisionCard";
+import { PlanReadyCard, PolicyRow } from "./PermissionMode";
 import { DelegationCard } from "./DelegationCard";
 import { ChangesCard, WorkGroup } from "./WorkGroup";
 
@@ -94,6 +95,26 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
       </Match>
       <Match when={item().kind === "note"}>
         <Notice text={message().text} />
+      </Match>
+      <Match when={item().kind === "policy"}>
+        <PolicyRow item={item() as Extract<FeedItem, { kind: "policy" }>} />
+      </Match>
+      <Match when={item().kind === "planReady"}>
+        {(() => {
+          const card = () => item() as Extract<FeedItem, { kind: "planReady" }>;
+          const latest = () => !a.feed().some((entry) => entry.kind === "planReady" && entry.id > card().id);
+          return (
+            <PlanReadyCard
+              plan={card().plan}
+              status={card().status}
+              active={latest() && a.connected() && !a.running()}
+              supported={a.state().permissionMode?.supported ?? ["ask"]}
+              renderPlan={(text) => <AgentMarkdown text={text} workspaceRoot={a.props.workspacePath || ""} onOpenFile={openFile} onOpenExternal={a.props.onOpenExternal} />}
+              onImplement={(mode) => void a.permissionModes.implementPlan(card().id, mode)}
+              onRefine={() => a.permissionModes.refinePlan(card().id)}
+            />
+          );
+        })()}
       </Match>
       <Match when={item().kind === "handoff"}>
         {(() => {

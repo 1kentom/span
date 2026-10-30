@@ -1,18 +1,16 @@
 {
-  "quirk": "The mode option value agent-full-access lets Codex run without asking: a warning Notice with hint permissionsBypassed appears when the mode changes to it and is cleared when it changes back to a safe mode. The default agent (Auto review) mode raises nothing.",
+  "quirk": "Choosing the Span mode Full sets codex-acp to agent-full-access, which lets Codex run without asking: a warning Notice with hint permissionsBypassed appears and is cleared when the thread moves to Plan (read-only plus the plan collaboration mode). The default agent (Auto review) mode raises nothing.",
   "drive": [
     {
       "do": "newSession"
     },
     {
-      "do": "setConfig",
-      "id": "mode",
-      "value": "agent-full-access"
+      "do": "setPermissionMode",
+      "mode": "full"
     },
     {
-      "do": "setConfig",
-      "id": "mode",
-      "value": "read-only"
+      "do": "setPermissionMode",
+      "mode": "plan"
     }
   ],
   "events": [
@@ -35,7 +33,7 @@
     },
     {
       "kind": "_step",
-      "do": "setConfig"
+      "do": "setPermissionMode"
     },
     {
       "kind": "config"
@@ -46,7 +44,7 @@
     },
     {
       "kind": "_step",
-      "do": "setConfig"
+      "do": "setPermissionMode"
     }
   ],
   "counts": [
@@ -62,6 +60,34 @@
         "kind": "noticeCleared"
       },
       "count": 1
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "configId": "mode",
+        "value": "agent-full-access"
+      }
+    },
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "configId": "mode",
+        "value": "read-only"
+      }
+    },
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "configId": "collaboration_mode",
+        "value": "plan"
+      }
+    }
+  ],
+  "absent": [
+    {
+      "kind": "modeMismatch"
     }
   ]
 }

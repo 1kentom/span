@@ -6,7 +6,9 @@ use crate::{
 use agent_client_protocol::schema::{v1::*, ProtocolVersion};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo, UntypedMessage};
 use serde_json::{json, Value};
-use span_core::{CoreWorkspace, StartMode};
+use span_core::permission_mode::{self, AgentSetting};
+use span_core::permission_policy::PolicyDecision;
+use span_core::{CoreWorkspace, StartMode, ThreadPermissionMode};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -61,6 +63,11 @@ enum Command {
     LoadSession(String, Vec<Value>, Reply<()>),
     CloseSession(String, Reply<()>),
     DeleteSession(String, Reply<()>),
+    /// Change the thread's Span permission mode (user only, ADR 0015).
+    SetPermissionMode(String, ThreadPermissionMode, Reply<()>),
+    /// Set the agent back to what the thread's mode needs after it switched
+    /// itself (internal: raised by a `ModeMismatch`, never by a caller).
+    CorrectMode(String),
     Shutdown,
 }
 struct Permission {
@@ -125,6 +132,11 @@ struct Bridge {
     rejected: HashSet<String>,
     /// Span's own hidden sessions on this connection and where their events go.
     hidden: Arc<Mutex<Hidden>>,
+    /// Delegated children and hidden sessions opened on this connection:
+    /// never looser than Ask (ADR 0015).
+    children: HashSet<String>,
+    /// Sessions whose agent mode is being set back after a mismatch.
+    correcting: HashSet<String>,
 }
 
 /// Sessions Span opens for itself (the agent health check, ADR 0010). Their
@@ -657,23 +669,72 @@ impl AgentService {
             .send(decision)
             .map_err(|_| "Input request expired".into())
     }
+    /// Change one session config option. An option a Span permission mode
+    /// sets (the agent's mode, Codex's collaboration mode) is not changed
+    /// around the thread's mode: a value that stands for Plan, or for the
+    /// thread's current mode, goes through [`Self::set_permission_mode`];
+    /// anything else is refused, so this path can never loosen a thread.
     pub async fn set_config(
         &self,
         session_id: String,
         config_id: String,
         value: String,
     ) -> Result<(), String> {
-        {
+        let adapter = {
             let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
             if bridge.closed || !bridge.sessions.contains(&session_id) {
                 return Err("Unknown or disconnected session".into());
             }
+            bridge.adapter.clone()
+        };
+        if adapter.managed_option(&session_id, &config_id) {
+            let current = adapter.thread_mode(&session_id);
+            return match permission_mode::from_agent(adapter.kind().id(), &config_id, &value) {
+                Some(mode) if mode == ThreadPermissionMode::Plan || mode == current => {
+                    self.set_permission_mode(session_id, mode).await
+                }
+                _ => Err("Span sets this option from the thread's permission mode. Choose a permission mode instead.".into()),
+            };
         }
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::SetConfig(session_id, config_id, value, tx))
             .map_err(|_| "Agent disconnected")?;
         rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// Change the Span permission mode of a session (ADR 0015). User only:
+    /// called from the desktop's own commands, never from a tool or an agent
+    /// request. A delegated child can only be Ask or Plan. The agent is set
+    /// to the mode the Span mode needs and its reported options are read
+    /// back; a refused change keeps the previous mode.
+    pub async fn set_permission_mode(
+        &self,
+        session_id: String,
+        mode: ThreadPermissionMode,
+    ) -> Result<(), String> {
+        {
+            let bridge = self.state.lock().map_err(|_| "Agent state lock poisoned")?;
+            if bridge.closed || !bridge.sessions.contains(&session_id) {
+                return Err("Unknown or disconnected session".into());
+            }
+            let child =
+                bridge.children.contains(&session_id) || bridge.delegated.contains(&session_id);
+            if child && !permission_mode::allowed_for_child(mode) {
+                return Err("A delegated child never runs looser than Ask".into());
+            }
+        }
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::SetPermissionMode(session_id, mode, tx))
+            .map_err(|_| "Agent disconnected")?;
+        rx.await.map_err(|_| "Agent disconnected".to_string())?
+    }
+    /// The Span permission mode of a session (Ask until set).
+    pub fn permission_mode(&self, session_id: &str) -> ThreadPermissionMode {
+        self.state
+            .lock()
+            .map(|bridge| bridge.adapter.thread_mode(session_id))
+            .unwrap_or_default()
     }
     /// Sessions of the connection's workspace folder.
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
@@ -970,6 +1031,23 @@ async fn run(
     // The adapter keeps the canonical root for its own path checks; the agent is
     // told the plain spelling (see `agent_protocol_cwd`).
     let protocol_cwd = agent_protocol_cwd(&cwd);
+    // A mode mismatch the adapter reports asks the command loop, once per
+    // mismatch, to set the agent back (ADR 0015).
+    let (fix_tx, mut fix_rx) = mpsc::unbounded_channel::<String>();
+    let emit: EventSink = {
+        let inner = emit;
+        Arc::new(move |event: AgentEvent| {
+            if let AgentEvent::ModeMismatch {
+                session_id,
+                resolved: false,
+                ..
+            } = &event
+            {
+                let _ = fix_tx.send(session_id.clone());
+            }
+            inner(event)
+        })
+    };
     let logger = emit.clone();
     let agent = AcpAgent::new(
         AcpAgentConfig::new(config.command)
@@ -1014,24 +1092,41 @@ async fn run(
                     serde_json::to_string(&request.tool_call.fields.kind).unwrap_or_default(),
                     serde_json::to_string(&request.tool_call.fields.raw_input).unwrap_or_default());
                 let (tx, rx) = oneshot::channel();
-                let pending = (|| -> Result<(String, Option<String>), String> {
+                let adapter = state.lock().map(|bridge| bridge.adapter.clone()).unwrap_or_default();
+                let raw = serde_json::to_value(&request).unwrap_or_default();
+                // The thread's Span mode answers first (ADR 0015), before any
+                // remembered "always" answer, so Plan refuses a write even if
+                // it was allowed for good in another mode. Span code only:
+                // no agent or tool can reach this decision.
+                let probe = adapter.permission(&session, "", &raw, Vec::new());
+                let policy = match adapter.policy(&session, &probe) {
+                    PolicyDecision::Allow(reason) => request.options.iter().find(|o| o.kind == PermissionOptionKind::AllowOnce)
+                        .map(|o| (Some(o.option_id.to_string()), "allowed", reason)),
+                    PolicyDecision::Reject(reason) => Some((request.options.iter().find(|o| o.kind == PermissionOptionKind::RejectOnce)
+                        .map(|o| o.option_id.to_string()), "rejected", reason)),
+                    PolicyDecision::Prompt => None,
+                };
+                let pending = (|| -> Result<(String, Option<String>, bool), String> {
                     let mut bridge = state.lock().map_err(|_| "Agent state lock poisoned")?;
-                    if bridge.closed || !bridge.sessions.contains(&session) || bridge.cancelled.contains(&session) { return Ok((String::new(), None)); }
+                    if bridge.closed || !bridge.sessions.contains(&session) || bridge.cancelled.contains(&session) { return Ok((String::new(), None, false)); }
+                    if let Some((choice, _, _)) = &policy { return Ok((String::new(), choice.clone(), true)); }
                     if let Some(kind) = bridge.remembered.get(&(session.clone(), scope.clone())) {
                         if let Some(option) = request.options.iter().find(|o| o.kind == *kind) {
-                            return Ok((String::new(), Some(option.option_id.to_string())));
+                            return Ok((String::new(), Some(option.option_id.to_string()), false));
                         }
                     }
                     bridge.sequence += 1;
                     let id = format!("permission-{}", bridge.sequence);
                     bridge.permissions.insert(id.clone(), Permission { session: session.clone(), scope, options: request.options.clone(), reply: tx });
-                    Ok((id, None))
+                    Ok((id, None, false))
                 })();
-                let (id, automatic) = match pending { Ok(value) => value, Err(error) => return responder.respond_with_internal_error(error) };
-                let adapter = state.lock().map(|bridge| bridge.adapter.clone()).unwrap_or_default();
+                let (id, automatic, by_policy) = match pending { Ok(value) => value, Err(error) => return responder.respond_with_internal_error(error) };
+                if let (true, Some((_, decision, reason)), AgentEvent::Permission { tool_call_id, title, tool_kind, raw_input, .. }) = (by_policy, &policy, &probe) {
+                    emit(AgentEvent::PermissionAuto { session_id: session.clone(), tool_call_id: tool_call_id.clone(), title: title.clone(),
+                        tool_kind: tool_kind.clone(), decision: (*decision).to_owned(), reason: *reason, raw_input: raw_input.clone() });
+                }
                 let selected = if id.is_empty() { automatic } else {
                     let options = request.options.iter().map(|o| PermissionOption { option_id: o.option_id.to_string(), name: o.name.clone(), kind: enum_string(&o.kind) }).collect();
-                    let raw = serde_json::to_value(&request).unwrap_or_default();
                     emit(adapter.permission(&session, &id, &raw, options));
                     let decision = rx.await.ok().flatten();
                     emit(AgentEvent::PermissionResolved { session_id: session.clone(), request_id: id });
@@ -1041,7 +1136,7 @@ async fn run(
                     && matches!(o.kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways)));
                 let rejected = selected.as_ref().is_some_and(|choice| request.options.iter().any(|o| o.option_id.to_string() == *choice
                     && matches!(o.kind, PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways)));
-                if rejected { if let Ok(mut bridge) = state.lock() { bridge.rejected.insert(session.clone()); } }
+                if rejected && !by_policy { if let Ok(mut bridge) = state.lock() { bridge.rejected.insert(session.clone()); } }
                 for event in adapter.after_permission(&session, &request.tool_call.tool_call_id.to_string(), allowed) { emit(event); }
                 responder.respond(RequestPermissionResponse::new(match selected {
                     Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
@@ -1189,6 +1284,7 @@ async fn run(
                     command = rx.recv() => match command { Some(command) => command, None => break },
                     _ = cx.incoming_closed() => break,
                     _ = compatibility_failures.recv() => break,
+                    Some(session) = fix_rx.recv() => Command::CorrectMode(session),
                     _ = tokio::time::sleep_until(cancel_deadline.unwrap_or_else(|| tokio::time::Instant::now() + std::time::Duration::from_secs(86400))), if cancel_deadline.is_some() => {
                         cancel_deadline = None;
                         // A delegated child that ignores Stop only loses its own
@@ -1245,7 +1341,10 @@ async fn run(
                                 let set = state.lock().map(|mut bridge| { bridge.delegated.insert(id.clone()); bridge.hidden.clone() });
                                 if let Ok(set) = set { if let Ok(mut set) = set.lock() { set.ids.insert(id.clone()); } }
                             }
-                            if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
+                            if let Ok(mut bridge) = state.lock() {
+                                bridge.sessions.insert(id.clone());
+                                if opened != Opened::User { bridge.children.insert(id.clone()); }
+                            }
                             emit(AgentEvent::Session { session_id: id.clone() });
                             let options = adapter.session_config(&id, &response);
                             (id, options)
@@ -1253,7 +1352,11 @@ async fn run(
                         let result = match result {
                             Ok((id, options)) => {
                                 let options = if approval { apply_start_mode(&cx, &adapter, &id, options, &emit).await } else { options };
-                                if !options.is_empty() { emit_config(&emit, &adapter, &id, options); }
+                                let child = opened != Opened::User;
+                                let options = establish_mode(&cx, &adapter, &id, options, !approval, child, &emit).await;
+                                if !options.is_empty() { emit_config(&emit, &adapter, &id, options.clone()); }
+                                for event in adapter.end_mode(&id) { emit(event); }
+                                emit(adapter.mode_event(&id, child, &options));
                                 Ok(id)
                             }
                             Err(error) => Err(error),
@@ -1380,6 +1483,7 @@ async fn run(
                         if !can_load { let _ = reply.send(Err("This agent cannot restore earlier sessions".into())); continue; }
                         if let Ok(mut bridge) = state.lock() { bridge.sessions.insert(id.clone()); }
                         let load_cx = cx.clone(); let load_emit = emit.clone(); let load_cwd = protocol_cwd.clone(); let load_state = state.clone(); let load_adapter = adapter.clone();
+                        let load_agent_default = workspace.lock().ok().and_then(|w| w.agent_start_mode(adapter.kind().id()).ok()).unwrap_or_default() == StartMode::AgentDefault;
                         let mut params = serde_json::to_value(LoadSessionRequest::new(id.clone(), load_cwd)).unwrap_or_default();
                         params["mcpServers"] = json!(gated_mcp_servers(&state, &servers));
                         if profile.replay_quiet.is_some() {
@@ -1390,7 +1494,12 @@ async fn run(
                             match result {
                                 Ok(Ok(response)) => {
                                     let options = load_adapter.session_config(&id, &response);
-                                    if !options.is_empty() { emit_config(&load_emit, &load_adapter, &id, options); }
+                                    // A restored thread starts in Ask like a new one; the UI then
+                                    // restores the mode stored with the thread (ADR 0015).
+                                    let options = establish_mode(&load_cx, &load_adapter, &id, options, load_agent_default, false, &load_emit).await;
+                                    if !options.is_empty() { emit_config(&load_emit, &load_adapter, &id, options.clone()); }
+                                    for event in load_adapter.end_mode(&id) { load_emit(event); }
+                                    load_emit(load_adapter.mode_event(&id, false, &options));
                                     if let Some(quiet) = profile.replay_quiet { replay_settled(&load_state, &id, quiet).await; }
                                     let _ = reply.send(Ok(()));
                                 }
@@ -1459,6 +1568,50 @@ async fn run(
                         cx.send_notification(CancelNotification::new(id.clone()))?;
                         cancel_pending(&state, &workspace, &emit, Some(&id));
                         cancel_deadline = Some(tokio::time::Instant::now() + profile.stop_deadline);
+                    }
+                    Command::SetPermissionMode(id, mode, reply) => {
+                        let known = state.lock().map(|bridge| (!bridge.closed && bridge.sessions.contains(&id), bridge.children.contains(&id) || bridge.delegated.contains(&id))).unwrap_or((false, false));
+                        let (known, child) = known;
+                        if !known { let _ = reply.send(Err("Unknown session".into())); continue; }
+                        if child && !permission_mode::allowed_for_child(mode) { let _ = reply.send(Err("A delegated child never runs looser than Ask".into())); continue; }
+                        let options = adapter.config(&id);
+                        if !adapter.available_modes(&options).contains(&mode) {
+                            let reason = permission_mode::unsupported_reason(adapter.kind().id(), mode).unwrap_or("This session does not offer that mode");
+                            let _ = reply.send(Err(reason.to_owned())); continue;
+                        }
+                        let expected = adapter.expected_settings(mode, &options);
+                        let previous = adapter.begin_mode(&id, mode, expected.clone());
+                        let set_cx = cx.clone(); let set_emit = emit.clone(); let set_adapter = adapter.clone();
+                        cx.spawn(async move {
+                            let changes = Adapter::changes(&expected, &options);
+                            let result = apply_settings(&set_cx, &set_adapter, &id, options.clone(), &changes).await;
+                            let (options, result) = match result {
+                                Ok(applied) => (applied, Ok(())),
+                                Err(error) => { set_adapter.restore_mode(&id, previous); (options, Err(error)) }
+                            };
+                            if !changes.is_empty() && !options.is_empty() { emit_config(&set_emit, &set_adapter, &id, options.clone()); }
+                            for event in set_adapter.end_mode(&id) { set_emit(event); }
+                            set_emit(set_adapter.mode_event(&id, child, &options));
+                            let _ = reply.send(result);
+                            Ok(())
+                        })?;
+                    }
+                    Command::CorrectMode(id) => {
+                        let start = state.lock().map(|mut bridge| bridge.sessions.contains(&id) && bridge.correcting.insert(id.clone())).unwrap_or(false);
+                        if !start { continue; }
+                        let (changes, options) = adapter.pending_corrections(&id);
+                        let fix_cx = cx.clone(); let fix_emit = emit.clone(); let fix_adapter = adapter.clone(); let fix_state = state.clone();
+                        cx.spawn(async move {
+                            if !changes.is_empty() {
+                                match apply_settings(&fix_cx, &fix_adapter, &id, options, &changes).await {
+                                    Ok(options) if !options.is_empty() => emit_config(&fix_emit, &fix_adapter, &id, options),
+                                    Ok(_) => {}
+                                    Err(error) => fix_emit(AgentEvent::Log { direction: "Client".into(), line: format!("Permission mode: the agent kept its own mode ({error})") }),
+                                }
+                            }
+                            if let Ok(mut bridge) = fix_state.lock() { bridge.correcting.remove(&id); }
+                            Ok(())
+                        })?;
                     }
                     Command::Shutdown => { cancel_pending(&state, &workspace, &emit, None); break; }
                 }
@@ -1627,6 +1780,109 @@ fn emit_config(emit: &EventSink, adapter: &Adapter, session: &str, options: Vec<
     emit(event);
     for event in extra {
         emit(event);
+    }
+}
+
+/// Sends one agent setting through the route its option uses. Returns the
+/// options the agent answered with (empty when it answered `{}`).
+async fn send_setting(
+    cx: &ConnectionTo<Agent>,
+    adapter: &Adapter,
+    id: &str,
+    setting: &AgentSetting,
+) -> Result<Vec<ConfigOption>, String> {
+    let route = adapter.route(id, &setting.config_id);
+    let request = match route {
+        ConfigRoute::Option => raw_request(
+            cx,
+            "session/set_config_option",
+            serde_json::to_value(SetSessionConfigOptionRequest::new(
+                id.to_owned(),
+                setting.config_id.clone(),
+                setting.value.as_str(),
+            ))
+            .unwrap_or_default(),
+        ),
+        ConfigRoute::Mode => raw_request(
+            cx,
+            "session/set_mode",
+            serde_json::to_value(SetSessionModeRequest::new(
+                id.to_owned(),
+                setting.value.clone(),
+            ))
+            .unwrap_or_default(),
+        ),
+        ConfigRoute::Model => return Err("A model is not a mode".into()),
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(20), request).await {
+        Ok(Ok(response)) => Ok(match route {
+            ConfigRoute::Option => config_options_value(response.get("configOptions")),
+            _ => adapter.legacy_applied(id, &setting.config_id, &setting.value),
+        }),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("The agent did not apply the change within 20 seconds".into()),
+    }
+}
+
+/// Applies `changes` in order and returns the options as the agent last
+/// reported them (an agent that answers `{}` accepted the value as sent).
+async fn apply_settings(
+    cx: &ConnectionTo<Agent>,
+    adapter: &Adapter,
+    id: &str,
+    mut options: Vec<ConfigOption>,
+    changes: &[AgentSetting],
+) -> Result<Vec<ConfigOption>, String> {
+    for setting in changes {
+        let applied = send_setting(cx, adapter, id, setting).await?;
+        if applied.is_empty() {
+            for option in options.iter_mut().filter(|o| o.id == setting.config_id) {
+                option.current_value = setting.value.clone();
+            }
+        } else {
+            options = applied;
+        }
+    }
+    Ok(options)
+}
+
+/// Establishes the thread's Span mode for a session that just started or
+/// was restored (ADR 0015): Ask, setting the agent to what Ask needs; or,
+/// when the user keeps the agent's own start mode (`agentDefault`, never for
+/// a child), the Span mode the agent's current setting stands for, with the
+/// agent left as it is. Call [`Adapter::end_mode`] after the options are
+/// emitted. A refused change is logged; the mismatch it leaves is reported.
+async fn establish_mode(
+    cx: &ConnectionTo<Agent>,
+    adapter: &Adapter,
+    id: &str,
+    options: Vec<ConfigOption>,
+    agent_default: bool,
+    child: bool,
+    emit: &EventSink,
+) -> Vec<ConfigOption> {
+    let current = Adapter::current_settings(&options);
+    let keep = agent_default && !child;
+    let mode = permission_mode::initial_mode(adapter.kind().id(), agent_default, child, &current);
+    let expected = if keep {
+        current
+    } else {
+        adapter.expected_settings(mode, &options)
+    };
+    adapter.begin_mode(id, mode, expected.clone());
+    let changes = Adapter::changes(&expected, &options);
+    if changes.is_empty() {
+        return options;
+    }
+    match apply_settings(cx, adapter, id, options.clone(), &changes).await {
+        Ok(applied) => applied,
+        Err(error) => {
+            emit(AgentEvent::Log {
+                direction: "Client".into(),
+                line: format!("Permission mode: the agent kept its own mode ({error})"),
+            });
+            options
+        }
     }
 }
 

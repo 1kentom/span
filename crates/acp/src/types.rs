@@ -538,6 +538,49 @@ pub enum AgentEvent {
         session_id: String,
         request_id: String,
     },
+    /// The thread's Span permission mode (ADR 0015), sent when a session
+    /// starts or is restored and after every change. `supported` lists the
+    /// modes this session can run in; `child` is true for a delegated child,
+    /// which can never be looser than Ask.
+    PermissionMode {
+        session_id: String,
+        mode: span_core::ThreadPermissionMode,
+        supported: Vec<span_core::ThreadPermissionMode>,
+        child: bool,
+        /// Agent option ids the mode sets (the agent's mode option, Codex's
+        /// collaboration mode). The UI shows the Span modes in their place.
+        managed: Vec<String>,
+    },
+    /// Span answered a permission request itself under the thread's mode,
+    /// without prompting (ADR 0015): `rejected` in Plan mode, `allowed` in
+    /// Accept edits, Auto and Full. Logged in the feed.
+    PermissionAuto {
+        session_id: String,
+        tool_call_id: String,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        tool_kind: Option<String>,
+        /// `allowed` or `rejected`.
+        decision: String,
+        reason: span_core::PolicyReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[specta(optional)]
+        raw_input: Option<serde_json::Value>,
+    },
+    /// The agent reports a mode other than the one the thread's Span mode
+    /// needs (it switched itself, or reset a setting). `resolved` false: the
+    /// mismatch was seen, Span keeps enforcing the thread's mode and tries
+    /// once to set the agent back; `resolved` true: the agent is back.
+    ModeMismatch {
+        session_id: String,
+        mode: span_core::ThreadPermissionMode,
+        /// The agent option id that differs.
+        config_id: String,
+        expected: String,
+        actual: String,
+        resolved: bool,
+    },
     Proposal {
         session_id: String,
         proposal: span_core::EditProposal,

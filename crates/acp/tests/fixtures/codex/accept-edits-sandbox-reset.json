@@ -1,0 +1,144 @@
+{
+  "quirk": "Accept edits on Codex: the agent stays in agent (Auto review). An edit inside the workspace is allowed by Span without a prompt (allow once, reason accept_edits_workspace); an edit outside the workspace and a command still prompt. When Codex resets its own preset mid turn (config_option_update to agent-full-access), Span reports modeMismatch, sets agent back once, and the bypass notice is raised and cleared.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "acceptEdits"
+    },
+    {
+      "do": "prompt",
+      "text": "edit"
+    }
+  ],
+  "events": [
+    {
+      "kind": "permissionMode",
+      "mode": "ask",
+      "managed": [
+        "mode",
+        "collaboration_mode"
+      ]
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    },
+    {
+      "kind": "permissionMode",
+      "mode": "acceptEdits"
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": true
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "e1",
+      "decision": "allowed",
+      "reason": "accept_edits_workspace"
+    },
+    {
+      "kind": "permission",
+      "toolCallId": "e2"
+    },
+    {
+      "kind": "permission",
+      "toolCallId": "x1"
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "agent-full-access"
+        },
+        {
+          "id": "collaboration_mode"
+        }
+      ]
+    },
+    {
+      "kind": "modeMismatch",
+      "mode": "acceptEdits",
+      "configId": "mode",
+      "expected": "agent",
+      "actual": "agent-full-access",
+      "resolved": false
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "agent"
+        },
+        {
+          "id": "collaboration_mode"
+        }
+      ]
+    },
+    {
+      "kind": "modeMismatch",
+      "configId": "mode",
+      "resolved": true
+    },
+    {
+      "kind": "_step",
+      "do": "prompt",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "permission",
+      "toolCallId": "e1"
+    }
+  ],
+  "sent": [
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    },
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "sessionId": "x-1",
+        "configId": "mode",
+        "value": "agent"
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "value": "agent-full-access"
+      }
+    }
+  ]
+}

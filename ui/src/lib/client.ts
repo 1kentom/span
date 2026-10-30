@@ -15,7 +15,7 @@ import { createHubPreview } from './hub-preview';
 import type { HubPort } from './hub-port';
 import { fileResults } from './navigation';
 import { createPreviewSettings } from './preview-settings';
-import type { AgentHealth_Serialize as AgentHealth, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates } from '../bindings';
+import type { AgentHealth_Serialize as AgentHealth, PromptError_Serialize as PromptError, SessionStates_Serialize as SessionStates, ThreadPermissionMode } from '../bindings';
 import type { AgentCommand, AgentEvent, BufferRevision, BufferSnapshot, FileEntry, FileProbe, FileIndexStatus, FileIndexQueryResponse, FormatWarning, ImageSource, InstalledAgent, NativeAction, NativeWindowState, RecentProject_Serialize as RecentProject, PromptAttachment, SavedAttachment, RegistryAgent, SearchMatch, SessionState_Serialize as SessionState, SessionSummary, Settings_Serialize as Settings, SettingsScope, StartupRequest_Serialize as StartupRequest, SyntaxSnapshot, TextEdit, ToolInfo_Serialize as ToolInfo, Workspace } from '../bindings';
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -898,6 +898,11 @@ export const api = {
     if (!isDesktop) nativeRequired('Changing agent options');
     await commands.agentSetConfig(configId, value);
   },
+  /** The open chat's Span permission mode (ADR 0015). The backend validates it and enforces it at the adapter. */
+  async agentSetPermissionMode(mode: ThreadPermissionMode): Promise<void> {
+    if (!isDesktop) nativeRequired('Changing the permission mode');
+    await commands.agentSetPermissionMode(mode);
+  },
   async agentNewSession(): Promise<string> {
     if (!isDesktop) nativeRequired('Starting a new chat');
     return commands.agentNewSession();
@@ -1074,6 +1079,10 @@ export const agentSessions = {
   async setConfig(key: SessionKey, configId: string, value: string): Promise<void> {
     if (!isDesktop) nativeRequired('Changing agent options');
     await commands.agentSetConfigKeyed(key, configId, value);
+  },
+  async setPermissionMode(key: SessionKey, mode: ThreadPermissionMode): Promise<void> {
+    if (!isDesktop) nativeRequired('Changing the permission mode');
+    await commands.agentSetPermissionModeKeyed(key, mode);
   },
   async review(key: SessionKey, proposalId: string, accept: boolean, expectedRevision: number): Promise<BufferSnapshot> {
     if (!isDesktop) nativeRequired('Reviewing agent edits');

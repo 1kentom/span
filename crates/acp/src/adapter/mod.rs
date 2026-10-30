@@ -17,7 +17,9 @@ mod opencode;
 
 use crate::{AgentCommand, AgentEvent, AgentHint, AuthMethodInfo, ConfigOption, PermissionOption};
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use span_core::permission_mode::{self, AgentSetting, ThreadPermissionMode};
+use span_core::permission_policy::{self, PolicyDecision};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -136,6 +138,22 @@ pub(crate) struct SessionState {
     pub bypass: Option<String>,
     /// A user message of this session was already seen (live or replayed).
     pub user_seen: bool,
+    /// The thread's Span permission mode and what it needs from the agent.
+    pub thread: ThreadMode,
+}
+
+/// The Span permission mode of one session (ADR 0015).
+#[derive(Debug, Default)]
+pub(crate) struct ThreadMode {
+    pub mode: ThreadPermissionMode,
+    /// The agent settings the mode needs, as last applied. Empty means Span
+    /// enforces the mode alone (or nothing was established yet).
+    pub expected: Vec<AgentSetting>,
+    /// Config ids whose agent value differs from `expected`.
+    pub mismatched: HashSet<String>,
+    /// A mode change is being applied: intermediate configs are not
+    /// mismatches.
+    pub applying: bool,
 }
 
 /// Mode and option values under which the agent runs tools without asking,
@@ -355,6 +373,16 @@ impl Adapter {
     /// clearing when the mode becomes a safe one again. Other events return
     /// nothing.
     pub(crate) fn observe(&self, session: &str, event: &AgentEvent) -> Vec<AgentEvent> {
+        let mut events = self.observe_bypass(session, event);
+        if matches!(event, AgentEvent::Config { options, .. } if !options.is_empty())
+            || matches!(event, AgentEvent::CurrentMode { .. })
+        {
+            events.extend(self.with(session, |state| mismatches(session, state)));
+        }
+        events
+    }
+
+    fn observe_bypass(&self, session: &str, event: &AgentEvent) -> Vec<AgentEvent> {
         self.with(session, |state| {
             let current = match event {
                 // An empty list (an agent answering a change with `{}`)
@@ -403,6 +431,230 @@ impl Adapter {
                 },
             }]
         })
+    }
+
+    /// The Span permission mode of `session` (Ask until one is set).
+    pub(crate) fn thread_mode(&self, session: &str) -> ThreadPermissionMode {
+        self.with(session, |state| state.thread.mode)
+    }
+
+    /// The modes `session` can run in, given the options it reports: the
+    /// agent's supported modes, without a mode whose agent setting exists
+    /// but does not offer the needed value, and without Plan when the agent
+    /// reports no mode option at all (it could not be kept read only).
+    pub(crate) fn available_modes(&self, options: &[ConfigOption]) -> Vec<ThreadPermissionMode> {
+        permission_mode::supported_modes(self.kind.id())
+            .into_iter()
+            .filter(|mode| {
+                let Some(choice) = permission_mode::map_to_agent(self.kind.id(), *mode) else {
+                    return false;
+                };
+                let Some(first) = choice.settings.first() else {
+                    return true;
+                };
+                match options.iter().find(|o| o.id == first.config_id) {
+                    Some(option) => has_choice(option, &first.value),
+                    None => *mode != ThreadPermissionMode::Plan,
+                }
+            })
+            .collect()
+    }
+
+    /// The agent settings `mode` needs that `options` can carry: settings
+    /// of options the session does not report are left out.
+    pub(crate) fn expected_settings(
+        &self,
+        mode: ThreadPermissionMode,
+        options: &[ConfigOption],
+    ) -> Vec<AgentSetting> {
+        permission_mode::map_to_agent(self.kind.id(), mode)
+            .map(|choice| choice.settings)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|setting| {
+                options
+                    .iter()
+                    .any(|o| o.id == setting.config_id && has_choice(o, &setting.value))
+            })
+            .collect()
+    }
+
+    /// The agent's current value of every option a Span mode can involve.
+    pub(crate) fn current_settings(options: &[ConfigOption]) -> Vec<AgentSetting> {
+        options
+            .iter()
+            .filter(|o| is_mode_option(o) || o.id == "collaboration_mode")
+            .map(|o| AgentSetting {
+                config_id: o.id.clone(),
+                value: o.current_value.clone(),
+            })
+            .collect()
+    }
+
+    /// The settings of `expected` that `options` do not already have.
+    pub(crate) fn changes(
+        expected: &[AgentSetting],
+        options: &[ConfigOption],
+    ) -> Vec<AgentSetting> {
+        expected
+            .iter()
+            .filter(|setting| {
+                options
+                    .iter()
+                    .find(|o| o.id == setting.config_id)
+                    .is_some_and(|o| o.current_value != setting.value)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The options `session` last reported to the UI.
+    pub(crate) fn config(&self, session: &str) -> Vec<ConfigOption> {
+        self.with(session, |state| state.config.clone())
+    }
+
+    /// The settings still to apply so `session` matches its expected mode.
+    pub(crate) fn pending_corrections(
+        &self,
+        session: &str,
+    ) -> (Vec<AgentSetting>, Vec<ConfigOption>) {
+        self.with(session, |state| {
+            (
+                Self::changes(&state.thread.expected, &state.config),
+                state.config.clone(),
+            )
+        })
+    }
+
+    /// Start applying `mode`: from now on `expected` is what the agent must
+    /// report. Mismatch checks wait until [`Self::end_mode`]. Returns the
+    /// previous mode and expectations, for [`Self::restore_mode`].
+    pub(crate) fn begin_mode(
+        &self,
+        session: &str,
+        mode: ThreadPermissionMode,
+        expected: Vec<AgentSetting>,
+    ) -> (ThreadPermissionMode, Vec<AgentSetting>) {
+        self.with(session, |state| {
+            state.thread.applying = true;
+            let previous = (
+                state.thread.mode,
+                std::mem::take(&mut state.thread.expected),
+            );
+            state.thread.mode = mode;
+            state.thread.expected = expected;
+            previous
+        })
+    }
+
+    /// Put back the mode `begin_mode` replaced (the agent refused the change).
+    pub(crate) fn restore_mode(
+        &self,
+        session: &str,
+        previous: (ThreadPermissionMode, Vec<AgentSetting>),
+    ) {
+        self.with(session, |state| {
+            state.thread.mode = previous.0;
+            state.thread.expected = previous.1;
+        });
+    }
+
+    /// Finish applying a mode and compare the agent's options with it.
+    pub(crate) fn end_mode(&self, session: &str) -> Vec<AgentEvent> {
+        self.with(session, |state| {
+            state.thread.applying = false;
+            mismatches(session, state)
+        })
+    }
+
+    /// True when `config_id` is an agent option a Span mode sets: a change
+    /// to it goes through the thread's permission mode, never around it.
+    pub(crate) fn managed_option(&self, session: &str, config_id: &str) -> bool {
+        if self.kind == AgentKind::Generic {
+            return false;
+        }
+        self.with(session, |state| {
+            state
+                .thread
+                .expected
+                .iter()
+                .any(|s| s.config_id == config_id)
+                || state.config.iter().chain(&state.legacy).any(|o| {
+                    o.id == config_id && (is_mode_option(o) || o.id == "collaboration_mode")
+                })
+        })
+    }
+
+    /// The `PermissionMode` event for `session`.
+    pub(crate) fn mode_event(
+        &self,
+        session: &str,
+        child: bool,
+        options: &[ConfigOption],
+    ) -> AgentEvent {
+        let mode = self.thread_mode(session);
+        let supported = if child {
+            self.available_modes(options)
+                .into_iter()
+                .filter(|m| permission_mode::allowed_for_child(*m))
+                .collect()
+        } else {
+            self.available_modes(options)
+        };
+        let managed = if self.kind == AgentKind::Generic {
+            Vec::new()
+        } else {
+            options
+                .iter()
+                .filter(|o| is_mode_option(o) || o.id == "collaboration_mode")
+                .map(|o| o.id.clone())
+                .collect()
+        };
+        AgentEvent::PermissionMode {
+            session_id: session.to_owned(),
+            mode,
+            supported,
+            child,
+            managed,
+        }
+    }
+
+    /// How Span answers a permission request (a `Permission` event built by
+    /// [`Self::permission`]) under the session's mode. The tool kind and raw
+    /// input fall back to what the tool call reported earlier.
+    pub(crate) fn policy(&self, session: &str, event: &AgentEvent) -> PolicyDecision {
+        let AgentEvent::Permission {
+            tool_call_id,
+            tool_kind,
+            raw_input,
+            locations,
+            diffs,
+            ..
+        } = event
+        else {
+            return PolicyDecision::Prompt;
+        };
+        let (mode, known) = self.with(session, |state| {
+            (state.thread.mode, state.tools.get(tool_call_id).cloned())
+        });
+        let kind = tool_kind
+            .clone()
+            .or_else(|| known.as_ref().and_then(|t| text(t, "kind")));
+        let raw = raw_input.clone().or_else(|| {
+            known
+                .as_ref()
+                .and_then(|t| t.get("rawInput").filter(|v| !v.is_null()).cloned())
+        });
+        let locations: Vec<String> = locations.iter().map(|l| l.path.clone()).collect();
+        let diffs: Vec<String> = diffs.iter().map(|d| d.path.clone()).collect();
+        let facts = permission_policy::facts(
+            &self.root,
+            kind.as_deref(),
+            &locations,
+            &diffs,
+            raw.as_ref(),
+        );
+        permission_policy::decide(mode, facts)
     }
 
     /// Under the approval start mode: the mode option to change, and the
@@ -608,6 +860,57 @@ impl Adapter {
             None => self.quirks.auth_hint(None),
         }
     }
+}
+
+/// `ModeMismatch` events for each expected setting whose agent value just
+/// started or stopped differing. Options the session does not report are not
+/// compared. Nothing is compared while a mode change is being applied.
+fn mismatches(session: &str, state: &mut SessionState) -> Vec<AgentEvent> {
+    if state.thread.applying {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    for setting in &state.thread.expected {
+        let Some(option) = state.config.iter().find(|o| o.id == setting.config_id) else {
+            continue;
+        };
+        let differs = option.current_value != setting.value;
+        let changed = if differs {
+            state.thread.mismatched.insert(setting.config_id.clone())
+        } else {
+            state.thread.mismatched.remove(&setting.config_id)
+        };
+        if changed {
+            events.push(AgentEvent::ModeMismatch {
+                session_id: session.to_owned(),
+                mode: state.thread.mode,
+                config_id: setting.config_id.clone(),
+                expected: setting.value.clone(),
+                actual: option.current_value.clone(),
+                resolved: !differs,
+            });
+        }
+    }
+    let expected: HashSet<&String> = state.thread.expected.iter().map(|s| &s.config_id).collect();
+    let stale: Vec<String> = state
+        .thread
+        .mismatched
+        .iter()
+        .filter(|id| !expected.contains(id))
+        .cloned()
+        .collect();
+    for config_id in stale {
+        state.thread.mismatched.remove(&config_id);
+        events.push(AgentEvent::ModeMismatch {
+            session_id: session.to_owned(),
+            mode: state.thread.mode,
+            actual: String::new(),
+            expected: String::new(),
+            config_id,
+            resolved: true,
+        });
+    }
+    events
 }
 
 /// Bookkeeping every adapter relies on, applied to each update it produced.

@@ -43,6 +43,8 @@ import { feedTurns } from "./agent-handoff";
 import { moveItem } from "./agent-queue";
 import { noteAgentUsed, readLastSession, writeLastSession } from "./last-session";
 import { chooseRestores, readLastConfig, writeLastConfig, type SavedConfig } from "./last-config";
+import { createPermissionModeControl } from "./agent-permission-mode";
+import { SPAN_MODE_KEY } from "./permission-modes";
 import { buildHandoff, carryFeed, withHandoff } from "./agent-handoff";
 import { initialThreadState, sameKey, type Handoff, type Queued, type Rewind, type ThreadState } from "./agent-threads/thread-state";
 import { createThreadRegistry } from "./agent-threads/threads";
@@ -397,7 +399,10 @@ export function createAgentController(props: AgentPanelProps) {
   /** The brand new session whose agent should get the user's remembered options once they arrive. Never a resumed chat. */
   const [freshSession, setFreshSession] = createSignal<{ id: string; saved?: SavedConfig }>();
   /** `saved` replaces the agent's remembered options, for a session that continues another one (edit, resend, fork). */
-  const markFresh = (id: string | undefined, saved?: SavedConfig) => setFreshSession(id ? { id, saved } : undefined);
+  const markFresh = (id: string | undefined, saved?: SavedConfig) => {
+    setFreshSession(id ? { id, saved } : undefined);
+    if (id) permissionModes.restoreFresh(id, saved);
+  };
   createEffect(() => {
     const id = sessionId();
     const options = state().config;
@@ -1309,7 +1314,7 @@ export function createAgentController(props: AgentPanelProps) {
   function restoreConfig(id: string, options: ConfigOption[], saved?: SavedConfig): Promise<void> {
     const agent = agentId();
     const values = saved ?? (agent ? readLastConfig(agent) : undefined);
-    const restores = values ? chooseRestores(options, values) : [];
+    const restores = values ? chooseRestores(options, values, state().permissionMode?.managed) : [];
     if (!restores.length) return Promise.resolve();
     const current = guard(agentEpoch);
     const edits = configEdits;
@@ -1586,6 +1591,8 @@ export function createAgentController(props: AgentPanelProps) {
       const id = await start();
       if (!current()) return;
       if (options.fresh) markFresh(id);
+      // A resumed thread gets back the permission mode stored with it (ADR 0015).
+      else if (options.target === id) permissionModes.restoreThread(id);
       const mine = runtimeOf(id);
       const busy = Boolean(mine && mine.state !== "idle");
       patch({ sessionId: id, status: busy ? "busy" : "ready", statusMessage: busy ? "Agent is working" : "Connected and ready", ...(busy ? { running: true } : {}) });
@@ -1772,6 +1779,8 @@ export function createAgentController(props: AgentPanelProps) {
     const before = sessionId();
     // The new session continues this one, so it starts on the same model and options, not the agent's defaults.
     const source: SavedConfig = Object.fromEntries(state().config.map((option) => [option.id, option.currentValue]));
+    const spanMode = state().permissionMode?.mode;
+    if (spanMode) source[SPAN_MODE_KEY] = spanMode;
     const draft = mode === "fork" ? { text: prompt(), items: attachments() } : undefined;
     if (editing?.mode === "edit") setPrompt(editing.draft);
     setRewind(undefined);
@@ -2247,9 +2256,25 @@ export function createAgentController(props: AgentPanelProps) {
   /** True when the composer should explain what Enter, Tab and Esc do while a turn runs. */
   const runHint = createMemo(() => running() && (busyNotice() || Boolean(prompt().trim())));
 
+  const permissionModes = createPermissionModeControl({
+    state,
+    sessionId,
+    agentId,
+    running,
+    apply: (mode) => api.agentSetPermissionMode(mode),
+    recordSessionMeta: (patch) => recordSessionMeta(patch),
+    sessionMetaOf: (id) => sessionMetaOf(id),
+    sendText: (text) => sendText(text),
+    setPrompt: (text) => setPrompt(text),
+    focusPrompt: () => focusPrompt(),
+    markPlan: (itemId, status) => update((previous) => ({ ...previous, feed: previous.feed.map((item) => (item.kind === "planReady" && item.id === itemId ? { ...item, status } : item)) })),
+    fail: (message) => fail({ phase: "session", message }),
+  });
+
   return {
     props,
     state,
+    permissionModes,
     sessionStates,
     rowStatus: rowStatusOf,
     attentionCount,

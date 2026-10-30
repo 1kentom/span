@@ -1,13 +1,12 @@
 {
-  "quirk": "session/new and session/load return legacy modes and models and no configOptions: options mode and model are synthesised; changes go to session/set_mode and unstable session/set_model, never set_config_option.",
+  "quirk": "session/new and session/load return legacy modes and models and no configOptions: options mode and model are synthesised; changes go to session/set_mode and unstable session/set_model, never set_config_option. The mode is changed through the thread's Span permission mode (Full sends set_mode yolo).",
   "drive": [
     {
       "do": "newSession"
     },
     {
-      "do": "setConfig",
-      "id": "mode",
-      "value": "autoEdit"
+      "do": "setPermissionMode",
+      "mode": "full"
     },
     {
       "do": "setConfig",
@@ -79,7 +78,7 @@
       "options": [
         {
           "id": "mode",
-          "currentValue": "autoEdit"
+          "currentValue": "yolo"
         },
         {
           "id": "model",
@@ -92,7 +91,7 @@
       "options": [
         {
           "id": "mode",
-          "currentValue": "autoEdit"
+          "currentValue": "yolo"
         },
         {
           "id": "model",
@@ -120,7 +119,7 @@
       "method": "session/set_mode",
       "params": {
         "sessionId": "g-1",
-        "modeId": "autoEdit"
+        "modeId": "yolo"
       }
     },
     {

@@ -14,6 +14,8 @@ pub use github::*;
 mod images;
 mod java_run;
 mod pdf_pages;
+pub mod permission_mode;
+pub mod permission_policy;
 mod proposal_diff;
 mod recent;
 mod run_config;
@@ -57,6 +59,8 @@ pub use fs_ops::{
 pub use git::*;
 pub use images::RasterImage;
 pub use pdf_pages::pdf_page_count;
+pub use permission_mode::{AgentModeChoice, AgentSetting, ThreadPermissionMode};
+pub use permission_policy::PolicyReason;
 pub use recent::{RecentProject, RecentProjectStore};
 pub use run_config::{DetectedRunTask, PreparedRun, RunCatalog, RunConfiguration};
 pub use run_current_file::{current_file_run, CurrentFileRun, CURRENT_FILE_RUN_ID};

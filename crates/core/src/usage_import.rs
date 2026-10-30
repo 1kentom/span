@@ -1249,6 +1249,7 @@ pub fn imported_sessions(
                     continues: None,
                     changes_tracked: false,
                     usage: Some(SessionUsage::default()),
+                    permission_mode: None,
                 });
             meta.first_seen_ms = meta.first_seen_ms.min(ms);
             meta.last_active_ms = meta.last_active_ms.max(ms + 3_599_999);

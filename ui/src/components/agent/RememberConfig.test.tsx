@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
       agentDisconnect: vi.fn(async () => undefined),
       agentListSessions: vi.fn(async (): Promise<unknown[]> => []),
       agentSetConfig: vi.fn(async (_id: string, _value: string) => undefined),
+      agentSetPermissionMode: vi.fn(async (_mode: string) => undefined),
     },
     agentPresets: vi.fn(async (): Promise<unknown[]> => []),
   };
@@ -133,15 +134,41 @@ describe("remembered config", () => {
     expect(a.state().status).toBe("ready");
   });
 
+  // Owner decision kept (remembered config restores everything, bypass modes too): since ADR 0015 it comes back as
+  // the Span mode Full, set through the permission mode command, never through the raw mode option.
   it("restores a remembered mode that skips approval", async () => {
     writeLastConfig("codex", "mode", "agent-full-access");
+    mocks.api.agentSetPermissionMode.mockClear();
     mocks.api.agentConnect.mockImplementation(async () => {
-      const mode = { id: "mode", name: "Mode", description: null, category: "mode", currentValue: "default", groups: choices(["default", "agent-full-access"]) };
-      mocks.emit({ kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] }, opened("s1"), { kind: "config", sessionId: "s1", options: [mode] } as unknown as AgentEvent);
+      const mode = { id: "mode", name: "Mode", description: null, category: "mode", currentValue: "agent", groups: choices(["agent", "agent-full-access"]) };
+      mocks.emit(
+        { kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] },
+        opened("s1"),
+        { kind: "config", sessionId: "s1", options: [mode] } as unknown as AgentEvent,
+        { kind: "permissionMode", sessionId: "s1", mode: "ask", supported: ["ask", "acceptEdits", "plan", "auto", "full"], child: false, managed: ["mode"] },
+      );
       return "s1";
     });
     await connected(start());
-    expect(mocks.api.agentSetConfig).toHaveBeenCalledWith("mode", "agent-full-access");
+    await tick();
+    expect(mocks.api.agentSetPermissionMode).toHaveBeenCalledWith("full");
+    expect(mocks.api.agentSetConfig).not.toHaveBeenCalledWith("mode", "agent-full-access");
+  });
+
+  it("starts a new thread in the Span mode this agent last ran in", async () => {
+    writeLastConfig("codex", "span.permissionMode", "plan");
+    mocks.api.agentSetPermissionMode.mockClear();
+    mocks.api.agentConnect.mockImplementation(async () => {
+      mocks.emit(
+        { kind: "ready", agentName: "codex", agentTitle: "Codex", agentVersion: "1", features, authMethods: [] },
+        opened("s1"),
+        { kind: "permissionMode", sessionId: "s1", mode: "ask", supported: ["ask", "acceptEdits", "plan", "auto", "full"], child: false, managed: ["mode"] },
+      );
+      return "s1";
+    });
+    await connected(start());
+    await tick();
+    expect(mocks.api.agentSetPermissionMode).toHaveBeenCalledWith("plan");
   });
 
   it("stores nothing for an agent without a known id", async () => {

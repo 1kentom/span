@@ -1,0 +1,117 @@
+{
+  "quirk": "Plan on OpenCode: Span switches the session to the plan agent. A bash request is refused by Span without a prompt (plan_mode_read_only). When OpenCode moves back to the build agent on its own, Span reports modeMismatch and sets plan back once.",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "plan"
+    },
+    {
+      "do": "prompt",
+      "text": "plan"
+    }
+  ],
+  "events": [
+    {
+      "kind": "permissionMode",
+      "mode": "ask"
+    },
+    {
+      "kind": "_step",
+      "do": "newSession",
+      "ok": true
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "plan"
+        }
+      ]
+    },
+    {
+      "kind": "permissionMode",
+      "mode": "plan"
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": true
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "b1",
+      "decision": "rejected",
+      "reason": "plan_mode_read_only"
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "build"
+        }
+      ]
+    },
+    {
+      "kind": "modeMismatch",
+      "mode": "plan",
+      "configId": "mode",
+      "expected": "plan",
+      "actual": "build",
+      "resolved": false
+    },
+    {
+      "kind": "config",
+      "options": [
+        {
+          "id": "mode",
+          "currentValue": "plan"
+        }
+      ]
+    },
+    {
+      "kind": "modeMismatch",
+      "configId": "mode",
+      "resolved": true
+    },
+    {
+      "kind": "_step",
+      "do": "prompt",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "permission",
+      "toolCallId": "b1"
+    }
+  ],
+  "sent": [
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "configId": "mode",
+        "value": "plan"
+      }
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "reject"
+        }
+      }
+    },
+    {
+      "method": "session/set_config_option",
+      "params": {
+        "configId": "mode",
+        "value": "plan"
+      }
+    }
+  ]
+}

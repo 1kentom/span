@@ -1,0 +1,85 @@
+{
+  "quirk": "An edit the user allowed for good in Ask (allow_always, remembered for the session) is still refused once the thread is in Plan: the Span mode answers before any remembered answer (the T3 Code leak where an auto mode plus plan silently approved writes).",
+  "drive": [
+    {
+      "do": "newSession"
+    },
+    {
+      "do": "prompt",
+      "text": "edit",
+      "permission": "allow_always"
+    },
+    {
+      "do": "setPermissionMode",
+      "mode": "plan"
+    },
+    {
+      "do": "prompt",
+      "text": "edit again"
+    }
+  ],
+  "events": [
+    {
+      "kind": "permission",
+      "toolCallId": "e1"
+    },
+    {
+      "kind": "_step",
+      "do": "prompt",
+      "ok": true
+    },
+    {
+      "kind": "_step",
+      "do": "setPermissionMode",
+      "ok": true
+    },
+    {
+      "kind": "permissionAuto",
+      "toolCallId": "e2",
+      "decision": "rejected",
+      "reason": "plan_mode_read_only"
+    },
+    {
+      "kind": "_step",
+      "do": "prompt",
+      "ok": true
+    }
+  ],
+  "absent": [
+    {
+      "kind": "permission",
+      "toolCallId": "e2"
+    }
+  ],
+  "sent": [
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "always"
+        }
+      }
+    },
+    {
+      "method": "session/set_config_option"
+    },
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "reject"
+        }
+      }
+    }
+  ],
+  "notSent": [
+    {
+      "result": {
+        "outcome": {
+          "outcome": "selected",
+          "optionId": "allow"
+        }
+      }
+    }
+  ]
+}

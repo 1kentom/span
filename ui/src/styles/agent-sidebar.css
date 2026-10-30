@@ -944,3 +944,22 @@ button.sb-live-avatar { cursor: pointer; }
   .sb-live-face, .sb-live-tip { transition: none; }
   .sb-live-agent:hover .sb-live-face, .sb-live-agent:focus-within .sb-live-face { transform: none; }
 }
+
+/* Permission modes (ADR 0015): popover rows, feed rows, Plan ready card, mismatch banner, Full access confirm. */
+.sb-perm-modes .sb-eyebrow { display: flex; align-items: center; gap: 6px; }
+.sb-perm-key { margin-left: auto; font: 10px/14px "JetBrains Mono", ui-monospace, monospace; color: var(--sb-faint); letter-spacing: 0; text-transform: none; }
+.sb-perm-option .sb-option-name { display: flex; align-items: center; gap: 6px; }
+.sb-perm-risk { padding: 0 5px; border: 1px solid var(--sb-control-border); border-radius: 4px; font-size: 10px; line-height: 14px; font-weight: 400; color: var(--sb-dim); }
+.sb-perm-risk.warn { border-color: var(--sb-warn-border); background: var(--sb-warn-surface); color: var(--sb-warning); }
+.sb-perm-option:disabled { opacity: 0.55; cursor: default; }
+.sb-perm-row { display: flex; align-items: center; gap: 6px; padding: 0 4px; font-size: 11.5px; color: var(--sb-faint); min-width: 0; }
+.sb-perm-row.blocked { color: var(--sb-dim); }
+.sb-plan-ready { border-color: var(--sb-accent-border); background: var(--sb-accent-surface); }
+.sb-plan-body { padding: 4px 10px; max-height: 320px; overflow: auto; }
+.sb-plan-then { display: flex; align-items: center; gap: 6px; padding: 4px 10px 0; }
+.sb-plan-then .sb-chip[aria-checked="true"] { border-color: var(--sb-accent-border); color: var(--sb-accent-fg); }
+.sb-perm-mismatch { margin-bottom: 6px; }
+.sb-perm-confirm { margin-bottom: 6px; border-color: var(--sb-warn-border); background: var(--sb-warn-surface); }
+.agent-perm-chip { gap: 4px; }
+.agent-perm-chip.plan .agent-model-name { color: var(--sb-accent-fg); }
+.agent-perm-chip.warn .agent-model-name { color: var(--sb-warning); }

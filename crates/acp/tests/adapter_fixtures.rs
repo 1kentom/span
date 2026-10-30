@@ -16,6 +16,8 @@
 //! - `userSettings`: the user's settings file content. Without it the user
 //!   has no settings file, so every agent starts in the approval mode.
 //! - A `newChildSession` step opens a delegated child session.
+//! - A `setPermissionMode` step sets the thread's Span mode (`mode`: ask,
+//!   acceptEdits, plan, auto or full), as the user's mode control does.
 //! - A `listSessions` step's `expectSessions` lists the session ids the
 //!   client returns, in order. Its `expectNative` lists, in order, the
 //!   returned sessions marked as native subagents, each as
@@ -276,6 +278,11 @@ async fn replay(agent: &str, name: &str) {
                 service
                     .set_config(session.clone(), text("id"), text("value"))
                     .await
+            }
+            "setPermissionMode" => {
+                let mode: span_core::ThreadPermissionMode =
+                    serde_json::from_value(step["mode"].clone()).expect("a Span mode name");
+                service.set_permission_mode(session.clone(), mode).await
             }
             "authenticate" => match step.get("credential") {
                 Some(credential) => {
@@ -564,4 +571,37 @@ fixture!(
     claude_interrupted_replay_is_a_notice,
     "claude",
     "interrupted-replay"
+);
+// Permission modes (ADR 0015): Span answers by the thread's mode, reads the
+// agent's mode back and sets it back once when the agent switched itself.
+fixture!(
+    claude_plan_mode_blocks_writes_and_corrects_exit,
+    "claude",
+    "plan-mode"
+);
+fixture!(
+    claude_plan_mode_overrides_a_remembered_always,
+    "claude",
+    "plan-overrides-always"
+);
+fixture!(claude_child_never_looser_than_ask, "claude", "child-mode");
+fixture!(
+    codex_accept_edits_and_sandbox_reset_correction,
+    "codex",
+    "accept-edits-sandbox-reset"
+);
+fixture!(
+    gemini_auto_safe_commands_and_yolo_drift,
+    "gemini",
+    "auto-mode-drift"
+);
+fixture!(
+    opencode_plan_agent_blocks_bash_and_corrects,
+    "opencode",
+    "plan-agent"
+);
+fixture!(
+    generic_full_access_logs_and_no_plan,
+    "generic",
+    "permission-modes"
 );

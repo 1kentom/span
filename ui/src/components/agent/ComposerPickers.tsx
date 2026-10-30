@@ -11,6 +11,7 @@ import { agentUpdateError, agentUpdates, agentUpdatesBusy, checkAgentUpdates } f
 import { AgentPopover } from "./AgentPopover";
 import { effortColor } from "./EffortSlider";
 import { ModePopover } from "./ModePopover";
+import { modeInfo } from "../../lib/permission-modes";
 import { ModelIcon, ModelPopover, isRouted, TraitBadge, currentModelTraits } from "./ModelPopover";
 import { modelBrandFor } from "../../lib/model-brands";
 import type { Brand } from "./types";
@@ -85,7 +86,18 @@ export function createPickers(a: AgentController, props: { brand: Brand; label: 
           />
         </Show>
         <Show when={a.menu() === "mode"}>
-          <ModePopover agentName={props.label} options={config()} busy={busy()} onSelect={select} onClose={close} />
+          <ModePopover
+            agentName={props.label}
+            options={config()}
+            busy={busy() || a.permissionModes.busy()}
+            onSelect={select}
+            onClose={close}
+            spanMode={a.state().permissionMode}
+            onSpanMode={(mode) => {
+              close();
+              void a.permissionModes.choose(mode);
+            }}
+          />
         </Show>
         <Show when={a.menu() === "agents"}>
           <AgentPopover
@@ -162,7 +174,31 @@ export function createPickers(a: AgentController, props: { brand: Brand; label: 
             <Icon name="arrow-down4" size={10} />
           </button>
         </Show>
-        <Show when={a.connected() && hasModePicker(groups()) ? modeChipOption(groups()) : undefined}>
+        <Show when={a.connected() ? a.state().permissionMode : undefined}>
+          {(mode) => {
+            const info = () => modeInfo(mode().mode);
+            const mismatch = () => Boolean(a.state().modeMismatch);
+            const label = () => (mismatch() ? `Permissions: ${info().label}. The agent reports another mode` : `Permissions: ${info().label}`);
+            return (
+              <button
+                ref={modeChip}
+                class="agent-tool-button agent-mode-button agent-perm-chip"
+                classList={{ warn: info().danger || mismatch(), plan: mode().mode === "plan" }}
+                data-mode={mode().mode}
+                aria-label={`${label()}. Shift Tab cycles Ask, Accept edits and Plan`}
+                title={`${label()} (⇧⇥)`}
+                aria-haspopup="dialog"
+                aria-expanded={a.menu() === "mode"}
+                onClick={() => toggle("mode", modeChip)}
+              >
+                <Icon name={mismatch() ? "Warning2" : info().icon} size={12} class={info().danger || mismatch() ? "sb-glyph warn" : "sb-glyph"} />
+                <span class="agent-model-name">{info().label}</span>
+                <Icon name="arrow-down4" size={10} />
+              </button>
+            );
+          }}
+        </Show>
+        <Show when={a.connected() && !a.state().permissionMode && hasModePicker(groups()) ? modeChipOption(groups()) : undefined}>
           {(option) => {
             const name = () => currentChoice(option())?.name ?? option().currentValue;
             // An on/off option says which switch it is: "Fast mode: On", not a bare "On".
