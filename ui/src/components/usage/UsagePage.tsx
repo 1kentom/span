@@ -1,9 +1,10 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
-import type { SessionUsageRow_Serialize as SessionUsageRow, UsageImportStatus_Serialize as ImportStatus, UsageRange_Deserialize as UsageRange, UsageSummary_Serialize as UsageSummary } from "../../bindings";
+import type { UsageBlock_Serialize as UsageBlock, SessionUsageRow_Serialize as SessionUsageRow, UsageImportStatus_Serialize as ImportStatus, UsageRange_Deserialize as UsageRange, UsageSummary_Serialize as UsageSummary } from "../../bindings";
 import { BrandIcon } from "../BrandIcon";
 import { Icon } from "../Icon";
 import { ModelIcon } from "../agent/ModelPopover";
 import { UsageChart, UsageChartTable, UsageShare, seriesVar, type ChartMetric, type SeriesInfo } from "./UsageChart";
+import { UsageBlocks } from "./UsageBlocks";
 import { ModelList, Panel, ProviderList, SessionTable, SourceList, brandId, type ProviderRow } from "./UsageTables";
 import { RANGES, SOURCES, assignSlots, chartColumns, compactTokens, costShort, costText, sumCosts, csvFileName, deltaText, fullNumber, money, percentChange, previousRangeFor, providerKey, providerName, rangeFor, relativeTime, shareText, sparkline, sumTotals, usageCsv, type RangeKey, type SourceKey } from "../../lib/usage";
 import "../../styles/usage.css";
@@ -14,6 +15,8 @@ export type UsageApi = {
   /** The local log importer (ADR 0012, source B). */
   importScan?: () => Promise<ImportStatus | undefined>;
   importStatus?: () => Promise<ImportStatus | undefined>;
+  /** Claude Code's five-hour blocks from its local logs over the last `days` days. */
+  blocks?: (days: number) => Promise<UsageBlock[]>;
 };
 
 const NOTICE_KEY = "span.usage.importNotice.v1";
@@ -53,7 +56,8 @@ export function UsagePage(props: {
   const [importState, setImportState] = createSignal<ImportStatus>();
   const [importBusy, setImportBusy] = createSignal(false);
   const [metric, setMetric] = createSignal<ChartMetric>("tokens");
-  const [groupBy, setGroupBy] = createSignal<"agent" | "model">("agent");
+  const [groupBy, setGroupBy] = createSignal<"agent" | "model" | "blocks">("agent");
+  const [blocks, setBlocks] = createSignal<UsageBlock[]>([]);
   const [notice, setNotice] = createSignal(false);
   const [showTable, setShowTable] = createSignal(false);
   const [data, setData] = createSignal<Loaded>();
@@ -78,6 +82,11 @@ export function UsagePage(props: {
       const before = previousRangeFor(range(), new Date(), effectiveSource());
       const [summary, sessions, previous] = await Promise.all([props.api.summary(target), props.api.sessions(target), before ? props.api.summary(before).catch(() => undefined) : Promise.resolve(undefined)]);
       if (id === request) { setData({ summary, sessions, previous, at: Date.now() }); setNow(Date.now()); }
+      if (id === request && props.api.blocks && props.importEnabled) {
+        const days = RANGES.find((entry) => entry.key === range())?.days ?? 90;
+        const list = await props.api.blocks(Math.min(90, days)).catch(() => []);
+        if (id === request) setBlocks(list);
+      }
     } catch (cause) {
       if (id === request) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -99,7 +108,8 @@ export function UsagePage(props: {
       setImportState((current) => ({ enabled: true, running: false, report: current?.report ?? null, scannedMs: current?.scannedMs ?? null, error: cause instanceof Error ? cause.message : String(cause) }));
     }
   }
-  createEffect(on(() => props.importEnabled, (enabled) => { if (enabled) void followImport(true); else { clearTimeout(poll); setImportState(undefined); setSource("all"); } }));
+  createEffect(on(() => props.importEnabled, (enabled) => { if (enabled) void followImport(true); else { clearTimeout(poll); setImportState(undefined); setSource("all"); if (groupBy() === "blocks") setGroupBy("agent"); } }));
+  const blocksOn = () => Boolean(props.api.blocks && props.importEnabled);
   onCleanup(() => clearTimeout(poll));
   async function toggleImport(enabled: boolean) {
     if (!props.onImportChange) return;
@@ -312,17 +322,19 @@ export function UsagePage(props: {
                     <span class="usage-tile-foot"><Show when={topModel()}>{(model) => <>{shareText(model().totals.tokens.total, totalTokens())} of tokens · {fullNumber(models().length)} {models().length === 1 ? "model" : "models"}</>}</Show></span>
                   </div>
                 </div>
-                <Panel title={metric() === "tokens" ? "Tokens over time" : "Estimated cost over time"} class="usage-chart-panel" actions={<>
+                <Panel title={groupBy() === "blocks" ? "Claude Code five-hour blocks" : metric() === "tokens" ? "Tokens over time" : "Estimated cost over time"} class="usage-chart-panel" actions={<>
                   <div class="usage-segmented small" role="group" aria-label="Group chart by">
                     <button type="button" aria-pressed={groupBy() === "agent"} onClick={() => setGroupBy("agent")}>By agent</button>
                     <button type="button" aria-pressed={groupBy() === "model"} onClick={() => setGroupBy("model")}>By model</button>
+                    <Show when={blocksOn()}><button type="button" aria-pressed={groupBy() === "blocks"} title="Claude Code's five-hour usage blocks" onClick={() => setGroupBy("blocks")}>Blocks</button></Show>
                   </div>
                   <div class="usage-segmented small" role="group" aria-label="Chart measure">
                     <button type="button" aria-pressed={metric() === "tokens"} onClick={() => setMetric("tokens")}>Tokens</button>
                     <button type="button" aria-pressed={metric() === "cost"} onClick={() => setMetric("cost")}>Cost</button>
                   </div>
-                  <button type="button" class="usage-text-button" aria-pressed={showTable()} onClick={() => setShowTable(!showTable())}>{showTable() ? "Chart" : "Table"}</button>
+                  <Show when={groupBy() !== "blocks"}><button type="button" class="usage-text-button" aria-pressed={showTable()} onClick={() => setShowTable(!showTable())}>{showTable() ? "Chart" : "Table"}</button></Show>
                 </>}>
+                  <Show when={groupBy() === "blocks"} fallback={<>
                   <div class="usage-legend" aria-label="Legend">
                     <For each={legendRows()}>{(row) => <span><i style={{ background: seriesVar(row.slot) }} />{row.name}<b>{metric() === "tokens" ? compactTokens(row.tokens) : costShort(row.cost).text}</b></span>}</For>
                     <Show when={view().chart.weekly}><span class="usage-legend-note">Weekly totals</span></Show>
@@ -332,6 +344,7 @@ export function UsagePage(props: {
                     <Match when={view().chart.columns.length === 1 ? view().chart.columns[0] : undefined}>{(column) => <UsageShare column={column()} series={view().series} metric={metric()} />}</Match>
                     <Match when={true}><UsageChart columns={view().chart.columns} series={view().series} metric={metric()} weekly={view().chart.weekly} /></Match>
                   </Switch>
+                  </>}><UsageBlocks blocks={blocks()} metric={metric()} now={now()} /></Show>
                 </Panel>
                 <div class="usage-split">
                   <ModelList rows={models()} totalTokens={totalTokens()} agentName={agentName} />

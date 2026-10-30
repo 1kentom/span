@@ -215,6 +215,38 @@ describe("UsagePage", () => {
     }
   });
 
+  it("shows Claude Code five-hour blocks as a chart mode when the importer is on", async () => {
+    const done = { enabled: true, running: false, report: null, scannedMs: Date.now(), error: null };
+    const now = Date.now();
+    const block = (startMs: number, active: boolean, total: number) => ({ startMs, endMs: startMs + 5 * 3_600_000, lastMs: startMs, active, turns: 3, tokens: { input: total, output: 0, cacheRead: 0, cacheWrite: 0, thought: 0, total }, cost: cost({ known: true, usd: 2, estimatedUsd: 2 }), models: ["claude-opus-5-5"] });
+    const blocks = vi.fn(async () => [block(now - 30 * 3_600_000, false, 500), block(now - 3_600_000, true, 2_000_000)]);
+    const api: UsageApi = { summary: async () => summary(), sessions: async () => [], importScan: async () => done, importStatus: async () => done, blocks };
+    const root = mount(() => <UsagePage api={api} desktop importEnabled onClose={() => undefined} />);
+    await settle();
+    await settle();
+    expect(blocks).toHaveBeenCalledWith(30);
+    const button = [...root.querySelectorAll('[aria-label="Group chart by"] button')].find((b) => b.textContent === "Blocks") as HTMLButtonElement;
+    button.click();
+    await settle();
+    const rows = [...root.querySelectorAll(".usage-block")];
+    expect(rows).toHaveLength(2);
+    // Newest first, the open block marked with its time left.
+    expect(rows[0].classList.contains("active")).toBe(true);
+    expect(rows[0].textContent).toContain("2M");
+    expect(rows[0].textContent).toMatch(/Active, 4h \d+m left/);
+    expect(rows[1].textContent).toContain("3 turns");
+    expect(root.textContent).toContain("Claude Code five-hour blocks");
+    expect(root.querySelector('[aria-label="Legend"]')).toBeNull();
+  });
+
+  it("hides the Blocks mode when the importer is off", async () => {
+    const blocks = vi.fn(async () => []);
+    const root = mount(() => <UsagePage api={{ summary: async () => summary(), sessions: async () => [], blocks }} desktop onClose={() => undefined} />);
+    await settle();
+    expect([...root.querySelectorAll('[aria-label="Group chart by"] button')].map((b) => b.textContent)).toEqual(["By agent", "By model"]);
+    expect(blocks).not.toHaveBeenCalled();
+  });
+
   it("switches the chart between agents and models", async () => {
     const value = summary();
     value.models.push({ model: "local-model", agentIds: ["local"], price: null, totals: totals(500, cost({ known: false, complete: false, unpricedTokens: 500 })) });

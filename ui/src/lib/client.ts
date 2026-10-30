@@ -936,6 +936,11 @@ export async function usageImportStatus(): Promise<import('../bindings').UsageIm
   return isDesktop ? commands.usageImportStatus() : undefined;
 }
 
+/** Claude Code's five-hour usage blocks from its local logs over the last `days` days (ADR 0012). */
+export async function usageBlocks(days: number): Promise<import('../bindings').UsageBlock_Serialize[]> {
+  return isDesktop ? commands.usageBlocks(days) : [];
+}
+
 /** Merge a patch into one session's metadata: model and agent uses add up, counters and stop reason replace. Debouncing is the caller's job. */
 export async function sessionMetaUpdate(patch: import('../bindings').SessionMetaPatch_Deserialize): Promise<import('../bindings').SessionMeta_Serialize> {
   if (!isDesktop) nativeRequired('Saving session history');

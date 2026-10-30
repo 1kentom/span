@@ -241,3 +241,19 @@ th.num .usage-sort { flex-direction: row-reverse; }
 @media (forced-colors: active) {
   .usage-segmented > button[aria-pressed="true"], .usage-chip[aria-pressed="true"] { outline: 1px solid CanvasText; }
 }
+/* Claude Code five-hour blocks */
+.usage-blocks { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.usage-block { display: grid; grid-template-columns: minmax(150px, 0.9fr) minmax(80px, 1.6fr) 60px 68px minmax(110px, 0.7fr); align-items: center; column-gap: 12px; padding: 9px 0; border-top: 1px solid var(--sepLine); font-size: 12px; }
+.usage-block:first-child { border-top: 0; }
+.usage-block-when { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.usage-block-when b { font-weight: 500; color: var(--strong); }
+.usage-block-bar { grid-column: auto; }
+.usage-block-num { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.usage-block-state { color: var(--dim); font-size: 11.5px; text-align: right; white-space: nowrap; }
+.usage-block.active .usage-block-state { color: var(--text); }
+.usage-blocks-note, .usage-blocks-empty { margin: 8px 0 0; color: var(--faint); font-size: 11.5px; line-height: 17px; }
+@media (max-width: 720px) {
+  .usage-block { grid-template-columns: minmax(0, 1fr) 60px 68px; row-gap: 6px; }
+  .usage-block-bar { grid-column: 1 / -1; grid-row: 2; }
+  .usage-block-state { display: none; }
+}
