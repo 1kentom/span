@@ -348,3 +348,35 @@ drops and clipboard commands. Check on macOS and on Windows:
 - Reveal in Finder on a folder row selects the folder.
 - Check drop hit testing on a Retina display, a scaled Windows display and
   with the window zoomed.
+
+## Archive viewer (native pass)
+
+ADR 0016. Covered by Rust unit tests (span-core `archive`, span-desktop
+`archives`) with archives built in the tests, and vitest for the viewer, the
+Explorer flow and chat attachments. Check on macOS and on Windows:
+
+- Open a `.zip`, `.jar`, `.tar` and `.tar.gz` from the Explorer: the viewer
+  lists the tree with sizes, packed sizes and dates without a delay that
+  grows with the archive size; the filter finds a nested file; a 50,000 entry
+  archive scrolls smoothly and says it cannot be extracted.
+- An archive with `../x`, an absolute name, a symbolic link and two names that
+  differ only in case shows the warning with each reason; those rows have no
+  Preview and are never written.
+- Right click a row (and Shift+F10): Preview, Extract here, Extract to... and
+  Copy path. Preview shows text (cut at 1 MiB) and images; a binary or nested
+  archive entry says it cannot be previewed.
+- Extract here from the viewer and from the Explorer menu: a folder named
+  after the archive appears next to it, is selected, and the toast offers
+  Undo (moves it to the Trash). A second run asks Keep both (default),
+  Replace or Skip; Keep both gives "name copy".
+- Extract to...: the folder picker starts next to the archive; a folder
+  outside the project is refused with a message.
+- Cancel a large extraction: the button reads "Cancelling..." until it stops
+  and no folder or `.span-extract-*` staging folder is left behind.
+- A script with the executable bit is extracted without it unless "Keep
+  executable permission" was ticked; nothing extracted is opened or run.
+- Drop an archive (from the project and from Finder or Explorer) on the agent
+  panel: it becomes an outline chip of its entries; the prompt never carries
+  its contents.
+- An archive upload in the Uploads view lists the same way and extracts into
+  the project root.
