@@ -7,8 +7,8 @@ use serde::Serialize;
 use span_core::{
     usage::{session_rows, summarize, PriceTable, SessionUsageRow, UsageRange, UsageSummary},
     usage_import::{
-        default_roots, imported_sessions, more_roots, scan_in, ImportCache, ImportLimits,
-        ScanReport,
+        claude_blocks, default_roots, imported_sessions, more_roots, scan_in, ImportCache,
+        ImportLimits, ScanReport, UsageBlock,
     },
     AgentUsageSettings, CoreWorkspace, SessionMeta, SessionMetaStore, SettingsScope,
 };
@@ -240,4 +240,26 @@ pub async fn usage_import_status(
             .filter(|ms| *ms > 0);
     }
     Ok(current)
+}
+
+/// Claude Code's five-hour usage blocks (ccusage rules) from its local logs,
+/// oldest first, over the last `days` days (at most 90). Empty when the
+/// importer is off.
+#[tauri::command]
+#[specta::specta]
+pub async fn usage_blocks(
+    _state: State<'_, DesktopState>,
+    days: u32,
+) -> Result<Vec<UsageBlock>, String> {
+    blocking(move || {
+        let settings = usage_settings();
+        if !settings.import_local_logs {
+            return Ok(vec![]);
+        }
+        let cache = ImportCache::load(&import_cache_path()?);
+        let now = now_ms();
+        let since = now.saturating_sub(u64::from(days.clamp(1, 90)) * 86_400_000);
+        Ok(claude_blocks(&cache, &prices(&settings), now, since))
+    })
+    .await
 }

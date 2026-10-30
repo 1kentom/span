@@ -1282,6 +1282,134 @@ pub fn imported_sessions(
     sessions.into_values().collect()
 }
 
+/// Length of a Claude Code usage block: five hours.
+pub const BLOCK_HOURS: u32 = 5;
+
+/// One Claude Code five-hour usage block, by ccusage's rules: a block starts
+/// at the hour of the first message after the previous block ended and lasts
+/// five hours. Read from Claude Code's local logs at hour resolution.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBlock {
+    /// Unix milliseconds of the block's first hour.
+    pub start_ms: u64,
+    /// Unix milliseconds the block ends (start plus five hours).
+    pub end_ms: u64,
+    /// Unix milliseconds of the start of the last hour with a message.
+    pub last_ms: u64,
+    /// The block has not ended yet.
+    pub active: bool,
+    pub turns: u32,
+    pub tokens: TokenCounts,
+    pub cost: crate::usage::UsageCost,
+    /// Models used in the block, largest first.
+    pub models: Vec<String>,
+}
+
+/// Claude Code's five-hour blocks from the import cache, oldest first, with
+/// blocks that ended before `since_ms` left out. Messages repeated across
+/// files were already counted once when read.
+pub fn claude_blocks(
+    cache: &ImportCache,
+    prices: &crate::usage::PriceTable,
+    now_ms: u64,
+    since_ms: u64,
+) -> Vec<UsageBlock> {
+    // Hour, then model: summed over every Claude file.
+    let mut hours: BTreeMap<u32, BTreeMap<String, ImportBucket>> = BTreeMap::new();
+    for state in cache.files.values() {
+        if state.kind != Some(ImportKind::Claude) {
+            continue;
+        }
+        for b in &state.buckets {
+            let slot = hours
+                .entry(b.hour)
+                .or_default()
+                .entry(b.model.clone())
+                .or_insert_with(|| ImportBucket {
+                    hour: b.hour,
+                    model: b.model.clone(),
+                    ..ImportBucket::default()
+                });
+            slot.turns = slot.turns.saturating_add(b.turns);
+            slot.input = slot.input.saturating_add(b.input);
+            slot.output = slot.output.saturating_add(b.output);
+            slot.cache_read = slot.cache_read.saturating_add(b.cache_read);
+            slot.cache_write = slot.cache_write.saturating_add(b.cache_write);
+            slot.thought = slot.thought.saturating_add(b.thought);
+            slot.total = slot.total.saturating_add(b.total);
+            slot.cost_micros = slot.cost_micros.saturating_add(b.cost_micros);
+        }
+    }
+    const HOUR_MS: u64 = 3_600_000;
+    let mut blocks: Vec<(UsageBlock, BTreeMap<String, u64>)> = vec![];
+    for (hour, models) in hours {
+        let open = blocks
+            .last()
+            .is_some_and(|(block, _)| u64::from(hour) * HOUR_MS < block.end_ms);
+        if !open {
+            let start_ms = u64::from(hour) * HOUR_MS;
+            blocks.push((
+                UsageBlock {
+                    start_ms,
+                    end_ms: start_ms + u64::from(BLOCK_HOURS) * HOUR_MS,
+                    last_ms: start_ms,
+                    active: false,
+                    turns: 0,
+                    tokens: TokenCounts::default(),
+                    cost: crate::usage::UsageCost::empty(),
+                    models: vec![],
+                },
+                BTreeMap::new(),
+            ));
+        }
+        let (block, by_model) = blocks.last_mut().expect("pushed above");
+        block.last_ms = u64::from(hour) * HOUR_MS;
+        for bucket in models.into_values() {
+            let usage = UsageBucket {
+                day: String::new(),
+                model: bucket.model.clone(),
+                turns: bucket.turns,
+                turns_with_tokens: bucket.turns,
+                input: bucket.input,
+                output: bucket.output,
+                cache_read: bucket.cache_read,
+                cache_write: bucket.cache_write,
+                thought: bucket.thought,
+                total: bucket.total,
+                cost_micros: bucket.cost_micros,
+                currency: (bucket.cost_micros > 0).then(|| "USD".to_owned()),
+            };
+            block.cost.add(&crate::usage::bucket_cost(&usage, prices));
+            block.turns = block.turns.saturating_add(bucket.turns);
+            block.tokens.add(&TokenCounts {
+                input: bucket.input,
+                output: bucket.output,
+                cache_read: bucket.cache_read,
+                cache_write: bucket.cache_write,
+                thought: bucket.thought,
+                total: bucket.total,
+            });
+            *by_model.entry(bucket.model).or_default() += bucket.total;
+        }
+    }
+    blocks
+        .into_iter()
+        .filter(|(block, _)| block.end_ms > since_ms)
+        .map(|(mut block, by_model)| {
+            block.active = now_ms < block.end_ms;
+            let mut models: Vec<(String, u64)> = by_model.into_iter().collect();
+            models.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            block.models = models
+                .into_iter()
+                .map(|(m, _)| m)
+                .filter(|m| !m.is_empty())
+                .collect();
+            block
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1919,5 +2047,50 @@ mod tests {
         let mut cache = ImportCache::default();
         let report = scan_all(&[(ImportKind::Codex, root)], &mut cache);
         assert_eq!(report.skipped + report.compressed_read, 1);
+    }
+
+    #[test]
+    fn usage_import_claude_blocks_start_at_the_first_message_and_last_five_hours() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("projects");
+        write(
+            &root.join("p/a.jsonl"),
+            &[
+                claude("m1", "r1", "2026-10-29T08:40:00Z", 100, 10),
+                claude("m2", "r2", "2026-10-29T12:59:00Z", 200, 20),
+                // 13:00 is five hours after 08:00: a new block.
+                claude("m3", "r3", "2026-10-29T13:00:00Z", 300, 30),
+                // A long gap, then another block.
+                claude("m4", "r4", "2026-10-30T02:15:00Z", 1, 1),
+            ],
+        );
+        // The same message in a second file counts once.
+        write(
+            &root.join("p/b.jsonl"),
+            &[claude("m1", "r1", "2026-10-29T08:40:00Z", 100, 10)],
+        );
+        let mut cache = ImportCache::default();
+        scan_all(&[(ImportKind::Claude, root)], &mut cache);
+        let hour = |text: &str| u64::from(parse_hour(text).unwrap()) * 3_600_000;
+        let now = hour("2026-10-30T03:00:00Z");
+        let blocks = claude_blocks(&cache, &crate::usage::PriceTable::bundled(), now, 0);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].start_ms, hour("2026-10-29T08:00:00Z"));
+        assert_eq!(blocks[0].end_ms, hour("2026-10-29T13:00:00Z"));
+        assert_eq!(blocks[0].last_ms, hour("2026-10-29T12:00:00Z"));
+        assert_eq!((blocks[0].turns, blocks[0].tokens.input), (2, 300));
+        assert!(blocks[0].cost.known && blocks[0].cost.usd > 0.0);
+        assert_eq!(blocks[0].models, vec!["claude-opus-5-5".to_owned()]);
+        assert_eq!(blocks[1].start_ms, hour("2026-10-29T13:00:00Z"));
+        assert!(!blocks[1].active);
+        assert!(blocks[2].active, "the latest block has not ended");
+        // Blocks that ended before `since` are left out.
+        let recent = claude_blocks(
+            &cache,
+            &crate::usage::PriceTable::bundled(),
+            now,
+            hour("2026-10-29T14:00:00Z"),
+        );
+        assert_eq!(recent.len(), 2);
     }
 }

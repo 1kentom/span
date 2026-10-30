@@ -1104,6 +1104,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             usage::usage_prices,
             usage::usage_import_scan,
             usage::usage_import_status,
+            usage::usage_blocks,
             agents::agent_registry,
             agents::agent_installed,
             agents::agent_install,
