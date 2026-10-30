@@ -1,0 +1,15 @@
+{
+  "sourceCollection": "User-provided Iconsax icon library, icons/rounded/linear",
+  "scope": "Exit button in the Zen mode pill at the top of the workbench.",
+  "processing": "Copied byte-identical. No edits. The application renders the artwork with a currentColor alpha mask.",
+  "rights": "Copied at the user's direction. No separate redistribution license has been inferred. The project source license does not relicense these assets.",
+  "assets": [
+    {
+      "asset": "ZenExit.svg",
+      "origin": "local Iconsax library, rounded linear",
+      "source": "video/iconsax-square-minimize-01139f60c64f-.svg",
+      "sourceSha256": "cc0170df7f8a66e8c7b1243481db3da8d9630997ed0caca200272b1a6e03823d",
+      "assetSha256": "cc0170df7f8a66e8c7b1243481db3da8d9630997ed0caca200272b1a6e03823d"
+    }
+  ]
+}

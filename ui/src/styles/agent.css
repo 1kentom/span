@@ -144,9 +144,8 @@
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--scroll) transparent;
-}
-/* A following feed is pinned explicitly (feed-follow.ts); scroll anchoring would fight those writes. */
-.agent-content[data-follow="following"] {
+  /* feed-follow.ts pins a following feed and anchors a detached one itself, the same in WebKit (which has no scroll
+     anchoring) and Chromium (whose own anchoring would correct twice). */
   overflow-anchor: none;
 }
 .agent-body {

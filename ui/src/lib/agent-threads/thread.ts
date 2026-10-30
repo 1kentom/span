@@ -240,7 +240,7 @@ function build(key: SessionKey, options: ThreadOptions) {
     /** This thread as a background chat snapshot (agent-chats.ts), for the transitional adapter. */
     snapshot: (): ChatSnapshot => {
       const current = state();
-      return { conversation: current.conversation, draft: current.draft, attachments: current.attachments, queue: current.queue, queueHeld: current.queueHeld, pinned: current.pinned, scrollTop: current.scrollTop, turnStart: current.turnStart, touchedAt: Date.now() };
+      return { conversation: current.conversation, draft: current.draft, attachments: current.attachments, queue: current.queue, queueHeld: current.queueHeld, pinned: current.pinned, scrollTop: current.scrollTop, scrollAnchor: current.scrollAnchor, turnStart: current.turnStart, touchedAt: Date.now() };
     },
     markDisposed: () => {
       disposed = true;
@@ -254,5 +254,5 @@ export type Thread = ReturnType<typeof createThread>;
 
 /** The seed of a thread restored from a background chat snapshot (agent-chats.ts). */
 export function seedFromSnapshot(chat: ChatSnapshot): ThreadSeed {
-  return { conversation: chat.conversation, draft: chat.draft, attachments: chat.attachments, queue: chat.queue, queueHeld: chat.queueHeld, pinned: chat.pinned, scrollTop: chat.scrollTop, turnStart: chat.turnStart };
+  return { conversation: chat.conversation, draft: chat.draft, attachments: chat.attachments, queue: chat.queue, queueHeld: chat.queueHeld, pinned: chat.pinned, scrollTop: chat.scrollTop, scrollAnchor: chat.scrollAnchor, turnStart: chat.turnStart };
 }

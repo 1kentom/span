@@ -124,7 +124,8 @@
           "goBack",
           "goForward",
           "focusBreadcrumbs",
-          "showUsage"
+          "showUsage",
+          "toggleZenMode"
         ]
       },
       "additionalProperties": {

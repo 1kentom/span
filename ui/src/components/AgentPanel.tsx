@@ -80,7 +80,10 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
         if (inComposer() || !target) return undefined;
         return () => {
           a.follow.detach();
-          requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
+          requestAnimationFrame(() => {
+            const element = feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`);
+            if (element) a.follow.reveal(element);
+          });
         };
       },
       onShowSessionList: () => {
@@ -563,7 +566,10 @@ export function AgentPanel(props: AgentPanelProps & { controller?: AgentControll
             if (!target) return;
             a.setViewing(undefined);
             a.follow.detach();
-            requestAnimationFrame(() => feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`)?.scrollIntoView?.({ block: "center" }));
+            requestAnimationFrame(() => {
+              const element = feedElement()?.querySelector<HTMLElement>(`[data-feed-id="${target.id}"]`);
+              if (element) a.follow.reveal(element);
+            });
           };
           return (
             <AttachmentViewer
