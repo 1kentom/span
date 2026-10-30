@@ -37,7 +37,7 @@ pub fn record_drop(state: &DesktopState, paths: &[std::path::PathBuf]) {
 }
 
 /// The canonical path when it belongs to the latest native drop, else an error. Never reads anything else.
-fn allowed_drop(state: &DesktopState, path: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn allowed_drop(state: &DesktopState, path: &str) -> Result<std::path::PathBuf, String> {
     let canonical = std::fs::canonicalize(path)
         .map_err(|_| "The dropped item is no longer available".to_owned())?;
     let dropped = state

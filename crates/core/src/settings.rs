@@ -218,6 +218,10 @@ pub struct Settings {
     /// Explorer preferences. Optional in TypeScript like `agents`.
     #[specta(optional)]
     pub explorer: ExplorerSettings,
+    /// `archiveExtractLimitMb`: most MiB one archive extraction may write
+    /// (ADR 0016). Honoured only from the user's own settings file.
+    #[specta(optional)]
+    pub archive_extract_limit_mb: u32,
 }
 
 /// `updates.*`: update checks for the app and for agents (ADR 0004).
@@ -414,11 +418,17 @@ impl Default for Settings {
             agents: AgentSettings::default(),
             updates: UpdateSettings::default(),
             explorer: ExplorerSettings::default(),
+            archive_extract_limit_mb: 1024,
         }
     }
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
+        if !(1..=16_384).contains(&self.archive_extract_limit_mb) {
+            return Err(CoreError::Settings(
+                "archiveExtractLimitMb must be between 1 and 16384".into(),
+            ));
+        }
         if !(1..=200).contains(&self.tab_limit) {
             return Err(CoreError::Settings(
                 "tabLimit must be between 1 and 200".into(),
@@ -956,6 +966,8 @@ const USER_ONLY: &[&[&str]] = &[
     &["agents", "usage"],
     // A cloned project must not make Span contact the network at launch.
     &["updates", "checkOnLaunch"],
+    // A cloned project must not raise the archive extraction cap (ADR 0016).
+    &["archiveExtractLimitMb"],
 ];
 
 impl CoreWorkspace {
