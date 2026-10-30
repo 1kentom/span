@@ -450,9 +450,35 @@ async fn tools_list_and_protocol_basics_over_real_http() {
             "get_result",
             "message",
             "cancel",
-            "record_decision"
-        ]
+            "record_decision",
+            "delegate_many",
+            "wait",
+            "task_status",
+            "list_tasks"
+        ],
+        "the six v1 tools keep their names and order; ADR 0014 adds four"
     );
+    for tool in tools["result"]["tools"].as_array().unwrap() {
+        assert_eq!(
+            tool["inputSchema"]["additionalProperties"], false,
+            "{}",
+            tool["name"]
+        );
+        assert_eq!(tool["outputSchema"]["type"], "object", "{}", tool["name"]);
+    }
+    // v1 required arguments are unchanged: every new field is optional.
+    let required = |name: &str| {
+        tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap()["inputSchema"]["required"]
+            .clone()
+    };
+    assert_eq!(required("delegate"), json!(["agent", "task"]));
+    assert_eq!(required("get_result"), json!(["taskId"]));
+    assert_eq!(required("message"), json!(["sessionId", "text"]));
     assert_eq!(
         client.rpc("ping", json!({})).await.response["result"],
         json!({})
