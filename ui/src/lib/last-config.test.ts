@@ -18,17 +18,23 @@ describe("chooseRestores", () => {
   it("skips a choice that vanished", () => {
     expect(chooseRestores([option("model", "gpt", ["gpt"])], { model: "luna" })).toEqual([]);
   });
-  it("restores a remembered mode that skips approval", () => {
+  // ADR 0015: a mode option Span manages is restored as the Span mode, never through the raw option.
+  it("leaves the agent's mode option to the Span permission mode by default", () => {
     const mode = option("mode", "default", ["default", "agent-full-access", "bypassPermissions", "yolo"]);
-    expect(chooseRestores([mode], { mode: "agent-full-access" })).toEqual([["mode", "agent-full-access"]]);
-    expect(chooseRestores([mode], { mode: "bypassPermissions" })).toEqual([["mode", "bypassPermissions"]]);
-    expect(chooseRestores([mode], { mode: "yolo" })).toEqual([["mode", "yolo"]]);
+    expect(chooseRestores([mode], { mode: "agent-full-access" })).toEqual([]);
+    expect(chooseRestores([option("collaboration_mode", "default", ["default", "plan"])], { collaboration_mode: "plan" })).toEqual([]);
+  });
+  it("restores a remembered mode value of an agent Span does not manage", () => {
+    const mode = option("mode", "default", ["default", "agent-full-access", "bypassPermissions", "yolo"]);
+    expect(chooseRestores([mode], { mode: "agent-full-access" }, [])).toEqual([["mode", "agent-full-access"]]);
+    expect(chooseRestores([mode], { mode: "bypassPermissions" }, [])).toEqual([["mode", "bypassPermissions"]]);
+    expect(chooseRestores([mode], { mode: "yolo" }, [])).toEqual([["mode", "yolo"]]);
   });
   it("skips options the session no longer has", () => {
     expect(chooseRestores([option("model", "gpt", ["gpt"])], { effort: "high" })).toEqual([]);
   });
   it("keeps a safe mode", () => {
-    expect(chooseRestores([option("mode", "default", ["default", "plan"])], { mode: "plan" })).toEqual([["mode", "plan"]]);
+    expect(chooseRestores([option("mode", "default", ["default", "plan"])], { mode: "plan" }, [])).toEqual([["mode", "plan"]]);
   });
 });
 
