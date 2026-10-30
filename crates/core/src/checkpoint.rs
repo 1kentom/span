@@ -1020,6 +1020,8 @@ fn resolve_revision(refs: &SessionRefs, revision: &str) -> Result<(CpRef, CpRef)
 struct Write {
     path: String,
     content: Option<Vec<u8>>,
+    /// Only applied where file modes exist (unix).
+    #[cfg_attr(not(unix), allow(dead_code))]
     executable: bool,
 }
 
