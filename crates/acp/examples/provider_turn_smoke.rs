@@ -39,7 +39,12 @@ impl ReplyExcerpt {
         }
         if let Some(root) = path.parent().and_then(Path::to_str) {
             text = text.replace(root, "<owned-workspace>");
-            if let Some(alias) = root.strip_prefix("/private") {
+            // macOS `/tmp` is `/private/tmp`; on Windows the agent is told the
+            // plain spelling of the canonical `\\?\C:\...` root.
+            for alias in [root.strip_prefix("/private"), root.strip_prefix(r"\\?\")]
+                .into_iter()
+                .flatten()
+            {
                 text = text.replace(alias, "<owned-workspace>");
             }
         }

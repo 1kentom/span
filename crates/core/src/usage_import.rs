@@ -1,5 +1,9 @@
-//! Opt-in importers for agents' own local usage logs (ADR 0012, source B):
-//! Claude Code's `projects/**/*.jsonl` and Codex's `sessions/**/rollout-*.jsonl`.
+//! Importers for agents' own local usage logs (ADR 0012, source B), on by
+//! default: Claude Code's `projects/**/*.jsonl` (subagent transcripts
+//! included), Codex's `sessions/**/rollout-*.jsonl` (and `.jsonl.gz`), Gemini
+//! CLI's `tmp/*/chats/*.json[l]` and OpenCode's legacy
+//! `storage/message/**/*.json`. Compressed `.zst` rollouts and OpenCode's
+//! SQLite database are found and reported, not read.
 //!
 //! Read only. Only token counts, model ids, session ids, timestamps and a
 //! reported cost leave a log line; prompt text, replies and tool output are
@@ -21,11 +25,16 @@ use std::path::{Path, PathBuf};
 /// Agent ids of imported sessions. They never collide with a catalog id.
 pub const IMPORTED_CLAUDE_ID: &str = "claude-code-logs";
 pub const IMPORTED_CODEX_ID: &str = "codex-logs";
-const CACHE_VERSION: u32 = 1;
+pub const IMPORTED_GEMINI_ID: &str = "gemini-logs";
+pub const IMPORTED_OPENCODE_ID: &str = "opencode-logs";
+const CACHE_VERSION: u32 = 2;
 const HEAD_BYTES: usize = 4096;
 
 pub fn is_imported_agent(agent_id: &str) -> bool {
-    agent_id == IMPORTED_CLAUDE_ID || agent_id == IMPORTED_CODEX_ID
+    matches!(
+        agent_id,
+        IMPORTED_CLAUDE_ID | IMPORTED_CODEX_ID | IMPORTED_GEMINI_ID | IMPORTED_OPENCODE_ID
+    )
 }
 
 /// Which agent's logs a root holds.
@@ -34,6 +43,8 @@ pub fn is_imported_agent(agent_id: &str) -> bool {
 pub enum ImportKind {
     Claude,
     Codex,
+    Gemini,
+    OpenCode,
 }
 
 impl ImportKind {
@@ -41,18 +52,50 @@ impl ImportKind {
         match self {
             ImportKind::Claude => IMPORTED_CLAUDE_ID,
             ImportKind::Codex => IMPORTED_CODEX_ID,
+            ImportKind::Gemini => IMPORTED_GEMINI_ID,
+            ImportKind::OpenCode => IMPORTED_OPENCODE_ID,
         }
     }
     fn agent_name(self) -> &'static str {
         match self {
             ImportKind::Claude => "Claude Code (local logs)",
             ImportKind::Codex => "Codex (local logs)",
+            ImportKind::Gemini => "Gemini CLI (local logs)",
+            ImportKind::OpenCode => "OpenCode (local logs)",
         }
     }
-    fn wants(self, name: &str) -> bool {
+    /// Whether a file belongs to this kind. Gemini chats must sit in a
+    /// `chats` folder (its `tmp` folder also holds checkpoints and logs).
+    fn wants(self, path: &Path) -> bool {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
         match self {
             ImportKind::Claude => name.ends_with(".jsonl"),
-            ImportKind::Codex => name.starts_with("rollout-") && name.ends_with(".jsonl"),
+            ImportKind::Codex => {
+                name.starts_with("rollout-")
+                    && (name.ends_with(".jsonl")
+                        || name.ends_with(".jsonl.gz")
+                        || name.ends_with(".jsonl.zst"))
+            }
+            ImportKind::Gemini => {
+                (name.ends_with(".jsonl") || name.ends_with(".json"))
+                    && path
+                        .components()
+                        .any(|c| c.as_os_str().to_string_lossy() == "chats")
+            }
+            ImportKind::OpenCode => name.ends_with(".json"),
+        }
+    }
+    /// Files read whole on every change instead of resumed at an offset:
+    /// compressed rollouts, OpenCode's one-message files, and Gemini chats
+    /// (whose messages are rewritten in place as tokens arrive).
+    fn whole_file(self, path: &Path) -> bool {
+        match self {
+            ImportKind::Claude => false,
+            ImportKind::Codex => path.extension().is_some_and(|e| e == "gz"),
+            ImportKind::Gemini | ImportKind::OpenCode => true,
         }
     }
 }
@@ -109,6 +152,40 @@ pub fn default_roots(
     if let Some(dir) = codex {
         roots.push((ImportKind::Codex, dir.join("sessions")));
         roots.push((ImportKind::Codex, dir.join("archived_sessions")));
+    }
+    roots
+}
+
+/// Gemini CLI's and OpenCode's folders: `~/.gemini/tmp` (chats live in
+/// `<project>/chats/`), and OpenCode's data folder (`OPENCODE_DATA_DIR`,
+/// comma separated, else `$XDG_DATA_HOME/opencode`, else
+/// `~/.local/share/opencode`) with `storage/message/`.
+pub fn more_roots(
+    home: Option<&Path>,
+    opencode_data_dir: Option<&str>,
+    xdg_data_home: Option<&str>,
+) -> Vec<(ImportKind, PathBuf)> {
+    let mut roots = vec![];
+    if let Some(home) = home {
+        roots.push((ImportKind::Gemini, home.join(".gemini/tmp")));
+    }
+    let opencode: Vec<PathBuf> = match opencode_data_dir.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+        None => xdg_data_home
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && Path::new(v).is_absolute())
+            .map(|v| PathBuf::from(v).join("opencode"))
+            .or_else(|| home.map(|h| h.join(".local/share/opencode")))
+            .into_iter()
+            .collect(),
+    };
+    for dir in opencode {
+        roots.push((ImportKind::OpenCode, dir.join("storage/message")));
     }
     roots
 }
@@ -200,6 +277,14 @@ pub struct ScanReport {
     pub skipped: u32,
     /// True when a cap stopped the file listing early.
     pub truncated: bool,
+    /// Compressed files read (gzip rollouts).
+    pub compressed_read: u32,
+    /// Compressed files found but not read (`.zst`: no zstd decoder).
+    pub compressed_skipped: u32,
+    /// Kinds that had at least one log file, in a fixed order.
+    pub kinds: Vec<ImportKind>,
+    /// Plain notes about sources found but not read.
+    pub notes: Vec<String>,
 }
 
 /// 64-bit FNV-1a, stable across platforms and releases.
@@ -240,7 +325,7 @@ fn list_files(
                 if depth < limits.max_depth {
                     stack.push((entry.path(), depth + 1));
                 }
-            } else if file_type.is_file() && kind.wants(&entry.file_name().to_string_lossy()) {
+            } else if file_type.is_file() && kind.wants(&entry.path()) {
                 if out.len() >= limits.max_files {
                     truncated = true;
                     return truncated;
@@ -268,6 +353,25 @@ pub fn scan(
             report.truncated |= list_files(*kind, root, limits, &mut files);
         }
     }
+    for kind in [
+        ImportKind::Claude,
+        ImportKind::Codex,
+        ImportKind::Gemini,
+        ImportKind::OpenCode,
+    ] {
+        if files.iter().any(|(k, _)| *k == kind) {
+            report.kinds.push(kind);
+        }
+    }
+    if roots
+        .iter()
+        .filter(|(kind, _)| *kind == ImportKind::OpenCode)
+        .any(|(_, root)| opencode_database(root))
+    {
+        report.notes.push(
+            "OpenCode 1.2 and later keep usage in opencode.db, which Span does not read yet. Only OpenCode's older JSON message files are counted.".into(),
+        );
+    }
     report.files_total = files.len() as u32;
     progress(&report);
     let present: HashSet<String> = files.iter().map(|(_, p)| path_key(p)).collect();
@@ -291,6 +395,22 @@ pub fn scan(
     report
 }
 
+/// True when OpenCode's data folder (two levels above `storage/message`)
+/// holds an `opencode*.db` file.
+fn opencode_database(message_root: &Path) -> bool {
+    let Some(data) = message_root.parent().and_then(Path::parent) else {
+        return false;
+    };
+    fs::read_dir(data).is_ok_and(|entries| {
+        entries.filter_map(|e| e.ok()).any(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("opencode")
+                && name.ends_with(".db")
+                && e.file_type().is_ok_and(|t| t.is_file())
+        })
+    })
+}
+
 fn read_file(
     kind: ImportKind,
     path: &Path,
@@ -307,11 +427,20 @@ fn read_file(
     if len > limits.max_file_bytes {
         return Err(CoreError::Settings("Log file is over the size cap".into()));
     }
+    if path.extension().is_some_and(|e| e == "zst") {
+        report.compressed_skipped += 1;
+        return Ok(());
+    }
     let mut file = File::open(path).map_err(|e| io_error("Read log file", path, e))?;
     let mut head = vec![0u8; HEAD_BYTES.min(len as usize)];
     file.read_exact(&mut head)
         .map_err(|e| io_error("Read log file", path, e))?;
     let head_hash = fnv(&head);
+    if kind.whole_file(path) {
+        return read_whole(
+            kind, path, file, len, head_hash, state, seen, limits, report,
+        );
+    }
     // A file shorter than HEAD_BYTES that grew has a different head hash,
     // so it is read again from the start, as is any rewritten file.
     let resumable = state.kind == Some(kind) && state.head == head_hash && len >= state.offset;
@@ -342,32 +471,52 @@ fn read_file(
     };
     report.files_read += 1;
     report.bytes_read += end as u64 + 1;
-    let fallback_session = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut buckets: HashMap<(u32, String, String), ImportBucket> = state
-        .buckets
-        .drain(..)
-        .map(|b| ((b.hour, b.model.clone(), b.session.clone()), b))
-        .collect();
+    let fallback_session = fallback_session(path);
+    let mut entries = vec![];
     for line in bytes[..end].split(|b| *b == b'\n') {
         if line.is_empty() || line.len() > limits.max_line_bytes {
             continue;
         }
         let entry = match kind {
             ImportKind::Claude => claude_entry(line, seen, &mut state.keys, report),
-            ImportKind::Codex => codex_entry(line, state),
+            _ => codex_entry(line, state),
         };
-        let Some(entry) = entry else {
-            continue;
-        };
+        entries.extend(entry);
+    }
+    add_entries(kind, state, entries, &fallback_session, report);
+    state.offset += end as u64 + 1;
+    state.len = len;
+    Ok(())
+}
+
+fn fallback_session(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    name.split('.').next().unwrap_or_default().to_owned()
+}
+
+/// Adds entries to the file's hour, model and session buckets.
+fn add_entries(
+    kind: ImportKind,
+    state: &mut FileState,
+    entries: Vec<Entry>,
+    fallback_session: &str,
+    report: &mut ScanReport,
+) {
+    let mut buckets: HashMap<(u32, String, String), ImportBucket> = state
+        .buckets
+        .drain(..)
+        .map(|b| ((b.hour, b.model.clone(), b.session.clone()), b))
+        .collect();
+    for entry in entries {
         report.entries += 1;
         let session = if entry.session.is_empty() {
             if kind == ImportKind::Codex && !state.session.is_empty() {
                 state.session.clone()
             } else {
-                fallback_session.clone()
+                fallback_session.to_owned()
             }
         } else {
             entry.session
@@ -392,9 +541,328 @@ fn read_file(
     let mut buckets: Vec<ImportBucket> = buckets.into_values().collect();
     buckets.sort_by(|a, b| (a.hour, &a.model, &a.session).cmp(&(b.hour, &b.model, &b.session)));
     state.buckets = buckets;
-    state.offset += end as u64 + 1;
-    state.len = len;
+}
+
+/// Keeps `key` once across all files; false (and counted) for a duplicate.
+fn first_seen(
+    key: u64,
+    seen: &mut HashSet<u64>,
+    keys: &mut Vec<u64>,
+    report: &mut ScanReport,
+) -> bool {
+    if !seen.insert(key) {
+        report.duplicates += 1;
+        return false;
+    }
+    keys.push(key);
+    true
+}
+
+/// A file read from the start whenever its length or first bytes change:
+/// its earlier counts and dedupe keys are replaced. Gzip is decoded with
+/// the decoded size capped like a plain file.
+#[allow(clippy::too_many_arguments)]
+fn read_whole(
+    kind: ImportKind,
+    path: &Path,
+    mut file: File,
+    len: u64,
+    head_hash: u64,
+    state: &mut FileState,
+    seen: &mut HashSet<u64>,
+    limits: &ImportLimits,
+    report: &mut ScanReport,
+) -> Result<()> {
+    if state.kind == Some(kind) && state.head == head_hash && state.len == len {
+        return Ok(());
+    }
+    for key in &state.keys {
+        seen.remove(key);
+    }
+    *state = FileState {
+        kind: Some(kind),
+        head: head_hash,
+        len,
+        offset: len,
+        ..FileState::default()
+    };
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| io_error("Read log file", path, e))?;
+    let mut bytes = vec![];
+    let compressed = path.extension().is_some_and(|e| e == "gz");
+    if compressed {
+        flate2::read::MultiGzDecoder::new(file)
+            .take(limits.max_file_bytes + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| io_error("Decompress log file", path, e))?;
+        if bytes.len() as u64 > limits.max_file_bytes {
+            return Err(CoreError::Settings(
+                "Decompressed log is over the size cap".into(),
+            ));
+        }
+        report.compressed_read += 1;
+    } else {
+        file.read_to_end(&mut bytes)
+            .map_err(|e| io_error("Read log file", path, e))?;
+    }
+    report.files_read += 1;
+    report.bytes_read += len;
+    let fallback = fallback_session(path);
+    let mut keys = vec![];
+    let entries: Vec<Entry> = match kind {
+        ImportKind::OpenCode => {
+            let session = path
+                .parent()
+                .and_then(Path::file_name)
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            opencode_entry(&bytes, &session, &fallback)
+                .filter(|(_, key)| first_seen(*key, seen, &mut keys, report))
+                .map(|(entry, _)| entry)
+                .into_iter()
+                .collect()
+        }
+        ImportKind::Gemini => gemini_entries(&bytes, limits)
+            .into_iter()
+            .filter(|(_, key)| first_seen(*key, seen, &mut keys, report))
+            .map(|(entry, _)| entry)
+            .collect(),
+        ImportKind::Codex | ImportKind::Claude => {
+            let mut out = vec![];
+            for line in bytes.split(|b| *b == b'\n') {
+                if line.is_empty() || line.len() > limits.max_line_bytes {
+                    continue;
+                }
+                let entry = match kind {
+                    ImportKind::Claude => claude_entry(line, seen, &mut keys, report),
+                    _ => codex_entry(line, state),
+                };
+                out.extend(entry);
+            }
+            out
+        }
+    };
+    state.keys.extend(keys);
+    add_entries(kind, state, entries, &fallback, report);
     Ok(())
+}
+
+/// Hours since the epoch of Unix milliseconds.
+fn hour_of_ms(ms: f64) -> Option<u32> {
+    (ms.is_finite() && ms > 0.0).then(|| (ms / 3_600_000.0) as u32)
+}
+
+/// Whether a model's prices count cached tokens inside input (OpenAI and
+/// Google), so tokens reported apart are folded in to match the ledger.
+fn input_includes_cache(model: &str) -> bool {
+    let id = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    id.starts_with("gpt")
+        || id.starts_with("gemini")
+        || id.starts_with("codex")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
+}
+
+/// One OpenCode assistant message file (`storage/message/<session>/<id>.json`):
+/// `tokens.{input, output, reasoning, cache.{read, write}}`, `modelID` (or
+/// `model.id`), `time.created` in ms and `cost`. Input there excludes cache.
+fn opencode_entry(bytes: &[u8], session_dir: &str, file_id: &str) -> Option<(Entry, u64)> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let message = value.as_object()?;
+    if message
+        .get("role")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|role| role != "assistant")
+    {
+        return None;
+    }
+    let text = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    let model_ref = message.get("model");
+    let model = [
+        text(model_ref.and_then(|m| m.get("id"))),
+        text(model_ref.and_then(|m| m.get("modelID"))),
+        text(message.get("modelID")),
+    ]
+    .into_iter()
+    .find(|m| !m.is_empty())?;
+    let tokens = message.get("tokens")?;
+    let n = |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let uncached = n(tokens.get("input"));
+    let reasoning = n(tokens.get("reasoning"));
+    let output = n(tokens.get("output")) + reasoning;
+    let cache_read = n(tokens.get("cache").and_then(|c| c.get("read")));
+    let cache_write = n(tokens.get("cache").and_then(|c| c.get("write")));
+    let input = if input_includes_cache(&model) {
+        uncached + cache_read
+    } else {
+        uncached
+    };
+    let counts = TokenCounts {
+        input,
+        output,
+        cache_read,
+        cache_write,
+        thought: reasoning,
+        total: uncached + cache_read + cache_write + output,
+    };
+    if counts.is_empty() {
+        return None;
+    }
+    let created = message
+        .get("time")
+        .and_then(|t| t.get("created"))
+        .and_then(serde_json::Value::as_f64)?;
+    let id = [text(message.get("id")), file_id.to_owned()]
+        .into_iter()
+        .find(|v| !v.is_empty())?;
+    let session = [text(message.get("sessionID")), session_dir.to_owned()]
+        .into_iter()
+        .find(|v| !v.is_empty())
+        .unwrap_or_default();
+    let cost_micros = message
+        .get("cost")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|c| c.is_finite() && *c > 0.0)
+        .map(|c| (c * 1_000_000.0).round() as u64)
+        .unwrap_or(0);
+    Some((
+        Entry {
+            hour: hour_of_ms(created)?,
+            model: model.chars().take(128).collect(),
+            session: session.chars().take(256).collect(),
+            tokens: counts,
+            cost_micros,
+        },
+        fnv(format!("opencode\u{0}{id}").as_bytes()),
+    ))
+}
+
+/// Gemini CLI chat records: JSONL (a metadata line with `sessionId`, then
+/// messages and `$set`, `$patch` and `$rewindTo` records) or the older single
+/// JSON `{sessionId, messages: [...]}`. Every `type: "gemini"` message with
+/// `tokens` counts once by id, last version winning. A rewind does not refund
+/// tokens already spent, so rewound messages still count. Google counts
+/// cached tokens inside input; thoughts are billed as output.
+fn gemini_entries(bytes: &[u8], limits: &ImportLimits) -> Vec<(Entry, u64)> {
+    let mut session = String::new();
+    let mut order: Vec<String> = vec![];
+    let mut messages: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut take = |value: serde_json::Value, session: &mut String| {
+        if let Some(id) = value.get("sessionId").and_then(serde_json::Value::as_str) {
+            if session.is_empty() {
+                *session = id.chars().take(256).collect();
+            }
+        }
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("gemini") {
+            return;
+        }
+        let Some(id) = value
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        if !messages.contains_key(&id) {
+            order.push(id.clone());
+        }
+        messages.insert(id, value);
+    };
+    let trimmed = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|i| &bytes[i..])
+        .unwrap_or(&[]);
+    let whole: Option<serde_json::Value> = serde_json::from_slice(trimmed).ok();
+    match whole {
+        Some(serde_json::Value::Object(record)) if record.contains_key("messages") => {
+            if let Some(id) = record.get("sessionId").and_then(serde_json::Value::as_str) {
+                session = id.chars().take(256).collect();
+            }
+            for message in record
+                .get("messages")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            {
+                take(message, &mut session);
+            }
+        }
+        _ => {
+            for line in bytes.split(|b| *b == b'\n') {
+                if line.is_empty() || line.len() > limits.max_line_bytes {
+                    continue;
+                }
+                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) {
+                    take(value, &mut session);
+                }
+            }
+        }
+    }
+    let mut out = vec![];
+    for id in order {
+        let Some(message) = messages.get(&id) else {
+            continue;
+        };
+        let Some(tokens) = message.get("tokens").filter(|t| t.is_object()) else {
+            continue;
+        };
+        let n = |key: &str| {
+            tokens
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        let thoughts = n("thoughts");
+        let input = n("input") + n("tool");
+        let output = n("output") + thoughts;
+        let total = n("total");
+        let counts = TokenCounts {
+            input,
+            output,
+            cache_read: n("cached"),
+            cache_write: 0,
+            thought: thoughts,
+            total: if total > 0 { total } else { input + output },
+        };
+        if counts.is_empty() {
+            continue;
+        }
+        let Some(hour) = message
+            .get("timestamp")
+            .and_then(serde_json::Value::as_str)
+            .and_then(parse_hour)
+        else {
+            continue;
+        };
+        let model = message
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .take(128)
+            .collect();
+        out.push((
+            Entry {
+                hour,
+                model,
+                session: session.clone(),
+                tokens: counts,
+                cost_micros: 0,
+            },
+            fnv(format!("gemini\u{0}{session}\u{0}{id}").as_bytes()),
+        ));
+    }
+    out
 }
 
 struct Entry {
@@ -935,5 +1403,285 @@ mod tests {
             ..UsageRange::default()
         };
         assert_eq!(summarize(&sessions, &tracked, &table).totals.sessions, 0);
+    }
+
+    fn sidechain(id: &str, request: &str, time: &str, input: u64) -> String {
+        format!(
+            r#"{{"type":"assistant","isSidechain":true,"agentId":"agent-1","timestamp":"{time}","sessionId":"sess-a","requestId":"{request}","message":{{"id":"{id}","model":"claude-haiku-4-5","usage":{{"input_tokens":{input},"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+        )
+    }
+
+    fn turn_context(model: &str) -> String {
+        format!(
+            r#"{{"timestamp":"2026-10-29T10:00:00Z","type":"turn_context","payload":{{"model":"{model}","cwd":"/sample"}}}}"#
+        )
+    }
+
+    fn session_meta(id: &str) -> String {
+        format!(
+            r#"{{"timestamp":"2026-10-29T10:00:00Z","type":"session_meta","payload":{{"id":"{id}"}}}}"#
+        )
+    }
+
+    fn totals_by_model(cache: &ImportCache) -> BTreeMap<String, (u64, u32)> {
+        let mut out = BTreeMap::new();
+        for state in cache.files.values() {
+            for b in &state.buckets {
+                let entry = out.entry(b.model.clone()).or_insert((0u64, 0u32));
+                entry.0 += b.input;
+                entry.1 += b.turns;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn usage_import_claude_counts_subagent_sidechains_once_by_message_and_request_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("projects");
+        // The main transcript repeats one message per content block (same id
+        // and request id); the subagent file repeats a sidechain message the
+        // main file also logged.
+        write(
+            &root.join("proj/sess-a.jsonl"),
+            &[
+                claude("msg-1", "req-1", "2026-10-29T10:00:00Z", 100, 10),
+                claude("msg-1", "req-1", "2026-10-29T10:00:01Z", 100, 10),
+                sidechain("msg-s1", "req-s1", "2026-10-29T10:05:00Z", 40),
+            ],
+        );
+        write(
+            &root.join("proj/sess-a/subagents/agent-1.jsonl"),
+            &[
+                sidechain("msg-s1", "req-s1", "2026-10-29T10:05:00Z", 40),
+                sidechain("msg-s2", "req-s2", "2026-10-29T10:06:00Z", 60),
+                "{ not json".to_owned(),
+            ],
+        );
+        let mut cache = ImportCache::default();
+        let report = scan_all(&[(ImportKind::Claude, root)], &mut cache);
+        assert_eq!(report.files_total, 2);
+        assert_eq!(report.entries, 3);
+        assert_eq!(report.duplicates, 2);
+        assert_eq!(report.kinds, vec![ImportKind::Claude]);
+        let models = totals_by_model(&cache);
+        assert_eq!(models["claude-opus-5-5"], (100, 1));
+        assert_eq!(models["claude-haiku-4-5"], (100, 2));
+        // Both files roll up into the parent session.
+        let sessions = imported_sessions(&cache, 0, &HashSet::new());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "sess-a");
+    }
+
+    #[test]
+    fn usage_import_codex_carries_the_turn_model_forward_and_reads_gzip_rollouts() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let lines = vec![
+            session_meta("codex-1"),
+            turn_context("gpt-5.5-codex"),
+            codex_token("2026-10-29T10:01:00Z", 100, 10, Some((100, 10))),
+            // No new turn_context: the model carries forward.
+            codex_token("2026-10-29T10:02:00Z", 150, 15, None),
+            turn_context("gpt-5.5"),
+            codex_token("2026-10-29T10:03:00Z", 170, 17, Some((20, 2))),
+        ];
+        write(&root.join("2026/10/29/rollout-a.jsonl"), &lines);
+        let gz = root.join("2026/10/28/rollout-b.jsonl.gz");
+        fs::create_dir_all(gz.parent().unwrap()).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(
+            File::create(&gz).unwrap(),
+            flate2::Compression::default(),
+        );
+        let text: String = [
+            session_meta("codex-2"),
+            turn_context("gpt-5-mini"),
+            codex_token("2026-10-28T09:00:00Z", 7, 3, Some((7, 3))),
+        ]
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect();
+        encoder.write_all(text.as_bytes()).unwrap();
+        encoder.finish().unwrap();
+        fs::write(
+            root.join("2026/10/28/rollout-c.jsonl.zst"),
+            b"\x28\xb5\x2f\xfd sample",
+        )
+        .unwrap();
+        let mut cache = ImportCache::default();
+        let report = scan_all(&[(ImportKind::Codex, root.clone())], &mut cache);
+        assert_eq!(report.files_total, 3);
+        assert_eq!(report.compressed_read, 1);
+        assert_eq!(report.compressed_skipped, 1);
+        let models = totals_by_model(&cache);
+        assert_eq!(models["gpt-5.5-codex"], (150, 2));
+        assert_eq!(models["gpt-5.5"], (20, 1));
+        assert_eq!(models["gpt-5-mini"], (7, 1));
+        // An unchanged compressed file is not read again.
+        let again = scan_all(&[(ImportKind::Codex, root)], &mut cache);
+        assert_eq!(again.files_read, 0);
+        assert_eq!(again.compressed_read, 0);
+        assert_eq!(totals_by_model(&cache), models);
+    }
+
+    #[test]
+    fn usage_import_opencode_reads_message_files_and_reports_its_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("opencode");
+        let root = data.join("storage/message");
+        write(
+            &root.join("ses_1/msg_1.json"),
+            &[r#"{"id":"msg_1","sessionID":"ses_1","role":"assistant","modelID":"claude-sonnet-5","providerID":"anthropic","cost":0.25,"time":{"created":1792000000000,"completed":1792000009000},"tokens":{"input":1200,"output":300,"reasoning":50,"cache":{"read":9000,"write":400}}}"#.to_owned()],
+        );
+        write(
+            &root.join("ses_1/msg_2.json"),
+            &[r#"{"id":"msg_2","sessionID":"ses_1","role":"assistant","model":{"id":"gpt-5.5","providerID":"openai"},"time":{"created":1792000100000},"tokens":{"input":100,"output":10,"reasoning":0,"cache":{"read":900,"write":0}}}"#.to_owned()],
+        );
+        write(
+            &root.join("ses_1/msg_0.json"),
+            &[r#"{"id":"msg_0","role":"user","time":{"created":1792000000000}}"#.to_owned()],
+        );
+        fs::write(data.join("opencode.db"), b"sample").unwrap();
+        let mut cache = ImportCache::default();
+        let report = scan_all(&[(ImportKind::OpenCode, root)], &mut cache);
+        assert_eq!(report.entries, 2);
+        assert!(report.notes.iter().any(|n| n.contains("opencode.db")));
+        let buckets: Vec<&ImportBucket> = cache.files.values().flat_map(|f| &f.buckets).collect();
+        let sonnet = buckets
+            .iter()
+            .find(|b| b.model == "claude-sonnet-5")
+            .unwrap();
+        // Anthropic convention: input apart from cache; reasoning is output.
+        assert_eq!(
+            (
+                sonnet.input,
+                sonnet.output,
+                sonnet.cache_read,
+                sonnet.cache_write,
+                sonnet.thought
+            ),
+            (1200, 350, 9000, 400, 50)
+        );
+        assert_eq!(sonnet.cost_micros, 250_000);
+        assert_eq!(sonnet.session, "ses_1");
+        // OpenAI convention: cached tokens folded into input for the ledger.
+        let gpt = buckets.iter().find(|b| b.model == "gpt-5.5").unwrap();
+        assert_eq!((gpt.input, gpt.cache_read, gpt.total), (1000, 900, 1010));
+    }
+
+    #[test]
+    fn usage_import_gemini_counts_each_message_once_and_keeps_rewound_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tmp");
+        write(
+            &root.join("project-a/chats/session-2026-10-29T10-00-abcd1234.jsonl"),
+            &[
+                r#"{"sessionId":"gem-1","projectHash":"p","startTime":"2026-10-29T10:00:00Z","kind":"main"}"#.to_owned(),
+                r#"{"id":"u1","timestamp":"2026-10-29T10:00:00Z","type":"user","content":"sample prompt"}"#.to_owned(),
+                r#"{"id":"m1","timestamp":"2026-10-29T10:00:05Z","type":"gemini","model":"gemini-3-pro","content":"","tokens":null}"#.to_owned(),
+                // The same message again once its tokens arrive: last wins.
+                r#"{"id":"m1","timestamp":"2026-10-29T10:00:05Z","type":"gemini","model":"gemini-3-pro","content":"sample","tokens":{"input":5000,"output":200,"cached":3000,"thoughts":150,"tool":0,"total":5350}}"#.to_owned(),
+                r#"{"id":"m2","timestamp":"2026-10-29T10:01:00Z","type":"gemini","model":"gemini-3-flash","tokens":{"input":100,"output":20,"cached":0,"thoughts":0,"tool":5,"total":125}}"#.to_owned(),
+                r#"{"$rewindTo":"m2"}"#.to_owned(),
+                r#"{"$set":{"lastUpdated":"2026-10-29T10:02:00Z"}}"#.to_owned(),
+            ],
+        );
+        write(
+            &root.join("project-b/chats/session-legacy.json"),
+            &[r#"{"sessionId":"gem-2","messages":[{"id":"x1","timestamp":"2026-10-28T08:00:00Z","type":"gemini","model":"gemini-2.5-pro","tokens":{"input":10,"output":2,"cached":0,"thoughts":0,"tool":0,"total":12}}]}"#.to_owned()],
+        );
+        // Outside a chats folder: not a chat file.
+        write(
+            &root.join("project-a/logs.json"),
+            &[r#"[{"type":"user"}]"#.to_owned()],
+        );
+        let mut cache = ImportCache::default();
+        let report = scan_all(&[(ImportKind::Gemini, root.clone())], &mut cache);
+        assert_eq!(report.files_total, 2);
+        assert_eq!(report.entries, 3);
+        let buckets: Vec<&ImportBucket> = cache.files.values().flat_map(|f| &f.buckets).collect();
+        let pro = buckets.iter().find(|b| b.model == "gemini-3-pro").unwrap();
+        assert_eq!(
+            (
+                pro.input,
+                pro.output,
+                pro.cache_read,
+                pro.thought,
+                pro.total,
+                pro.turns
+            ),
+            (5000, 350, 3000, 150, 5350, 1)
+        );
+        assert_eq!(pro.session, "gem-1");
+        let flash = buckets
+            .iter()
+            .find(|b| b.model == "gemini-3-flash")
+            .unwrap();
+        assert_eq!(flash.input, 105);
+        let sessions = imported_sessions(&cache, 0, &HashSet::new());
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().all(|s| s.agent_id == IMPORTED_GEMINI_ID));
+        // A rescan of unchanged files adds nothing.
+        let again = scan_all(&[(ImportKind::Gemini, root)], &mut cache);
+        assert_eq!(again.entries, 0);
+    }
+
+    #[test]
+    fn usage_import_more_roots_follow_opencode_and_gemini_environment() {
+        let home = Path::new("/home/sample");
+        let roots = more_roots(Some(home), None, None);
+        assert_eq!(roots[0], (ImportKind::Gemini, home.join(".gemini/tmp")));
+        assert_eq!(
+            roots[1],
+            (
+                ImportKind::OpenCode,
+                home.join(".local/share/opencode/storage/message")
+            )
+        );
+        // XDG_DATA_HOME must be absolute on the host, which on Windows needs a drive.
+        let data = if cfg!(windows) { r"C:\data" } else { "/data" };
+        let xdg = more_roots(Some(home), None, Some(data));
+        assert_eq!(
+            xdg[1],
+            (
+                ImportKind::OpenCode,
+                Path::new(data).join("opencode").join("storage/message")
+            )
+        );
+        // A relative XDG_DATA_HOME is ignored, as the XDG spec says.
+        assert_eq!(
+            more_roots(Some(home), None, Some("rel"))[1].1,
+            home.join(".local/share/opencode/storage/message")
+        );
+        let custom = more_roots(Some(home), Some("/x, /y"), None);
+        assert_eq!(custom.len(), 3);
+        assert!(is_imported_agent(IMPORTED_OPENCODE_ID) && is_imported_agent(IMPORTED_GEMINI_ID));
+    }
+
+    #[test]
+    fn usage_import_day_rows_carry_model_slices() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("projects");
+        write(
+            &root.join("p/sess-a.jsonl"),
+            &[
+                claude("m1", "r1", "2026-10-29T10:00:00Z", 100, 10),
+                sidechain("m2", "r2", "2026-10-29T11:00:00Z", 50),
+            ],
+        );
+        let mut cache = ImportCache::default();
+        scan_all(&[(ImportKind::Claude, root)], &mut cache);
+        let sessions = imported_sessions(&cache, 0, &HashSet::new());
+        let summary = summarize(&sessions, &UsageRange::default(), &PriceTable::bundled());
+        let day = &summary.days[0];
+        let mut models: Vec<&str> = day.models.iter().map(|m| m.model.as_str()).collect();
+        models.sort();
+        assert_eq!(models, vec!["claude-haiku-4-5", "claude-opus-5-5"]);
+        assert!(day.models.iter().all(|m| m.agent_id == IMPORTED_CLAUDE_ID));
+        assert_eq!(
+            day.models.iter().map(|m| m.tokens).sum::<u64>(),
+            day.agents[0].tokens
+        );
     }
 }

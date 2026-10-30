@@ -4,8 +4,9 @@ import { BrandIcon } from "../BrandIcon";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { MessageAttachments } from "../attachments";
 import type { AgentController } from "../../lib/agent-controller";
-import type { FeedItem } from "../../lib/agent-session";
-import { buildBlocks, changedFiles, noticeView, stopView, toStep, workChildren, workSummary, type Block } from "../../lib/agent-view";
+import type { FeedItem, ToolEvent } from "../../lib/agent-session";
+import type { StepView } from "./types";
+import { buildBlocks, changedFiles, noticeView, stopView, toStep, workSummary, type Block } from "../../lib/agent-view";
 import { budgetNote, budgetText, decisionView, deliverablesText, permissionWaitsOn, taskNote } from "../../lib/agent-delegation";
 import { urlRecordText } from "../../lib/agent-url-request";
 import { handoffDivider } from "../../lib/agent-handoff";
@@ -210,19 +211,50 @@ function FeedEntry(props: { agent: AgentController; item: () => FeedItem; last: 
   );
 }
 
-function Work(props: { agent: AgentController; block: () => Extract<Block, { type: "work" }> }) {
+const sameItems = <T,>(previous: readonly T[], next: readonly T[]) => previous.length === next.length && previous.every((item, index) => item === next[index]);
+
+const NO_CHILDREN: readonly ToolEvent[] = [];
+
+function Work(props: { agent: AgentController; block: () => Extract<Block, { type: "work" }>; children: () => ReadonlyMap<string, readonly ToolEvent[]> }) {
   const a = props.agent;
-  const steps = createMemo(() => props.block().tools.map((tool) => {
-    const step = toStep(tool, workChildren(a.feed(), tool), a.props.workspacePath, (path, line) => void a.openInEditor(path, line), (id) => a.setViewing(id));
+  const openFile = (path: string, line?: number) => void a.openInEditor(path, line);
+  const view = (id: string) => a.setViewing(id);
+  /**
+   * Steps by tool call. `toStep` parses the call's JSON (command output can run to megabytes) and every streamed token
+   * changes the feed, so a step is rebuilt only when its own event, its subagent children or the workspace changed.
+   */
+  const built = new Map<string, { tool: ToolEvent; children: readonly ToolEvent[]; root?: string; step: StepView }>();
+  const withImages = new Map<string, { step: StepView; image: unknown; result: StepView }>();
+  const stepFor = (tool: ToolEvent): StepView => {
+    const children = props.children().get(tool.toolCallId) ?? NO_CHILDREN;
+    const root = a.props.workspacePath;
+    const hit = built.get(tool.toolCallId);
+    const step = hit && hit.tool === tool && hit.root === root && sameItems(hit.children, children) ? hit.step : toStep(tool, children, root, openFile, view);
+    if (step !== hit?.step) built.set(tool.toolCallId, { tool, children, root, step });
     if (!step.savedPath || step.images?.length || step.status !== "completed") return step;
     const image = a.savedImage(`${tool.sessionId}:${tool.toolCallId}`, step.savedPath);
+    const kept = withImages.get(tool.toolCallId);
+    if (kept && kept.step === step && kept.image === image) return kept.result;
+    const result: StepView = { ...step };
     if (image?.state === "ready") {
       const item = image.attachment;
-      step.images = [{ id: item.id, name: item.name, mime: item.mime, src: image.src, onOpen: () => a.openAttachment(item) }];
-      step.savedImageNote = "Workspace image preview loaded.";
-    } else step.savedImageNote = image?.state === "pending" ? "Loading workspace image preview..." : image?.state === "unavailable" ? image.reason : "Preview is unavailable for this older generated image.";
-    return step;
-  }));
+      result.images = [{ id: item.id, name: item.name, mime: item.mime, src: image.src, onOpen: () => a.openAttachment(item) }];
+      result.savedImageNote = "Workspace image preview loaded.";
+    } else result.savedImageNote = image?.state === "pending" ? "Loading workspace image preview..." : image?.state === "unavailable" ? image.reason : "Preview is unavailable for this older generated image.";
+    withImages.set(tool.toolCallId, { step, image, result });
+    return result;
+  };
+  // Unchanged steps keep their identity, so the group and its rows do not re-render for a token streamed elsewhere.
+  const steps = createMemo(() => {
+    const tools = props.block().tools;
+    const next = tools.map(stepFor);
+    if (built.size > tools.length) {
+      const live = new Set(tools.map((tool) => tool.toolCallId));
+      for (const id of built.keys()) if (!live.has(id)) built.delete(id);
+      for (const id of withImages.keys()) if (!live.has(id)) withImages.delete(id);
+    }
+    return next;
+  }, [], { equals: sameItems });
   const summary = createMemo(() => workSummary(steps()));
   const bypass = () => Boolean(a.state().agent?.features.editsBypassReview) && steps().some((step) => step.kind === "edit" && !step.internal);
   return (
@@ -271,12 +303,44 @@ function Changes(props: { agent: AgentController; block: () => Extract<Block, { 
   );
 }
 
+/** A block that renders the same as before keeps its old object, so its row does not re-run for a change elsewhere. */
+function sameBlock(previous: Block | undefined, next: Block): boolean {
+  if (!previous || previous.type !== next.type) return false;
+  if (previous.type === "item") return previous.item === (next as typeof previous).item;
+  if (previous.type === "work") return sameItems(previous.tools, (next as typeof previous).tools);
+  return sameItems(previous.proposals, (next as typeof previous).proposals);
+}
+
+/** Subagent tool calls by parent call id, one pass per feed change. Unchanged when no nested call changed. */
+function childIndex(feed: readonly FeedItem[]): Map<string, ToolEvent[]> {
+  const index = new Map<string, ToolEvent[]>();
+  for (const item of feed) {
+    const parent = item.kind === "tool" ? item.event.parentToolCallId : undefined;
+    if (!parent) continue;
+    const list = index.get(parent);
+    if (list) list.push((item as Extract<FeedItem, { kind: "tool" }>).event);
+    else index.set(parent, [(item as Extract<FeedItem, { kind: "tool" }>).event]);
+  }
+  return index;
+}
+const sameIndex = (previous: ReadonlyMap<string, readonly ToolEvent[]>, next: ReadonlyMap<string, readonly ToolEvent[]>) =>
+  previous.size === next.size && [...next].every(([key, list]) => sameItems(previous.get(key) ?? NO_CHILDREN, list));
+
 /** The conversation: messages, notices, work groups and per-turn changes, built from the session feed. */
 export function AgentFeed(props: { agent: AgentController; ref?: (element: HTMLDivElement) => void }) {
   const a = props.agent;
-  const blocks = createMemo(() => buildBlocks(a.feed()));
+  // Every streamed token changes the feed. Blocks that did not change keep their identity, and each row reads its own
+  // block through a memo, so a token re-renders the streaming message and not every row in the thread.
+  const blocks = createMemo<Block[]>((previous) => {
+    const kept = new Map(previous.map((block) => [block.key, block]));
+    return buildBlocks(a.feed()).map((block) => {
+      const old = kept.get(block.key);
+      return old && sameBlock(old, block) ? old : block;
+    });
+  }, []);
   const byKey = createMemo(() => new Map(blocks().map((block) => [block.key, block])));
   const keys = createMemo(() => blocks().map((block) => block.key), [], { equals: sameKeys });
+  const children = createMemo(() => childIndex(a.feed()), new Map(), { equals: sameIndex });
   const lastKey = () => keys()[keys().length - 1];
   return (
     // Not a live region: streaming markdown re-renders constantly. The composer announces turn start and end and new
@@ -284,7 +348,7 @@ export function AgentFeed(props: { agent: AgentController; ref?: (element: HTMLD
     <div class="agent-feed" ref={props.ref}>
       <For each={keys()}>
         {(key) => {
-          const block = () => byKey().get(key);
+          const block = createMemo(() => byKey().get(key));
           const last = () => lastKey() === key;
           return (
             <Show when={block()}>
@@ -293,7 +357,7 @@ export function AgentFeed(props: { agent: AgentController; ref?: (element: HTMLD
                   <FeedEntry agent={a} item={() => (block() as Extract<Block, { type: "item" }>).item} last={last} />
                 </Match>
                 <Match when={block()!.type === "work"}>
-                  <Work agent={a} block={() => block() as Extract<Block, { type: "work" }>} />
+                  <Work agent={a} block={() => block() as Extract<Block, { type: "work" }>} children={children} />
                 </Match>
                 <Match when={block()!.type === "changes"}>
                   <Changes agent={a} block={() => block() as Extract<Block, { type: "changes" }>} />

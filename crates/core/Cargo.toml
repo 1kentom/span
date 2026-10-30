@@ -23,6 +23,8 @@ dprint-plugin-json = "=0.25.2"
 dprint-plugin-markdown = "=0.28.2"
 dprint-plugin-typescript = "=0.96.1"
 libc = "0.2"
+# Already in the lockfile (span-lsp); reads gzip compressed Codex rollouts.
+flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"

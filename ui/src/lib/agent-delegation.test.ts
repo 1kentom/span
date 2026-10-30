@@ -113,7 +113,7 @@ describe("child permission requests", () => {
 });
 
 describe("failure text table", () => {
-  const reasons: FailureReason[] = ["auth_required", "permission_rejected", "refused", "cancelled", "output_limit", "agent_unavailable", "depth_exceeded", "budget_exceeded", "timeout"];
+  const reasons: FailureReason[] = ["auth_required", "permission_rejected", "refused", "cancelled", "output_limit", "agent_unavailable", "depth_exceeded", "budget_exceeded", "timeout", "lost", "permission_required", "mode_unavailable", "worktree_unavailable"];
   it("has distinct text for every reason in the closed set", () => {
     expect(Object.keys(FAILURE_TEXT).sort()).toEqual([...reasons].sort());
     expect(new Set(Object.values(FAILURE_TEXT)).size).toBe(reasons.length);

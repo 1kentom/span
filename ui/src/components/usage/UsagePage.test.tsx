@@ -3,9 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import type { UsageCost, UsageSummary_Serialize as UsageSummary, UsageTotals_Serialize as UsageTotals } from "../../bindings";
 import { UsagePage, type UsageApi } from "./UsagePage";
+import { UsageImportSettings } from "./UsageImportSettings";
 
 const disposers: (() => void)[] = [];
-afterEach(() => { disposers.splice(0).forEach((dispose) => dispose()); document.body.replaceChildren(); });
+afterEach(() => { disposers.splice(0).forEach((dispose) => dispose()); document.body.replaceChildren(); localStorage.clear(); });
 function mount(view: () => any) {
   const root = document.createElement("div");
   document.body.append(root);
@@ -22,7 +23,10 @@ function summary(): UsageSummary {
   return {
     range: {},
     totals: totals(1_000_500, cost({ known: true, usd: 4, estimatedUsd: 4, complete: false, unpricedTokens: 500 })),
-    days: [{ day: "2026-10-28", agents: [{ agentId: "claude", tokens: 1_000_000, cost: priced }] }, { day: "2026-10-29", agents: [{ agentId: "local", tokens: 500, cost: unknown }] }],
+    days: [
+      { day: "2026-10-28", agents: [{ agentId: "claude", tokens: 1_000_000, cost: priced }], models: [{ agentId: "claude", model: "claude-opus-5-5", tokens: 1_000_000, cost: priced }] },
+      { day: "2026-10-29", agents: [{ agentId: "local", tokens: 500, cost: unknown }], models: [{ agentId: "local", model: "local-model", tokens: 500, cost: unknown }] },
+    ],
     agents: [{ agentId: "claude", name: "Claude", totals: totals(1_000_000, priced), imported: false }, { agentId: "local", name: "Local", totals: totals(500, unknown), imported: false }],
     models: [{ model: "claude-opus-5-5", agentIds: ["claude"], price: { id: "claude-opus-5-5", label: "Claude Opus 5.5", kind: "exact", note: null }, totals: totals(1_000_000, priced) }],
     topModel: "claude-opus-5-5",
@@ -70,7 +74,7 @@ describe("UsagePage", () => {
   });
 
   it("shows scan progress, partial results and the source filter while the importer runs", async () => {
-    const running = { enabled: true, running: true, report: { filesTotal: 2314, filesDone: 949, filesRead: 949, bytesRead: 10, entries: 4, duplicates: 0, skipped: 0, truncated: false }, scannedMs: null, error: null };
+    const running = { enabled: true, running: true, report: { filesTotal: 2314, filesDone: 949, filesRead: 949, bytesRead: 10, entries: 4, duplicates: 0, skipped: 0, truncated: false, compressedRead: 0, compressedSkipped: 0, kinds: [], notes: [] }, scannedMs: null, error: null };
     const api: UsageApi = { summary: vi.fn(async () => summary()), sessions: vi.fn(async () => []), importScan: vi.fn(async () => running), importStatus: vi.fn(async () => running) };
     const root = mount(() => <UsagePage api={api} desktop importEnabled onClose={() => undefined} />);
     await settle();
@@ -134,5 +138,53 @@ describe("UsagePage", () => {
     [...root.querySelectorAll("button")].find((button) => button.textContent === "Try again")!.click();
     await settle();
     expect(root.textContent).toContain("Tokens over time");
+  });
+
+  it("shows the importer notice once, with a link to Settings", async () => {
+    const done = { enabled: true, running: false, report: { filesTotal: 3, filesDone: 3, filesRead: 3, bytesRead: 10, entries: 4, duplicates: 1, skipped: 0, truncated: false, compressedRead: 1, compressedSkipped: 2, kinds: ["claude", "codex", "openCode"] as ("claude" | "codex" | "openCode")[], notes: ["OpenCode 1.2 and later keep usage in opencode.db, which Span does not read yet."] }, scannedMs: Date.now(), error: null };
+    const api: UsageApi = { summary: async () => summary(), sessions: async () => [], importScan: async () => done, importStatus: async () => done };
+    const onOpenSettings = vi.fn();
+    const first = mount(() => <UsagePage api={api} desktop importEnabled onOpenSettings={onOpenSettings} onClose={() => undefined} />);
+    await settle();
+    const note = first.querySelector(".usage-notice")!;
+    expect(note.textContent).toContain("Reading local usage from Claude Code, Codex, Gemini CLI and OpenCode logs. Turn off in Settings.");
+    (note.querySelector(".usage-link") as HTMLButtonElement).click();
+    expect(onOpenSettings).toHaveBeenCalled();
+    // Skipped sources are named, never silently dropped.
+    expect(first.textContent).toContain("3 sources not read");
+    expect(first.textContent).toContain("2 compressed Codex logs (.zst) skipped");
+    expect(first.textContent).toContain("opencode.db");
+    expect(first.textContent).toContain("Found Claude Code, Codex, OpenCode logs, 3 files, 1 compressed");
+    disposers.splice(0).forEach((dispose) => dispose());
+    document.body.replaceChildren();
+    const second = mount(() => <UsagePage api={api} desktop importEnabled onClose={() => undefined} />);
+    await settle();
+    expect(second.querySelector(".usage-notice")).toBeNull();
+  });
+
+  it("switches the chart between agents and models", async () => {
+    const value = summary();
+    value.models.push({ model: "local-model", agentIds: ["local"], price: null, totals: totals(500, cost({ known: false, complete: false, unpricedTokens: 500 })) });
+    const root = mount(() => <UsagePage api={{ summary: async () => value, sessions: async () => [] }} desktop onClose={() => undefined} />);
+    await settle();
+    const legend = () => root.querySelector('[aria-label="Legend"]')!.textContent;
+    expect(legend()).toContain("Claude Code");
+    (root.querySelector('[aria-label="Group chart by"] button:nth-child(2)') as HTMLButtonElement).click();
+    await settle();
+    expect(legend()).toContain("Claude Opus 5.5");
+    expect(legend()).toContain("local-model");
+    expect(legend()).not.toContain("Claude Code");
+  });
+});
+
+describe("UsageImportSettings", () => {
+  it("is on by default and saves a change", () => {
+    const onChange = vi.fn();
+    const root = mount(() => <UsageImportSettings onChange={onChange} />);
+    const toggle = root.querySelector('[role="switch"]') as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(root.textContent).toContain("On by default");
+    toggle.click();
+    expect(onChange).toHaveBeenCalledWith(false);
   });
 });

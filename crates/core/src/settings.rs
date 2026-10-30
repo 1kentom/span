@@ -304,7 +304,7 @@ pub struct AgentSettings {
 }
 
 /// `agents.usage.*` settings (ADR 0012).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentUsageSettings {
     /// `agents.usage.prices.<model>`: the user's own USD per million token
@@ -312,11 +312,21 @@ pub struct AgentUsageSettings {
     /// bundled price table.
     #[specta(optional)]
     pub prices: BTreeMap<String, crate::usage::PriceOverride>,
-    /// `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
-    /// local usage logs (read only, counters only) so the Usage page also
-    /// shows sessions run outside Span. Off by default.
+    /// `agents.usage.importLocalLogs`: read the agents' own local usage logs
+    /// (Claude Code, Codex, Gemini CLI, OpenCode; read only, counters only)
+    /// so the Usage page also shows sessions run outside Span. On by default
+    /// since the owner reversed the opt-in (ADR 0012, amendment).
     #[specta(optional)]
     pub import_local_logs: bool,
+}
+
+impl Default for AgentUsageSettings {
+    fn default() -> Self {
+        AgentUsageSettings {
+            prices: BTreeMap::new(),
+            import_local_logs: true,
+        }
+    }
 }
 
 /// How a session Span starts treats the agent's own default mode.

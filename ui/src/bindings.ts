@@ -190,8 +190,8 @@ export const commands = {
 	/**  The price table in use, with the user's overrides first. */
 	usagePrices: () => __TAURI_INVOKE<PriceTable_Serialize>("usage_prices"),
 	/**
-	 *  Starts a background scan of the local logs when the user turned the
-	 *  importer on and no scan is running. Returns at once; poll
+	 *  Starts a background scan of the local logs when the importer is on (the
+	 *  default) and no scan is running. Returns at once; poll
 	 *  `usage_import_status` for progress.
 	 */
 	usageImportScan: () => __TAURI_INVOKE<UsageImportStatus_Serialize>("usage_import_scan"),
@@ -1019,9 +1019,10 @@ export type AgentUsageSettings_Deserialize = {
 	 */
 	prices?: { [key in string]: PriceOverride_Deserialize },
 	/**
-	 *  `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
-	 *  local usage logs (read only, counters only) so the Usage page also
-	 *  shows sessions run outside Span. Off by default.
+	 *  `agents.usage.importLocalLogs`: read the agents' own local usage logs
+	 *  (Claude Code, Codex, Gemini CLI, OpenCode; read only, counters only)
+	 *  so the Usage page also shows sessions run outside Span. On by default
+	 *  since the owner reversed the opt-in (ADR 0012, amendment).
 	 */
 	importLocalLogs?: boolean,
 };
@@ -1035,9 +1036,10 @@ export type AgentUsageSettings_Serialize = {
 	 */
 	prices?: { [key in string]: PriceOverride_Serialize },
 	/**
-	 *  `agents.usage.importLocalLogs`: read Claude Code's and Codex's own
-	 *  local usage logs (read only, counters only) so the Usage page also
-	 *  shows sessions run outside Span. Off by default.
+	 *  `agents.usage.importLocalLogs`: read the agents' own local usage logs
+	 *  (Claude Code, Codex, Gemini CLI, OpenCode; read only, counters only)
+	 *  so the Usage page also shows sessions run outside Span. On by default
+	 *  since the owner reversed the opt-in (ADR 0012, amendment).
 	 */
 	importLocalLogs?: boolean,
 };
@@ -1559,6 +1561,14 @@ export type CurrentFileRun_Serialize = {
 	reason: string | null,
 };
 
+/**  One model of one agent on one day, for the chart's by-model view. */
+export type DayModelSlice = {
+	agentId: string,
+	model: string,
+	tokens: number,
+	cost: UsageCost,
+};
+
 /**  One agent's share of a day. */
 export type DaySlice = {
 	agentId: string,
@@ -1566,9 +1576,20 @@ export type DaySlice = {
 	cost: UsageCost,
 };
 
-export type DayUsage = {
+export type DayUsage = DayUsage_Serialize | DayUsage_Deserialize;
+
+export type DayUsage_Deserialize = {
 	day: string,
 	agents: DaySlice[],
+	/**  The same day by agent and model. */
+	models?: DayModelSlice[],
+};
+
+export type DayUsage_Serialize = {
+	day: string,
+	agents: DaySlice[],
+	/**  The same day by agent and model. */
+	models: DayModelSlice[],
 };
 
 /**  A decision the lead recorded with `record_decision` (#54). */
@@ -2465,6 +2486,9 @@ export type ImportItem = {
 	source: string,
 	policy: ConflictPolicy,
 };
+
+/**  Which agent's logs a root holds. */
+export type ImportKind = "claude" | "codex" | "gemini" | "openCode";
 
 /**  Copied and total entries and bytes of a running import. */
 export type ImportProgress = {
@@ -3517,6 +3541,14 @@ export type ScanReport = {
 	skipped: number,
 	/**  True when a cap stopped the file listing early. */
 	truncated: boolean,
+	/**  Compressed files read (gzip rollouts). */
+	compressedRead: number,
+	/**  Compressed files found but not read (`.zst`: no zstd decoder). */
+	compressedSkipped: number,
+	/**  Kinds that had at least one log file, in a fixed order. */
+	kinds: ImportKind[],
+	/**  Plain notes about sources found but not read. */
+	notes: string[],
 };
 
 export type SearchMatch = {
@@ -4946,7 +4978,7 @@ export type UsageSummary_Deserialize = {
 	 *  Every day of the range, oldest first, with zero days filled in. For
 	 *  an open range it starts at the first recorded day.
 	 */
-	days: DayUsage[],
+	days: DayUsage_Deserialize[],
 	/**  Most tokens first. */
 	agents: AgentUsage_Deserialize[],
 	/**  Most tokens first. */
@@ -4965,7 +4997,7 @@ export type UsageSummary_Serialize = {
 	 *  Every day of the range, oldest first, with zero days filled in. For
 	 *  an open range it starts at the first recorded day.
 	 */
-	days: DayUsage[],
+	days: DayUsage_Serialize[],
 	/**  Most tokens first. */
 	agents: AgentUsage_Serialize[],
 	/**  Most tokens first. */
