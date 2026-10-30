@@ -25,7 +25,7 @@ export function GitSourceControl(props: GitSourceControlProps) {
   const [toolsOpen, setToolsOpen] = createSignal(false);
   let tools!: HTMLDivElement;
   let toolsButton!: HTMLButtonElement;
-  createEffect(on(() => g.context()?.repository?.id, () => setToolsOpen(false)));
+  createEffect(on(() => g.context()?.repository?.id, (id, previousId) => { if (id !== previousId) setToolsOpen(false); }));
   createEffect(() => { if (!props.active || !g.context()?.enabled) setToolsOpen(false); });
   createEffect(() => {
     if (!toolsOpen()) return;

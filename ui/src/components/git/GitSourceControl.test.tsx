@@ -32,6 +32,27 @@ const tabs = (host: HTMLElement) => [...host.querySelectorAll<HTMLButtonElement>
 const radio = (host: HTMLElement, name: string) => [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(node => node.textContent?.trim() === name)!;
 
 describe("Git source control view", () => {
+  it("keeps Repository actions and drafts open across same-repository context refreshes and closes on repository change", async () => {
+    const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes");
+    f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);
+    const trigger = f.host.querySelector<HTMLButtonElement>('button[aria-label="Repository actions"]')!;
+    const popup = f.host.querySelector<HTMLElement>("#git-repository-actions")!;
+    trigger.click();
+    const target = f.host.querySelector<HTMLInputElement>("#git-network-branch")!;
+    target.value = "retained-target"; target.dispatchEvent(new Event("input", { bubbles: true }));
+    f.git.setMessage("Retained commit draft");
+    f.transport.gitContext.mockResolvedValueOnce({ ...context, repository: { ...context.repository! } });
+    f.transport.gitStatus.mockResolvedValueOnce({ ...status, repository: { ...status.repository } });
+    await f.git.refresh();
+    expect(popup.hidden).toBe(false); expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(target.value).toBe("retained-target"); expect(f.git.message()).toBe("Retained commit draft");
+    const otherRepository = { ...context.repository!, id: "other-repository" };
+    f.transport.gitContext.mockResolvedValueOnce({ ...context, repository: otherRepository });
+    f.transport.gitStatus.mockResolvedValueOnce({ ...status, repository: otherRepository });
+    await f.git.refresh();
+    expect(popup.hidden).toBe(true); expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(f.transport.gitRemoteSelected).not.toHaveBeenCalled();
+  });
   it("keeps the explicit Repository actions popup stable across queued native toggle events", async () => {
     const f = fixture(); await f.git.refresh(); await f.git.loadResource("remotes");
     f.mount(() => <GitSourceControl git={f.git} view={f.view} available active />);

@@ -139,3 +139,7 @@ The latest integration source passed 3,216 UI tests in 289 files (144.87 seconds
 All 28 Git browser workflows passed in 1.2 minutes with mocked IPC and real rendering checks. The initial run had 27 passes and one timeout and remains a recorded failed run; it is not counted as a pass.
 
 Actual native inspection of the separately installed `d8e7b23` Sidebar Review app exposed spontaneous closing of the outer details-based repository popup. Source now uses an explicit button and a mounted hidden popup, with 14 focused tests passing. A newly built native runtime and acceptance of this correction remain pending. Neither the automated passes nor this identified native defect establishes visual acceptance or completion of #210. Exact-head hosted checks and the broader Git/GitHub completion gates remain open.
+
+### Native repository actions refresh correction
+
+The separate native review build at `0bfec5c` confirmed that replacing the outer disclosure alone did not stop the popup from closing. Source investigation found that the repository-context effect closed it on every context refresh, including new context objects with the same repository ID. The corrected callback compares the current and previous IDs. A focused regression replaces context and status objects for the same repository, verifies the open popup and remote/commit drafts survive, then changes repository identity and verifies dismissal. All 15 Source Control tests passed. Rebuilt native acceptance for this additional correction remains pending.
