@@ -1,6 +1,7 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import type { FileProbe } from '../../bindings';
 import { formatAssetBytes } from '../../lib/asset-preview';
+import type { ArchiveApi } from '../../lib/archive-api';
 import { NOT_TEXT_MESSAGE } from '../../lib/binary-file';
 import { officeKindOf, officeLabels } from '../../lib/office/kind';
 import { classifyFile, extensionOf, readLimit } from '../../lib/viewer';
@@ -14,6 +15,9 @@ export interface WorkspaceFileViewProps {
   onOpenWithSystem?: () => void | Promise<void>;
   onReveal?: () => void | Promise<void>;
   revealLabel?: string;
+  /** Native archive backend for this file (desktop). The archive is then listed by Rust, never read here. */
+  archiveApi?: ArchiveApi;
+  onCopyArchivePath?: (path: string) => void;
 }
 
 /** Kinds the shared viewer renders natively. Anything else that is not text gets the "Can't show this file" card. */
@@ -51,6 +55,8 @@ export function WorkspaceFileView(props: WorkspaceFileViewProps) {
     if (!showViewer()) return;
     const { path, size } = props.file;
     const asHex = hex();
+    // The native backend reads the archive in place: no bytes cross IPC and no size cap applies here.
+    if (!asHex && props.archiveApi && officeKindOf(name()) === 'archive') { setContent({ status: 'ready' }); return; }
     // A document needs its whole container: 0 means too large, and the viewer says so without reading anything.
     const limit = readLimit(name(), '', size, asHex);
     let live = true;
@@ -100,6 +106,8 @@ export function WorkspaceFileView(props: WorkspaceFileViewProps) {
         onOpenWithSystem={props.onOpenWithSystem}
         onReveal={props.onReveal}
         revealLabel={props.revealLabel}
+        archiveApi={hex() ? undefined : props.archiveApi}
+        onCopyArchivePath={props.onCopyArchivePath}
       />
     </Show>
   </section>;

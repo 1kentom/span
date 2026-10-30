@@ -16,6 +16,8 @@ export interface ArchiveNode {
   implicit: boolean;
   hidden: boolean;
   encrypted: boolean;
+  /** Native refusal reason of an unsafe entry. */
+  reason?: string;
 }
 export interface ArchiveTree { root: ArchiveNode[]; unsafe: ArchiveEntry[]; files: number; folders: number; size: number; packed: number }
 
@@ -53,9 +55,9 @@ export function buildArchiveTree(entries: readonly ArchiveEntry[]): ArchiveTree 
     return node.children;
   };
   entries.forEach((entry, i) => {
-    if (isUnsafePath(entry.path)) {
+    if (entry.unsafeReason || isUnsafePath(entry.path)) {
       unsafe.push(entry);
-      unsafeNodes.push({ ...makeNode(`u:${i}`, entry.path, entry.path, entry.dir, entry), unsafe: true, implicit: false });
+      unsafeNodes.push({ ...makeNode(`u:${i}`, entry.path, entry.path, entry.dir, entry), unsafe: true, implicit: false, reason: entry.unsafeReason });
       return;
     }
     const path = normalise(entry.path);

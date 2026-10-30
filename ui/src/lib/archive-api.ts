@@ -1,7 +1,7 @@
 /**
  * The archive viewer talks to its backend through this small interface. The desktop implementation
  * (archive_list, archive_read_entry, archive_plan_extract, archive_extract with a progress Channel,
- * archive_cancel) is wired by the lead from client.ts; this file only defines the contract and the
+ * archive_cancel; ADR 0016) lives in archive-desktop.ts; this file defines the contract and the
  * browser preview implementation, which lists and reads ZIP entries locally and never extracts.
  *
  * Adapter point: build an ArchiveApi per opened archive and pass it to ArchiveView as `api`.
@@ -17,9 +17,12 @@ export interface ArchiveEntry {
   /** Milliseconds since the epoch. */
   modified?: number;
   encrypted?: boolean;
+  /** Why the native backend never previews or extracts this entry (links, collisions, bombs and so on). */
+  unsafeReason?: string;
 }
 export interface ArchiveListing { format: string; method?: string; entries: ArchiveEntry[]; truncated?: boolean }
-export type ConflictMode = 'ask' | 'skip' | 'replace';
+/** `keepBoth` adds " copy" to the new folder's name, as the Explorer does. */
+export type ConflictMode = 'ask' | 'keepBoth' | 'skip' | 'replace';
 export type ExtractTargetKind = 'workspace' | 'here' | 'choose' | 'new-folder';
 export interface ExtractTarget { kind: ExtractTargetKind; label: string; detail: string }
 export interface ExtractOptions {
@@ -30,6 +33,8 @@ export interface ExtractOptions {
   skipHidden: boolean;
   openWhenDone: boolean;
   conflict: ConflictMode;
+  /** Keep the executable bit of entries that had it. Off unless the user opts in. */
+  keepExecutable?: boolean;
 }
 export interface ExtractPlan { destination: string; files: number; bytes: number; conflicts: string[]; skippedUnsafe: string[] }
 export interface ExtractProgress { done: number; total: number; bytes?: number; current?: string }
@@ -37,6 +42,14 @@ export interface ExtractResult { extracted: number; skipped: number; destination
 
 export interface ArchiveApi {
   readonly canExtract: boolean;
+  /** False hides "Open folder when done": the native extractor never opens anything it wrote. */
+  readonly canOpenWhenDone?: boolean;
+  /** Shows the "Keep executable permission" option. */
+  readonly canKeepExecutable?: boolean;
+  /** A name clash offers Keep both (the default) besides Replace and Skip. */
+  readonly canKeepBoth?: boolean;
+  /** Cancel and failure leave nothing behind (the native extractor stages, then publishes). */
+  readonly atomic?: boolean;
   targets(): ExtractTarget[];
   list(): Promise<ArchiveListing>;
   readEntry(path: string): Promise<Uint8Array>;

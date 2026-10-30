@@ -1,5 +1,7 @@
 import { For, Show, batch, createEffect, createMemo, createSignal, on, onMount } from 'solid-js';
 import { formatAssetBytes } from '../../lib/asset-preview';
+import type { ArchiveApi } from '../../lib/archive-api';
+import { officeKindOf } from '../../lib/office/kind';
 import { currentPlatform, type Platform } from '../../lib/commands';
 import { UploadsError, type UploadEntry, type UploadExtras, type UploadsApi } from '../../lib/uploads-api';
 import {
@@ -17,6 +19,8 @@ import '../../styles/uploads.css';
 
 export interface UploadsWorkspaceProps {
   api: UploadsApi;
+  /** Native archive backend for an archive upload (desktop). It lists the stored file in place. */
+  archiveApi?: (entry: UploadEntry) => ArchiveApi;
   platform?: Platform;
   /** Host navigation to the session an upload came from. The menu entry is hidden without it. */
   onShowInSession?: (entry: UploadEntry) => void;
@@ -56,6 +60,7 @@ export function UploadsWorkspace(props: UploadsWorkspaceProps) {
 
   const byId = createMemo(() => new Map(entries().map(entry => [entry.id, entry])));
   const active = () => { const id = tabs().active; return id ? byId().get(id) : undefined; };
+  const archiveApi = createMemo(() => { const entry = active(); return entry && officeKindOf(entry.name, entry.mime ?? '') === 'archive' ? props.archiveApi?.(entry) : undefined; });
   const viewOf = (id: string): ViewAs => viewAs()[id] ?? 'preview';
   const now = () => props.now?.() ?? Date.now();
 
@@ -209,7 +214,7 @@ export function UploadsWorkspace(props: UploadsWorkspaceProps) {
         </div>}>{entry => {
           const a = actions(entry);
           const line = sourceLine(entry, ms => formatUploadTime(ms, now()));
-          return <FileViewer name={entry.name} mime={entry.mime} size={entry.size} content={contentOf(entry)}
+          return <FileViewer archiveApi={archiveApi()} name={entry.name} mime={entry.mime} size={entry.size} content={contentOf(entry)}
             source={{ agent: entry.agent, verb: line.verb, session: line.session, time: line.time }}
             viewAs={viewOf(entry.id)} onViewAsChange={mode => setViewAs(entry.id, mode)}
             openWith={{ system: caps().openWithSystem ? a.openWithSystem : undefined, choose: caps().chooseApplication ? a.chooseApplication : undefined }}

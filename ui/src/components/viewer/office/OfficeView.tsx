@@ -23,6 +23,7 @@ export interface OfficeViewProps {
   /** Archive backend. Without it, ZIP files are listed in the browser and extraction is disabled. */
   archiveApi?: ArchiveApi;
   onOpenEntry?: (path: string, bytes: Uint8Array) => void;
+  onCopyPath?: (path: string) => void;
 }
 
 export function OfficeView(props: OfficeViewProps) {
@@ -32,7 +33,7 @@ export function OfficeView(props: OfficeViewProps) {
       <Match when={props.kind === 'pptx'}><PptxView name={props.name} bytes={props.bytes} onMeta={props.onMeta} onOpenWithSystem={props.onOpenWithSystem} /></Match>
       <Match when={props.kind === 'xlsx'}><XlsxView name={props.name} bytes={props.bytes} onMeta={props.onMeta} onOpenWithSystem={props.onOpenWithSystem} /></Match>
       <Match when={props.kind === 'pdf'}><PdfView name={props.name} bytes={props.bytes} onMeta={props.onMeta} onOpenWithSystem={props.onOpenWithSystem} /></Match>
-      <Match when={props.kind === 'archive'}><ArchiveView name={props.name} bytes={props.bytes} api={props.archiveApi} onMeta={props.onMeta} onOpenEntry={props.onOpenEntry} onOpenWithSystem={props.onOpenWithSystem} /></Match>
+      <Match when={props.kind === 'archive'}><ArchiveView name={props.name} bytes={props.bytes} api={props.archiveApi} onMeta={props.onMeta} onOpenEntry={props.onOpenEntry} onCopyPath={props.onCopyPath} onOpenWithSystem={props.onOpenWithSystem} /></Match>
     </Switch>
   </Suspense>;
 }
