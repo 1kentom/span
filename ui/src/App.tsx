@@ -62,6 +62,7 @@ import { commonFolder, planStartup } from "./lib/startup-plan";
 import { SettingsPage } from "./components/SettingsPage";
 import { UsagePage } from "./components/usage/UsagePage";
 import { UsageImportSettings } from "./components/usage/UsageImportSettings";
+import { signalAppReady } from "./lib/boot-guard";
 import { afterNextPaint, collectStartupTimings, markStartup, readBootTheme, rememberBootTheme, revealOnce, STARTUP_MARKS, type BootTheme } from "./lib/startup";
 import { createSyntaxColorsEffect } from "./editor/syntax-colors-effect";
 import { SyntaxColorsSettings } from "./components/SyntaxColorsSettings";
@@ -752,7 +753,7 @@ export default function App() {
     const viewportObserver = new ResizeObserver(() => setViewport(layoutSize(layoutElement)));
     viewportObserver.observe(layoutElement); onCleanup(() => viewportObserver.disconnect());
     setViewport(layoutSize(layoutElement));
-    window.addEventListener("keydown", keyboard, true); window.addEventListener("beforeunload", beforeUnload); void w.initialize(applyStartup).then(async () => { setInitialized(true); setSettingsApplied(true); markStartup(STARTUP_MARKS.sessionReady); revealWindow(); afterNextPaint(() => void api.reportStartupTimings(collectStartupTimings()).catch(() => undefined)); await refreshRecentProjects(); const unlisten = await api.onOpenWorkspaceRequested(applyStartup); if (disposed) unlisten(); else unlistenStartup = unlisten; });
+    window.addEventListener("keydown", keyboard, true); window.addEventListener("beforeunload", beforeUnload); void w.initialize(applyStartup).then(async () => { setInitialized(true); setSettingsApplied(true); markStartup(STARTUP_MARKS.sessionReady); signalAppReady(); revealWindow(); afterNextPaint(() => void api.reportStartupTimings(collectStartupTimings()).catch(() => undefined)); await refreshRecentProjects(); const unlisten = await api.onOpenWorkspaceRequested(applyStartup); if (disposed) unlisten(); else unlistenStartup = unlisten; });
     if (isDesktop) {
       void api.onWindowFocus(focused => { if (!focused) w.autoSaveWindowBlur(); else void w.checkExternalChanges(true); }).then(unlisten => { if (disposed) unlisten(); else unlistenFocus = unlisten; });
       void api.onOpenRequestError(message => w.setError(message)).then(unlisten => { if (disposed) unlisten(); else unlistenOpenError = unlisten; });
