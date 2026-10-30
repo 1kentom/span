@@ -2,8 +2,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
 import type { UsageCost, UsageSummary_Serialize as UsageSummary, UsageTotals_Serialize as UsageTotals } from "../../bindings";
-import { UsagePage, type UsageApi } from "./UsagePage";
+import { RESCAN_MS, UsagePage, type UsageApi } from "./UsagePage";
 import { UsageImportSettings } from "./UsageImportSettings";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const usageCss = readFileSync(resolve("src/styles/usage.css"), "utf8");
 
 const disposers: (() => void)[] = [];
 afterEach(() => { disposers.splice(0).forEach((dispose) => dispose()); document.body.replaceChildren(); localStorage.clear(); });
@@ -74,7 +78,7 @@ describe("UsagePage", () => {
   });
 
   it("shows scan progress, partial results and the source filter while the importer runs", async () => {
-    const running = { enabled: true, running: true, report: { filesTotal: 2314, filesDone: 949, filesRead: 949, bytesRead: 10, entries: 4, duplicates: 0, skipped: 0, truncated: false, compressedRead: 0, compressedSkipped: 0, kinds: [], notes: [] }, scannedMs: null, error: null };
+    const running = { enabled: true, running: true, report: { filesTotal: 2314, filesDone: 949, filesRead: 949, bytesRead: 10, entries: 4, duplicates: 0, skipped: 0, truncated: false, compressedRead: 0, compressedSkipped: 0, databasesRead: 0, kinds: [], notes: [] }, scannedMs: null, error: null };
     const api: UsageApi = { summary: vi.fn(async () => summary()), sessions: vi.fn(async () => []), importScan: vi.fn(async () => running), importStatus: vi.fn(async () => running) };
     const root = mount(() => <UsagePage api={api} desktop importEnabled onClose={() => undefined} />);
     await settle();
@@ -141,7 +145,7 @@ describe("UsagePage", () => {
   });
 
   it("shows the importer notice once, with a link to Settings", async () => {
-    const done = { enabled: true, running: false, report: { filesTotal: 3, filesDone: 3, filesRead: 3, bytesRead: 10, entries: 4, duplicates: 1, skipped: 0, truncated: false, compressedRead: 1, compressedSkipped: 2, kinds: ["claude", "codex", "openCode"] as ("claude" | "codex" | "openCode")[], notes: ["OpenCode 1.2 and later keep usage in opencode.db, which Span does not read yet."] }, scannedMs: Date.now(), error: null };
+    const done = { enabled: true, running: false, report: { filesTotal: 3, filesDone: 3, filesRead: 3, bytesRead: 10, entries: 4, duplicates: 1, skipped: 0, truncated: false, compressedRead: 1, compressedSkipped: 2, databasesRead: 1, kinds: ["claude", "codex", "openCode"] as ("claude" | "codex" | "openCode")[], notes: ["OpenCode database format not recognised (version 7), so it was not read."] }, scannedMs: Date.now(), error: null };
     const api: UsageApi = { summary: async () => summary(), sessions: async () => [], importScan: async () => done, importStatus: async () => done };
     const onOpenSettings = vi.fn();
     const first = mount(() => <UsagePage api={api} desktop importEnabled onOpenSettings={onOpenSettings} onClose={() => undefined} />);
@@ -152,14 +156,95 @@ describe("UsagePage", () => {
     expect(onOpenSettings).toHaveBeenCalled();
     // Skipped sources are named, never silently dropped.
     expect(first.textContent).toContain("3 sources not read");
-    expect(first.textContent).toContain("2 compressed Codex logs (.zst) skipped");
-    expect(first.textContent).toContain("opencode.db");
-    expect(first.textContent).toContain("Found Claude Code, Codex, OpenCode logs, 3 files, 1 compressed");
+    expect(first.textContent).toContain("2 compressed Codex logs skipped: larger than 256 MB once decompressed.");
+    expect(first.textContent).not.toContain("no zstd reader");
+    expect(first.textContent).toContain("OpenCode database format not recognised (version 7)");
+    expect(first.textContent).toContain("Found Claude Code, Codex, OpenCode logs, 3 files, 1 compressed, 1 OpenCode database");
     disposers.splice(0).forEach((dispose) => dispose());
     document.body.replaceChildren();
     const second = mount(() => <UsagePage api={api} desktop importEnabled onClose={() => undefined} />);
     await settle();
     expect(second.querySelector(".usage-notice")).toBeNull();
+  });
+
+  it("lays the importer notice out as one compact left-aligned row", async () => {
+    const done = { enabled: true, running: false, report: null, scannedMs: Date.now(), error: null };
+    const api: UsageApi = { summary: async () => summary(), sessions: async () => [], importScan: async () => done, importStatus: async () => done };
+    const root = mount(() => <UsagePage api={api} desktop importEnabled onOpenSettings={() => undefined} onClose={() => undefined} />);
+    await settle();
+    const note = root.querySelector('.usage-notice[role="note"]')!;
+    expect(note.tagName).toBe("DIV");
+    // Icon, then the text with its Settings link, then the dismiss button last.
+    const children = [...note.children];
+    expect(children.map((child) => child.className.trim())).toEqual(["icon", "usage-notice-text", "usage-icon-button small"]);
+    expect(children[1].querySelector(".usage-link")!.textContent).toBe("Settings");
+    expect(children[2].getAttribute("aria-label")).toBe("Dismiss");
+    // The text keeps its own width (no flex grow) so nothing opens a gap between icon and text; only the dismiss
+    // button is pushed right, and the row uses the tiles' surface and radius.
+    expect(usageCss.length).toBeGreaterThan(0);
+    const rule = (selector: string) => { const start = usageCss.indexOf(`\n${selector} {`); return start < 0 ? "" : usageCss.slice(start, usageCss.indexOf("}", start)); };
+    expect(rule(".usage-notice-text")).toContain("flex: 0 1 auto");
+    expect(rule(".usage-notice > .icon")).toContain("flex: none");
+    expect(rule(".usage-notice > .usage-icon-button")).toContain("margin-left: auto");
+    expect(rule(".usage-notice")).toContain("justify-content: flex-start");
+    expect(rule(".usage-notice")).toContain("border-radius: 12px");
+    expect(rule(".usage-tile")).toContain("border-radius: 12px");
+    expect(rule(".usage-notice")).toContain("background: var(--island)");
+    (children[2] as HTMLButtonElement).click();
+    await settle();
+    expect(root.querySelector(".usage-notice")).toBeNull();
+  });
+
+  it("rescans every minute only while the window is visible", async () => {
+    vi.useFakeTimers();
+    try {
+      const done = { enabled: true, running: false, report: null, scannedMs: Date.now(), error: null };
+      const importScan = vi.fn(async () => done);
+      const api: UsageApi = { summary: async () => summary(), sessions: async () => [], importScan, importStatus: async () => done };
+      mount(() => <UsagePage api={api} desktop importEnabled onClose={() => undefined} />);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(importScan).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(RESCAN_MS);
+      expect(importScan).toHaveBeenCalledTimes(2);
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      await vi.advanceTimersByTimeAsync(RESCAN_MS);
+      expect(importScan).toHaveBeenCalledTimes(2);
+      visibility.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows Claude Code five-hour blocks as a chart mode when the importer is on", async () => {
+    const done = { enabled: true, running: false, report: null, scannedMs: Date.now(), error: null };
+    const now = Date.now();
+    const block = (startMs: number, active: boolean, total: number) => ({ startMs, endMs: startMs + 5 * 3_600_000, lastMs: startMs, active, turns: 3, tokens: { input: total, output: 0, cacheRead: 0, cacheWrite: 0, thought: 0, total }, cost: cost({ known: true, usd: 2, estimatedUsd: 2 }), models: ["claude-opus-5-5"] });
+    const blocks = vi.fn(async () => [block(now - 30 * 3_600_000, false, 500), block(now - 3_600_000, true, 2_000_000)]);
+    const api: UsageApi = { summary: async () => summary(), sessions: async () => [], importScan: async () => done, importStatus: async () => done, blocks };
+    const root = mount(() => <UsagePage api={api} desktop importEnabled onClose={() => undefined} />);
+    await settle();
+    await settle();
+    expect(blocks).toHaveBeenCalledWith(30);
+    const button = [...root.querySelectorAll('[aria-label="Group chart by"] button')].find((b) => b.textContent === "Blocks") as HTMLButtonElement;
+    button.click();
+    await settle();
+    const rows = [...root.querySelectorAll(".usage-block")];
+    expect(rows).toHaveLength(2);
+    // Newest first, the open block marked with its time left.
+    expect(rows[0].classList.contains("active")).toBe(true);
+    expect(rows[0].textContent).toContain("2M");
+    expect(rows[0].textContent).toMatch(/Active, 4h \d+m left/);
+    expect(rows[1].textContent).toContain("3 turns");
+    expect(root.textContent).toContain("Claude Code five-hour blocks");
+    expect(root.querySelector('[aria-label="Legend"]')).toBeNull();
+  });
+
+  it("hides the Blocks mode when the importer is off", async () => {
+    const blocks = vi.fn(async () => []);
+    const root = mount(() => <UsagePage api={{ summary: async () => summary(), sessions: async () => [], blocks }} desktop onClose={() => undefined} />);
+    await settle();
+    expect([...root.querySelectorAll('[aria-label="Group chart by"] button')].map((b) => b.textContent)).toEqual(["By agent", "By model"]);
+    expect(blocks).not.toHaveBeenCalled();
   });
 
   it("switches the chart between agents and models", async () => {
