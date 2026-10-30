@@ -1,5 +1,6 @@
 //! The editor's authoritative text and workspace services.
 //! UI undo/redo owns history and submits inverse edits through `edit_buffer`.
+mod archive;
 mod attachment;
 mod buffer;
 mod checkpoint;
@@ -35,6 +36,14 @@ pub mod usage_import_opencode;
 pub mod version;
 mod workspace;
 
+pub use archive::{
+    default_folder_name, ArchiveEntry, ArchiveEntryKind, ArchiveEntryPreview,
+    ArchiveExtractOptions, ArchiveExtractProgress, ArchiveExtractReport, ArchiveLimits,
+    ArchiveListing, ArchivePlan, ArchivePreviewKind, ArchiveSkip, ArchiveSource, ExtractTarget,
+    StagedExtract, ARCHIVE_RATIO_FLOOR, DEFAULT_ARCHIVE_EXTRACT_BYTES, MAX_ARCHIVE_COMPONENT_BYTES,
+    MAX_ARCHIVE_DEPTH, MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_FILE_BYTES, MAX_ARCHIVE_PATH_BYTES,
+    MAX_ARCHIVE_PREVIEW_BYTES, MAX_ARCHIVE_RATIO,
+};
 pub use attachment::{SavedAttachment, MAX_ATTACHMENT_BYTES};
 pub use buffer::{BufferRevision, BufferSnapshot, EditProposal, ProposalHunk, TextEdit};
 pub use checkpoint::{
@@ -138,12 +147,14 @@ pub enum CoreError {
     Attachment(String),
     #[error("Upload: {0}")]
     Upload(String),
+    #[error("{0}")]
+    Archive(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 /// The one place an I/O failure becomes a [`CoreError`]. `InvalidData` is what
 /// `read_to_string` reports for bytes that are not UTF-8, so it becomes [`CoreError::NotText`].
-fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> CoreError {
+pub(crate) fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> CoreError {
     if source.kind() == std::io::ErrorKind::InvalidData {
         return CoreError::NotText {
             path: path.display().to_string(),

@@ -692,6 +692,13 @@ impl UploadStore {
         Ok(upload)
     }
 
+    /// The checked blob of an owned upload and its display name, for the
+    /// archive viewer (ADR 0016), which reads it in place without copying.
+    pub fn archive_blob(&self, id: &str) -> Result<(PathBuf, String)> {
+        let upload = self.get_meta(id)?;
+        Ok((self.checked_blob(id)?, upload.name))
+    }
+
     /// Up to `len` bytes (capped at `MAX_UPLOAD_READ_BYTES`) from `offset`.
     pub fn read(&self, id: &str, offset: u64, len: u64) -> Result<UploadChunk> {
         self.get_meta(id)?;

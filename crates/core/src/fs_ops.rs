@@ -395,7 +395,7 @@ impl CoreWorkspace {
         Ok(resolved)
     }
 
-    fn import_target(&self, target_dir: &str) -> Result<PathBuf> {
+    pub(crate) fn import_target(&self, target_dir: &str) -> Result<PathBuf> {
         let target = if target_dir.is_empty() {
             self.root.clone()
         } else {
@@ -487,7 +487,7 @@ impl CoreWorkspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn publish_import(
+    pub(crate) fn publish_import(
         &mut self,
         staging: &Path,
         target: &Path,
@@ -714,7 +714,7 @@ impl CopyBudget<'_> {
         }
     }
 }
-enum ImportOutcome {
+pub(crate) enum ImportOutcome {
     Created(String),
     Replaced(String),
     Skipped,
@@ -922,7 +922,7 @@ pub fn copy_name(name: &str, directory: bool) -> String {
     }
     format!("{stem} copy{extension}")
 }
-fn open_copy_source(path: &Path) -> std::io::Result<File> {
+pub(crate) fn open_copy_source(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(any(target_os = "linux", target_os = "macos"))]

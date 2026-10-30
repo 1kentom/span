@@ -31,6 +31,17 @@ flate2 = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 # Pure Rust streaming zstd decoder for compressed Codex rollouts.
 ruzstd = "0.9"
+# Archive viewer (ADR 0016). Bounded ZIP reading with no extract helper used;
+# deflate only, decoded by pure Rust zlib-rs (already in the lockfile).
+zip = { version = "=9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Tar listing and extraction. Already in the lockfile (span-lsp); xattr is off.
+tar = { version = "0.4", default-features = false }
+# Directory-relative writes: extraction cannot leave the staging folder.
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
+# Collision keys for archive names: NFKC plus Unicode case folding.
+unicode-normalization = "0.1"
+unicode-casefold = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
