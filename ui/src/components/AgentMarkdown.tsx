@@ -8,6 +8,7 @@ import {
 import { createStreamReveal } from "../lib/create-stream-reveal";
 import { createIncrementalParser, offsetLines } from "../lib/incremental-markdown";
 import { enhanceTables, restoreTableScroll, tableScrollState } from "../lib/markdown-tables";
+import { enhanceMermaid } from "../lib/markdown-mermaid";
 import "../styles/markdown.css";
 import "../styles/stream-reveal.css";
 
@@ -68,7 +69,7 @@ function fadeFresh(host: HTMLElement, fresh: Fresh[], previous: number, now: num
   return { length, fresh: live };
 }
 
-function Block(props: { block: MarkdownBlock; context: { documentPath: string; workspaceRoot: string }; animate: Accessor<boolean> }) {
+function Block(props: { block: MarkdownBlock; context: { documentPath: string; workspaceRoot: string }; animate: Accessor<boolean>; streaming: Accessor<boolean>; last: Accessor<boolean> }) {
   let host!: HTMLDivElement;
   let previous = 0;
   let fresh: Fresh[] = [];
@@ -89,6 +90,14 @@ function Block(props: { block: MarkdownBlock; context: { documentPath: string; w
         void highlightFence(code).catch(() => {
           /* Plain code stays readable if a language chunk cannot load. */
         });
+    });
+  });
+  createEffect(() => {
+    html();
+    // The tail block grows with the stream: a half-written fence would fail on every chunk. Wait for the turn to end.
+    if (props.streaming() && props.last()) return;
+    queueMicrotask(() => {
+      if (!props.streaming() || !props.last()) void enhanceMermaid(host).catch(() => { /* Source stays readable. */ });
     });
   });
   return <div ref={host} class="markdown-block" />;
@@ -136,7 +145,7 @@ export function AgentMarkdown(props: AgentMarkdownProps) {
   }
   return (
     <div class="markdown-body agent-markdown" classList={{ "stream-revealing": reveal.revealing() }} onClick={click}>
-      <Index each={blocks()}>{(block) => <Block block={block()} context={context()} animate={reveal.animate} />}</Index>
+      <Index each={blocks()}>{(block, index) => <Block block={block()} context={context()} animate={reveal.animate} streaming={() => Boolean(props.streaming)} last={() => index === blocks().length - 1} />}</Index>
     </div>
   );
 }
