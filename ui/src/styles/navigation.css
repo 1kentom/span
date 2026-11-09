@@ -43,3 +43,8 @@
 .nav-library-banner{display:flex;align-items:center;gap:8px;min-width:0;padding:5px 12px;background:var(--amberSurface,var(--pill));border-bottom:1px solid var(--amberBorder,var(--border));font-size:12px}
 .nav-library-body{flex:1;min-height:0;display:flex}.nav-library-body .cm-editor{flex:1;min-width:0;background:var(--field);font-family:var(--editor-font-family,"JetBrains Mono"),monospace;font-size:var(--editor-font-size,13px)}.nav-library-body .cm-scroller{overflow:auto}
 .goto-symbol-icon{display:inline-grid;place-items:center;flex:none;color:var(--dim)}.breadcrumb-symbol{display:inline-flex;align-items:center;gap:4px}
+/* Outline (active Markdown document): rows indent one step per heading level; the heading at the caret is marked. */
+.nav-outline .nav-row{gap:4px;padding-top:2px;padding-bottom:2px}
+.nav-outline-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre}
+.nav-outline .nav-line-number{width:26px}
+.nav-row.nav-outline-current{background:var(--pill);font-weight:500}

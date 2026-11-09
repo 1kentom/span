@@ -32,6 +32,12 @@ export interface NavigationContext {
   open(path: string, line?: number, column?: number): Promise<void> | void;
   /** Same as `open`, in the other editor group. */
   openToSide?(path: string, line?: number, column?: number): Promise<void> | void;
+  /**
+   * Reveals a line in the visible document view, with the app free to switch what that means: an outline
+   * jump on a Markdown document in preview shows the source first, because a hidden caret is no reveal.
+   * Falls back to `open` where the app does not implement it.
+   */
+  revealInEditor?(path: string, line: number): void | Promise<void>;
   /** Opens a workspace file as a buffer. False when it could not be opened. */
   openFile(path: string): Promise<boolean>;
   /** Applies edits through the normal buffer edit path, so they are undoable and leave the buffer dirty. */

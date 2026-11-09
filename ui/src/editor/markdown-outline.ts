@@ -12,6 +12,11 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
 const NOT_PARAGRAPH = /^ {0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t]|>|#|\||<|`{3}|~{3})|^ {4}|^\t/;
 
+/** Document extensions the outline treats as Markdown. Mirrors the workbench `isMarkdown` rule. */
+export function isMarkdownPath(path: string): boolean {
+  return /\.(?:md|markdown|mdown)$/i.test(path);
+}
+
 /**
  * Headings of a Markdown document in order: ATX (`# Title`) and Setext (underlined with `===` or `---`).
  * Fenced code and front matter are skipped. For outline panels and breadcrumbs.
