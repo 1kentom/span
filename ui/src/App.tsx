@@ -195,7 +195,7 @@ export default function App() {
   // One tab state for the bottom panel: Terminal and Run, plus the References and Hierarchy tabs that navigation opens.
   const bottomTab = navigationState.bottomTab;
   const setBottomTab = navigationState.setBottomTab;
-  const navigationBottomTab = () => bottomTab() === "references" || bottomTab() === "hierarchy";
+  const navigationBottomTab = () => bottomTab() === "outline" || bottomTab() === "references" || bottomTab() === "hierarchy";
   const [runRequested, setRunRequested] = createSignal(false);
   const [runManagerOpen, setRunManagerOpen] = createSignal(false);
   const [runDraftDirty, setRunDraftDirty] = createSignal(false);
@@ -208,7 +208,7 @@ export default function App() {
     if (!root || !terminalDock) { w.setError("Open a folder to start a terminal."); return; }
     try { terminalDock.openAt(absolutePath(folder, root)); } catch (error) { w.setError(String(error instanceof Error ? error.message : error)); }
   };
-  function OutputViewTabs() { return <Show when={runs.runs().length > 0 || runRequested() || navigationState.references.status !== "idle" || navigationState.hierarchy.status !== "idle"}><div class="run-view-tabs" role="tablist" aria-label="Output views" onKeyDown={event => { if (["ArrowLeft", "ArrowRight"].includes(event.key) && (runs.runs().length > 0 || runRequested())) { event.preventDefault(); setBottomTab(bottomTab() === "terminal" ? "run" : "terminal"); } }}><button role="tab" aria-selected={bottomTab() === "terminal"} tabIndex={bottomTab() === "terminal" ? 0 : -1} onClick={() => setBottomTab("terminal")}>Terminal</button><Show when={runs.runs().length > 0 || runRequested()}><button role="tab" aria-selected={bottomTab() === "run"} tabIndex={bottomTab() === "run" ? 0 : -1} onClick={() => setBottomTab("run")}>Run</button></Show><NavigationTabs showPanel={() => setShowBottom(true)} /></div></Show>; }
+  function OutputViewTabs() { return <Show when={runs.runs().length > 0 || runRequested() || navigationState.references.status !== "idle" || navigationState.hierarchy.status !== "idle" || !!navigationState.outline()}><div class="run-view-tabs" role="tablist" aria-label="Output views" onKeyDown={event => { if (["ArrowLeft", "ArrowRight"].includes(event.key) && (runs.runs().length > 0 || runRequested())) { event.preventDefault(); setBottomTab(bottomTab() === "terminal" ? "run" : "terminal"); } }}><button role="tab" aria-selected={bottomTab() === "terminal"} tabIndex={bottomTab() === "terminal" ? 0 : -1} onClick={() => setBottomTab("terminal")}>Terminal</button><Show when={runs.runs().length > 0 || runRequested()}><button role="tab" aria-selected={bottomTab() === "run"} tabIndex={bottomTab() === "run" ? 0 : -1} onClick={() => setBottomTab("run")}>Run</button></Show><NavigationTabs showPanel={() => setShowBottom(true)} /></div></Show>; }
   createEffect(on(bottomTab, tab => { if (tab === "run") queueMicrotask(() => document.querySelector<HTMLButtonElement>('.run-output .run-view-tabs [aria-selected="true"]')?.focus()); }, { defer: true }));
   const runFile = () => { const path = w.activePath(); return path && !isSettingsBuffer(path) ? path : undefined; };
   const runs = createRunWorkbench({ generation: w.workspaceGeneration, root: () => w.workspace()?.root, blocked: w.busy, available: isDesktop, onReveal: () => { setRunRequested(true); setBottomTab("run"); setShowBottom(true); }, activeFile: runFile });
@@ -735,6 +735,8 @@ export default function App() {
     isReadOnly: path => isSettingsBuffer(path), isOpen: path => !!w.buffers[path], documentText: path => w.documents()[path]?.document,
     open: (path, line, column) => navigate(path, line, column),
     openToSide: (path, line, column) => navigateToSide(path, line, column),
+    // An outline jump on a Markdown document in preview switches to source first: a hidden caret cannot be revealed.
+    revealInEditor: (path, line) => { if (w.isMarkdown(path) && w.markdownView(path) === "preview") w.setMarkdownView(path, "source"); void navigate(path, line, 1); },
     openFile: async path => { await w.openFile(path); return !!w.buffers[path]; },
     applyEdits: (path, edits) => {
       const document = w.documents()[path]?.document; const buffer = w.buffers[path];

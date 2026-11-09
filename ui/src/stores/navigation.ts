@@ -10,12 +10,13 @@ import {
   classifyLocation,
 } from "../lib/lsp-navigation";
 import { closePeek, openPeek, setExternalLocationOpener } from "../lib/lsp-peek";
+import { isMarkdownPath, markdownOutline, type OutlineHeading } from "../editor/markdown-outline";
 import {
   configureNavigationContext, currentPlace, editorViewFor, focusEditor, jumpHistory, navigationContext, type NavigationContext, type Place,
 } from "../lib/navigation-context";
 import { NAVIGATION_UNAVAILABLE_MESSAGE, registerNavigationHandler, type NavigationActionId } from "../lib/navigation-actions";
 
-export type BottomTab = "terminal" | "run" | "references" | "hierarchy";
+export type BottomTab = "terminal" | "run" | "outline" | "references" | "hierarchy";
 
 /** All navigation state lives in one root so it is shared between the editor extensions and the panels. */
 const state = createRoot(() => {
@@ -27,7 +28,8 @@ const state = createRoot(() => {
   const [references, setReferences] = createStore<ReferencesState>({ status: "idle", symbol: "", error: "", groups: [], count: 0 });
   const [hierarchy, setHierarchy] = createStore<HierarchyState>({ kind: "call", direction: "incoming", status: "idle", error: "", roots: [], title: "" });
   const [library, setLibrary] = createStore<{ docs: LibraryDoc[]; active: string | undefined }>({ docs: [], active: undefined });
-  return { bottomTab, setBottomTab, toast, setToast, rename, setRename, caret, setCaret, symbolState, setSymbolState, references, setReferences, hierarchy, setHierarchy, library, setLibrary };
+  const [outline, setOutline] = createSignal<OutlineState | undefined>();
+  return { bottomTab, setBottomTab, toast, setToast, rename, setRename, caret, setCaret, symbolState, setSymbolState, references, setReferences, hierarchy, setHierarchy, library, setLibrary, outline, setOutline };
 });
 
 export interface RenameState { path: string; from: number; to: number; original: string; position: PositionDto; left: number; top: number; busy: boolean; error: string }
@@ -41,10 +43,11 @@ export interface HierarchyState {
   roots: HNode[]; title: string; origin?: { path: string; position: PositionDto };
 }
 export interface LibraryDoc { id: string; location: LocationDto; /** Opened to the side: the viewer covers the right half. */ side: boolean; title: string; status: "loading" | "ready" | "error"; text: string; startLine: number; language: string; error: string }
+export interface OutlineState { path: string; revision: number; headings: OutlineHeading[] }
 
 export const navigationState = {
   bottomTab: state.bottomTab, setBottomTab: state.setBottomTab, toast: state.toast, rename: state.rename,
-  references: state.references, hierarchy: state.hierarchy, library: state.library,
+  references: state.references, hierarchy: state.hierarchy, library: state.library, outline: state.outline,
 };
 
 // ------------------------------------------------------------ setup
@@ -69,6 +72,7 @@ export function resetNavigationState(): void {
     state.setReferences({ status: "idle", symbol: "", error: "", groups: [], count: 0, origin: undefined });
     state.setHierarchy({ kind: "call", direction: "incoming", status: "idle", error: "", roots: [], title: "", origin: undefined });
     state.setLibrary({ docs: [], active: undefined });
+    state.setOutline(undefined);
     state.setBottomTab("terminal");
   });
   jumpHistory.clear();
@@ -479,6 +483,21 @@ export function refreshDocumentSymbols(immediate = false): void {
 
 export function forgetDocumentSymbols(path?: string): void { if (path) symbolCache.delete(path); else symbolCache.clear(); }
 export const setCaretPosition = (position: PositionDto | undefined): void => { state.setCaret(position); };
+/** The caret of the active editor, or undefined when no editor has reported one. */
+export const caretPosition = (): PositionDto | undefined => state.caret();
+
+/**
+ * Headings of the active Markdown document, in the outline store. Called from the NavigationLayer effects that
+ * already track the active path, the buffer revision and the document text, and on workspace generation changes.
+ * Anything not an open Markdown document clears the tab and its panel.
+ */
+export function refreshOutline(): void {
+  const ctx = navigationContext();
+  const path = ctx?.activePath();
+  const text = ctx && path ? ctx.documentText(path) : undefined;
+  if (!ctx || !path || !text || !isMarkdownPath(path)) { state.setOutline(undefined); return; }
+  state.setOutline({ path, revision: ctx.revision(path), headings: markdownOutline(text.toString()) });
+}
 
 /** The symbol path of the caret in the active file, or an empty list while symbols are unknown or unsupported. */
 export function symbolCrumbs(): SymbolCrumb[] {

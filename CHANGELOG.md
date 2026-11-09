@@ -17,6 +17,7 @@ Changes to Span are recorded here. Release notes combine this curated section wi
 - Public LSP client foundation, with native editor integration tracked separately.
 - A production website with verified manual installer links and a local release manifest for public API rate limits.
 - Agent Markdown rendering, follow-latest scrolling, queued follow-ups, resumable sessions, and subagent metadata, combined with the scoped installation and settings workflow.
+- A Markdown outline panel for the bottom navigation area, listing the active document's headings with click-to-jump reveals and current-heading tracking.
 
 ### Changed
 
