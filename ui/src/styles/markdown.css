@@ -109,3 +109,22 @@
 .markdown-view-toolbar .markdown-view-toggle button[aria-checked="true"] { color: var(--text); background: var(--pill); }
 .markdown-body code[data-language="shell"] .tok-variableName { color: var(--syntax-function, #d9ba7e); }
 .markdown-body code[data-language="shell"] .tok-variableName.tok-definition { color: var(--syntax-type, #80b7ec); }
+/*
+ * Mermaid diagrams. Same surface as a code block; the diagram box holds the SVG, and the source stays available in a
+ * native disclosure so a failed render still shows readable text instead of an empty frame.
+ */
+.markdown-mermaid { margin: 0 0 20px; border: 1px solid var(--sepLine); border-radius: 5px; overflow: hidden; background: var(--field); }
+.markdown-mermaid-diagram { display: grid; place-items: center; min-height: 72px; padding: 16px; overflow: auto; }
+.markdown-mermaid-diagram[aria-busy="true"] { min-height: 96px; }
+.markdown-mermaid-diagram > svg { display: block; max-width: 100%; height: auto; }
+.markdown-mermaid-status { color: var(--dim); font-size: 11px; line-height: 18px; }
+.markdown-mermaid-status.is-error { color: var(--error); }
+.markdown-mermaid-source { border-top: 1px solid var(--sepLine); }
+.markdown-mermaid-source > summary { display: flex; align-items: center; gap: 5px; padding: 5px 12px; color: var(--dim); font-size: 10px; line-height: 20px; font-weight: 500; list-style: none; cursor: pointer; user-select: none; }
+.markdown-mermaid-source > summary::-webkit-details-marker { display: none; }
+.markdown-mermaid-source > summary:hover { color: var(--text); background: var(--hover); }
+.markdown-mermaid-source > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.markdown-mermaid-chevron { width: 12px; height: 12px; mask-image: url('/icons/rounded-linear/arrow-right4.svg'); -webkit-mask-image: url('/icons/rounded-linear/arrow-right4.svg'); transition: transform .12s ease; }
+.markdown-mermaid-source[open] .markdown-mermaid-chevron { transform: rotate(90deg); }
+.markdown-mermaid-code { margin: 0; padding: 12px 16px; border-top: 1px solid var(--sepLine); overflow: auto; font: 12px/20px var(--editor-font-family, "JetBrains Mono"), monospace; tab-size: 2; }
+.markdown-mermaid-code > code { display: block; min-width: max-content; padding: 0; background: none; border-radius: 0; white-space: pre; color: var(--text); }

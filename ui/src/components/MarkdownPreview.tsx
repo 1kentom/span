@@ -7,6 +7,7 @@ import { loadFenceLanguage } from "../editor/languages";
 import { describeMarkdownFence, type MarkdownRunRequest } from "../lib/markdown-fences";
 export type { MarkdownRunRequest } from "../lib/markdown-fences";
 import { enhanceTables, installTableRules } from "../lib/markdown-tables";
+import { enhanceMermaid, isMermaidFence, mermaidFence } from "../lib/markdown-mermaid";
 import "../styles/markdown.css";
 
 export interface MarkdownPreviewProps {
@@ -98,6 +99,7 @@ markdown.renderer.rules.image = (tokens, index, _options, env, renderer) => {
 };
 markdown.renderer.rules.fence = (tokens, index, _options, env) => {
   const token = tokens[index];
+  if (isMermaidFence(token.info)) return mermaidFence(token.content);
   const fence = describeMarkdownFence(token.info, token.content);
   const canRun = !!(env as RenderContext)?.canRun && !!fence.action;
   const action = fence.action === "send" ? "Send code to terminal for review" : "Run code in terminal";
@@ -229,6 +231,7 @@ function PreviewBlock(props: { block: MarkdownBlock; context: RenderContext; ind
     queueMicrotask(() => {
       enhanceTables(host);
       for (const code of host.querySelectorAll<HTMLElement>("code[data-language]")) void highlightFence(code).catch(() => { /* Plain code remains readable if a language chunk cannot load. */ });
+      void enhanceMermaid(host).catch(() => { /* The fence keeps its readable source when the diagram chunk cannot load. */ });
       if (props.loadImage) for (const image of host.querySelectorAll<HTMLElement>("[data-markdown-local-image]")) void loadLocalImage(image, props.loadImage);
     });
   });
