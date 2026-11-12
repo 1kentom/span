@@ -366,4 +366,3 @@ returns early only when a task becomes blocked during the call; a task
 already blocked when the call starts is listed in `blocked` but does not
 end the wait, so a lead polling it does not spin. Records are in memory
 until stage 3, so `lost` after a restart is not yet reachable in the app.
-

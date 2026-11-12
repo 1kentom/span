@@ -398,14 +398,8 @@ where
 {
     let (workspace, service) = current_service(&state).await?;
     let id = repository_id(&context)?.to_owned();
-    let owned = workspace.clone();
-    let runtime = tokio::runtime::Handle::current();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let mut editor = owned.lock().map_err(|_| "Workspace state is unavailable".to_owned())?;
-        if changes_disk && editor.git_has_dirty_buffers() {
-            return Err("Save or close unsaved editor buffers before this Git action.".into());
-        }
-        let result = runtime.block_on(operation(service, id)).map_err(|error| {
+    mutate_workspace(state, workspace, changes_disk, "Git", move || async move {
+        operation(service, id).await.map_err(|error| {
             let message = error.to_string();
             if message.contains("timed out") || message.contains("cancelled")
                 || message.contains("output exceeded") || message.contains("read failed")
@@ -414,11 +408,37 @@ where
                 || message.contains("stdout unavailable") || message.contains("stderr unavailable") {
                 format!("Git action was interrupted. Its outcome may be incomplete or unknown. Inspect repository and remote state before retrying. {message}")
             } else { message }
-        });
-        // Git can change files before returning an error, including stash conflicts.
-        if changes_disk { editor.git_reload_clean_buffers().map_err(|error| format!("Git may have applied its mutation, but editor reload failed. Inspect the repository before retrying. {error}"))?; }
+        })
+    }).await
+}
+
+/// Serialize disk changes with editor edits, saves, and other workspace mutations.
+/// Reload even on failure because an operation may have applied only some writes.
+pub(crate) async fn mutate_workspace<T, F, Fut>(
+    state: DesktopState,
+    workspace: Arc<Mutex<CoreWorkspace>>,
+    changes_disk: bool,
+    action: &'static str,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+{
+    let owned = workspace.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut editor = owned.lock().map_err(|_| "Workspace state is unavailable".to_owned())?;
+        if changes_disk && editor.git_has_dirty_buffers() {
+            return Err(format!("Save or close unsaved editor buffers before this {action} action."));
+        }
+        let result = runtime.block_on(operation());
+        if changes_disk {
+            editor.git_reload_clean_buffers().map_err(|error| format!("{action} may have applied its mutation, but editor reload failed. Inspect the repository before retrying. {error}"))?;
+        }
         result
-    }).await.map_err(|error| format!("Git task failed: {error}"))?;
+    }).await.map_err(|error| format!("{action} task failed: {error}"))?;
     ensure_current_workspace(&state, &workspace).await?;
     result
 }
@@ -1389,5 +1409,111 @@ mod tests {
         );
         operation.await.unwrap().unwrap();
         assert!(workspace.try_lock().is_ok());
+    }
+    #[tokio::test]
+    async fn shared_mutation_guard_protects_drafts_and_reloads_after_partial_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        initialize_repository(directory.path());
+        let state = state_for(directory.path());
+        let workspace = state.workspace.lock().unwrap().clone().unwrap();
+        let snapshot = workspace
+            .lock()
+            .unwrap()
+            .open_buffer("tracked.txt")
+            .unwrap();
+        workspace
+            .lock()
+            .unwrap()
+            .edit_buffer(
+                "tracked.txt",
+                snapshot.revision,
+                vec![span_core::TextEdit {
+                    from: 0,
+                    to: 0,
+                    insert: "draft ".into(),
+                }],
+            )
+            .unwrap();
+        let denied = mutate_workspace(
+            state.clone(),
+            workspace.clone(),
+            true,
+            "checkpoint",
+            || async {
+                panic!("dirty buffers must prevent the operation from starting");
+                #[allow(unreachable_code)]
+                Ok::<(), String>(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(denied.contains("Save or close unsaved"));
+        workspace
+            .lock()
+            .unwrap()
+            .discard_buffer("tracked.txt")
+            .unwrap();
+        let path = directory.path().join("tracked.txt");
+        let result = mutate_workspace(
+            state,
+            workspace.clone(),
+            true,
+            "checkpoint",
+            move || async move {
+                fs::write(path, "partially restored\n").unwrap();
+                Err::<(), String>("a later file failed".into())
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "a later file failed");
+        assert_eq!(
+            workspace
+                .lock()
+                .unwrap()
+                .buffer_snapshot("tracked.txt")
+                .unwrap()
+                .text,
+            "partially restored\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn checkpoint_boundary_serializes_with_git_mutations() {
+        let directory = tempfile::tempdir().unwrap();
+        initialize_repository(directory.path());
+        let state = state_for(directory.path());
+        let context = git_context_for(state.clone()).await.unwrap();
+        git_enable_for(state.clone(), context.clone())
+            .await
+            .unwrap();
+        let workspace = state.workspace.lock().unwrap().clone().unwrap();
+        let (entered, running) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let checkpoint = tokio::spawn(mutate_workspace(
+            state.clone(),
+            workspace,
+            true,
+            "checkpoint",
+            move || async move {
+                entered.send(()).unwrap();
+                released.await.unwrap();
+                Ok(())
+            },
+        ));
+        running.await.unwrap();
+        let (git_entered, mut git_running) = tokio::sync::oneshot::channel();
+        let git = tokio::spawn(mutate_git(state, context, true, move |_, _| async move {
+            git_entered.send(()).unwrap();
+            Ok(())
+        }));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut git_running)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        checkpoint.await.unwrap().unwrap();
+        git_running.await.unwrap();
+        git.await.unwrap().unwrap();
     }
 }

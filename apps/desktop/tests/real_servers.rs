@@ -149,17 +149,16 @@ impl Fetch for CountingFetch {
 // Processes
 // ---------------------------------------------------------------------------
 
-/// Every process as `(pid, ppid, state)`, without the lister that produced the
-/// table (it is itself a child of the test process, not a language server).
-/// Unix state is the `ps` stat column (`Z...` is a zombie). Windows has no
-/// zombies, so its state is always `R` and reaping is checked by absence.
+/// Every process as `(pid, ppid, state)`, excluding the native lister.
+/// Unix state is the `ps` stat column. Windows has no zombies, so its
+/// state is always `R` and reaping is checked by absence.
 #[cfg(unix)]
 fn process_table() -> Vec<(u32, u32, String)> {
     let out = Command::new("ps")
         .args(["-axo", "pid=,ppid=,stat=,comm="])
         .output()
         .expect("run ps");
-    parse_process_table(&String::from_utf8_lossy(&out.stdout), "ps")
+    checked_process_table(out, "ps")
 }
 
 #[cfg(windows)]
@@ -173,37 +172,39 @@ fn process_table() -> Vec<(u32, u32, String)> {
         ])
         .output()
         .expect("run powershell");
-    parse_process_table(&String::from_utf8_lossy(&out.stdout), "powershell.exe")
+    checked_process_table(out, "powershell.exe")
 }
 
-/// Parses `pid ppid state command` rows, dropping rows whose command file name
-/// is `lister`.
+fn checked_process_table(out: std::process::Output, lister: &str) -> Vec<(u32, u32, String)> {
+    assert!(
+        out.status.success(),
+        "process query failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let table = parse_process_table(&text, lister);
+    assert!(
+        table.iter().any(|(pid, _, _)| *pid == std::process::id()),
+        "process query omitted the test process: {text}"
+    );
+    table
+}
+
+/// Parses native PIDs and drops the process that listed them.
 fn parse_process_table(text: &str, lister: &str) -> Vec<(u32, u32, String)> {
     text.lines()
-        .filter_map(|l| {
-            let mut it = l.split_whitespace();
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
             let row = (
-                it.next()?.parse().ok()?,
-                it.next()?.parse().ok()?,
-                it.next()?.to_string(),
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+                fields.next()?.to_string(),
             );
-            let comm = it.collect::<Vec<_>>().join(" ");
-            let name = Path::new(&comm).file_name()?.to_string_lossy().to_string();
+            let command = fields.collect::<Vec<_>>().join(" ");
+            let name = Path::new(&command).file_name()?.to_string_lossy();
             (!name.eq_ignore_ascii_case(lister)).then_some(row)
         })
         .collect()
-}
-
-#[cfg(unix)]
-fn force_kill(pid: u32) {
-    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
-}
-
-#[cfg(windows)]
-fn force_kill(pid: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status();
 }
 
 #[test]
@@ -216,6 +217,18 @@ fn process_table_uses_native_process_ids() {
             .count(),
         1
     );
+}
+
+#[cfg(unix)]
+fn force_kill(pid: u32) {
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+}
+
+#[cfg(windows)]
+fn force_kill(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .status();
 }
 
 /// Live (non zombie) descendants of this test process.

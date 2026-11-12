@@ -71,7 +71,7 @@ it("does not offer file history for Git or settings virtual view identifiers", a
 });
 it("shows the actual repository and every staged/working outside-folder entry with explicit actions", async () => {
   const f = fixture(); await f.git.refresh(); f.mount(() => <GitPanel git={f.git} available />);
-  expect(f.host.textContent).toContain("/repo"); expect(f.host.textContent).toContain("feature/test"); expect(f.host.textContent).toContain("whole repository");
+  expect(f.host.querySelector(".git-repo-identity")?.getAttribute("title")).toBe("/repo"); expect(f.host.querySelector(".git-repo-identity strong")?.textContent).toBe("repo"); expect(f.host.textContent).toContain("feature/test");
   expect(f.host.querySelectorAll('[aria-label="Review staged changes in outside/file.ts"]')).toHaveLength(1);
   expect(f.host.querySelectorAll('[aria-label="Review working changes in outside/file.ts"]')).toHaveLength(1);
   f.host.querySelector<HTMLButtonElement>('[aria-label="Unstage outside/file.ts"]')!.click();
@@ -88,7 +88,7 @@ it("keeps a rejected commit draft, retries explicitly and never stages implicitl
   const f = fixture(); await f.git.refresh(); f.transport.gitCommit.mockRejectedValueOnce(new Error("Signing failed")); f.mount(() => <GitPanel git={f.git} available />);
   const textarea = f.host.querySelector<HTMLTextAreaElement>('[aria-label="Git commit message"]')!;
   textarea.value = "Retained message"; textarea.dispatchEvent(new Event("input", { bubbles: true }));
-  const button = () => [...f.host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent?.includes("Commit 1 staged file"))!;
+  const button = () => f.host.querySelector<HTMLButtonElement>('[aria-label="Commit 1 staged file"]')!;
   button().click(); await vi.waitFor(() => expect(f.host.textContent).toContain("Signing failed")); expect(textarea.value).toBe("Retained message");
   for (const [index, extra] of [{ isComposing: true }, { repeat: true }, {}].entries()) {
     const event = new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true, ...extra });

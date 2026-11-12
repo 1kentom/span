@@ -39,6 +39,11 @@ impl GitService {
             if fields.len() != 5 {
                 return Err(error("Malformed reference decorations"));
             }
+            // Span checkpoint and pull refs are private implementation storage.
+            // Filter before collecting decorations or deriving default graph heads.
+            if fields[0].starts_with(b"refs/span/") {
+                continue;
+            }
             if refs.len() >= 4096 {
                 return Err(error("History has too many reference heads"));
             }
